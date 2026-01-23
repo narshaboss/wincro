@@ -869,58 +869,108 @@ class SettingsView(BaseView):
         thread.start()
 
     def _check_version_thread(self, repo: str) -> None:
-        """버전 확인 스레드"""
+        """버전 확인 스레드 - 여러 방법 시도"""
         from ..utils.config import APP_VERSION
         import urllib.request
         import urllib.error
         import ssl
         import json
+        import socket
 
+        api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+        logger.info(f"버전 확인 시작: {api_url}")
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        data = None
+        last_error = None
+
+        # 방법 1: 기본 SSL 컨텍스트
         try:
-            # GitHub API로 최신 릴리즈 확인
-            api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-            logger.debug(f"버전 확인 API 호출: {api_url}")
-
-            # SSL 컨텍스트 생성
+            logger.debug("방법 1: 기본 SSL 컨텍스트 시도")
             ssl_context = ssl.create_default_context()
-
-            req = urllib.request.Request(api_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0',
-                'Accept': 'application/vnd.github.v3+json'
-            })
-
-            with urllib.request.urlopen(req, timeout=15, context=ssl_context) as response:
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
                 data = json.loads(response.read().decode())
+            logger.info("방법 1 성공")
+        except Exception as e1:
+            last_error = e1
+            logger.warning(f"방법 1 실패: {e1}")
 
-            latest_version = data.get("tag_name", "").lstrip("v")
-            current_version = APP_VERSION
-            logger.debug(f"버전 비교: 최신={latest_version}, 현재={current_version}")
+            # 방법 2: SSL 검증 완화
+            try:
+                logger.debug("방법 2: SSL 검증 완화 시도")
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                req = urllib.request.Request(api_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                    data = json.loads(response.read().decode())
+                logger.info("방법 2 성공")
+            except Exception as e2:
+                last_error = e2
+                logger.warning(f"방법 2 실패: {e2}")
 
-            # 버전 비교
-            if self._compare_versions(latest_version, current_version) > 0:
-                # 새 버전 있음 - 변수를 로컬에 저장해서 클로저 문제 방지
-                ver = latest_version
-                rel_data = data
-                self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
-            else:
-                # 최신 버전
-                ver = current_version
-                self.after(0, lambda v=ver: self._show_up_to_date(v))
+                # 방법 3: SSL 컨텍스트 없이 시도
+                try:
+                    logger.debug("방법 3: SSL 컨텍스트 없이 시도")
+                    req = urllib.request.Request(api_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=20) as response:
+                        data = json.loads(response.read().decode())
+                    logger.info("방법 3 성공")
+                except Exception as e3:
+                    last_error = e3
+                    logger.warning(f"방법 3 실패: {e3}")
 
-        except urllib.error.HTTPError as e:
-            logger.error(f"HTTP 오류: {e.code}")
-            if e.code == 404:
-                self.after(0, lambda: self._update_check_failed("저장소 또는 릴리즈를 찾을 수 없습니다"))
-            else:
-                err_code = e.code
-                self.after(0, lambda c=err_code: self._update_check_failed(f"HTTP 오류: {c}"))
-        except urllib.error.URLError as e:
-            logger.error(f"URL 오류: {e.reason}")
-            self.after(0, lambda: self._update_check_failed("네트워크 연결 실패"))
-        except Exception as e:
-            logger.error(f"버전 확인 오류: {e}", exc_info=True)
-            err_msg = str(e)[:50]
-            self.after(0, lambda m=err_msg: self._update_check_failed(m))
+                    # 방법 4: 프록시 환경변수 확인 후 시도
+                    try:
+                        import os
+                        logger.debug("방법 4: 프록시 설정 확인")
+                        proxy_handler = urllib.request.ProxyHandler()
+                        opener = urllib.request.build_opener(proxy_handler)
+                        req = urllib.request.Request(api_url, headers=headers)
+                        with opener.open(req, timeout=20) as response:
+                            data = json.loads(response.read().decode())
+                        logger.info("방법 4 성공")
+                    except Exception as e4:
+                        last_error = e4
+                        logger.error(f"방법 4 실패: {e4}")
+
+        # 결과 처리
+        if data:
+            try:
+                latest_version = data.get("tag_name", "").lstrip("v")
+                current_version = APP_VERSION
+                logger.info(f"버전 비교: 최신={latest_version}, 현재={current_version}")
+
+                if self._compare_versions(latest_version, current_version) > 0:
+                    ver = latest_version
+                    rel_data = data
+                    self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
+                else:
+                    ver = current_version
+                    self.after(0, lambda v=ver: self._show_up_to_date(v))
+            except Exception as e:
+                logger.error(f"버전 비교 오류: {e}")
+                self.after(0, lambda: self._update_check_failed("버전 정보 파싱 실패"))
+        else:
+            # 모든 방법 실패
+            error_detail = ""
+            if last_error:
+                if isinstance(last_error, urllib.error.HTTPError):
+                    error_detail = f"HTTP {last_error.code}"
+                elif isinstance(last_error, urllib.error.URLError):
+                    error_detail = str(last_error.reason)[:25]
+                elif isinstance(last_error, socket.timeout):
+                    error_detail = "시간 초과"
+                else:
+                    error_detail = str(last_error)[:25]
+
+            logger.error(f"모든 연결 방법 실패: {error_detail}")
+            self.after(0, lambda e=error_detail: self._update_check_failed(f"연결 실패: {e}"))
 
     def _compare_versions(self, v1: str, v2: str) -> int:
         """버전 비교 (v1 > v2: 1, v1 == v2: 0, v1 < v2: -1)"""
@@ -1005,9 +1055,54 @@ class SettingsView(BaseView):
         except Exception as e:
             logger.error(f"_update_check_failed 오류: {e}", exc_info=True)
 
+    def _fetch_latest_release_direct(self, repo: str) -> dict:
+        """릴리즈 정보 직접 가져오기 (여러 방법 시도)"""
+        import urllib.request
+        import urllib.error
+        import ssl
+        import json
+
+        api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        methods = [
+            ("기본 SSL", lambda: ssl.create_default_context()),
+            ("SSL 검증 완화", lambda: self._create_unverified_ssl_context()),
+            ("SSL 없음", lambda: None),
+        ]
+
+        for method_name, get_context in methods:
+            try:
+                logger.debug(f"릴리즈 가져오기 시도: {method_name}")
+                req = urllib.request.Request(api_url, headers=headers)
+                ctx = get_context()
+                if ctx:
+                    with urllib.request.urlopen(req, timeout=30, context=ctx) as response:
+                        return json.loads(response.read().decode())
+                else:
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        return json.loads(response.read().decode())
+            except Exception as e:
+                logger.warning(f"{method_name} 실패: {e}")
+                continue
+
+        return None
+
+    def _create_unverified_ssl_context(self):
+        """SSL 검증을 완화한 컨텍스트 생성"""
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     def _perform_update(self) -> None:
-        """GitHub에서 업데이트 수행"""
+        """GitHub에서 업데이트 수행 - 버전 확인 없이도 가능"""
         from tkinter import messagebox
+        from ..utils.config import APP_VERSION
         import threading
 
         repo = self._github_repo_var.get().strip()
@@ -1015,18 +1110,40 @@ class SettingsView(BaseView):
             messagebox.showwarning("경고", "GitHub 저장소를 먼저 입력하세요.")
             return
 
-        # 최신 버전 체크
+        # 최신 버전 체크 (버전 확인이 성공한 경우)
         if hasattr(self, '_is_latest_version') and self._is_latest_version:
             messagebox.showinfo("안내", "이미 최신 버전입니다!")
             return
 
-        # 릴리즈 정보가 없으면 먼저 확인
-        if not hasattr(self, '_latest_release') or not self._latest_release:
-            messagebox.showinfo("안내", "먼저 '버전 확인' 버튼을 눌러주세요.")
-            return
+        # 릴리즈 정보가 있으면 바로 사용
+        if hasattr(self, '_latest_release') and self._latest_release:
+            release = self._latest_release
+            version = release.get("tag_name", "").lstrip("v")
+        else:
+            # 릴리즈 정보가 없으면 - 현재 버전 보여주고 물어봄
+            if not messagebox.askyesno(
+                "업데이트",
+                f"현재 버전: v{APP_VERSION}\n\n"
+                f"버전 확인을 하지 않았거나 실패했습니다.\n"
+                f"최신 릴리즈를 직접 다운로드하시겠습니까?\n\n"
+                f"(네트워크 문제로 버전 확인이 안 될 때 사용)"
+            ):
+                return
 
-        release = self._latest_release
-        version = release.get("tag_name", "").lstrip("v")
+            # 직접 릴리즈 정보 가져오기 시도
+            self._do_update_btn.configure(state="disabled", text="확인 중...")
+            self._check_update_btn.configure(state="disabled")
+            self._update_status_label.configure(text="릴리즈 정보 가져오는 중...", text_color=COLORS["warning"])
+            self.update()
+
+            release = self._fetch_latest_release_direct(repo)
+            if not release:
+                self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
+                self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
+                messagebox.showerror("오류", "릴리즈 정보를 가져올 수 없습니다.\n\n네트워크 연결을 확인해주세요.")
+                return
+
+            version = release.get("tag_name", "").lstrip("v")
 
         # 다운로드할 에셋 찾기 (zip 파일만 지원)
         assets = release.get("assets", [])
@@ -1036,32 +1153,39 @@ class SettingsView(BaseView):
             name = asset.get("name", "").lower()
             if name.endswith(".zip"):
                 zip_asset = asset
-                break  # 첫 번째 zip 파일 사용
+                break
 
         if not zip_asset:
+            self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             messagebox.showerror("오류", "다운로드 가능한 zip 파일이 없습니다.\n\nGitHub Release에 zip 파일을 첨부해주세요.")
             return
 
         # 다운로드 URL 검증
         download_url = zip_asset.get("browser_download_url")
         if not download_url:
+            self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             messagebox.showerror("오류", "다운로드 URL을 찾을 수 없습니다.")
             return
 
         # 확인 메시지
         asset_to_download = zip_asset
         file_name = asset_to_download.get("name", "unknown")
-        file_size = asset_to_download.get("size", 0) / (1024 * 1024)  # MB
+        file_size = asset_to_download.get("size", 0) / (1024 * 1024)
 
         if not messagebox.askyesno(
             "업데이트 확인",
             f"새 버전을 다운로드합니다.\n\n"
-            f"버전: v{version}\n"
+            f"현재 버전: v{APP_VERSION}\n"
+            f"새 버전: v{version}\n"
             f"파일: {file_name}\n"
             f"크기: {file_size:.1f} MB\n\n"
             f"다운로드 후 프로그램이 재시작됩니다.\n"
             f"계속하시겠습니까?"
         ):
+            self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             return
 
         # 버튼 비활성화
