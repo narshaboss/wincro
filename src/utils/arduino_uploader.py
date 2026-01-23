@@ -15,11 +15,18 @@ from typing import Optional, Tuple
 
 from .logger import get_logger
 from .config import PROJECT_ROOT
+import sys
 
 logger = get_logger(__name__)
 
-# 경로 설정
-ARDUINO_DIR = PROJECT_ROOT / "arduino"
+# 경로 설정 (exe와 스크립트 실행 구분)
+if getattr(sys, 'frozen', False):
+    # exe로 실행 중 - _internal 폴더 안에 있음
+    ARDUINO_DIR = Path(sys.executable).parent / "_internal" / "arduino"
+else:
+    # 스크립트로 실행 중
+    ARDUINO_DIR = PROJECT_ROOT / "arduino"
+
 ARDUINO_CLI_DIR = ARDUINO_DIR / "arduino-cli"
 ARDUINO_CLI_EXE = ARDUINO_CLI_DIR / "arduino-cli.exe"
 SKETCH_PATH = ARDUINO_DIR / "wincro_hid"

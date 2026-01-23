@@ -32,16 +32,17 @@ class SettingsView(BaseView):
 
     def _setup_ui(self) -> None:
         """UI 구성"""
-        # 메인 컨테이너 (3x2 그리드)
+        # 메인 컨테이너
         main_frame = ctk.CTkFrame(self, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # 그리드 설정 (3행 2열)
+        # 그리드 설정 (4행 2열)
         main_frame.grid_columnconfigure(0, weight=1, uniform="col")
         main_frame.grid_columnconfigure(1, weight=1, uniform="col")
-        main_frame.grid_rowconfigure(0, weight=2, uniform="row")
-        main_frame.grid_rowconfigure(1, weight=2, uniform="row")
+        main_frame.grid_rowconfigure(0, weight=3, uniform="row")
+        main_frame.grid_rowconfigure(1, weight=3, uniform="row")
         main_frame.grid_rowconfigure(2, weight=2)  # 업데이트 설정 행
+        main_frame.grid_rowconfigure(3, weight=0)  # 저장 버튼 행 (고정)
 
         # 좌상단: 일반 설정
         general_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -58,15 +59,20 @@ class SettingsView(BaseView):
         player_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
         self._setup_player_settings(player_frame)
 
-        # 우하단: 외관 설정 + 버튼
+        # 우하단: 외관 설정
         appearance_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         appearance_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
         self._setup_appearance_settings(appearance_frame)
 
-        # 하단 전체: 업데이트 설정
+        # 3행: 업데이트 설정
         update_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         update_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=0, pady=(4, 0))
         self._setup_update_settings(update_frame)
+
+        # 4행: 저장 버튼 (크게)
+        save_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        save_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=0, pady=(8, 0))
+        self._setup_save_button(save_frame)
 
     def _setup_general_settings(self, parent) -> None:
         """일반 설정 섹션"""
@@ -422,27 +428,36 @@ class SettingsView(BaseView):
         card = self.create_card(parent, title=SETTINGS["recording"])
         card.pack(fill="both", expand=True)
 
+        # 스크롤 가능한 프레임
+        scroll_frame = ctk.CTkScrollableFrame(
+            card,
+            fg_color="transparent",
+            scrollbar_button_color=COLORS["border"],
+            scrollbar_button_hover_color=COLORS["accent"],
+        )
+        scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
         # 설정 그리드
-        grid_frame = ctk.CTkFrame(card, fg_color="transparent")
-        grid_frame.pack(fill="x", padx=15, pady=(0, 10))
+        grid_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        grid_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         # FPS
         self._fps_var = ctk.StringVar()
         self._create_setting_row_with_help(
-            grid_frame, "FPS (프레임)", self._fps_var, ["15", "30", "60"], row=0,
-            help_text="초당 캡처 횟수. 높을수록 부드럽지만 용량↑"
+            grid_frame, "FPS", self._fps_var, ["15", "30", "60"], row=0,
+            help_text="초당 캡처 횟수"
         )
 
         # 화질
         self._quality_var = ctk.StringVar()
         self._create_setting_row_with_help(
             grid_frame, "화질", self._quality_var, ["low", "medium", "high"], row=1,
-            help_text="low=작은용량, high=선명함"
+            help_text="low=작음, high=선명"
         )
 
         # 체크박스 프레임
-        options_frame = ctk.CTkFrame(card, fg_color="transparent")
-        options_frame.pack(fill="x", padx=15, pady=(0, 15))
+        options_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        options_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         # 마우스 커서 포함
         self._cursor_var = ctk.BooleanVar()
@@ -452,7 +467,7 @@ class SettingsView(BaseView):
         self._input_log_var = ctk.BooleanVar()
         self._create_checkbox_with_help(
             options_frame, "입력 로그 저장", self._input_log_var,
-            help_text="자동화 분석에 필요 (권장: ON)"
+            help_text="자동화 분석에 필요"
         )
 
     def _setup_player_settings(self, parent) -> None:
@@ -460,44 +475,53 @@ class SettingsView(BaseView):
         card = self.create_card(parent, title=SETTINGS["playback"])
         card.pack(fill="both", expand=True)
 
+        # 스크롤 가능한 프레임
+        scroll_frame = ctk.CTkScrollableFrame(
+            card,
+            fg_color="transparent",
+            scrollbar_button_color=COLORS["border"],
+            scrollbar_button_hover_color=COLORS["accent"],
+        )
+        scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
         # 설정 그리드
-        grid_frame = ctk.CTkFrame(card, fg_color="transparent")
-        grid_frame.pack(fill="x", padx=15, pady=(0, 15))
+        grid_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        grid_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         # 기본 실행 속도
         self._speed_var = ctk.StringVar()
         self._create_setting_row_with_help(
             grid_frame,
-            "기본 실행 속도",
+            "실행 속도",
             self._speed_var,
             ["0.5", "0.75", "1.0", "1.25", "1.5", "2.0"],
             row=0,
-            help_text="0.5x=느림(안정), 1.0x=보통, 2.0x=빠름"
+            help_text="0.5=느림, 1.0=보통, 2.0=빠름"
         )
 
         # 기본 대기 시간
         self._wait_var = ctk.StringVar()
         self._create_entry_row_with_help(
-            grid_frame, "동작 간 대기시간", self._wait_var, row=1,
-            help_text="각 동작 후 대기 (1000ms = 1초)"
+            grid_frame, "대기시간(ms)", self._wait_var, row=1,
+            help_text="동작 후 대기 (1000=1초)"
         )
 
         # 재시도 횟수
         self._retry_var = ctk.StringVar()
         self._create_entry_row_with_help(
-            grid_frame, "실패 시 재시도", self._retry_var, row=2,
-            help_text="이미지를 못 찾을 때 재시도 횟수"
+            grid_frame, "재시도 횟수", self._retry_var, row=2,
+            help_text="실패 시 재시도"
         )
 
         # 긴급 중지 키
         self._stop_key_var = ctk.StringVar()
         self._create_setting_row_with_help(
             grid_frame,
-            "긴급 중지 키",
+            "중지 키",
             self._stop_key_var,
             ["escape", "f12", "pause"],
             row=3,
-            help_text="이 키를 2번 누르면 즉시 중지"
+            help_text="2번 누르면 즉시 중지"
         )
 
     def _setup_appearance_settings(self, parent) -> None:
@@ -505,9 +529,18 @@ class SettingsView(BaseView):
         card = self.create_card(parent, title=SETTINGS["appearance"])
         card.pack(fill="both", expand=True)
 
+        # 스크롤 가능한 프레임
+        scroll_frame = ctk.CTkScrollableFrame(
+            card,
+            fg_color="transparent",
+            scrollbar_button_color=COLORS["border"],
+            scrollbar_button_hover_color=COLORS["accent"],
+        )
+        scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
         # 설정 그리드
-        grid_frame = ctk.CTkFrame(card, fg_color="transparent")
-        grid_frame.pack(fill="x", padx=15, pady=(0, 15))
+        grid_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        grid_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         # 테마
         self._theme_var = ctk.StringVar()
@@ -532,59 +565,19 @@ class SettingsView(BaseView):
         )
 
         # 구분선
-        ctk.CTkFrame(card, fg_color=COLORS["border"], height=1).pack(fill="x", padx=15, pady=10)
-
-        # 버튼 프레임
-        btn_frame = ctk.CTkFrame(card, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=15, pady=(0, 15))
-
-        # 저장 버튼
-        self._save_btn = self.create_button(
-            btn_frame,
-            text=SETTINGS["save"],
-            command=self._save_settings,
-            style="primary",
-            width=100,
-            height=36,
-        )
-        self._save_btn.pack(side="left", padx=(0, 8))
-
-        # 취소 버튼
-        self._cancel_btn = self.create_button(
-            btn_frame,
-            text=SETTINGS["cancel"],
-            command=self._load_settings,
-            style="secondary",
-            width=80,
-            height=36,
-        )
-        self._cancel_btn.pack(side="left", padx=(0, 8))
-
-        # 초기화 버튼
-        self._reset_btn = self.create_button(
-            btn_frame,
-            text=SETTINGS["reset"],
-            command=self._reset_settings,
-            style="warning",
-            width=120,
-            height=36,
-        )
-        self._reset_btn.pack(side="right")
-
-        # 구분선
-        ctk.CTkFrame(card, fg_color=COLORS["border"], height=1).pack(fill="x", padx=15, pady=10)
+        ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=10)
 
         # 진단 도구 섹션
         diag_label = ctk.CTkLabel(
-            card,
+            scroll_frame,
             text="진단 도구",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
-        diag_label.pack(anchor="w", padx=15)
+        diag_label.pack(anchor="w", padx=10)
 
-        diag_frame = ctk.CTkFrame(card, fg_color="transparent")
-        diag_frame.pack(fill="x", padx=15, pady=(5, 15))
+        diag_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        diag_frame.pack(fill="x", padx=10, pady=(5, 10))
 
         # pyautogui 테스트 버튼
         self._test_btn = self.create_button(
@@ -592,19 +585,19 @@ class SettingsView(BaseView):
             text="마우스 테스트",
             command=self._test_pyautogui,
             style="secondary",
-            width=110,
-            height=32,
+            width=100,
+            height=30,
         )
-        self._test_btn.pack(side="left", padx=(0, 8))
+        self._test_btn.pack(side="left", padx=(0, 5))
 
         # 전체 기능 테스트 버튼
         self._full_test_btn = self.create_button(
             diag_frame,
-            text="전체 기능 테스트",
+            text="전체 테스트",
             command=self._run_full_test,
             style="primary",
-            width=130,
-            height=32,
+            width=100,
+            height=30,
         )
         self._full_test_btn.pack(side="left")
 
@@ -615,150 +608,205 @@ class SettingsView(BaseView):
         card = self.create_card(parent, title="업데이트 설정")
         card.pack(fill="both", expand=True)
 
+        # 스크롤 가능한 프레임
+        scroll_frame = ctk.CTkScrollableFrame(
+            card,
+            fg_color="transparent",
+            scrollbar_button_color=COLORS["border"],
+            scrollbar_button_hover_color=COLORS["accent"],
+            orientation="horizontal",
+        )
+        scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
         # 내용 프레임
-        content_frame = ctk.CTkFrame(card, fg_color="transparent")
-        content_frame.pack(fill="both", expand=True, padx=15, pady=10)
+        content_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True)
 
-        # 상단: 저장소 입력 영역
-        repo_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        repo_frame.pack(fill="x", pady=(0, 10))
+        # 1행: 버전 + 저장소
+        row1 = ctk.CTkFrame(content_frame, fg_color="transparent")
+        row1.pack(fill="x", pady=(0, 8))
 
-        # 레이블
-        label_frame = ctk.CTkFrame(repo_frame, fg_color="transparent")
-        label_frame.pack(fill="x", pady=(0, 5))
-
-        ctk.CTkLabel(
-            label_frame,
-            text="GitHub 저장소",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=COLORS["text_primary"],
-        ).pack(side="left")
+        # 버전 표시
+        self._version_frame = ctk.CTkFrame(row1, fg_color=COLORS["accent"], corner_radius=6)
+        self._version_frame.pack(side="left", padx=(0, 15))
 
         self._current_version_label = ctk.CTkLabel(
-            label_frame,
-            text=f"(현재 버전: v{APP_VERSION})",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["accent"],
+            self._version_frame,
+            text=f"v{APP_VERSION}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#ffffff",
         )
-        self._current_version_label.pack(side="left", padx=(8, 0))
+        self._current_version_label.pack(padx=12, pady=6)
 
-        # 1줄: 입력 필드 + 저장 버튼
-        input_frame = ctk.CTkFrame(repo_frame, fg_color="transparent")
-        input_frame.pack(fill="x", pady=(0, 8))
+        # 최신 버전 여부 플래그
+        self._is_latest_version = False
 
-        # 저장소 입력 필드
+        # GitHub 저장소 입력
+        ctk.CTkLabel(
+            row1,
+            text="저장소:",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 5))
+
         self._github_repo_var = ctk.StringVar()
         self._github_repo_entry = ctk.CTkEntry(
-            input_frame,
+            row1,
             textvariable=self._github_repo_var,
-            placeholder_text="username/repository",
-            height=36,
+            placeholder_text="username/repo",
+            width=200,
+            height=32,
             fg_color=COLORS["bg_dark"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
         )
-        self._github_repo_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self._github_repo_entry.pack(side="left")
 
-        # 저장 버튼
-        self._save_repo_btn = ctk.CTkButton(
-            input_frame,
-            text="저장",
-            command=self._save_github_repo,
-            width=60,
-            height=36,
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        )
-        self._save_repo_btn.pack(side="left")
+        # 2행: 버튼들
+        row2 = ctk.CTkFrame(content_frame, fg_color="transparent")
+        row2.pack(fill="x", pady=(0, 8))
 
-        # 2줄: 버전 확인 + 업데이트 버튼
-        btn_frame = ctk.CTkFrame(repo_frame, fg_color="transparent")
-        btn_frame.pack(fill="x")
-
-        # 버전 확인 버튼 (크게)
+        # 버전 확인 버튼
         self._check_update_btn = ctk.CTkButton(
-            btn_frame,
+            row2,
             text="🔍 버전 확인",
             command=self._check_for_updates,
-            width=150,
-            height=45,
+            width=120,
+            height=40,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
             text_color="#ffffff",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self._check_update_btn.pack(side="left", padx=(0, 15))
+        self._check_update_btn.pack(side="left", padx=(0, 10))
 
-        # 업데이트 버튼 (크게)
+        # 업데이트 다운로드 버튼
         self._do_update_btn = ctk.CTkButton(
-            btn_frame,
-            text="⬇️ 업데이트 다운로드",
+            row2,
+            text="⬇️ 업데이트",
             command=self._perform_update,
-            width=180,
-            height=45,
+            width=120,
+            height=40,
             fg_color="#2ecc71",
             hover_color="#27ae60",
             text_color="#ffffff",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self._do_update_btn.pack(side="left")
+        self._do_update_btn.pack(side="left", padx=(0, 10))
 
-        # 상태 표시 영역
-        status_frame = ctk.CTkFrame(content_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
-        status_frame.pack(fill="x", pady=(5, 0))
-
-        status_inner = ctk.CTkFrame(status_frame, fg_color="transparent")
-        status_inner.pack(fill="x", padx=12, pady=8)
-
-        # 상태 아이콘
-        self._update_status_icon = ctk.CTkLabel(
-            status_inner,
-            text="ℹ️",
-            font=ctk.CTkFont(size=14),
-            width=20,
-        )
-        self._update_status_icon.pack(side="left")
-
-        # 상태 텍스트
-        self._update_status_label = ctk.CTkLabel(
-            status_inner,
-            text="GitHub 저장소를 입력하고 저장하세요",
-            font=ctk.CTkFont(size=12),
-            text_color=COLORS["text_muted"],
-        )
-        self._update_status_label.pack(side="left", padx=(8, 0))
-
-        # 마지막 업데이트 시간
-        self._last_update_label = ctk.CTkLabel(
-            status_inner,
-            text="",
-            font=ctk.CTkFont(size=11),
-            text_color=COLORS["text_muted"],
-        )
-        self._last_update_label.pack(side="right")
-
-        # 자동 업데이트 확인 체크박스
-        auto_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        auto_frame.pack(fill="x", pady=(10, 0))
-
+        # 자동 업데이트 체크박스
         self._auto_update_var = ctk.BooleanVar(value=get_config().update.auto_check)
         self._auto_update_checkbox = ctk.CTkCheckBox(
-            auto_frame,
-            text="시작할 때 자동으로 업데이트 확인",
+            row2,
+            text="자동 확인",
             variable=self._auto_update_var,
             command=self._toggle_auto_update,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             text_color=COLORS["text_primary"],
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
         )
         self._auto_update_checkbox.pack(side="left")
 
+        # 3행: 상태 표시
+        row3 = ctk.CTkFrame(content_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
+        row3.pack(fill="x")
+
+        self._update_status_icon = ctk.CTkLabel(
+            row3,
+            text="ℹ️",
+            font=ctk.CTkFont(size=12),
+        )
+        self._update_status_icon.pack(side="left", padx=(8, 4), pady=6)
+
+        self._update_status_label = ctk.CTkLabel(
+            row3,
+            text="저장소를 입력하세요",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        )
+        self._update_status_label.pack(side="left", padx=(0, 8), pady=6)
+
+        # 마지막 업데이트 시간 (우측)
+        self._last_update_label = ctk.CTkLabel(
+            row3,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        )
+        self._last_update_label.pack(side="right", padx=8, pady=6)
+
         # 릴리즈 데이터 초기화
         self._latest_release = None
+
+    def _setup_save_button(self, parent) -> None:
+        """하단 저장 버튼 (모든 설정 저장)"""
+        # 버튼 컨테이너
+        btn_container = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_container.pack(fill="x", pady=5)
+
+        # 왼쪽: 초기화 버튼
+        self._reset_btn = ctk.CTkButton(
+            btn_container,
+            text="🔄 설정 초기화",
+            command=self._reset_settings,
+            width=120,
+            height=45,
+            fg_color=COLORS["warning"],
+            hover_color="#c9a227",
+            text_color="#000000",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        self._reset_btn.pack(side="left", padx=(0, 10))
+
+        # 오른쪽: 저장 버튼
+        self._save_all_btn = ctk.CTkButton(
+            btn_container,
+            text="💾 모든 설정 저장",
+            command=self._save_all_settings,
+            width=150,
+            height=45,
+            fg_color=COLORS["success"],
+            hover_color="#45a049",
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        self._save_all_btn.pack(side="left")
+
+    def _save_all_settings(self) -> None:
+        """모든 설정 저장"""
+        from tkinter import messagebox
+
+        try:
+            # 기존 _save_settings 호출 (일반/녹화/재생/외관 설정)
+            self._save_settings()
+
+            # GitHub 저장소 저장
+            repo = self._github_repo_var.get().strip()
+            if repo:
+                config = get_config()
+                config.update.github_repo = repo
+                save_config()
+
+            # 자동 업데이트 설정 저장
+            config = get_config()
+            config.update.auto_check = self._auto_update_var.get()
+            save_config()
+
+            # 상태 업데이트
+            self._update_status_icon.configure(text="✅")
+            self._update_status_label.configure(
+                text="모든 설정이 저장되었습니다",
+                text_color=COLORS["success"]
+            )
+
+            messagebox.showinfo("저장 완료", "모든 설정이 저장되었습니다!")
+            logger.info("모든 설정 저장 완료")
+
+        except Exception as e:
+            logger.error(f"설정 저장 오류: {e}", exc_info=True)
+            messagebox.showerror("오류", f"설정 저장 중 오류가 발생했습니다:\n{e}")
 
     def _toggle_auto_update(self) -> None:
         """자동 업데이트 확인 설정 토글"""
@@ -899,17 +947,18 @@ class SettingsView(BaseView):
             self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             self._update_status_icon.configure(text="🆕")
             self._update_status_label.configure(
-                text=f"🆕 새 버전 사용 가능: v{new_version} (현재: v{APP_VERSION})",
+                text=f"새 버전: v{new_version} (현재: v{APP_VERSION})",
                 text_color=COLORS["warning"]
             )
             # 상단 버전 라벨도 업데이트
-            self._current_version_label.configure(
-                text=f"🆕 업데이트 필요! v{APP_VERSION} → v{new_version}",
-                text_color=COLORS["warning"]
-            )
+            self._current_version_label.configure(text=f"🆕 v{APP_VERSION}→v{new_version}")
+            # 버전 프레임 색상 변경 (안전하게)
+            if hasattr(self, '_version_frame'):
+                self._version_frame.configure(fg_color=COLORS["warning"])
 
             # 릴리즈 데이터 저장 (다운로드용)
             self._latest_release = release_data
+            self._is_latest_version = False
 
             # 버전 저장
             config = get_config()
@@ -925,15 +974,16 @@ class SettingsView(BaseView):
             self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             self._update_status_icon.configure(text="✅")
             self._update_status_label.configure(
-                text=f"✅ 최신 버전입니다! (v{current_version})",
+                text=f"최신 버전입니다! (v{current_version})",
                 text_color=COLORS["success"]
             )
             # 상단 버전 라벨도 업데이트
-            self._current_version_label.configure(
-                text=f"✅ 최신 버전: v{current_version}",
-                text_color=COLORS["success"]
-            )
+            self._current_version_label.configure(text=f"✅ v{current_version}")
+            # 버전 프레임 색상 변경 (안전하게)
+            if hasattr(self, '_version_frame'):
+                self._version_frame.configure(fg_color=COLORS["success"])
             self._latest_release = None
+            self._is_latest_version = True
         except Exception as e:
             logger.error(f"_show_up_to_date 오류: {e}", exc_info=True)
 
@@ -960,9 +1010,14 @@ class SettingsView(BaseView):
             messagebox.showwarning("경고", "GitHub 저장소를 먼저 입력하세요.")
             return
 
+        # 최신 버전 체크
+        if hasattr(self, '_is_latest_version') and self._is_latest_version:
+            messagebox.showinfo("안내", "이미 최신 버전입니다!")
+            return
+
         # 릴리즈 정보가 없으면 먼저 확인
         if not hasattr(self, '_latest_release') or not self._latest_release:
-            messagebox.showinfo("안내", "먼저 '버전 확인' 버튼을 눌러 새 버전을 확인하세요.")
+            messagebox.showinfo("안내", "먼저 '버전 확인' 버튼을 눌러주세요.")
             return
 
         release = self._latest_release
