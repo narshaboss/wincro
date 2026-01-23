@@ -301,6 +301,15 @@ class RecorderView(BaseView):
             height=28,
         ).pack(side="right")
 
+        self.create_button(
+            header,
+            text="녹화 동기화",
+            command=self._sync_recordings,
+            style="ghost",
+            width=90,
+            height=28,
+        ).pack(side="right", padx=(0, 5))
+
         # 목록
         self._recordings_scroll = ctk.CTkScrollableFrame(
             card,
@@ -421,6 +430,56 @@ class RecorderView(BaseView):
         main_window = self.winfo_toplevel()
         if hasattr(main_window, 'refresh_all_views'):
             main_window.refresh_all_views()
+
+    def _sync_recordings(self):
+        """원격 녹화 파일과 동기화"""
+        from tkinter import messagebox
+        import threading
+
+        config = get_config()
+        repo = config.update.github_repo
+
+        if not repo:
+            messagebox.showwarning(
+                "설정 필요",
+                "GitHub 저장소가 설정되지 않았습니다.\n\n"
+                "설정 > 업데이트 설정에서 GitHub 저장소를 먼저 입력하세요."
+            )
+            return
+
+        # 동기화 진행
+        def sync_thread():
+            try:
+                from ..utils.updater import sync_recordings, upload_recording_info
+
+                result = sync_recordings(repo)
+
+                if result["downloaded"] > 0:
+                    msg = f"동기화 완료!\n\n다운로드: {result['downloaded']}개\n건너뜀: {result['skipped']}개"
+                    if result["failed"] > 0:
+                        msg += f"\n실패: {result['failed']}개"
+                    self.after(0, lambda: messagebox.showinfo("녹화 동기화", msg))
+                    self.after(0, self._refresh_recordings_list)
+                elif result["skipped"] > 0:
+                    self.after(0, lambda: messagebox.showinfo(
+                        "녹화 동기화",
+                        f"새로운 녹화 파일이 없습니다.\n(이미 {result['skipped']}개 존재)"
+                    ))
+                else:
+                    # 업로드 안내 표시
+                    info = upload_recording_info().format(repo=repo)
+                    self.after(0, lambda: messagebox.showinfo(
+                        "녹화 동기화",
+                        f"원격에 공유된 녹화 파일이 없습니다.\n\n{info}"
+                    ))
+
+            except Exception as e:
+                logger.error(f"녹화 동기화 오류: {e}")
+                self.after(0, lambda: messagebox.showerror("동기화 오류", str(e)))
+
+        thread = threading.Thread(target=sync_thread, daemon=True)
+        thread.start()
+        messagebox.showinfo("녹화 동기화", "동기화를 시작합니다...\n완료되면 알림이 표시됩니다.")
 
     def _on_start_recording(self):
         """녹화 시작 - logger 사용 금지 (백그라운드 스레드와 데드락 발생)"""

@@ -739,8 +739,32 @@ class SettingsView(BaseView):
         )
         self._last_update_label.pack(side="right")
 
+        # 자동 업데이트 확인 체크박스
+        auto_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        auto_frame.pack(fill="x", pady=(10, 0))
+
+        self._auto_update_var = ctk.BooleanVar(value=get_config().update.auto_check)
+        self._auto_update_checkbox = ctk.CTkCheckBox(
+            auto_frame,
+            text="시작할 때 자동으로 업데이트 확인",
+            variable=self._auto_update_var,
+            command=self._toggle_auto_update,
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_primary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+        )
+        self._auto_update_checkbox.pack(side="left")
+
         # 릴리즈 데이터 초기화
         self._latest_release = None
+
+    def _toggle_auto_update(self) -> None:
+        """자동 업데이트 확인 설정 토글"""
+        config = get_config()
+        config.update.auto_check = self._auto_update_var.get()
+        save_config()
+        logger.info(f"자동 업데이트 확인: {config.update.auto_check}")
 
     def _save_github_repo(self) -> None:
         """GitHub 저장소 저장"""

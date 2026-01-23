@@ -115,6 +115,10 @@ class WinCroApp:
             if self._config.arduino.enabled and self._config.arduino.auto_connect and self._config.arduino.com_port:
                 self._main_window.after(1500, self._auto_connect_arduino)
 
+            # 자동 업데이트 확인 (설정된 경우)
+            if self._config.update.auto_check and self._config.update.github_repo:
+                self._main_window.after(2000, self._auto_check_update)
+
             logger.info("애플리케이션 실행")
             self._main_window.mainloop()
 
@@ -175,6 +179,51 @@ class WinCroApp:
                 logger.warning("아두이노 자동 연결 실패 - 수동으로 연결하세요")
         except Exception as e:
             logger.error(f"아두이노 자동 연결 오류: {e}")
+
+    def _auto_check_update(self) -> None:
+        """시작 시 자동 업데이트 확인"""
+        import threading
+
+        def check_thread():
+            try:
+                from .utils.updater import check_for_update, download_and_apply_update
+                from .utils.config import APP_VERSION
+
+                repo = self._config.update.github_repo
+                result = check_for_update(repo, APP_VERSION)
+
+                if result and result.get("update_available"):
+                    new_version = result.get("version")
+                    release_data = result.get("release_data")
+
+                    # 메인 스레드에서 UI 업데이트
+                    self._main_window.after(0, lambda: self._show_update_dialog(new_version, release_data))
+
+            except Exception as e:
+                logger.error(f"자동 업데이트 확인 오류: {e}")
+
+        thread = threading.Thread(target=check_thread, daemon=True)
+        thread.start()
+
+    def _show_update_dialog(self, new_version: str, release_data: dict) -> None:
+        """업데이트 알림 다이얼로그"""
+        from tkinter import messagebox
+        from .utils.config import APP_VERSION
+
+        result = messagebox.askyesno(
+            "업데이트 알림",
+            f"새 버전이 있습니다!\n\n"
+            f"현재 버전: v{APP_VERSION}\n"
+            f"새 버전: v{new_version}\n\n"
+            f"지금 업데이트하시겠습니까?"
+        )
+
+        if result:
+            # 설정 탭으로 이동해서 업데이트 진행
+            self._main_window.set_tab("settings")
+            if self._settings_view:
+                self._settings_view._latest_release = release_data
+                self._settings_view._perform_update()
 
 
 # 전역 앱 인스턴스
