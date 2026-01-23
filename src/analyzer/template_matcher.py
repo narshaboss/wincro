@@ -46,6 +46,9 @@ class TemplateMatcher:
     화면에서 특정 이미지를 찾는 기능을 제공합니다.
     """
 
+    # 캐시 크기 제한 (메모리 누수 방지)
+    _MAX_CACHE_SIZE = 50
+
     def __init__(self):
         """템플릿 매처 초기화"""
         self._config = get_config()
@@ -75,6 +78,14 @@ class TemplateMatcher:
             if template is None:
                 logger.error(f"템플릿 이미지 로드 실패: {template_path}")
                 return None
+
+            # 캐시 크기 제한 - LRU 방식으로 오래된 항목 제거
+            if len(self._cache) >= self._MAX_CACHE_SIZE:
+                try:
+                    oldest_key = next(iter(self._cache))
+                    del self._cache[oldest_key]
+                except (StopIteration, KeyError):
+                    pass
 
             # 캐시에 저장
             self._cache[template_path] = template

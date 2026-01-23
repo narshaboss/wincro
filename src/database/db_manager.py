@@ -60,17 +60,25 @@ class DatabaseManager:
     @contextmanager
     def _get_connection(self):
         """데이터베이스 연결 컨텍스트 매니저"""
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
+        conn = None
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error as e:
+            logger.error(f"데이터베이스 연결 실패: {e}")
+            raise
+
         try:
             yield conn
             conn.commit()
         except Exception as e:
-            conn.rollback()
+            if conn:
+                conn.rollback()
             logger.error(f"데이터베이스 오류: {e}")
             raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """테이블 생성"""
@@ -149,18 +157,17 @@ class DatabaseManager:
         ''')
 
         # 기존 테이블에 새 컬럼 추가 (마이그레이션)
-        try:
-            cursor.execute('ALTER TABLE recordings ADD COLUMN ai_analyzed INTEGER DEFAULT 0')
-        except sqlite3.OperationalError:
-            pass  # 이미 존재하는 컬럼
-        try:
-            cursor.execute('ALTER TABLE recordings ADD COLUMN automation_plan_id TEXT')
-        except sqlite3.OperationalError:
-            pass  # 이미 존재하는 컬럼
-        try:
-            cursor.execute('ALTER TABLE recordings ADD COLUMN locked INTEGER DEFAULT 0')
-        except sqlite3.OperationalError:
-            pass  # 이미 존재하는 컬럼
+        migrations = [
+            ('recordings', 'ai_analyzed', 'INTEGER DEFAULT 0'),
+            ('recordings', 'automation_plan_id', 'TEXT'),
+            ('recordings', 'locked', 'INTEGER DEFAULT 0'),
+        ]
+        for table, column, col_type in migrations:
+            try:
+                cursor.execute(f'ALTER TABLE {table} ADD COLUMN {column} {col_type}')
+                logger.debug(f"마이그레이션: {table}.{column} 컬럼 추가됨")
+            except sqlite3.OperationalError:
+                pass  # 이미 존재하는 컬럼
 
         # 인덱스 생성
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sequences_name ON sequences(name)')

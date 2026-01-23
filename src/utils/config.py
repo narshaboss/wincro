@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 
 
 # 프로젝트 루트 디렉토리
@@ -28,7 +28,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 
 @dataclass
@@ -38,7 +38,6 @@ class RecordingConfig:
     quality: str = "high"  # low, medium, high
     include_cursor: bool = True  # 마우스 커서 포함
     include_clicks: bool = True  # 클릭 효과 표시
-    audio_enabled: bool = False  # 오디오 녹음 (현재 미지원)
     save_input_log: bool = True  # 입력 로그 저장
 
     # 드래그 감지 임계값
@@ -262,18 +261,20 @@ class ConfigManager:
 
     def _dict_to_config(self, data: dict) -> AppConfig:
         """딕셔너리를 설정 객체로 변환"""
-        # 업데이트 설정 호환성 처리 (이전 update_url → github_repo)
-        update_data = data.get('update', {})
-        if 'update_url' in update_data:
-            del update_data['update_url']  # 이전 키 제거
+        # 각 설정 클래스의 알려진 필드만 추출 (이전 버전 호환성)
+        def filter_known_keys(cls, d: dict) -> dict:
+            if not d:
+                return {}
+            known = {f.name for f in fields(cls)}
+            return {k: v for k, v in d.items() if k in known}
 
         return AppConfig(
-            recording=RecordingConfig(**data.get('recording', {})),
-            analyzer=AnalyzerConfig(**data.get('analyzer', {})),
-            player=PlayerConfig(**data.get('player', {})),
-            ui=UIConfig(**data.get('ui', {})),
-            arduino=ArduinoConfig(**data.get('arduino', {})),
-            update=UpdateConfig(**update_data),
+            recording=RecordingConfig(**filter_known_keys(RecordingConfig, data.get('recording', {}))),
+            analyzer=AnalyzerConfig(**filter_known_keys(AnalyzerConfig, data.get('analyzer', {}))),
+            player=PlayerConfig(**filter_known_keys(PlayerConfig, data.get('player', {}))),
+            ui=UIConfig(**filter_known_keys(UIConfig, data.get('ui', {}))),
+            arduino=ArduinoConfig(**filter_known_keys(ArduinoConfig, data.get('arduino', {}))),
+            update=UpdateConfig(**filter_known_keys(UpdateConfig, data.get('update', {}))),
             version=data.get('version', '1.0.0'),
             first_run=data.get('first_run', True),
             last_opened=data.get('last_opened', '')

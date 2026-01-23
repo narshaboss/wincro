@@ -14,7 +14,7 @@ from enum import Enum
 from datetime import datetime
 
 import pyautogui
-pyautogui.FAILSAFE = False  # 화면 구석 이동 시 안전 기능 비활성화 (커서 숨김 기능용)
+pyautogui.FAILSAFE = True  # 화면 구석 이동 시 안전 기능 활성화 (action_player와 일관성 유지)
 import pyperclip
 import cv2
 import numpy as np
@@ -119,8 +119,11 @@ def _get_cached_template(image_path: str):
         # 캐시에 저장 (락 사용)
         with _template_cache_lock:
             if len(_template_cache) >= _MAX_TEMPLATE_CACHE:
-                oldest_key = next(iter(_template_cache))
-                del _template_cache[oldest_key]
+                try:
+                    oldest_key = next(iter(_template_cache))
+                    del _template_cache[oldest_key]
+                except (StopIteration, KeyError):
+                    pass
             _template_cache[image_path] = (template_gray, h, w, mtime)
 
         return template_gray, h, w

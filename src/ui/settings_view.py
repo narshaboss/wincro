@@ -828,6 +828,8 @@ class SettingsView(BaseView):
         try:
             # GitHub API로 최신 릴리즈 확인
             api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+            logger.debug(f"버전 확인 API 호출: {api_url}")
+
             req = urllib.request.Request(api_url, headers={
                 'User-Agent': 'WinCro-Updater',
                 'Accept': 'application/vnd.github.v3+json'
@@ -838,21 +840,33 @@ class SettingsView(BaseView):
 
             latest_version = data.get("tag_name", "").lstrip("v")
             current_version = APP_VERSION
+            logger.debug(f"버전 비교: 최신={latest_version}, 현재={current_version}")
 
             # 버전 비교
             if self._compare_versions(latest_version, current_version) > 0:
-                self.after(0, lambda: self._show_update_available(latest_version, data))
+                # 새 버전 있음 - 변수를 로컬에 저장해서 클로저 문제 방지
+                ver = latest_version
+                rel_data = data
+                self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
             else:
-                self.after(0, lambda: self._show_up_to_date(current_version))
+                # 최신 버전
+                ver = current_version
+                self.after(0, lambda v=ver: self._show_up_to_date(v))
 
         except urllib.error.HTTPError as e:
+            logger.error(f"HTTP 오류: {e.code}")
             if e.code == 404:
                 self.after(0, lambda: self._update_check_failed("저장소 또는 릴리즈를 찾을 수 없습니다"))
             else:
-                self.after(0, lambda: self._update_check_failed(f"HTTP 오류: {e.code}"))
+                err_code = e.code
+                self.after(0, lambda c=err_code: self._update_check_failed(f"HTTP 오류: {c}"))
+        except urllib.error.URLError as e:
+            logger.error(f"URL 오류: {e.reason}")
+            self.after(0, lambda: self._update_check_failed("네트워크 연결 실패"))
         except Exception as e:
-            logger.error(f"버전 확인 오류: {e}")
-            self.after(0, lambda: self._update_check_failed(str(e)[:50]))
+            logger.error(f"버전 확인 오류: {e}", exc_info=True)
+            err_msg = str(e)[:50]
+            self.after(0, lambda m=err_msg: self._update_check_failed(m))
 
     def _compare_versions(self, v1: str, v2: str) -> int:
         """버전 비교 (v1 > v2: 1, v1 == v2: 0, v1 < v2: -1)"""
@@ -877,41 +891,53 @@ class SettingsView(BaseView):
 
     def _show_update_available(self, new_version: str, release_data: dict) -> None:
         """새 버전 사용 가능 표시"""
-        from ..utils.config import APP_VERSION
+        try:
+            from ..utils.config import APP_VERSION
+            logger.info(f"새 버전 발견: {new_version} (현재: {APP_VERSION})")
 
-        self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
-        self._update_status_icon.configure(text="🆕")
-        self._update_status_label.configure(
-            text=f"새 버전 사용 가능: v{new_version} (현재: v{APP_VERSION})",
-            text_color=COLORS["warning"]
-        )
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
+            self._update_status_icon.configure(text="🆕")
+            self._update_status_label.configure(
+                text=f"새 버전 사용 가능: v{new_version} (현재: v{APP_VERSION})",
+                text_color=COLORS["warning"]
+            )
 
-        # 릴리즈 데이터 저장 (다운로드용)
-        self._latest_release = release_data
+            # 릴리즈 데이터 저장 (다운로드용)
+            self._latest_release = release_data
 
-        # 버전 저장
-        config = get_config()
-        config.update.last_version = new_version
-        save_config()
+            # 버전 저장
+            config = get_config()
+            config.update.last_version = new_version
+            save_config()
+        except Exception as e:
+            logger.error(f"_show_update_available 오류: {e}", exc_info=True)
 
     def _show_up_to_date(self, current_version: str) -> None:
         """최신 버전 표시"""
-        self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
-        self._update_status_icon.configure(text="✅")
-        self._update_status_label.configure(
-            text=f"최신 버전입니다 (v{current_version})",
-            text_color=COLORS["success"]
-        )
-        self._latest_release = None
+        try:
+            logger.info(f"최신 버전 확인됨: {current_version}")
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
+            self._update_status_icon.configure(text="✅")
+            self._update_status_label.configure(
+                text=f"최신 버전입니다 (v{current_version})",
+                text_color=COLORS["success"]
+            )
+            self._latest_release = None
+        except Exception as e:
+            logger.error(f"_show_up_to_date 오류: {e}", exc_info=True)
 
     def _update_check_failed(self, message: str) -> None:
         """버전 확인 실패"""
-        self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
-        self._update_status_icon.configure(text="❌")
-        self._update_status_label.configure(
-            text=f"확인 실패: {message}",
-            text_color=COLORS["error"]
-        )
+        try:
+            logger.warning(f"버전 확인 실패: {message}")
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
+            self._update_status_icon.configure(text="❌")
+            self._update_status_label.configure(
+                text=f"확인 실패: {message}",
+                text_color=COLORS["error"]
+            )
+        except Exception as e:
+            logger.error(f"_update_check_failed 오류: {e}", exc_info=True)
 
     def _perform_update(self) -> None:
         """GitHub에서 업데이트 수행"""

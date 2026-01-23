@@ -286,6 +286,10 @@ class VideoAnalyzer:
             if fps <= 0:
                 fps = 30.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            # 프레임 수가 유효하지 않은 경우 처리
+            if total_frames <= 0:
+                logger.error(f"유효하지 않은 프레임 수: {total_frames}")
+                return
             frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             video_duration = total_frames / fps if fps > 0 else 0
@@ -400,6 +404,10 @@ class VideoAnalyzer:
                         best_frame = frame_cache[f]
 
                 click['frame'] = best_frame
+
+                # 프레임을 찾지 못한 경우 경고
+                if best_frame is None:
+                    logger.warning(f"클릭 {click['idx']}에 대한 프레임을 찾지 못함 (target: {target})")
 
             matched = sum(1 for c in clicks if c['frame'] is not None)
             logger.info(f"프레임 매칭: {matched}/{total_clicks}개")

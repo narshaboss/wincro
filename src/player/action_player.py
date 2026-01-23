@@ -7,13 +7,33 @@ pyautogui를 사용하여 녹화된 동작을 재현합니다.
 import time
 import random
 import threading
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Callable, Tuple
+from typing import Optional, List, Dict, Any, Callable, Tuple, Generator
 from dataclasses import dataclass
 from enum import Enum
 
 import pyautogui
 import pyperclip
+
+
+@contextmanager
+def _preserve_clipboard() -> Generator[None, None, None]:
+    """클립보드 내용을 보존하는 컨텍스트 매니저"""
+    original = None
+    try:
+        try:
+            original = pyperclip.paste()
+        except (OSError, pyperclip.PyperclipException):
+            pass
+        yield
+    finally:
+        if original is not None:
+            try:
+                time.sleep(0.05)
+                pyperclip.copy(original)
+            except (OSError, pyperclip.PyperclipException):
+                pass
 import cv2
 import numpy as np
 from PIL import ImageGrab
@@ -85,11 +105,14 @@ def _get_cached_template(image_path: str):
 
         # 캐시에 저장 (락 사용)
         with _template_cache_lock:
-            # 캐시 크기 제한
+            # 캐시 크기 제한 - LRU 방식으로 오래된 항목 제거
             if len(_template_cache) >= _MAX_TEMPLATE_CACHE:
-                # 가장 오래된 항목 제거
-                oldest_key = next(iter(_template_cache))
-                del _template_cache[oldest_key]
+                # 가장 오래된 항목 제거 (Python 3.7+ dict는 삽입 순서 유지)
+                try:
+                    oldest_key = next(iter(_template_cache))
+                    del _template_cache[oldest_key]
+                except (StopIteration, KeyError):
+                    pass  # 빈 캐시일 경우 무시
 
             _template_cache[image_path] = (template_gray, h, w, mtime)
 
@@ -111,6 +134,12 @@ def _validate_coordinates(x: int, y: int) -> Tuple[int, int]:
         Tuple[int, int]: 보정된 (x, y) 좌표
     """
     screen_width, screen_height = _get_screen_size()
+
+    # 화면 크기가 유효하지 않은 경우 기본값 사용
+    if screen_width <= 0 or screen_height <= 0:
+        logger.warning(f"유효하지 않은 화면 크기: {screen_width}x{screen_height}, 기본값 사용")
+        screen_width = 1920
+        screen_height = 1080
 
     # 좌표를 화면 범위 내로 제한
     x = max(0, min(x, screen_width - 1))
@@ -437,7 +466,10 @@ class ActionPlayer:
                     self._update_progress(f"액션 {i + 1}/{len(sequence.actions)} 실행 중")
 
                     if self._on_action_start:
-                        self._on_action_start(i, action)
+                        try:
+                            self._on_action_start(i, action)
+                        except Exception as cb_err:
+                            logger.warning(f"on_action_start 콜백 오류: {cb_err}")
 
                     # 액션 반복 횟수
                     action_repeat = getattr(action, 'repeat_count', 1)
@@ -475,7 +507,6 @@ class ActionPlayer:
                                 # 랜덤 대기시간 적용
                                 if getattr(action, 'repeat_delay_random', False):
                                     delay_range = getattr(action, 'repeat_delay_random_range', 0.3)
-                                    import random
                                     actual_delay = max(0, repeat_delay + random.uniform(-delay_range, delay_range))
                                 else:
                                     actual_delay = repeat_delay
@@ -489,7 +520,10 @@ class ActionPlayer:
                         self._execution_logger.error(f"액션 {i + 1} 실패: {error}")
 
                     if self._on_action_complete:
-                        self._on_action_complete(i, action, success)
+                        try:
+                            self._on_action_complete(i, action, success)
+                        except Exception as cb_err:
+                            logger.warning(f"on_action_complete 콜백 오류: {cb_err}")
 
                 self._execution_logger.info(f"=== 반복 {iteration} 완료 ===")
 
@@ -878,63 +912,31 @@ class ActionPlayer:
 
         input_ctrl = get_input_controller()
 
-        # ASCII만 있는 경우
+        # ASCII만 있는 경우 직접 입력
         if text.isascii():
             if typing_random:
-                # 랜덤 딜레이로 글자 하나씩 입력 (기본값 ± 범위)
                 for char in text:
                     input_ctrl.type_text(char)
-                    delay = typing_delay + random.uniform(-typing_delay_range, typing_delay_range)
-                    delay = max(0, delay)  # 음수 방지
+                    delay = max(0, typing_delay + random.uniform(-typing_delay_range, typing_delay_range))
                     time.sleep(delay)
             else:
                 input_ctrl.type_text(text, interval=interval)
-        else:
-            # 한글 등 비ASCII 문자가 있으면 클립보드 사용
+            return
+
+        # 한글 등 비ASCII 문자는 클립보드 사용
+        with _preserve_clipboard():
             if typing_random:
-                # 랜덤 딜레이로 글자 하나씩 입력 (기본값 ± 범위)
-                original_clipboard = None
-                try:
-                    try:
-                        original_clipboard = pyperclip.paste()
-                    except (OSError, pyperclip.PyperclipException):
-                        pass
-
-                    for char in text:
-                        pyperclip.copy(char)
-                        time.sleep(0.02)
-                        input_ctrl.hotkey('ctrl', 'v')
-                        delay = typing_delay + random.uniform(-typing_delay_range, typing_delay_range)
-                        delay = max(0, delay)  # 음수 방지
-                        time.sleep(delay)
-
-                finally:
-                    if original_clipboard is not None:
-                        try:
-                            time.sleep(0.05)
-                            pyperclip.copy(original_clipboard)
-                        except (OSError, pyperclip.PyperclipException):
-                            pass
-            else:
-                original_clipboard = None
-                try:
-                    try:
-                        original_clipboard = pyperclip.paste()
-                    except (OSError, pyperclip.PyperclipException):
-                        pass
-
-                    pyperclip.copy(text)
-                    time.sleep(0.05)
+                for char in text:
+                    pyperclip.copy(char)
+                    time.sleep(0.02)
                     input_ctrl.hotkey('ctrl', 'v')
-                    time.sleep(0.1)
-
-                finally:
-                    if original_clipboard is not None:
-                        try:
-                            time.sleep(0.05)
-                            pyperclip.copy(original_clipboard)
-                        except (OSError, pyperclip.PyperclipException):
-                            pass
+                    delay = max(0, typing_delay + random.uniform(-typing_delay_range, typing_delay_range))
+                    time.sleep(delay)
+            else:
+                pyperclip.copy(text)
+                time.sleep(0.05)
+                input_ctrl.hotkey('ctrl', 'v')
+                time.sleep(0.1)
 
     def _update_progress(self, message: str) -> None:
         """진행 상태 업데이트"""

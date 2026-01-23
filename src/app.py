@@ -4,7 +4,6 @@ WinCro 메인 앱 클래스
 애플리케이션의 전체 생명주기를 관리합니다.
 """
 
-import sys
 from datetime import datetime
 from typing import Optional
 
@@ -52,7 +51,8 @@ class WinCroApp:
                 self._config.first_run = False
                 logger.info("첫 실행 감지")
 
-            save_config()
+            if not save_config():
+                logger.warning("설정 저장 실패 - 기본 설정으로 계속")
 
             # 메인 윈도우 생성
             self._main_window = MainWindow()

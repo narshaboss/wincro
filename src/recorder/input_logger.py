@@ -110,10 +110,6 @@ class InputLogger:
     def set_f8_callback(self, callback: Optional[Callable[[], None]]) -> None:
         self._on_f8_pressed = callback
 
-    def set_screen_capture_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        """F8 콜백 (호환성)"""
-        self._on_f8_pressed = callback
-
     def set_click_capture_callback(self, callback: Optional[Callable[[int, int, float], Optional[str]]]) -> None:
         """클릭 시 스크린샷 캡처 콜백 설정 (x, y, timestamp) -> image_path"""
         self._on_click_capture = callback
@@ -177,15 +173,15 @@ class InputLogger:
         if self._mouse_listener:
             try:
                 self._mouse_listener.stop()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"마우스 리스너 중지 중 오류: {e}")
             self._mouse_listener = None
 
         if self._keyboard_listener:
             try:
                 self._keyboard_listener.stop()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"키보드 리스너 중지 중 오류: {e}")
             self._keyboard_listener = None
 
         output_path = self._save_log()
