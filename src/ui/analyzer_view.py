@@ -11,6 +11,7 @@ from typing import Optional, Callable
 from pathlib import Path
 import threading
 import cv2
+import numpy as np
 import json
 from PIL import Image, ImageTk
 
@@ -257,7 +258,9 @@ class ImageCropDialog(ctk.CTkToplevel):
     def _load_image(self):
         """이미지 로드"""
         try:
-            self._original_image = cv2.imread(self._image_path)
+            # 한글 경로 지원
+            img_array = np.fromfile(self._image_path, np.uint8)
+            self._original_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if self._original_image is not None:
                 self._original_image = cv2.cvtColor(self._original_image, cv2.COLOR_BGR2RGB)
         except Exception as e:
@@ -1347,7 +1350,9 @@ class AltImageDialog(ctk.CTkToplevel):
                 if cached is not None:
                     ctk_image = cached
                 else:
-                    img = cv2.imread(img_path)
+                    # 한글 경로 지원
+                    img_arr = np.fromfile(img_path, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
@@ -1813,8 +1818,9 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                     ctk_image = cached
                     new_w, new_h = 60, 60
                 else:
-                    # 파일 읽기 시도 - 파일이 없으면 None 반환 (TOCTOU 안전)
-                    img = cv2.imread(image_path)
+                    # 파일 읽기 시도 - 한글 경로 지원
+                    img_arr = np.fromfile(image_path, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if img is None:
                         raise ValueError("Image load failed")
                     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)

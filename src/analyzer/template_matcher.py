@@ -74,7 +74,9 @@ class TemplateMatcher:
                 logger.error(f"템플릿 파일을 찾을 수 없음: {template_path}")
                 return None
 
-            template = cv2.imread(str(path))
+            # 한글 경로 지원
+            img_array = np.fromfile(str(path), np.uint8)
+            template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if template is None:
                 logger.error(f"템플릿 이미지 로드 실패: {template_path}")
                 return None

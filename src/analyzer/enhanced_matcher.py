@@ -99,7 +99,9 @@ class EnhancedMatcher:
                 logger.error(f"템플릿 파일 없음: {template_path}")
                 return None
 
-            original = cv2.imread(str(path))
+            # 한글 경로 지원 (cv2.imread는 한글 경로 못 읽음)
+            img_array = np.fromfile(str(path), np.uint8)
+            original = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if original is None:
                 logger.error(f"템플릿 로드 실패: {template_path}")
                 return None

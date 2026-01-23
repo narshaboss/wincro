@@ -110,7 +110,9 @@ def _get_cached_template(image_path: str):
                     return cached[0], cached[1], cached[2]
 
         # 캐시 미스 - 이미지 로드 (락 밖에서 I/O)
-        template = cv2.imread(image_path)
+        # 한글 경로 지원
+        img_array = np.fromfile(image_path, np.uint8)
+        template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if template is None:
             return None, 0, 0
         template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)

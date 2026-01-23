@@ -20,6 +20,7 @@ from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from .main_window import BaseView, COLORS
 from .analyzer_view import ImageCropDialog
 import cv2
+import numpy as np
 from PIL import Image
 import tkinter as tk
 from tkinter import Canvas
@@ -1332,8 +1333,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 ctk_image = get_cached_thumbnail(image_path, target_size)
 
                 if ctk_image is None:
-                    # 캐시에 없으면 로드
-                    img = cv2.imread(image_path)
+                    # 캐시에 없으면 로드 (한글 경로 지원)
+                    img_arr = np.fromfile(image_path, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
@@ -2085,7 +2087,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         def update_preview(path):
             if path and Path(path).exists():
                 try:
-                    img = cv2.imread(path)
+                    # 한글 경로 지원
+                    img_arr = np.fromfile(path, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
@@ -2779,10 +2783,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                         ).pack(side="right", padx=(2, 0))
 
         def load_thumbnail(path, size=(40, 40)):
-            """이미지 썸네일 로드"""
+            """이미지 썸네일 로드 (한글 경로 지원)"""
             if path and Path(path).exists():
                 try:
-                    img = cv2.imread(path)
+                    img_arr = np.fromfile(path, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
@@ -4660,8 +4665,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 ctk_image = get_cached_thumbnail(image_path, target_size)
 
                 if ctk_image is None:
-                    # 캐시에 없으면 로드
-                    img = cv2.imread(image_path)
+                    # 캐시에 없으면 로드 (한글 경로 지원)
+                    img_arr = np.fromfile(image_path, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
