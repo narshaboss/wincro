@@ -28,7 +28,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 
 @dataclass

@@ -872,6 +872,7 @@ class SettingsView(BaseView):
         """버전 확인 스레드"""
         from ..utils.config import APP_VERSION
         import urllib.request
+        import urllib.error
         import json
 
         try:
@@ -1023,24 +1024,28 @@ class SettingsView(BaseView):
         release = self._latest_release
         version = release.get("tag_name", "").lstrip("v")
 
-        # 다운로드할 에셋 찾기
+        # 다운로드할 에셋 찾기 (zip 파일만 지원)
         assets = release.get("assets", [])
-        exe_asset = None
         zip_asset = None
 
         for asset in assets:
             name = asset.get("name", "").lower()
-            if name.endswith(".exe"):
-                exe_asset = asset
-            elif name.endswith(".zip"):
+            if name.endswith(".zip"):
                 zip_asset = asset
+                break  # 첫 번째 zip 파일 사용
 
-        if not exe_asset and not zip_asset:
-            messagebox.showerror("오류", "다운로드 가능한 파일이 없습니다.\n(exe 또는 zip 파일 필요)")
+        if not zip_asset:
+            messagebox.showerror("오류", "다운로드 가능한 zip 파일이 없습니다.\n\nGitHub Release에 zip 파일을 첨부해주세요.")
+            return
+
+        # 다운로드 URL 검증
+        download_url = zip_asset.get("browser_download_url")
+        if not download_url:
+            messagebox.showerror("오류", "다운로드 URL을 찾을 수 없습니다.")
             return
 
         # 확인 메시지
-        asset_to_download = exe_asset or zip_asset
+        asset_to_download = zip_asset
         file_name = asset_to_download.get("name", "unknown")
         file_size = asset_to_download.get("size", 0) / (1024 * 1024)  # MB
 
@@ -1058,7 +1063,6 @@ class SettingsView(BaseView):
         # 버튼 비활성화
         self._do_update_btn.configure(state="disabled", text="다운로드 중...")
         self._check_update_btn.configure(state="disabled")
-        self._save_repo_btn.configure(state="disabled")
 
         self._update_status_icon.configure(text="⏳")
         self._update_status_label.configure(text="다운로드 중...", text_color=COLORS["warning"])
@@ -1077,6 +1081,8 @@ class SettingsView(BaseView):
         import urllib.request
         import urllib.error
         import ssl
+        import socket
+        import zipfile
         import os
         import sys
         import shutil
@@ -1085,7 +1091,15 @@ class SettingsView(BaseView):
 
         try:
             download_url = asset.get("browser_download_url")
-            file_name = asset.get("name", "update")
+            file_name = asset.get("name", "update.zip")
+
+            # URL 검증
+            if not download_url:
+                self.after(0, lambda: self._update_failed("다운로드 URL이 없습니다"))
+                return
+
+            if not file_name.endswith(".zip"):
+                file_name = f"{file_name}.zip"
 
             logger.info(f"다운로드 시작: {download_url}")
             self.after(0, lambda: self._update_status_label.configure(text="연결 중..."))
@@ -1171,27 +1185,52 @@ class SettingsView(BaseView):
                 self.after(0, lambda: self._update_failed("zip 파일만 지원됩니다"))
                 return
 
-            import zipfile
+            # 다운로드된 파일 존재 확인
+            if not os.path.exists(temp_path):
+                self.after(0, lambda: self._update_failed("다운로드 파일을 찾을 수 없습니다"))
+                return
+
             extract_dir = os.path.join(temp_dir, "wincro_update_extract")
+            logger.info(f"압축 해제 경로: {extract_dir}")
 
             # 기존 추출 폴더 삭제
             if os.path.exists(extract_dir):
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
+            # zip 압축 해제
+            logger.info("zip 파일 압축 해제 중...")
             with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
+            logger.info("압축 해제 완료")
 
-            # 추출된 폴더에서 WinCro 폴더 찾기 (또는 루트)
-            new_app_dir = extract_dir
+            # 추출된 폴더에서 exe가 있는 폴더 찾기
+            new_app_dir = None
+            found_exe = False
+
             for item in os.listdir(extract_dir):
                 item_path = os.path.join(extract_dir, item)
                 if os.path.isdir(item_path):
-                    # WinCro 폴더나 exe가 있는 폴더 찾기
+                    # 하위 폴더에서 exe 파일 찾기
                     for sub_item in os.listdir(item_path):
                         if sub_item.endswith(".exe"):
                             new_app_dir = item_path
+                            found_exe = True
+                            logger.info(f"exe 발견: {os.path.join(item_path, sub_item)}")
                             break
+                    if found_exe:
+                        break
+                elif item.endswith(".exe"):
+                    # 루트에 exe가 있는 경우
+                    new_app_dir = extract_dir
+                    found_exe = True
+                    logger.info(f"exe 발견: {os.path.join(extract_dir, item)}")
                     break
+
+            if not found_exe or not new_app_dir:
+                self.after(0, lambda: self._update_failed("업데이트 파일에 exe가 없습니다"))
+                return
+
+            logger.info(f"새 앱 디렉토리: {new_app_dir}")
 
             self.after(0, lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
 
@@ -1291,10 +1330,18 @@ del "%~f0"
             error_msg = f"연결 오류: {str(e.reason)[:40]}"
             logger.error(f"업데이트 다운로드 URL 오류: {e}")
             self.after(0, lambda msg=error_msg: self._update_failed(msg))
-        except TimeoutError:
+        except socket.timeout:
             error_msg = "서버 연결 시간 초과"
             logger.error("업데이트 다운로드 타임아웃")
             self.after(0, lambda: self._update_failed(error_msg))
+        except zipfile.BadZipFile:
+            error_msg = "손상된 zip 파일"
+            logger.error("다운로드된 zip 파일이 손상됨")
+            self.after(0, lambda: self._update_failed(error_msg))
+        except OSError as e:
+            error_msg = f"파일 오류: {str(e)[:30]}"
+            logger.error(f"업데이트 파일 처리 오류: {e}")
+            self.after(0, lambda msg=error_msg: self._update_failed(msg))
         except Exception as e:
             error_msg = f"{type(e).__name__}: {str(e)[:40]}"
             logger.error(f"업데이트 다운로드 오류: {e}", exc_info=True)
@@ -1304,22 +1351,41 @@ del "%~f0"
         """배치 파일 실행 후 종료"""
         import subprocess
         import sys
+        import os
 
         from tkinter import messagebox
+
+        # 배치 파일 존재 확인
+        if not os.path.exists(batch_path):
+            messagebox.showerror("업데이트 오류", "업데이트 스크립트를 찾을 수 없습니다.")
+            self._update_failed("배치 파일 생성 실패")
+            return
+
         messagebox.showinfo(
             "업데이트",
             "업데이트를 적용하기 위해 프로그램을 종료합니다.\n"
-            "잠시 후 자동으로 재시작됩니다."
+            "업데이트 창이 열리면 자동으로 진행됩니다.\n\n"
+            "⚠️ 업데이트 창을 닫지 마세요!"
         )
 
-        # 배치 파일 실행
-        subprocess.Popen(
-            ['cmd', '/c', batch_path],
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
+        logger.info(f"배치 파일 실행: {batch_path}")
+
+        # 배치 파일 실행 (새 창에서 보이도록)
+        try:
+            subprocess.Popen(
+                ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+        except Exception as e:
+            logger.error(f"배치 파일 실행 실패: {e}")
+            messagebox.showerror("업데이트 오류", f"업데이트 스크립트 실행 실패:\n{e}")
+            return
 
         # 프로그램 종료
-        self.winfo_toplevel().destroy()
+        try:
+            self.winfo_toplevel().destroy()
+        except Exception:
+            pass
         sys.exit(0)
 
     def _update_success_dev(self, version: str, file_path: str) -> None:
@@ -1328,7 +1394,6 @@ del "%~f0"
 
         self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
         self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
-        self._save_repo_btn.configure(state="normal")
 
         self._update_status_icon.configure(text="✅")
         self._update_status_label.configure(
@@ -1350,7 +1415,6 @@ del "%~f0"
         # UI 복구
         self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
         self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
-        self._save_repo_btn.configure(state="normal")
 
         # 상태 업데이트
         self._update_status_icon.configure(text="✅")
@@ -1377,7 +1441,6 @@ del "%~f0"
         # UI 복구
         self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
         self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
-        self._save_repo_btn.configure(state="normal")
 
         # 상태 업데이트
         self._update_status_icon.configure(text="❌")
