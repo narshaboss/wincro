@@ -73,33 +73,15 @@ jobs:
 
         print(f"Updated APP_VERSION to {version}")
 
-    - name: Build with PyInstaller
+    - name: Build with PyInstaller (spec file)
       run: |
-        pyinstaller --noconfirm --onefile --windowed `
-          --name "WinCro" `
-          --add-data "src;src" `
-          --hidden-import "PIL._tkinter_finder" `
-          --hidden-import "customtkinter" `
-          --hidden-import "cv2" `
-          --hidden-import "numpy" `
-          --hidden-import "pyautogui" `
-          --hidden-import "pynput" `
-          --hidden-import "serial" `
-          src/main.py
+        pyinstaller WinCro.spec --clean --noconfirm
       shell: pwsh
-
-    - name: Create data folders
-      run: |
-        mkdir -p dist/data/plans
-        mkdir -p dist/data/templates
-        mkdir -p dist/data/recordings
-        mkdir -p dist/logs
-      shell: bash
 
     - name: Create ZIP package
       run: |
         cd dist
-        7z a -tzip "WinCro-v${{ steps.get_version.outputs.VERSION }}.zip" WinCro.exe data/ logs/
+        7z a -tzip "WinCro_v${{ steps.get_version.outputs.VERSION }}.zip" WinCro/*
       shell: pwsh
 
     - name: Create Release
@@ -111,19 +93,20 @@ jobs:
           ## WinCro v${{ steps.get_version.outputs.VERSION }}
 
           ### 다운로드
-          - **WinCro.exe** - 실행 파일 (단일 파일)
-          - **WinCro-v${{ steps.get_version.outputs.VERSION }}.zip** - 전체 패키지
+          - **WinCro_v${{ steps.get_version.outputs.VERSION }}.zip** - 전체 패키지
 
           ### 설치 방법
-          1. WinCro.exe 다운로드
-          2. 원하는 폴더에 저장
-          3. 실행!
+          1. zip 파일 다운로드
+          2. 원하는 폴더에 압축 해제
+          3. dwm.exe 실행!
+
+          ### 업데이트 방법
+          - 프로그램 내 설정 > 업데이트 설정에서 "버전 확인" 후 "업데이트 다운로드"
 
           ### 변경 사항
           - 자동 생성된 릴리즈입니다
         files: |
-          dist/WinCro.exe
-          dist/WinCro-v${{ steps.get_version.outputs.VERSION }}.zip
+          dist/WinCro_v${{ steps.get_version.outputs.VERSION }}.zip
         draft: false
         prerelease: false
       env:

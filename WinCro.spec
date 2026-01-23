@@ -1,7 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('src/i18n', 'src/i18n'), ('arduino', 'arduino')]
+datas = [
+    ('src/i18n', 'src/i18n'),
+    ('arduino', 'arduino'),
+    ('data', 'data'),
+]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('customtkinter')

@@ -956,12 +956,12 @@ class SettingsView(BaseView):
         thread.start()
 
     def _download_update_thread(self, asset: dict, version: str) -> None:
-        """업데이트 다운로드 스레드"""
+        """업데이트 다운로드 스레드 (전체 폴더 교체 방식)"""
         import tempfile
         import urllib.request
         import os
         import sys
-        import subprocess
+        import shutil
         from datetime import datetime
         from ..utils.config import PROJECT_ROOT
 
@@ -971,7 +971,7 @@ class SettingsView(BaseView):
 
             self.after(0, lambda: self._update_status_label.configure(text="다운로드 중..."))
 
-            # 임시 파일에 다운로드
+            # 임시 폴더 생성
             temp_dir = tempfile.gettempdir()
             temp_path = os.path.join(temp_dir, file_name)
 
@@ -980,7 +980,7 @@ class SettingsView(BaseView):
                 'Accept': 'application/octet-stream'
             })
 
-            with urllib.request.urlopen(req, timeout=120) as response:
+            with urllib.request.urlopen(req, timeout=300) as response:
                 total_size = int(response.headers.get('Content-Length', 0))
                 downloaded = 0
 
@@ -998,47 +998,97 @@ class SettingsView(BaseView):
                                 text=f"다운로드 중... {p}%"
                             ))
 
-            self.after(0, lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
+            self.after(0, lambda: self._update_status_label.configure(text="압축 해제 중..."))
 
-            # 현재 exe 경로
-            if getattr(sys, 'frozen', False):
-                current_exe = sys.executable
-            else:
-                # 개발 모드에서는 테스트만
+            # 개발 모드 체크
+            if not getattr(sys, 'frozen', False):
                 self.after(0, lambda: self._update_success_dev(version, temp_path))
                 return
 
-            # 배치 파일 생성 (exe 교체 및 재시작)
-            batch_path = os.path.join(temp_dir, "wincro_update.bat")
-            new_exe_path = temp_path
+            # 현재 프로그램 폴더 (exe가 있는 폴더)
+            current_exe = sys.executable
+            app_dir = os.path.dirname(current_exe)
+            exe_name = os.path.basename(current_exe)
 
-            # zip인 경우 압축 해제 필요
-            if file_name.endswith(".zip"):
-                import zipfile
-                extract_dir = os.path.join(temp_dir, "wincro_update")
-                with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
+            # zip 압축 해제
+            if not file_name.endswith(".zip"):
+                self.after(0, lambda: self._update_failed("zip 파일만 지원됩니다"))
+                return
 
-                # exe 파일 찾기
-                for root, dirs, files in os.walk(extract_dir):
-                    for f in files:
-                        if f.endswith(".exe"):
-                            new_exe_path = os.path.join(root, f)
+            import zipfile
+            extract_dir = os.path.join(temp_dir, "wincro_update_extract")
+
+            # 기존 추출 폴더 삭제
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir, ignore_errors=True)
+
+            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            # 추출된 폴더에서 WinCro 폴더 찾기 (또는 루트)
+            new_app_dir = extract_dir
+            for item in os.listdir(extract_dir):
+                item_path = os.path.join(extract_dir, item)
+                if os.path.isdir(item_path):
+                    # WinCro 폴더나 exe가 있는 폴더 찾기
+                    for sub_item in os.listdir(item_path):
+                        if sub_item.endswith(".exe"):
+                            new_app_dir = item_path
                             break
+                    break
+
+            self.after(0, lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
+
+            # 배치 파일 생성 (전체 폴더 교체)
+            batch_path = os.path.join(temp_dir, "wincro_update.bat")
+            data_dir = os.path.join(app_dir, "_internal", "data")
+            data_backup = os.path.join(temp_dir, "wincro_data_backup")
 
             batch_content = f'''@echo off
 chcp 65001 >nul
-echo WinCro 업데이트 중...
-timeout /t 2 /nobreak >nul
-del "{current_exe}" 2>nul
-copy /y "{new_exe_path}" "{current_exe}"
+echo.
+echo ========================================
+echo   WinCro 업데이트 v{version}
+echo ========================================
+echo.
+
+echo [1/5] 프로그램 종료 대기 중...
+timeout /t 3 /nobreak >nul
+
+echo [2/5] 사용자 데이터 백업 중...
+if exist "{data_dir}" (
+    xcopy /E /I /Y /Q "{data_dir}" "{data_backup}" >nul 2>&1
+)
+
+echo [3/5] 기존 파일 삭제 중...
+rd /s /q "{app_dir}\\_internal" 2>nul
+del /q "{current_exe}" 2>nul
+
+echo [4/5] 새 파일 복사 중...
+xcopy /E /I /Y /Q "{new_app_dir}\\*" "{app_dir}\\" >nul 2>&1
 if errorlevel 1 (
-    echo 업데이트 실패! 파일 복사 오류
+    echo.
+    echo [오류] 파일 복사 실패!
     pause
     exit /b 1
 )
-echo 업데이트 완료! 재시작 중...
-start "" "{current_exe}"
+
+echo [5/5] 사용자 데이터 복원 중...
+if exist "{data_backup}" (
+    xcopy /E /I /Y /Q "{data_backup}" "{app_dir}\\_internal\\data" >nul 2>&1
+    rd /s /q "{data_backup}" 2>nul
+)
+
+echo.
+echo ========================================
+echo   업데이트 완료! 재시작 중...
+echo ========================================
+timeout /t 2 /nobreak >nul
+
+start "" "{app_dir}\\{exe_name}"
+
+rd /s /q "{extract_dir}" 2>nul
+del /q "{temp_path}" 2>nul
 del "%~f0"
 '''
 
