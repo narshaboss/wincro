@@ -506,18 +506,24 @@ class EnhancedMatcher:
         """
         all_scores = {}
 
+        # 임계값 캐스케이드 (일관되게 감소)
+        t1 = threshold                          # Level 1: 원본
+        t2 = max(threshold - 0.05, 0.55)        # Level 2: -0.05
+        t3 = max(threshold - 0.10, 0.50)        # Level 3: -0.10
+        t4 = max(threshold - 0.15, 0.50)        # Level 5: -0.15
+        t5 = max(threshold - 0.20, 0.45)        # Level 6: -0.20
+
         # 1. 기본 그레이스케일 매칭 (빠름)
-        found, score, region = self.match_template_gray(screen, template_path, threshold)
+        found, score, region = self.match_template_gray(screen, template_path, t1)
         all_scores['template_gray'] = score
 
-        if found and score >= threshold:
+        if found and score >= t1:
             result = self._create_result(True, region, score, 'template_gray', all_scores)
             self._update_last_position(template_path, result)
             return result
 
         # 2. 엣지 기반 매칭 (색상/밝기 변화에 강함)
-        edge_threshold = max(threshold - 0.15, 0.5)
-        found, score, region = self.match_edge_based(screen, template_path, edge_threshold)
+        found, score, region = self.match_edge_based(screen, template_path, t2)
         all_scores['edge'] = score
 
         if found:
@@ -526,8 +532,7 @@ class EnhancedMatcher:
             return result
 
         # 3. 다중 스케일 매칭 (크기 변화 대응)
-        scale_threshold = max(threshold - 0.1, 0.6)
-        found, score, region = self.match_multi_scale(screen, template_path, scale_threshold)
+        found, score, region = self.match_multi_scale(screen, template_path, t3)
         all_scores['multi_scale'] = score
 
         if found:
@@ -535,7 +540,7 @@ class EnhancedMatcher:
             self._update_last_position(template_path, result)
             return result
 
-        # 4. 특징점 매칭
+        # 4. 특징점 매칭 (회전/변형 대응)
         found, score, region = self.match_feature_based(screen, template_path, min_matches=8)
         all_scores['feature'] = score
 
@@ -545,25 +550,21 @@ class EnhancedMatcher:
             return result
 
         # 5. 중앙 마스크 매칭 (마우스 커서가 중앙을 가릴 때)
-        mask_threshold = max(threshold - 0.15, 0.6)
-        found, score, region = self.match_with_center_mask(screen, template_path, mask_threshold)
+        found, score, region = self.match_with_center_mask(screen, template_path, t4)
         all_scores['center_mask'] = score
 
         if found:
             result = self._create_result(True, region, score, 'center_mask', all_scores)
             self._update_last_position(template_path, result)
-            # 디버그 로그 제거 (초보자에게 불필요)
             return result
 
         # 6. 가장자리 분할 매칭 (최후의 수단)
-        region_threshold = max(threshold - 0.2, 0.55)
-        found, score, region = self.match_edge_regions(screen, template_path, region_threshold)
+        found, score, region = self.match_edge_regions(screen, template_path, t5)
         all_scores['edge_regions'] = score
 
         if found:
             result = self._create_result(True, region, score, 'edge_regions', all_scores)
             self._update_last_position(template_path, result)
-            # 디버그 로그 제거 (초보자에게 불필요)
             return result
 
         # 모든 방법 실패 시 가장 높은 점수 반환

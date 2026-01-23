@@ -834,8 +834,9 @@ class RuleExecutor:
             if is_click_action and next_target_image:
                 check_interval = 0.5
                 waited = 0.0
+                max_wait_time = 300.0  # 5분 타임아웃
 
-                while True:
+                while waited < max_wait_time:
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
@@ -853,7 +854,10 @@ class RuleExecutor:
 
                     # 20초마다 로그 출력 (빈도 줄임)
                     if waited % 20 < check_interval and waited > 0:
-                        logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초")
+                        logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (최대 {max_wait_time:.0f}초)")
+
+                # 타임아웃 - 경고 후 계속 진행
+                logger.warning(f"  ⚠ 다음 화면 대기 타임아웃 ({max_wait_time:.0f}초) - 계속 진행")
 
             # 클릭이 아니거나 다음 이미지가 없으면 바로 성공
             return result
@@ -1037,6 +1041,13 @@ class RuleExecutor:
                             if locations:
                                 found_image = img_path
                                 break  # 하나라도 찾으면 중단
+
+                        # 검색 후 마우스 원위치 복원
+                        if mouse_moved_for_search and original_mouse_pos:
+                            try:
+                                pyautogui.moveTo(original_mouse_pos[0], original_mouse_pos[1], duration=0)
+                            except Exception:
+                                pass
 
                         if not locations:
                             wait_count += 1
@@ -1816,6 +1827,19 @@ class RuleExecutor:
                 # watch별 confidence 사용 (없으면 rule의 confidence 사용)
                 watch_confidence = watch.get('confidence', confidence)
 
+                # search_radius가 있고 search_region이 없으면 변환
+                watch_search_radius = watch.get('search_radius', 0)
+                if not search_region and watch_search_radius > 0:
+                    watch_center_x = watch.get('center_x') or watch.get('x')
+                    watch_center_y = watch.get('center_y') or watch.get('y')
+                    if watch_center_x is not None and watch_center_y is not None:
+                        screen_w, screen_h = pyautogui.size()
+                        x1 = max(0, watch_center_x - watch_search_radius)
+                        y1 = max(0, watch_center_y - watch_search_radius)
+                        x2 = min(screen_w, watch_center_x + watch_search_radius)
+                        y2 = min(screen_h, watch_center_y + watch_search_radius)
+                        search_region = [x1, y1, x2, y2]
+
                 watch_result = self._find_image_on_screen(
                     watch_image, watch_confidence,
                     search_region=search_region
@@ -1856,6 +1880,12 @@ class RuleExecutor:
                                         logger.info(f"\033[92m  ✓ 모니터링 액션 완료 ({repeat_i+1}/{repeat_count})\033[0m")
                                     else:
                                         logger.info(f"\033[92m  ✓ 모니터링 액션 완료\033[0m")
+                                else:
+                                    action_type = monitor_action.get('type', '알수없음')
+                                    if repeat_count > 1:
+                                        logger.warning(f"\033[93m  ⚠ 모니터링 액션 실패 ({repeat_i+1}/{repeat_count}): {action_type}\033[0m")
+                                    else:
+                                        logger.warning(f"\033[93m  ⚠ 모니터링 액션 실패: {action_type}\033[0m")
 
                                 # 반복 사이 대기 (마지막 반복 제외)
                                 if repeat_i < repeat_count - 1:
@@ -1998,6 +2028,19 @@ class RuleExecutor:
                 image_path = monitor_action.get('image')
                 click_type = monitor_action.get('click_type', 'click')
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
+
+                # search_radius가 있고 search_region이 없으면 변환
+                if not search_region and search_radius > 0:
+                    action_center_x = monitor_action.get('x') or monitor_action.get('center_x')
+                    action_center_y = monitor_action.get('y') or monitor_action.get('center_y')
+                    if action_center_x is not None and action_center_y is not None:
+                        screen_w, screen_h = pyautogui.size()
+                        x1 = max(0, action_center_x - search_radius)
+                        y1 = max(0, action_center_y - search_radius)
+                        x2 = min(screen_w, action_center_x + search_radius)
+                        y2 = min(screen_h, action_center_y + search_radius)
+                        search_region = [x1, y1, x2, y2]
+
                 if image_path and Path(image_path).exists():
                     location = self._find_image_on_screen(image_path, search_confidence, search_region=search_region)
                     if location:

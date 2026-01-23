@@ -1075,6 +1075,8 @@ class SettingsView(BaseView):
         """업데이트 다운로드 스레드 (전체 폴더 교체 방식)"""
         import tempfile
         import urllib.request
+        import urllib.error
+        import ssl
         import os
         import sys
         import shutil
@@ -1085,24 +1087,50 @@ class SettingsView(BaseView):
             download_url = asset.get("browser_download_url")
             file_name = asset.get("name", "update")
 
-            self.after(0, lambda: self._update_status_label.configure(text="다운로드 중..."))
+            logger.info(f"다운로드 시작: {download_url}")
+            self.after(0, lambda: self._update_status_label.configure(text="연결 중..."))
 
             # 임시 폴더 생성
             temp_dir = tempfile.gettempdir()
             temp_path = os.path.join(temp_dir, file_name)
+            logger.info(f"다운로드 경로: {temp_path}")
 
+            # SSL 컨텍스트 생성 (인증서 검증 포함)
+            ssl_context = ssl.create_default_context()
+
+            # 요청 생성 - User-Agent만 설정 (Accept 헤더 제거)
             req = urllib.request.Request(download_url, headers={
-                'User-Agent': 'WinCro-Updater',
-                'Accept': 'application/octet-stream'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'
             })
 
-            with urllib.request.urlopen(req, timeout=300) as response:
+            logger.info("서버에 연결 중...")
+            self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중..."))
+
+            with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
+                # 리다이렉트된 최종 URL 확인
+                final_url = response.geturl()
+                if final_url != download_url:
+                    logger.info(f"리다이렉트됨: {final_url}")
+
                 total_size = int(response.headers.get('Content-Length', 0))
+                logger.info(f"파일 크기: {total_size / (1024*1024):.1f} MB")
+
                 downloaded = 0
+                last_percent = -1
+                last_log_percent = -1
+
+                self.after(0, lambda t=total_size: self._update_status_label.configure(
+                    text=f"다운로드 중... 0% (0/{t/(1024*1024):.1f}MB)"
+                ))
 
                 with open(temp_path, 'wb') as f:
                     while True:
-                        chunk = response.read(8192)
+                        try:
+                            chunk = response.read(131072)  # 128KB chunks
+                        except Exception as read_err:
+                            logger.error(f"읽기 오류: {read_err}")
+                            raise
+
                         if not chunk:
                             break
                         f.write(chunk)
@@ -1110,9 +1138,21 @@ class SettingsView(BaseView):
 
                         if total_size > 0:
                             percent = int(downloaded / total_size * 100)
-                            self.after(0, lambda p=percent: self._update_status_label.configure(
-                                text=f"다운로드 중... {p}%"
-                            ))
+                            # 1% 변할 때마다만 UI 업데이트
+                            if percent != last_percent:
+                                last_percent = percent
+                                mb_down = downloaded / (1024 * 1024)
+                                mb_total = total_size / (1024 * 1024)
+                                self.after(0, lambda p=percent, d=mb_down, t=mb_total:
+                                    self._update_status_label.configure(
+                                        text=f"다운로드 중... {p}% ({d:.1f}/{t:.1f}MB)"
+                                    ))
+                                # 10% 단위로 로그
+                                if percent // 10 > last_log_percent // 10:
+                                    last_log_percent = percent
+                                    logger.info(f"다운로드 진행: {percent}%")
+
+                logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
 
             self.after(0, lambda: self._update_status_label.configure(text="압축 해제 중..."))
 
@@ -1243,9 +1283,22 @@ del "%~f0"
             # 배치 파일 실행하고 프로그램 종료
             self.after(0, lambda: self._start_update_and_exit(batch_path))
 
+        except urllib.error.HTTPError as e:
+            error_msg = f"HTTP 오류 {e.code}: {e.reason}"
+            logger.error(f"업데이트 다운로드 HTTP 오류: {error_msg}")
+            self.after(0, lambda msg=error_msg: self._update_failed(msg))
+        except urllib.error.URLError as e:
+            error_msg = f"연결 오류: {str(e.reason)[:40]}"
+            logger.error(f"업데이트 다운로드 URL 오류: {e}")
+            self.after(0, lambda msg=error_msg: self._update_failed(msg))
+        except TimeoutError:
+            error_msg = "서버 연결 시간 초과"
+            logger.error("업데이트 다운로드 타임아웃")
+            self.after(0, lambda: self._update_failed(error_msg))
         except Exception as e:
-            logger.error(f"업데이트 다운로드 오류: {e}")
-            self.after(0, lambda: self._update_failed(str(e)[:50]))
+            error_msg = f"{type(e).__name__}: {str(e)[:40]}"
+            logger.error(f"업데이트 다운로드 오류: {e}", exc_info=True)
+            self.after(0, lambda msg=error_msg: self._update_failed(msg))
 
     def _start_update_and_exit(self, batch_path: str) -> None:
         """배치 파일 실행 후 종료"""
