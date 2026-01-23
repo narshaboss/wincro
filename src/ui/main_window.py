@@ -20,7 +20,7 @@ import mss
 from pynput import keyboard
 
 from ..utils.logger import get_logger
-from ..utils.config import get_config, save_config, DATA_DIR
+from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
 from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
@@ -1079,12 +1079,13 @@ class MainWindow(ctk.CTk):
         version_frame = ctk.CTkFrame(self._topbar, fg_color=COLORS["bg_card"], corner_radius=6)
         version_frame.pack(side="right", padx=20, pady=12)
 
-        ctk.CTkLabel(
+        self._version_label = ctk.CTkLabel(
             version_frame,
-            text=f"  Version {self._config.version}  ",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            text=f"  v{APP_VERSION}  ",
+            font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["accent_blue"],
-        ).pack(padx=8, pady=4)
+        )
+        self._version_label.pack(padx=8, pady=4)
 
     def _setup_content_area(self):
         self._content_area = ctk.CTkFrame(

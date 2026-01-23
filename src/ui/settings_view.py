@@ -634,12 +634,13 @@ class SettingsView(BaseView):
             text_color=COLORS["text_primary"],
         ).pack(side="left")
 
-        ctk.CTkLabel(
+        self._current_version_label = ctk.CTkLabel(
             label_frame,
             text=f"(현재 버전: v{APP_VERSION})",
-            font=ctk.CTkFont(size=11),
-            text_color=COLORS["text_muted"],
-        ).pack(side="left", padx=(8, 0))
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["accent"],
+        )
+        self._current_version_label.pack(side="left", padx=(8, 0))
 
         # 1줄: 입력 필드 + 저장 버튼
         input_frame = ctk.CTkFrame(repo_frame, fg_color="transparent")
@@ -677,31 +678,31 @@ class SettingsView(BaseView):
         btn_frame = ctk.CTkFrame(repo_frame, fg_color="transparent")
         btn_frame.pack(fill="x")
 
-        # 버전 확인 버튼
+        # 버전 확인 버튼 (크게)
         self._check_update_btn = ctk.CTkButton(
             btn_frame,
-            text="버전 확인",
+            text="🔍 버전 확인",
             command=self._check_for_updates,
-            width=100,
-            height=36,
-            fg_color=COLORS["bg_card"],
-            hover_color=COLORS["accent"],
-            text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=12, weight="bold"),
+            width=150,
+            height=45,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=14, weight="bold"),
         )
-        self._check_update_btn.pack(side="left", padx=(0, 10))
+        self._check_update_btn.pack(side="left", padx=(0, 15))
 
-        # 업데이트 버튼
+        # 업데이트 버튼 (크게)
         self._do_update_btn = ctk.CTkButton(
             btn_frame,
-            text="업데이트 다운로드",
+            text="⬇️ 업데이트 다운로드",
             command=self._perform_update,
-            width=130,
-            height=36,
+            width=180,
+            height=45,
             fg_color="#2ecc71",
             hover_color="#27ae60",
             text_color="#ffffff",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=14, weight="bold"),
         )
         self._do_update_btn.pack(side="left")
 
@@ -898,7 +899,12 @@ class SettingsView(BaseView):
             self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             self._update_status_icon.configure(text="🆕")
             self._update_status_label.configure(
-                text=f"새 버전 사용 가능: v{new_version} (현재: v{APP_VERSION})",
+                text=f"🆕 새 버전 사용 가능: v{new_version} (현재: v{APP_VERSION})",
+                text_color=COLORS["warning"]
+            )
+            # 상단 버전 라벨도 업데이트
+            self._current_version_label.configure(
+                text=f"🆕 업데이트 필요! v{APP_VERSION} → v{new_version}",
                 text_color=COLORS["warning"]
             )
 
@@ -919,7 +925,12 @@ class SettingsView(BaseView):
             self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
             self._update_status_icon.configure(text="✅")
             self._update_status_label.configure(
-                text=f"최신 버전입니다 (v{current_version})",
+                text=f"✅ 최신 버전입니다! (v{current_version})",
+                text_color=COLORS["success"]
+            )
+            # 상단 버전 라벨도 업데이트
+            self._current_version_label.configure(
+                text=f"✅ 최신 버전: v{current_version}",
                 text_color=COLORS["success"]
             )
             self._latest_release = None

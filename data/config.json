@@ -4,7 +4,6 @@
     "quality": "high",
     "include_cursor": true,
     "include_clicks": true,
-    "audio_enabled": false,
     "save_input_log": true,
     "drag_threshold_distance": 25,
     "drag_threshold_time": 0.15
@@ -54,5 +53,5 @@
   },
   "version": "1.0.0",
   "first_run": false,
-  "last_opened": "2026-01-23T18:05:35.547419"
+  "last_opened": "2026-01-23T22:11:28.804432"
 }
