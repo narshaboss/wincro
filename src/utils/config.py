@@ -14,21 +14,24 @@ from dataclasses import dataclass, field, asdict, fields
 
 
 # 프로젝트 루트 디렉토리
-# PyInstaller로 빌드된 exe인 경우 exe 위치 기준, 아니면 스크립트 위치 기준
+# PyInstaller로 빌드된 exe인 경우 _internal 폴더 기준, 아니면 스크립트 위치 기준
 import sys
 if getattr(sys, 'frozen', False):
-    # exe로 실행 중 - exe 파일 위치 기준
+    # exe로 실행 중 - _internal 폴더 안에 data/logs가 있음
     PROJECT_ROOT = Path(sys.executable).parent
+    INTERNAL_DIR = PROJECT_ROOT / "_internal"
+    DATA_DIR = INTERNAL_DIR / "data"
+    LOGS_DIR = INTERNAL_DIR / "logs"
 else:
     # 스크립트로 실행 중
     PROJECT_ROOT = Path(__file__).parent.parent.parent
+    DATA_DIR = PROJECT_ROOT / "data"
+    LOGS_DIR = PROJECT_ROOT / "logs"
 
-DATA_DIR = PROJECT_ROOT / "data"
-LOGS_DIR = PROJECT_ROOT / "logs"
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 
 
 @dataclass
