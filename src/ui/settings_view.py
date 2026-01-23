@@ -873,6 +873,7 @@ class SettingsView(BaseView):
         from ..utils.config import APP_VERSION
         import urllib.request
         import urllib.error
+        import ssl
         import json
 
         try:
@@ -880,12 +881,15 @@ class SettingsView(BaseView):
             api_url = f"https://api.github.com/repos/{repo}/releases/latest"
             logger.debug(f"버전 확인 API 호출: {api_url}")
 
+            # SSL 컨텍스트 생성
+            ssl_context = ssl.create_default_context()
+
             req = urllib.request.Request(api_url, headers={
-                'User-Agent': 'WinCro-Updater',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0',
                 'Accept': 'application/vnd.github.v3+json'
             })
 
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=15, context=ssl_context) as response:
                 data = json.loads(response.read().decode())
 
             latest_version = data.get("tag_name", "").lstrip("v")
