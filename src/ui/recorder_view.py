@@ -301,15 +301,6 @@ class RecorderView(BaseView):
             height=28,
         ).pack(side="right")
 
-        self.create_button(
-            header,
-            text="녹화 동기화",
-            command=self._sync_recordings,
-            style="ghost",
-            width=90,
-            height=28,
-        ).pack(side="right", padx=(0, 5))
-
         # 목록
         self._recordings_scroll = ctk.CTkScrollableFrame(
             card,

@@ -41,7 +41,7 @@ class SettingsView(BaseView):
         main_frame.grid_columnconfigure(1, weight=1, uniform="col")
         main_frame.grid_rowconfigure(0, weight=2, uniform="row")
         main_frame.grid_rowconfigure(1, weight=2, uniform="row")
-        main_frame.grid_rowconfigure(2, weight=1)  # 업데이트 설정 행
+        main_frame.grid_rowconfigure(2, weight=2)  # 업데이트 설정 행
 
         # 좌상단: 일반 설정
         general_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -1076,19 +1076,19 @@ echo   WinCro 업데이트 v{version}
 echo ========================================
 echo.
 
-echo [1/5] 프로그램 종료 대기 중...
+echo [1/6] 프로그램 종료 대기 중...
 timeout /t 3 /nobreak >nul
 
-echo [2/5] 사용자 데이터 백업 중...
+echo [2/6] 사용자 데이터 백업 중...
 if exist "{data_dir}" (
     xcopy /E /I /Y /Q "{data_dir}" "{data_backup}" >nul 2>&1
 )
 
-echo [3/5] 기존 파일 삭제 중...
+echo [3/6] 기존 파일 삭제 중...
 rd /s /q "{app_dir}\\_internal" 2>nul
 del /q "{current_exe}" 2>nul
 
-echo [4/5] 새 파일 복사 중...
+echo [4/6] 새 파일 복사 중...
 xcopy /E /I /Y /Q "{new_app_dir}\\*" "{app_dir}\\" >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -1097,11 +1097,34 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [5/5] 사용자 데이터 복원 중...
-if exist "{data_backup}" (
-    xcopy /E /I /Y /Q "{data_backup}" "{app_dir}\\_internal\\data" >nul 2>&1
-    rd /s /q "{data_backup}" 2>nul
+echo [5/6] 설정 파일 복원 중...
+if exist "{data_backup}\\config.json" (
+    copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
 )
+if exist "{data_backup}\\wincro.db" (
+    copy /y "{data_backup}\\wincro.db" "{app_dir}\\_internal\\data\\wincro.db" >nul 2>&1
+)
+if exist "{data_backup}\\window_positions.json" (
+    copy /y "{data_backup}\\window_positions.json" "{app_dir}\\_internal\\data\\window_positions.json" >nul 2>&1
+)
+if exist "{data_backup}\\.keyfile" (
+    copy /y "{data_backup}\\.keyfile" "{app_dir}\\_internal\\data\\.keyfile" >nul 2>&1
+)
+
+echo [6/6] 녹화 파일 병합 중...
+if exist "{data_backup}\\recordings" (
+    xcopy /E /I /Y /Q "{data_backup}\\recordings\\*" "{app_dir}\\_internal\\data\\recordings\\" >nul 2>&1
+)
+if exist "{data_backup}\\plans" (
+    xcopy /E /I /Y /Q "{data_backup}\\plans\\*" "{app_dir}\\_internal\\data\\plans\\" >nul 2>&1
+)
+if exist "{data_backup}\\sequences" (
+    xcopy /E /I /Y /Q "{data_backup}\\sequences\\*" "{app_dir}\\_internal\\data\\sequences\\" >nul 2>&1
+)
+if exist "{data_backup}\\templates" (
+    xcopy /E /I /Y /Q "{data_backup}\\templates\\*" "{app_dir}\\_internal\\data\\templates\\" >nul 2>&1
+)
+rd /s /q "{data_backup}" 2>nul
 
 echo.
 echo ========================================
