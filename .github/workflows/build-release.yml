@@ -1,0 +1,130 @@
+# WinCro 자동 빌드 및 릴리즈
+# 태그 푸시하면 자동으로 exe 빌드 후 Release 생성
+#
+# 사용법:
+#   git tag v1.0.1
+#   git push origin v1.0.1
+#
+# 또는 수동으로 Actions 탭에서 실행 가능
+
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # v로 시작하는 태그 (v1.0.0, v1.2.3 등)
+  workflow_dispatch:  # 수동 실행 가능
+    inputs:
+      version:
+        description: '버전 (예: 1.0.1)'
+        required: true
+        default: '1.0.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Get version from tag
+      id: get_version
+      shell: bash
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          # 태그에서 v 제거
+          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Update version in code
+      shell: python
+      run: |
+        import re
+        version = "${{ steps.get_version.outputs.VERSION }}"
+
+        # config.py의 APP_VERSION 업데이트
+        config_path = "src/utils/config.py"
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        content = re.sub(
+            r'APP_VERSION = "[^"]*"',
+            f'APP_VERSION = "{version}"',
+            content
+        )
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        print(f"Updated APP_VERSION to {version}")
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --onefile --windowed `
+          --name "WinCro" `
+          --add-data "src;src" `
+          --hidden-import "PIL._tkinter_finder" `
+          --hidden-import "customtkinter" `
+          --hidden-import "cv2" `
+          --hidden-import "numpy" `
+          --hidden-import "pyautogui" `
+          --hidden-import "pynput" `
+          --hidden-import "serial" `
+          src/main.py
+      shell: pwsh
+
+    - name: Create data folders
+      run: |
+        mkdir -p dist/data/plans
+        mkdir -p dist/data/templates
+        mkdir -p dist/data/recordings
+        mkdir -p dist/logs
+      shell: bash
+
+    - name: Create ZIP package
+      run: |
+        cd dist
+        7z a -tzip "WinCro-v${{ steps.get_version.outputs.VERSION }}.zip" WinCro.exe data/ logs/
+      shell: pwsh
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.get_version.outputs.VERSION }}
+        name: WinCro v${{ steps.get_version.outputs.VERSION }}
+        body: |
+          ## WinCro v${{ steps.get_version.outputs.VERSION }}
+
+          ### 다운로드
+          - **WinCro.exe** - 실행 파일 (단일 파일)
+          - **WinCro-v${{ steps.get_version.outputs.VERSION }}.zip** - 전체 패키지
+
+          ### 설치 방법
+          1. WinCro.exe 다운로드
+          2. 원하는 폴더에 저장
+          3. 실행!
+
+          ### 변경 사항
+          - 자동 생성된 릴리즈입니다
+        files: |
+          dist/WinCro.exe
+          dist/WinCro-v${{ steps.get_version.outputs.VERSION }}.zip
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

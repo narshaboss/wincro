@@ -1,0 +1,129 @@
+당신은 WinCro(윈크로) 프로젝트의 개발자입니다.
+이 프로젝트는 영상 녹화 기반 업무 자동화 RPA 프로그램입니다.
+
+## 작업 시작 전 필수 확인
+
+1. CLAUDE.md 파일을 읽고 프로젝트 구조와 요구사항을 완전히 이해하라
+2. PROGRESS.md 파일을 읽고 현재 진행 상태를 확인하라
+3. 이전에 완료된 작업은 건너뛰고, 중단된 지점부터 이어서 작업하라
+
+## 사전 설치 (최초 1회)
+
+다음 명령어를 순서대로 실행하라:
+
+```powershell
+# 1. Chocolatey로 Tesseract OCR 설치
+choco install tesseract -y
+
+# 2. 프로젝트 디렉토리로 이동
+cd C:\Projects\wincro
+
+# 3. 가상환경 생성 및 활성화
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+# 4. pip 업그레이드
+python -m pip install --upgrade pip
+
+# 5. 의존성 설치
+pip install customtkinter mss opencv-python pyautogui pynput pytesseract openai Pillow numpy cryptography pytest black
+```
+
+## 개발 단계 (순서대로 진행)
+
+### 1단계: 프로젝트 기본 구조 생성
+- requirements.txt 생성
+- 모든 디렉토리 구조 생성 (src/, data/, logs/, tests/)
+- 각 모듈의 __init__.py 생성
+- PROGRESS.md 업데이트: "1단계 완료"
+
+### 2단계: 유틸리티 모듈 개발
+- src/utils/config.py: 설정 관리 클래스
+- src/utils/security.py: API 키 암호화/복호화
+- src/utils/logger.py: 로깅 설정
+- 단위 테스트 작성
+- PROGRESS.md 업데이트: "2단계 완료"
+
+### 3단계: 데이터베이스 모듈 개발
+- src/database/models.py: SQLAlchemy 모델 또는 순수 SQL
+- src/database/db_manager.py: DB 연결, CRUD 작업
+- 데이터베이스 초기화 스크립트
+- 단위 테스트 작성
+- PROGRESS.md 업데이트: "3단계 완료"
+
+### 4단계: 화면 녹화 모듈 개발
+- src/recorder/screen_recorder.py: mss 기반 화면 캡처
+- src/recorder/input_logger.py: pynput 기반 입력 로깅
+- 녹화 시작/중지/일시정지 기능
+- 영상 파일(.mp4) + 입력 로그(.json) 동시 저장
+- 단위 테스트 작성
+- PROGRESS.md 업데이트: "4단계 완료"
+
+### 5단계: 영상 분석 모듈 개발
+- src/analyzer/video_analyzer.py: 영상 프레임 분석
+- src/analyzer/action_extractor.py: 액션 추출 로직
+- src/analyzer/template_matcher.py: OpenCV 템플릿 매칭
+- 입력 로그와 영상 동기화
+- 액션 시퀀스 JSON 생성
+- 단위 테스트 작성
+- PROGRESS.md 업데이트: "5단계 완료"
+
+### 6단계: 동작 재현 모듈 개발
+- src/player/action_player.py: pyautogui 기반 자동화
+- src/player/ai_intervention.py: OpenAI API 연동, 변수 대응
+- 이미지 매칭 기반 클릭
+- 타임아웃 및 에러 처리
+- ESC 2번 긴급 중지 구현
+- 단위 테스트 작성
+- PROGRESS.md 업데이트: "6단계 완료"
+
+### 7단계: GUI 개발
+- src/ui/main_window.py: 메인 윈도우, 네비게이션
+- src/ui/recorder_view.py: 녹화 화면
+- src/ui/analyzer_view.py: 분석 화면
+- src/ui/player_view.py: 실행 화면
+- src/ui/settings_view.py: 설정 화면
+- CustomTkinter 다크 테마 적용
+- PROGRESS.md 업데이트: "7단계 완료"
+
+### 8단계: 메인 앱 통합
+- src/app.py: 모든 모듈 통합
+- src/main.py: 앱 진입점
+- 시퀀스 내보내기/가져오기 (JSON)
+- 실행 속도 조절 (0.5x ~ 2x)
+- 반복 실행 기능
+- PROGRESS.md 업데이트: "8단계 완료"
+
+### 9단계: 테스트 및 검증
+- 전체 통합 테스트
+- 버그 수정
+- 코드 품질 검사 (black, pylint)
+- PROGRESS.md 업데이트: "9단계 완료"
+
+### 10단계: 문서화 및 마무리
+- README.md 작성
+- .env.example 생성
+- 최종 점검
+- PROGRESS.md 업데이트: "모든 작업 완료"
+
+## 작업 규칙
+
+1. 매 단계 완료 시 반드시 PROGRESS.md 업데이트
+2. 에러 발생 시:
+   - 에러 내용을 PROGRESS.md에 기록
+   - 해결 시도
+   - 해결 불가 시 다음 단계로 넘어가고 "TODO: 수정 필요" 표시
+3. 모든 코드에 한글 docstring 작성
+4. PEP 8 준수, 타입 힌트 사용
+5. 보안 민감 정보(API 키)는 환경변수 또는 암호화 저장
+
+## 완료 조건
+
+- 모든 10단계가 완료됨
+- 프로그램이 에러 없이 실행됨
+- 기본 기능(녹화 → 분석 → 재현)이 동작함
+- PROGRESS.md에 "모든 작업 완료" 기록됨
+
+## 시작
+
+지금 바로 작업을 시작하라. PROGRESS.md를 먼저 확인하고, 중단된 지점이 있으면 이어서, 없으면 1단계부터 시작하라.

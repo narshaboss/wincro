@@ -1,0 +1,14 @@
+{
+  "MainWindow": {
+    "x": 171,
+    "y": 9
+  },
+  "PlanDetailDialog": {
+    "x": 326,
+    "y": 187
+  },
+  "ImageCropDialog": {
+    "x": 104,
+    "y": 104
+  }
+}
