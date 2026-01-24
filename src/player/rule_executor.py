@@ -860,7 +860,17 @@ class RuleExecutor:
                             logger.warning(f"  ⏸ 일시정지 대기 중...")
                             pause_wait_start = time.time()
 
+                    # 이미지 검색 시작 로그 (첫 번째만)
+                    if waited == 0:
+                        logger.debug(f"  [DEBUG] 이미지 검색 시작")
+
+                    search_start = time.time()
                     location = self._find_image_on_screen(next_target_image, 0.7)
+                    search_time = time.time() - search_start
+
+                    # 검색이 오래 걸리면 로그
+                    if search_time > 3.0:
+                        logger.warning(f"  [DEBUG] 이미지 검색 {search_time:.1f}초 소요")
                     if location:
                         return self._make_result(rule, True, f"{result.message}", start_time)
 
@@ -1419,6 +1429,8 @@ class RuleExecutor:
 
         search_region: 검색 영역 제한 [x1, y1, x2, y2] 또는 None (전체 화면)
         """
+        func_start = time.time()
+
         # 중지 체크
         if self._stop_event.is_set():
             return None
@@ -1441,12 +1453,14 @@ class RuleExecutor:
             check_thread.join(timeout=3.0)  # 3초 타임아웃
 
             if check_thread.is_alive():
-                logger.warning(f"파일 존재 확인 타임아웃: {image_path}")
+                logger.warning(f"파일 존재 확인 타임아웃 (3초): {Path(image_path).name}")
                 return None
 
             if not file_exists[0]:
-                logger.warning(f"템플릿 이미지 파일이 존재하지 않습니다: {image_path}")
+                logger.warning(f"템플릿 파일 없음: {Path(image_path).name}")
                 return None
+
+            logger.debug(f"  [DEBUG] 파일 확인 완료: {time.time() - func_start:.2f}초")
 
             # 중지 체크
             if self._stop_event.is_set():
