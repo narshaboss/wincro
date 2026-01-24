@@ -146,6 +146,39 @@ CREATE TABLE execution_logs (
 - 동작 재현 지연: 50ms 이내
 - 메모리 사용: 500MB 이하
 
+## 배포 절차 (중요!)
+배포/업데이트 요청 시 반드시 아래 체크리스트 확인:
+
+### 1. 코드 변경
+- [ ] src/ 폴더 내 변경된 파일 모두 커밋
+- [ ] src/utils/config.py 버전 번호 업데이트
+
+### 2. 데이터 파일 (배포에 포함되어야 함)
+- [ ] data/plans/*.json - 플랜 파일
+- [ ] data/templates/*.png - 템플릿 이미지
+- [ ] data/sequences/*.json - 시퀀스 파일
+
+### 3. Git 작업
+```bash
+# 변경된 코드 + 데이터 파일 모두 add
+git add src/
+git add data/plans/
+git add data/templates/
+git add data/sequences/
+
+# 커밋
+git commit -m "vX.X.X: 변경 내용"
+
+# 태그 생성 및 푸시
+git tag vX.X.X
+git push origin master
+git push origin vX.X.X
+```
+
+### 4. 확인 사항
+- GitHub Actions 빌드 완료 확인
+- Release에 zip 파일 업로드 확인
+
 ## 참고
 - 세션 재시작 시 PROGRESS.md를 읽고 작업 이어서 진행
 - 에러 발생 시 PROGRESS.md에 기록 후 가능한 범위까지 진행

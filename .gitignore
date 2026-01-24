@@ -8,5 +8,20 @@ dist/
 *.egg-info/
 debug_frames/
 logs/
-*.png
+
+# 이미지 (루트만 제외, data 폴더는 포함)
+/*.png
+!icon.png
 !icon_preview.png
+
+# 사용자 데이터 (제외)
+data/config.json
+data/wincro.db
+data/window_positions.json
+data/recordings/
+data/.keyfile
+
+# 배포용 데이터 (포함)
+!data/plans/
+!data/templates/
+!data/sequences/
