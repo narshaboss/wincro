@@ -729,7 +729,7 @@ class DatabaseManager:
 
     def delete_recording(self, recording_id: int, delete_files: bool = True) -> bool:
         """
-        녹화 삭제 (연관된 시퀀스와 파일도 함께 삭제)
+        녹화 삭제 (파일만 삭제, 분석된 재생목록은 유지)
 
         Args:
             recording_id: 삭제할 녹화 ID
@@ -745,10 +745,7 @@ class DatabaseManager:
         if not recording:
             return False
 
-        # 연관된 시퀀스 삭제
-        if recording.sequence_id:
-            self.delete_sequence(recording.sequence_id)
-            logger.info(f"연관 시퀀스 삭제: ID {recording.sequence_id}")
+        # 분석된 재생목록(시퀀스)은 삭제하지 않음 - 사용자 데이터 보존
 
         # 실제 파일 삭제
         if delete_files:

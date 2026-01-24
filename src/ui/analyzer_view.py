@@ -2412,20 +2412,7 @@ class AnalyzerView(BaseView):
             corner_radius=4,
         ).pack(side="right", padx=(0, 5))
 
-        # 분석된 재생 또는 자동화 계획이 있으면 수정 버튼 표시
-        if recording.sequence_id or recording.automation_plan_id:
-            ctk.CTkButton(
-                btn_row,
-                text="수정",
-                command=lambda r=recording: self._show_recording_detail(r),
-                width=50,
-                height=26,
-                fg_color=COLORS["accent_blue"],
-                hover_color="#2563eb",
-                text_color="white",
-                font=ctk.CTkFont(size=12),
-                corner_radius=4,
-            ).pack(side="right", padx=(0, 5))
+        # 수정은 '분석된 재생 목록'에서만 가능 (녹화 목록에서는 수정 버튼 제거)
 
     def _select_recording_item(self, recording: Recording, widget):
         """녹화 항목 선택 (클릭으로)"""
