@@ -957,20 +957,39 @@ class SettingsView(BaseView):
                 logger.error(f"버전 비교 오류: {e}")
                 self.after(0, lambda: self._update_check_failed("버전 정보 파싱 실패"))
         else:
-            # 모든 방법 실패
-            error_detail = ""
+            # 모든 방법 실패 - 사용자 친화적 메시지
+            error_detail = "연결 실패"
             if last_error:
+                error_str = str(last_error)
+                reason_str = str(getattr(last_error, 'reason', ''))
+
                 if isinstance(last_error, urllib.error.HTTPError):
-                    error_detail = f"HTTP {last_error.code}"
+                    if last_error.code == 404:
+                        error_detail = "저장소를 찾을 수 없음"
+                    elif last_error.code == 403:
+                        error_detail = "API 제한 - 잠시 후 재시도"
+                    else:
+                        error_detail = f"HTTP {last_error.code}"
                 elif isinstance(last_error, urllib.error.URLError):
-                    error_detail = str(last_error.reason)[:25]
+                    if "SSL" in reason_str or "CERTIFICATE" in reason_str.upper():
+                        error_detail = "SSL 오류 - VPN/방화벽 확인"
+                    elif "Connection refused" in reason_str:
+                        error_detail = "연결 거부됨"
+                    elif "Name or service not known" in reason_str:
+                        error_detail = "인터넷 연결 확인"
+                    elif "timed out" in reason_str.lower():
+                        error_detail = "시간 초과"
+                    else:
+                        error_detail = reason_str[:20] if reason_str else "연결 오류"
                 elif isinstance(last_error, socket.timeout):
                     error_detail = "시간 초과"
+                elif "SSL" in error_str or "CERTIFICATE" in error_str.upper():
+                    error_detail = "SSL 오류"
                 else:
-                    error_detail = str(last_error)[:25]
+                    error_detail = error_str[:20]
 
-            logger.error(f"모든 연결 방법 실패: {error_detail}")
-            self.after(0, lambda e=error_detail: self._update_check_failed(f"연결 실패: {e}"))
+            logger.error(f"모든 연결 방법 실패: {last_error}")
+            self.after(0, lambda e=error_detail: self._update_check_failed(e))
 
     def _compare_versions(self, v1: str, v2: str) -> int:
         """버전 비교 (v1 > v2: 1, v1 == v2: 0, v1 < v2: -1)"""
@@ -1204,7 +1223,7 @@ class SettingsView(BaseView):
         thread.start()
 
     def _download_update_thread(self, asset: dict, version: str) -> None:
-        """업데이트 다운로드 스레드 (전체 폴더 교체 방식)"""
+        """업데이트 다운로드 스레드 (전체 폴더 교체 방식) - SSL 다중 폴백"""
         import tempfile
         import urllib.request
         import urllib.error
@@ -1237,18 +1256,79 @@ class SettingsView(BaseView):
             temp_path = os.path.join(temp_dir, file_name)
             logger.info(f"다운로드 경로: {temp_path}")
 
-            # SSL 컨텍스트 생성 (인증서 검증 포함)
-            ssl_context = ssl.create_default_context()
+            # 요청 헤더
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'}
 
-            # 요청 생성 - User-Agent만 설정 (Accept 헤더 제거)
-            req = urllib.request.Request(download_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'
-            })
+            # SSL 다중 폴백 방식으로 연결 시도
+            response = None
+            last_error = None
 
-            logger.info("서버에 연결 중...")
-            self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중..."))
+            # 방법 1: 기본 SSL
+            try:
+                logger.info("다운로드 시도 1: 기본 SSL")
+                self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 1)"))
+                ssl_ctx = ssl.create_default_context()
+                req = urllib.request.Request(download_url, headers=headers)
+                response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                logger.info("방법 1 성공")
+            except Exception as e1:
+                last_error = e1
+                logger.warning(f"방법 1 실패: {e1}")
 
-            with urllib.request.urlopen(req, timeout=60, context=ssl_context) as response:
+                # 방법 2: SSL 검증 완화
+                try:
+                    logger.info("다운로드 시도 2: SSL 검증 완화")
+                    self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 2)"))
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+                    req = urllib.request.Request(download_url, headers=headers)
+                    response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                    logger.info("방법 2 성공")
+                except Exception as e2:
+                    last_error = e2
+                    logger.warning(f"방법 2 실패: {e2}")
+
+                    # 방법 3: SSL 없이
+                    try:
+                        logger.info("다운로드 시도 3: SSL 없음")
+                        self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 3)"))
+                        req = urllib.request.Request(download_url, headers=headers)
+                        response = urllib.request.urlopen(req, timeout=60)
+                        logger.info("방법 3 성공")
+                    except Exception as e3:
+                        last_error = e3
+                        logger.warning(f"방법 3 실패: {e3}")
+
+                        # 방법 4: 프록시 핸들러
+                        try:
+                            logger.info("다운로드 시도 4: 프록시 핸들러")
+                            self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 4)"))
+                            proxy_handler = urllib.request.ProxyHandler({})
+                            opener = urllib.request.build_opener(proxy_handler)
+                            req = urllib.request.Request(download_url, headers=headers)
+                            response = opener.open(req, timeout=60)
+                            logger.info("방법 4 성공")
+                        except Exception as e4:
+                            last_error = e4
+                            logger.error(f"방법 4 실패: {e4}")
+
+            # 모든 방법 실패
+            if response is None:
+                error_msg = "서버 연결 실패"
+                if last_error:
+                    if "SSL" in str(last_error) or "CERTIFICATE" in str(last_error).upper():
+                        error_msg = "SSL 인증서 오류 - 네트워크 확인 필요"
+                    elif "timeout" in str(last_error).lower():
+                        error_msg = "서버 연결 시간 초과"
+                    elif "Connection refused" in str(last_error):
+                        error_msg = "서버 연결 거부됨"
+                    else:
+                        error_msg = f"연결 실패: {str(last_error)[:30]}"
+                self.after(0, lambda msg=error_msg: self._update_failed(msg))
+                return
+
+            with response:
                 # 리다이렉트된 최종 URL 확인
                 final_url = response.geturl()
                 if final_url != download_url:
@@ -1452,27 +1532,57 @@ del "%~f0"
             self.after(0, lambda: self._start_update_and_exit(batch_path))
 
         except urllib.error.HTTPError as e:
-            error_msg = f"HTTP 오류 {e.code}: {e.reason}"
-            logger.error(f"업데이트 다운로드 HTTP 오류: {error_msg}")
+            if e.code == 404:
+                error_msg = "릴리즈 파일을 찾을 수 없습니다 (404)"
+            elif e.code == 403:
+                error_msg = "접근 권한 없음 (403) - 잠시 후 재시도"
+            elif e.code >= 500:
+                error_msg = f"서버 오류 ({e.code}) - 잠시 후 재시도"
+            else:
+                error_msg = f"HTTP 오류 {e.code}"
+            logger.error(f"업데이트 다운로드 HTTP 오류: {e.code} {e.reason}")
             self.after(0, lambda msg=error_msg: self._update_failed(msg))
         except urllib.error.URLError as e:
-            error_msg = f"연결 오류: {str(e.reason)[:40]}"
+            reason = str(e.reason)
+            if "SSL" in reason or "CERTIFICATE" in reason.upper():
+                error_msg = "SSL 인증서 오류 - VPN/방화벽 확인"
+            elif "Connection refused" in reason:
+                error_msg = "연결 거부됨 - 네트워크 확인"
+            elif "Name or service not known" in reason:
+                error_msg = "서버를 찾을 수 없음 - 인터넷 확인"
+            elif "timed out" in reason.lower():
+                error_msg = "연결 시간 초과 - 네트워크 확인"
+            else:
+                error_msg = f"연결 오류: {reason[:30]}"
             logger.error(f"업데이트 다운로드 URL 오류: {e}")
             self.after(0, lambda msg=error_msg: self._update_failed(msg))
+        except ssl.SSLError as e:
+            error_msg = "SSL 보안 연결 실패 - VPN/방화벽 확인"
+            logger.error(f"SSL 오류: {e}")
+            self.after(0, lambda msg=error_msg: self._update_failed(msg))
         except socket.timeout:
-            error_msg = "서버 연결 시간 초과"
+            error_msg = "서버 연결 시간 초과 - 네트워크 확인"
             logger.error("업데이트 다운로드 타임아웃")
             self.after(0, lambda: self._update_failed(error_msg))
         except zipfile.BadZipFile:
-            error_msg = "손상된 zip 파일"
+            error_msg = "손상된 zip 파일 - 재시도 필요"
             logger.error("다운로드된 zip 파일이 손상됨")
             self.after(0, lambda: self._update_failed(error_msg))
         except OSError as e:
-            error_msg = f"파일 오류: {str(e)[:30]}"
+            if "No space" in str(e):
+                error_msg = "디스크 공간 부족"
+            elif "Permission" in str(e):
+                error_msg = "파일 접근 권한 없음"
+            else:
+                error_msg = f"파일 오류: {str(e)[:30]}"
             logger.error(f"업데이트 파일 처리 오류: {e}")
             self.after(0, lambda msg=error_msg: self._update_failed(msg))
         except Exception as e:
-            error_msg = f"{type(e).__name__}: {str(e)[:40]}"
+            error_str = str(e)
+            if "SSL" in error_str or "CERTIFICATE" in error_str.upper():
+                error_msg = "SSL 연결 실패 - 네트워크 설정 확인"
+            else:
+                error_msg = f"오류: {error_str[:35]}"
             logger.error(f"업데이트 다운로드 오류: {e}", exc_info=True)
             self.after(0, lambda msg=error_msg: self._update_failed(msg))
 
