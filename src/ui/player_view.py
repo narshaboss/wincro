@@ -1849,6 +1849,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _test_run_rule(self, rule: AutomationRule):
         """해당 규칙부터 끝까지 실행 (토글 방식: 실행 중이면 중지)"""
+        logger.info(f"[부분실행] 클릭됨: {rule.description or rule.action_type}")
         from tkinter import messagebox
         from ..player.rule_executor import get_rule_executor
         from ..analyzer.automation_models import AutomationPlan
@@ -1912,13 +1913,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 self._save_plan()
 
         # 실행 전 플랜 파일에서 최신 데이터 리로드 (업데이트 반영)
+        logger.info(f"[부분실행] 플랜 리로드 시작...")
         try:
             plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
+            logger.debug(f"[부분실행] 플랜 파일: {plan_file}")
             if plan_file.exists():
                 with open(plan_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                logger.debug(f"[부분실행] JSON 로드 완료")
                 templates_dir = DATA_DIR / "templates"
                 reloaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                logger.debug(f"[부분실행] from_dict 완료")
                 # 리로드된 플랜으로 규칙 재구성
                 all_rules_flat = flatten_rules(reloaded_plan.initial_rules)
                 # 인덱스 다시 찾기
