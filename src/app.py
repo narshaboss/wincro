@@ -229,9 +229,7 @@ class WinCroApp:
                 self._settings_view._perform_update()
 
     def _merge_user_plans(self) -> None:
-        """업데이트 후 사용자 플랜 파일 병합 (plans_user_backup → plans)"""
-        import os
-        import json
+        """업데이트 후 사용자 플랜 파일 병합 (새 버전 우선, 같은 이름은 덮어쓰기)"""
         import shutil
         from .utils.config import DATA_DIR
 
@@ -244,55 +242,21 @@ class WinCroApp:
         logger.info("사용자 플랜 파일 병합 시작")
         plans_dir.mkdir(parents=True, exist_ok=True)
 
-        merged_count = 0
+        restored_count = 0
         for backup_file in backup_dir.glob("*.json"):
             target_file = plans_dir / backup_file.name
 
             if not target_file.exists():
-                # 새 버전에 없는 파일 → 그대로 복사
+                # 새 버전에 없는 파일만 복원 (사용자가 직접 만든 플랜)
                 shutil.copy2(backup_file, target_file)
                 logger.info(f"플랜 복원: {backup_file.name}")
-                merged_count += 1
-            else:
-                # 같은 이름 있음 → 숫자 붙여서 복사
-                base_name = backup_file.stem
-                ext = backup_file.suffix
-                counter = 1
-
-                while True:
-                    new_name = f"{base_name}_{counter}{ext}"
-                    new_target = plans_dir / new_name
-
-                    if not new_target.exists():
-                        # 플랜 내용도 수정 (plan_id, name)
-                        try:
-                            with open(backup_file, 'r', encoding='utf-8') as f:
-                                plan_data = json.load(f)
-
-                            # plan_id와 name에 숫자 추가
-                            if 'plan_id' in plan_data:
-                                plan_data['plan_id'] = f"{plan_data['plan_id']}_{counter}"
-                            if 'name' in plan_data:
-                                plan_data['name'] = f"{plan_data['name']}_{counter}"
-
-                            with open(new_target, 'w', encoding='utf-8') as f:
-                                json.dump(plan_data, f, ensure_ascii=False, indent=2)
-
-                            logger.info(f"플랜 병합 (이름 변경): {backup_file.name} → {new_name}")
-                            merged_count += 1
-                        except Exception as e:
-                            logger.error(f"플랜 병합 실패: {backup_file.name} - {e}")
-                        break
-
-                    counter += 1
-                    if counter > 100:  # 무한 루프 방지
-                        logger.warning(f"플랜 병합 건너뜀 (이름 충돌): {backup_file.name}")
-                        break
+                restored_count += 1
+            # 같은 이름 있으면 새 버전 유지 (덮어쓰기 안 함 = 새 버전 우선)
 
         # 백업 폴더 삭제
         try:
             shutil.rmtree(backup_dir)
-            logger.info(f"사용자 플랜 병합 완료: {merged_count}개 파일")
+            logger.info(f"사용자 플랜 병합 완료: {restored_count}개 복원")
         except Exception as e:
             logger.error(f"백업 폴더 삭제 실패: {e}")
 
