@@ -1424,8 +1424,27 @@ class RuleExecutor:
             return None
 
         try:
-            # 파일 존재 확인
-            if not image_path or not Path(image_path).exists():
+            # 파일 존재 확인 (타임아웃 적용)
+            if not image_path:
+                logger.warning(f"이미지 경로가 없습니다")
+                return None
+
+            file_exists = [False]
+            def check_file():
+                try:
+                    file_exists[0] = Path(image_path).exists()
+                except Exception:
+                    file_exists[0] = False
+
+            check_thread = threading.Thread(target=check_file, daemon=True)
+            check_thread.start()
+            check_thread.join(timeout=3.0)  # 3초 타임아웃
+
+            if check_thread.is_alive():
+                logger.warning(f"파일 존재 확인 타임아웃: {image_path}")
+                return None
+
+            if not file_exists[0]:
                 logger.warning(f"템플릿 이미지 파일이 존재하지 않습니다: {image_path}")
                 return None
 
