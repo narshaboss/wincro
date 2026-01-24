@@ -1433,9 +1433,30 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # 화면 캡처 (타임아웃 감지용)
+            # 화면 캡처 (타임아웃 적용)
+            screenshot = None
+            capture_result = [None]
+
+            def capture_screen():
+                try:
+                    capture_result[0] = ImageGrab.grab()
+                except Exception as e:
+                    logger.error(f"화면 캡처 오류: {e}")
+
+            capture_thread = threading.Thread(target=capture_screen, daemon=True)
             capture_start = time.time()
-            screenshot = ImageGrab.grab()
+            capture_thread.start()
+            capture_thread.join(timeout=5.0)  # 5초 타임아웃
+
+            if capture_thread.is_alive():
+                logger.warning(f"화면 캡처 타임아웃 (5초) - 건너뜀")
+                return None
+
+            screenshot = capture_result[0]
+            if screenshot is None:
+                logger.warning("화면 캡처 실패")
+                return None
+
             capture_time = time.time() - capture_start
             if capture_time > 2.0:
                 logger.warning(f"화면 캡처 지연: {capture_time:.1f}초")
