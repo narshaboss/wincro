@@ -1410,12 +1410,12 @@ if exist "{data_backup}\\.keyfile" (
     copy /y "{data_backup}\\.keyfile" "{app_dir}\\_internal\\data\\.keyfile" >nul 2>&1
 )
 
-echo [6/6] 녹화 파일 병합 중...
+echo [6/6] 사용자 데이터 병합 중...
 if exist "{data_backup}\\recordings" (
     xcopy /E /I /Y /Q "{data_backup}\\recordings\\*" "{app_dir}\\_internal\\data\\recordings\\" >nul 2>&1
 )
 if exist "{data_backup}\\plans" (
-    xcopy /E /I /Y /Q "{data_backup}\\plans\\*" "{app_dir}\\_internal\\data\\plans\\" >nul 2>&1
+    xcopy /E /I /Y /Q "{data_backup}\\plans\\*" "{app_dir}\\_internal\\data\\plans_user_backup\\" >nul 2>&1
 )
 if exist "{data_backup}\\sequences" (
     xcopy /E /I /Y /Q "{data_backup}\\sequences\\*" "{app_dir}\\_internal\\data\\sequences\\" >nul 2>&1
