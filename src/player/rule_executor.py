@@ -843,15 +843,22 @@ class RuleExecutor:
                 check_interval = 0.5
                 waited = 0.0
                 max_wait_time = 300.0  # 5분 타임아웃
+                logger.info(f"  → 다음 화면 확인: {Path(next_target_image).name if next_target_image else 'None'}")
 
                 while waited < max_wait_time:
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
+                    # 일시정지 체크 (타임아웃 추가)
+                    pause_wait_start = time.time()
                     while not self._pause_event.is_set():
                         time.sleep(0.1)
                         if self._stop_event.is_set():
                             return self._make_result(rule, False, "실행 중지됨", start_time)
+                        # 일시정지 대기 5초 초과시 로그
+                        if time.time() - pause_wait_start > 5:
+                            logger.warning(f"  ⏸ 일시정지 대기 중...")
+                            pause_wait_start = time.time()
 
                     location = self._find_image_on_screen(next_target_image, 0.7)
                     if location:
@@ -860,8 +867,8 @@ class RuleExecutor:
                     time.sleep(check_interval)
                     waited += check_interval
 
-                    # 20초마다 로그 출력 (빈도 줄임)
-                    if waited % 20 < check_interval and waited > 0:
+                    # 10초마다 로그 출력
+                    if waited % 10 < check_interval and waited > 0:
                         logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (최대 {max_wait_time:.0f}초)")
 
                 # 타임아웃 - 경고 후 계속 진행
@@ -1426,8 +1433,12 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # 화면 캡처
+            # 화면 캡처 (타임아웃 감지용)
+            capture_start = time.time()
             screenshot = ImageGrab.grab()
+            capture_time = time.time() - capture_start
+            if capture_time > 2.0:
+                logger.warning(f"화면 캡처 지연: {capture_time:.1f}초")
             screenshot_np = np.array(screenshot)
             screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
 
