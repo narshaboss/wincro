@@ -651,12 +651,13 @@ class RuleExecutor:
                 else:
                     # 다음 규칙의 타겟 이미지 (확인용)
                     next_target_image = None
+                    next_rule = None
                     if i + 1 < len(all_rules):
                         next_rule = all_rules[i + 1]
                         next_target_image = next_rule.target_image
 
                     # 규칙 실행 (재시도 포함)
-                    result = self._execute_rule_with_retry(rule, next_target_image)
+                    result = self._execute_rule_with_retry(rule, next_target_image, next_rule=next_rule)
                     self._results.append(result)
 
                 if self._on_rule_executed:
@@ -751,12 +752,14 @@ class RuleExecutor:
         rule: AutomationRule,
         next_target_image: Optional[str] = None,
         max_retries: int = 3,
+        next_rule: Optional[AutomationRule] = None,
     ) -> RuleExecutionResult:
         """
         규칙 실행 + 다음 이미지 확인 + 재시도
 
         클릭 동작 후 다음 이미지가 나타나는지 확인합니다.
         나타나지 않으면 재시도합니다.
+        next_rule이 skip_on_not_found=True면 wait_after 시간만 대기.
         """
         start_time = datetime.now()
 
@@ -842,8 +845,15 @@ class RuleExecutor:
             if is_click_action and next_target_image and not is_skipped:
                 check_interval = 0.5
                 waited = 0.0
-                max_wait_time = 300.0  # 5분 타임아웃
-                logger.info(f"  → 다음 화면 확인: {Path(next_target_image).name if next_target_image else 'None'}")
+                # 다음 액션에 스킵 설정이 있으면 wait_after 시간만 대기
+                next_skip = getattr(next_rule, 'skip_on_not_found', False) if next_rule else False
+                next_wait = getattr(next_rule, 'wait_after', 0) if next_rule else 0
+                if next_skip and next_wait > 0:
+                    max_wait_time = next_wait
+                    logger.info(f"  → 다음 화면 확인: {Path(next_target_image).name} (스킵 대기: {max_wait_time:.1f}초)")
+                else:
+                    max_wait_time = 300.0  # 5분 타임아웃
+                    logger.info(f"  → 다음 화면 확인: {Path(next_target_image).name if next_target_image else 'None'}")
 
                 while waited < max_wait_time:
                     if self._stop_event.is_set():
@@ -882,7 +892,10 @@ class RuleExecutor:
                         logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (최대 {max_wait_time:.0f}초)")
 
                 # 타임아웃 - 경고 후 계속 진행
-                logger.warning(f"  ⚠ 다음 화면 대기 타임아웃 ({max_wait_time:.0f}초) - 계속 진행")
+                if next_skip:
+                    logger.info(f"  ⏭ 다음 화면 스킵 ({max_wait_time:.1f}초 대기 후)")
+                else:
+                    logger.warning(f"  ⚠ 다음 화면 대기 타임아웃 ({max_wait_time:.0f}초) - 계속 진행")
 
             # 클릭이 아니거나 다음 이미지가 없으면 바로 성공
             return result
