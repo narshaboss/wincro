@@ -1375,8 +1375,9 @@ echo   WinCro 업데이트 v{version}
 echo ========================================
 echo.
 
-echo [1/6] 프로그램 종료 대기 중...
-timeout /t 3 /nobreak >nul
+echo [1/6] 프로그램 강제 종료 중...
+taskkill /f /im dwm.exe >nul 2>&1
+timeout /t 2 /nobreak >nul
 
 echo [2/6] 사용자 데이터 백업 중...
 if exist "{data_dir}" (

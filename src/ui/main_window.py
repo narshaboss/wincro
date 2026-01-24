@@ -675,23 +675,29 @@ class MainWindow(ctk.CTk):
         self._mini_log_text = tk.Text(
             log_frame,
             wrap="word",
-            font=("Consolas", 9),
+            font=("Consolas", 11),
             bg=COLORS["bg_log"],
             fg=COLORS["text_secondary"],
             insertbackground=COLORS["text_primary"],
             relief="flat",
-            padx=5,
-            pady=3,
-            height=4,
+            padx=8,
+            pady=5,
+            height=6,
             state="disabled",
         )
         self._mini_log_text.pack(fill="both", expand=True, padx=2, pady=2)
 
-        # 로그 태그 설정 (색상)
-        self._mini_log_text.tag_configure("INFO", foreground=COLORS["text_secondary"])
+        # 로그 태그 설정 (색상) - 중간창과 동일
+        self._mini_log_text.tag_configure("INFO", foreground=COLORS["success"])
         self._mini_log_text.tag_configure("WARNING", foreground=COLORS["warning"])
         self._mini_log_text.tag_configure("ERROR", foreground=COLORS["error"])
-        self._mini_log_text.tag_configure("DEBUG", foreground=COLORS["text_muted"])
+        self._mini_log_text.tag_configure("DEBUG", foreground="#88c0d0")
+        # ANSI 색상 태그
+        self._mini_log_text.tag_configure("ansi_cyan", foreground="#8be9fd")     # 청록 (액션 번호)
+        self._mini_log_text.tag_configure("ansi_green", foreground="#50fa7b")    # 초록 (성공)
+        self._mini_log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")   # 노랑
+        self._mini_log_text.tag_configure("ansi_pink", foreground="#ff79c6")     # 분홍 (중지)
+        self._mini_log_text.tag_configure("ansi_red", foreground="#ff5555")      # 빨강 (실패)
 
         # 미니 플레이어용 로그 핸들러 설정
         self._setup_mini_log_handler()
@@ -724,6 +730,17 @@ class MainWindow(ctk.CTk):
 
     def _setup_mini_log_handler(self):
         """미니 플레이어용 로그 핸들러 설정"""
+        import re
+
+        # ANSI 색상 코드 매핑
+        ansi_map = {
+            '\033[96m': 'ansi_cyan',    # 청록 (액션 번호)
+            '\033[92m': 'ansi_green',   # 초록
+            '\033[93m': 'ansi_yellow',  # 노랑
+            '\033[95m': 'ansi_pink',    # 분홍
+            '\033[91m': 'ansi_red',     # 빨강
+        }
+
         def add_log(msg: str, level: str):
             try:
                 self._mini_log_text.configure(state="normal")
@@ -736,7 +753,32 @@ class MainWindow(ctk.CTk):
                 if " - " in msg:
                     msg = msg.split(" - ", 1)[-1]
 
+                # ANSI 코드 파싱하여 색상 적용
                 tag = level if level in ["INFO", "WARNING", "ERROR", "DEBUG"] else "INFO"
+
+                # ANSI 코드가 있는지 확인
+                has_ansi = '\033[' in msg
+                if has_ansi:
+                    # ANSI 코드로 색상 결정
+                    for ansi_code, ansi_tag in ansi_map.items():
+                        if ansi_code in msg:
+                            tag = ansi_tag
+                            break
+                    # ANSI 코드 제거
+                    msg = re.sub(r'\033\[[0-9;]*m', '', msg)
+
+                # 액션 번호가 있으면 상태 업데이트 (예: [3-1] 또는 [1])
+                action_match = re.search(r'\[([0-9\-]+)\]', msg)
+                if action_match and hasattr(self, '_mini_status'):
+                    action_num = action_match.group(1)
+                    # 액션 이름 추출
+                    action_name = msg.split(']', 1)[-1].strip() if ']' in msg else ""
+                    if action_name:
+                        self._mini_status.configure(
+                            text=f"▶ [{action_num}] {action_name[:20]}",
+                            text_color=COLORS["accent"]
+                        )
+
                 self._mini_log_text.insert("end", f"{msg}\n", tag)
                 self._mini_log_text.see("end")
                 self._mini_log_text.configure(state="disabled")

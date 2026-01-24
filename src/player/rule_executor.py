@@ -990,7 +990,7 @@ class RuleExecutor:
                     found_image = None
                     wait_count = 0
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
-                    skip_timeout = rule.wait_after if skip_on_not_found else float('inf')
+                    skip_timeout = rule.timeout if skip_on_not_found else float('inf')
                     search_start = time.time()
 
                     # 이미지가 나타날 때까지 대기
