@@ -57,7 +57,7 @@
           "trigger_image": null,
           "trigger_x": null,
           "trigger_y": null,
-          "confidence": 0.8022727272727272,
+          "confidence": 0.6545454545454545,
           "search_radius": 205,
           "move_mouse_before_search": false,
           "wait_after": 3.5,
