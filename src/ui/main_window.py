@@ -918,16 +918,34 @@ class MainWindow(ctk.CTk):
         self._mini_total_repeat = repeat_count
         self._mini_current_repeat = 0
 
-        # 플랜 찾기
-        selected_plan = None
+        # 플랜 찾기 (캐시에서 plan_id 확인)
+        cached_plan = None
         for p in self._mini_plans:
             if p.name == plan_name:
-                selected_plan = p
+                cached_plan = p
                 break
 
-        if not selected_plan:
+        if not cached_plan:
             self._mini_status.configure(text="⚠ 플랜을 찾을 수 없음")
             return
+
+        # JSON에서 최신 플랜 다시 로드 (수정사항 반영)
+        import json
+        from .player_view import PLANS_DIR
+        plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
+        selected_plan = None
+        if plan_file.exists():
+            try:
+                with open(plan_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    templates_dir = DATA_DIR / "templates"
+                    selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                logger.info(f"[미니플레이어] 플랜 최신 버전 로드: {plan_name}")
+            except Exception as e:
+                logger.warning(f"[미니플레이어] 플랜 재로드 실패, 캐시 사용: {e}")
+                selected_plan = cached_plan
+        else:
+            selected_plan = cached_plan
 
         try:
             # RuleExecutor 생성 및 실행
