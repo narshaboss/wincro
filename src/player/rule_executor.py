@@ -848,6 +848,8 @@ class RuleExecutor:
                 # 다음 액션에 스킵 설정이 있으면 wait_after 시간만 대기
                 next_skip = getattr(next_rule, 'skip_on_not_found', False) if next_rule else False
                 next_wait = getattr(next_rule, 'wait_after', 0) if next_rule else 0
+                next_desc = getattr(next_rule, 'description', '') if next_rule else ''
+                logger.debug(f"  [DEBUG] 다음액션: {next_desc}, skip={next_skip}, wait_after={next_wait}")
                 if next_skip and next_wait > 0:
                     max_wait_time = next_wait
                     logger.info(f"  → 다음 화면 확인: {Path(next_target_image).name} (스킵 대기: {max_wait_time:.1f}초)")
@@ -1028,6 +1030,8 @@ class RuleExecutor:
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
                     skip_timeout = rule.wait_after if skip_on_not_found else float('inf')
                     search_start = time.time()
+                    if skip_on_not_found:
+                        logger.debug(f"  [DEBUG] 현재액션 스킵설정: wait_after={rule.wait_after}초")
 
                     # 이미지가 나타날 때까지 대기
                     while not locations:
