@@ -67,7 +67,7 @@
           "typing_delay": 0.1,
           "typing_delay_range": 0.05,
           "timeout": 30.0,
-          "skip_on_not_found": false,
+          "skip_on_not_found": true,
           "repeat_count": 1,
           "repeat_delay": 0.5,
           "repeat_delay_random": false,
