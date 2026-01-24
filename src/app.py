@@ -186,7 +186,7 @@ class WinCroApp:
 
         def check_thread():
             try:
-                from .utils.updater import check_for_update, download_and_apply_update
+                from .utils.updater import check_for_update
                 from .utils.config import APP_VERSION
 
                 repo = self._config.update.github_repo

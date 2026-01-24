@@ -23,8 +23,8 @@
 // LED 핀 (Leonardo 내장 LED)
 const int LED_PIN = 13;
 
-// 타이핑 딜레이 (ms) - 기본값 50ms
-int typingDelay = 50;
+// 타이핑 딜레이 (ms) - 기본값 100ms
+int typingDelay = 100;
 
 void setup() {
   Serial.begin(9600);

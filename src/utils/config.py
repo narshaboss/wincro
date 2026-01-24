@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 
 
 @dataclass
@@ -64,7 +64,7 @@ class PlayerConfig:
     speed_multiplier: float = 1.0  # 재생 속도 (0.5 ~ 2.0)
     default_wait_ms: int = 500  # 기본 대기 시간
     mouse_move_duration: float = 0.2  # 마우스 이동 시간
-    typing_interval: float = 0.025  # 타이핑 간격 (2배 빠르게)
+    typing_interval: float = 0.05  # 타이핑 간격 (글자당 50ms)
     retry_count: int = 3  # 실패 시 재시도 횟수
     retry_delay_ms: int = 1000  # 재시도 대기 시간
     emergency_stop_key: str = "escape"  # 긴급 중지 키
