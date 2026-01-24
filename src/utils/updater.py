@@ -6,6 +6,8 @@ GitHub Release를 통한 자동 업데이트와 녹화 파일 공유 기능을 �
 
 import json
 import os
+import ssl
+import socket
 import urllib.request
 import urllib.error
 from typing import Optional, Dict, List, Any
@@ -15,6 +17,52 @@ from .logger import get_logger
 from .config import PROJECT_ROOT, DATA_DIR
 
 logger = get_logger(__name__)
+
+
+def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
+    """SSL 폴백을 포함한 URL 열기 - 4가지 방법 시도"""
+    req = urllib.request.Request(url, headers=headers)
+    last_error = None
+
+    # 방법 1: 기본 SSL
+    try:
+        ctx = ssl.create_default_context()
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+    except Exception as e1:
+        last_error = e1
+        logger.debug(f"SSL 방법 1 실패: {e1}")
+
+    # 방법 2: SSL 검증 완화
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers=headers)
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+    except Exception as e2:
+        last_error = e2
+        logger.debug(f"SSL 방법 2 실패: {e2}")
+
+    # 방법 3: SSL 컨텍스트 없이
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        return urllib.request.urlopen(req, timeout=timeout)
+    except Exception as e3:
+        last_error = e3
+        logger.debug(f"SSL 방법 3 실패: {e3}")
+
+    # 방법 4: 프록시 핸들러
+    try:
+        proxy_handler = urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(proxy_handler)
+        req = urllib.request.Request(url, headers=headers)
+        return opener.open(req, timeout=timeout)
+    except Exception as e4:
+        last_error = e4
+        logger.debug(f"SSL 방법 4 실패: {e4}")
+
+    # 모든 방법 실패
+    raise last_error
 
 # 녹화 파일 저장 디렉토리
 RECORDINGS_DIR = DATA_DIR / "recordings"
@@ -38,12 +86,12 @@ def check_for_update(repo: str, current_version: str) -> Optional[Dict[str, Any]
     """
     try:
         api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-        req = urllib.request.Request(api_url, headers={
+        headers = {
             'User-Agent': 'WinCro-Updater',
             'Accept': 'application/vnd.github.v3+json'
-        })
+        }
 
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with _urlopen_with_fallback(api_url, headers, timeout=10) as response:
             data = json.loads(response.read().decode())
 
         latest_version = data.get("tag_name", "").lstrip("v")
@@ -65,7 +113,11 @@ def check_for_update(repo: str, current_version: str) -> Optional[Dict[str, Any]
         logger.error(f"GitHub API 오류: {e.code}")
         return None
     except Exception as e:
-        logger.error(f"업데이트 확인 오류: {e}")
+        error_str = str(e)
+        if "SSL" in error_str or "CERTIFICATE" in error_str.upper():
+            logger.error(f"SSL 연결 오류 (모든 방법 실패): {e}")
+        else:
+            logger.error(f"업데이트 확인 오류: {e}")
         return None
 
 
@@ -103,12 +155,12 @@ def get_remote_recordings(repo: str) -> List[Dict[str, Any]]:
     try:
         # recordings 태그가 붙은 릴리즈 찾기
         api_url = f"https://api.github.com/repos/{repo}/releases"
-        req = urllib.request.Request(api_url, headers={
+        headers = {
             'User-Agent': 'WinCro-Updater',
             'Accept': 'application/vnd.github.v3+json'
-        })
+        }
 
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with _urlopen_with_fallback(api_url, headers, timeout=10) as response:
             releases = json.loads(response.read().decode())
 
         recordings = []
@@ -154,12 +206,12 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
             logger.info(f"이미 존재하는 파일: {filename}")
             return True
 
-        req = urllib.request.Request(url, headers={
+        headers = {
             'User-Agent': 'WinCro-Updater',
             'Accept': 'application/octet-stream'
-        })
+        }
 
-        with urllib.request.urlopen(req, timeout=300) as response:
+        with _urlopen_with_fallback(url, headers, timeout=300) as response:
             total_size = int(response.headers.get('Content-Length', 0))
             downloaded = 0
 
