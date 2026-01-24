@@ -1911,6 +1911,33 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if result:  # 예 - 저장 후 실행
                 self._save_plan()
 
+        # 실행 전 플랜 파일에서 최신 데이터 리로드 (업데이트 반영)
+        try:
+            plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
+            if plan_file.exists():
+                with open(plan_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                templates_dir = DATA_DIR / "templates"
+                reloaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                # 리로드된 플랜으로 규칙 재구성
+                all_rules_flat = flatten_rules(reloaded_plan.initial_rules)
+                # 인덱스 다시 찾기
+                for idx, r in enumerate(all_rules_flat):
+                    if r.rule_id == rule.rule_id:
+                        rule_index = idx
+                        break
+                if rule_index >= 0:
+                    import copy
+                    rules_to_run = []
+                    for r in all_rules_flat[rule_index:]:
+                        r_copy = copy.copy(r)
+                        r_copy.children = []
+                        rules_to_run.append(r_copy)
+                    remaining_count = len(rules_to_run)
+                logger.info(f"[부분실행] 플랜 최신 버전 로드됨")
+        except Exception as e:
+            logger.warning(f"[부분실행] 플랜 리로드 실패, 기존 데이터 사용: {e}")
+
         logger.info(f"[부분실행] 준비: {rule.description or rule.action_type} ({remaining_count}개 액션)")
 
         # 부분 plan 생성
