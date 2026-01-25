@@ -537,6 +537,10 @@ class MainWindow(ctk.CTk):
         logger.info(f"[미니플레이어] 총 {len(self._mini_plans)}개 플랜 로드됨")
 
         self._rule_executor = None
+        self._is_running = False
+        self._is_paused = False
+        self._mini_current_repeat = 0
+        self._mini_total_repeat = 1
 
         # UI 생성
         self._create_mini_player_ui()
