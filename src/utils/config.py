@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.47"
+APP_VERSION = "1.0.48"
 
 
 @dataclass
@@ -133,7 +133,7 @@ class ConfigManager:
 
     _instance: Optional['ConfigManager'] = None
     _config: Optional[AppConfig] = None
-    _lock: threading.Lock = threading.Lock()
+    _lock: threading.RLock = threading.RLock()  # RLock으로 변경 - 중첩 락 허용
 
     def __new__(cls) -> 'ConfigManager':
         """싱글톤 인스턴스 생성 (스레드 안전)"""

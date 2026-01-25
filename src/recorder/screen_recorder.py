@@ -403,9 +403,10 @@ class ScreenRecorder:
         - 녹화 중: 마지막 캡처된 프레임 반환 (dxcam/mss)
         - 녹화 중 아님: mss로 새로 캡처
         """
-        if self._recording and self._last_frame is not None:
+        if self._recording:
             with self._frame_lock:
-                return self._last_frame.copy()
+                if self._last_frame is not None:
+                    return self._last_frame.copy()
         return self.capture_screenshot()
 
     def save_screenshot(
