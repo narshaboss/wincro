@@ -2300,13 +2300,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
             command=clear_coords,
         ).pack(side="left")
 
-        # === 신뢰도 설정 ===
+        # === 인식률 설정 ===
         conf_frame = ctk.CTkFrame(main_frame, fg_color=COLORS["bg_card"], corner_radius=8)
         conf_frame.pack(fill="x", pady=10)
 
         ctk.CTkLabel(
             conf_frame,
-            text="이미지 인식 신뢰도",
+            text="이미지 인식률",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w", padx=10, pady=(10, 5))
@@ -2354,14 +2354,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         def save_confidence_only():
             rule.confidence = conf_var.get() / 100.0
-            logger.info(f"트리거 이미지 신뢰도 저장: {int(conf_var.get())}%")
+            logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
             self._modified = True
             from tkinter import messagebox
-            messagebox.showinfo("저장 완료", f"신뢰도가 {int(conf_var.get())}%로 저장되었습니다.")
+            messagebox.showinfo("저장 완료", f"인식률이 {int(conf_var.get())}%로 저장되었습니다.")
 
         ctk.CTkButton(
             conf_input_frame,
-            text="신뢰도 저장",
+            text="인식률 저장",
             width=80,
             height=28,
             font=ctk.CTkFont(size=12),
@@ -2387,7 +2387,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 rule.trigger_y = None
             # 신뢰도 저장
             rule.confidence = conf_var.get() / 100.0
-            logger.info(f"트리거 이미지 신뢰도 설정: {int(conf_var.get())}%")
+            logger.info(f"트리거 이미지 인식률 설정: {int(conf_var.get())}%")
             self._modified = True
             dialog.destroy()
 
@@ -2499,7 +2499,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 "goto_index": w.get("goto_index", 0),  # 내부 인덱스 (0부터)
                 "search_region": w.get("search_region"),  # [x1, y1, x2, y2] 또는 None
                 "monitor_actions": monitor_actions,  # 모니터링 액션 리스트
-                "confidence": w.get("confidence", 0.65),  # 감시 이미지별 인식률
             })
 
         watch_widgets = []
@@ -3392,41 +3391,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                         command=clear_region,
                     ).pack(side="left")
 
-                    # 인식률 설정 줄
-                    row_conf = ctk.CTkFrame(detail_frame, fg_color="transparent")
-                    row_conf.pack(fill="x", pady=(0, 5))
-
-                    ctk.CTkLabel(
-                        row_conf, text="인식률:",
-                        font=ctk.CTkFont(size=11),
-                        text_color=COLORS["text_muted"],
-                    ).pack(side="left", padx=(0, 5))
-
-                    watch_conf = watch.get("confidence", 0.65)
-                    conf_label = ctk.CTkLabel(
-                        row_conf, text=f"{int(watch_conf * 100)}%",
-                        font=ctk.CTkFont(size=11),
-                        text_color=COLORS["accent"],
-                        width=35,
-                    )
-                    conf_label.pack(side="left", padx=(0, 5))
-
-                    def on_conf_change(val, i=idx, lbl=conf_label):
-                        watches_data[i]["confidence"] = float(val)
-                        lbl.configure(text=f"{int(float(val) * 100)}%")
-
-                    conf_slider = ctk.CTkSlider(
-                        row_conf, from_=0.3, to=1.0, width=120, height=16,
-                        number_of_steps=70,
-                        button_color=COLORS["accent"],
-                        button_hover_color=COLORS["accent_hover"],
-                        progress_color=COLORS["accent"],
-                        command=on_conf_change,
-                    )
-                    conf_slider.set(watch_conf)
-                    conf_slider.pack(side="left")
-
-                    # 세 번째 줄: 모니터링 액션 목록
+                    # 모니터링 액션 목록 (인식률은 액션 설정에서 통일)
                     row3 = ctk.CTkFrame(detail_frame, fg_color="transparent")
                     row3.pack(fill="x", pady=(0, 5))
                     watch_row3_containers[idx] = row3
@@ -3478,7 +3443,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                                 ma["typing_random"] = getattr(act, 'typing_random', False)
                                 ma["typing_delay"] = getattr(act, 'typing_delay', 0.1)
                                 ma["typing_delay_range"] = getattr(act, 'typing_delay_range', 0.05)
-                                ma["confidence"] = getattr(act, 'confidence', 0.65)
                                 ma["search_radius"] = getattr(act, 'search_radius', 0)
                             return ma
 
@@ -3531,7 +3495,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 감시 추가 버튼
         def add_watch():
             new_idx = len(watches_data)
-            watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": [], "confidence": 0.65})
+            watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": []})
             watch_collapsed[new_idx] = False  # 새 항목은 펼침 상태
             refresh_watch_list()
 
@@ -3566,7 +3530,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                         "goto_index": w.get("goto_index", 0),  # 이미 0-based 인덱스
                         "search_region": w.get("search_region"),  # [x1, y1, x2, y2] 또는 None
                         "monitor_actions": monitor_actions,  # 모니터링 액션 리스트
-                        "confidence": w.get("confidence", 0.65),  # 감시 이미지별 인식률
                     })
 
             # 모니터링 모드 활성화 조건 (엄격하게 적용):
@@ -3768,7 +3731,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 monitor_action["typing_random"] = getattr(action, 'typing_random', False)
                 monitor_action["typing_delay"] = getattr(action, 'typing_delay', 0.1)
                 monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
-                monitor_action["confidence"] = getattr(action, 'confidence', 0.65)
                 monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
 
             return monitor_action
@@ -3848,7 +3810,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 monitor_action["typing_random"] = getattr(action, 'typing_random', False)
                 monitor_action["typing_delay"] = getattr(action, 'typing_delay', 0.1)
                 monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
-                monitor_action["confidence"] = getattr(action, 'confidence', 0.65)
                 monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
 
             return monitor_action
@@ -3899,7 +3860,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 "image": getattr(clipboard, 'target_image', None),
                 "goto_index": -1,
                 "monitor_actions": monitor_actions,
-                "confidence": 0.65,
             }
             rule.monitoring_watches.append(new_watch)
             rule.is_monitoring_mode = True
@@ -5629,7 +5589,6 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 monitor_action["typing_random"] = getattr(act, 'typing_random', False)
                 monitor_action["typing_delay"] = getattr(act, 'typing_delay', 0.1)
                 monitor_action["typing_delay_range"] = getattr(act, 'typing_delay_range', 0.05)
-                monitor_action["confidence"] = getattr(act, 'confidence', 0.65)
                 monitor_action["search_radius"] = getattr(act, 'search_radius', 0)
 
             return monitor_action
@@ -5683,7 +5642,6 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 "image": getattr(clipboard, 'target_image', None),
                 "goto_index": -1,
                 "monitor_actions": monitor_actions,
-                "confidence": 0.65,
             }
             action.monitoring_watches.append(new_watch)
             logger.info(f"모니터링 액션 추가 (새 감시 항목): {len(monitor_actions)}개")
@@ -5754,7 +5712,6 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             monitor_action["typing_random"] = getattr(clipboard, 'typing_random', False)
             monitor_action["typing_delay"] = getattr(clipboard, 'typing_delay', 0.1)
             monitor_action["typing_delay_range"] = getattr(clipboard, 'typing_delay_range', 0.05)
-            monitor_action["confidence"] = getattr(clipboard, 'confidence', 0.65)
             monitor_action["search_radius"] = getattr(clipboard, 'search_radius', 0)
 
             # monitor_actions 리스트에 추가 (없으면 생성)

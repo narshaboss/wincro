@@ -92,7 +92,7 @@ ANALYZER: Dict[str, str] = {
     "save_sequence": "시퀀스로 저장",
     "edit_actions": "동작 편집",
     "preview": "미리보기",
-    "confidence": "신뢰도",
+    "confidence": "인식률",
     "timestamp": "시간",
     "action_type": "동작 유형",
     "target": "대상",

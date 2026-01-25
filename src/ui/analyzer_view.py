@@ -532,12 +532,12 @@ class ImageCropDialog(ctk.CTkToplevel):
             )
             self._search_radius_btn.pack(side="left", padx=5)
 
-            # 신뢰도 설정 버튼
+            # 인식률 설정 버튼
             conf_value = getattr(self._rule, 'confidence', 0.65) or 0.65
             conf_pct = int(conf_value * 100)
             self._confidence_btn = ctk.CTkButton(
                 btn_frame,
-                text=f"신뢰도: {conf_pct}%",
+                text=f"인식률: {conf_pct}%",
                 command=self._set_confidence,
                 width=100,
                 height=40,
@@ -1041,15 +1041,15 @@ class ImageCropDialog(ctk.CTkToplevel):
                 self._on_search_radius_change()
 
     def _set_confidence(self):
-        """신뢰도 설정 다이얼로그"""
+        """인식률 설정 다이얼로그"""
         if self._rule is None:
             return
 
         from tkinter import messagebox
 
-        # 신뢰도 설정 다이얼로그
+        # 인식률 설정 다이얼로그
         conf_dialog = ctk.CTkToplevel(self)
-        conf_dialog.title("이미지 인식 신뢰도 설정")
+        conf_dialog.title("이미지 인식률 설정")
         conf_dialog.geometry("350x200")
         conf_dialog.resizable(False, False)
         conf_dialog.configure(fg_color=COLORS["bg_dark"])
@@ -1067,7 +1067,7 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             main_frame,
-            text="이미지 인식 신뢰도",
+            text="이미지 인식률",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w", pady=(0, 5))
@@ -1116,12 +1116,12 @@ class ImageCropDialog(ctk.CTkToplevel):
         def save_conf():
             self._rule.confidence = conf_var.get() / 100.0
             conf_pct = int(conf_var.get())
-            logger.info(f"신뢰도 설정: {conf_pct}%")
+            logger.info(f"인식률 설정: {conf_pct}%")
 
             # 버튼 텍스트 업데이트
             if hasattr(self, '_confidence_btn'):
                 self._confidence_btn.configure(
-                    text=f"신뢰도: {conf_pct}%",
+                    text=f"인식률: {conf_pct}%",
                     fg_color="#f59e0b" if conf_pct != 65 else COLORS["bg_card"],
                     hover_color="#d97706" if conf_pct != 65 else COLORS["bg_card_hover"],
                     text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
