@@ -59,6 +59,7 @@ pyautogui.PAUSE = 0.1  # 각 동작 후 대기 시간
 # 화면 크기 캐시 (성능 최적화)
 _screen_size_cache = None
 _screen_size_cache_time = 0
+_screen_size_lock = threading.Lock()  # 화면 크기 캐시 락
 _SCREEN_SIZE_CACHE_TTL = 5.0  # 5초마다 갱신
 
 # 템플릿 이미지 캐시 (성능 최적화)
@@ -68,13 +69,15 @@ _MAX_TEMPLATE_CACHE = 50
 
 
 def _get_screen_size() -> Tuple[int, int]:
-    """캐시된 화면 크기 반환 (성능 최적화)"""
+    """캐시된 화면 크기 반환 (성능 최적화, 스레드 안전)"""
     global _screen_size_cache, _screen_size_cache_time
     current_time = time.time()
-    if _screen_size_cache is None or (current_time - _screen_size_cache_time) > _SCREEN_SIZE_CACHE_TTL:
-        _screen_size_cache = pyautogui.size()
-        _screen_size_cache_time = current_time
-    return _screen_size_cache
+
+    with _screen_size_lock:
+        if _screen_size_cache is None or (current_time - _screen_size_cache_time) > _SCREEN_SIZE_CACHE_TTL:
+            _screen_size_cache = pyautogui.size()
+            _screen_size_cache_time = current_time
+        return _screen_size_cache
 
 
 def _get_cached_template(image_path: str):

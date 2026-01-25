@@ -1408,6 +1408,7 @@ class MainWindow(ctk.CTk):
                 self._capture_notification_label.destroy()
             except tk.TclError:
                 pass
+            self._capture_notification_label = None
 
         # 알림 레이블 생성
         filename = Path(filepath).name

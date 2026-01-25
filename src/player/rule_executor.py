@@ -2160,8 +2160,9 @@ class RuleExecutor:
                 click_type = monitor_action.get('click_type', 'click')
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
 
-                # INFO 레벨로 실제 사용 값 출력 (디버깅용)
-                logger.info(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}, 신뢰도: {search_confidence:.2f}, 검색범위: {search_region}")
+                logger.debug(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}")
+                logger.debug(f"[이미지 클릭] 검색범위: {search_region}")
+                logger.debug(f"[이미지 클릭] 신뢰도: {search_confidence}")
 
                 # search_radius가 있고 search_region이 없으면 변환
                 if not search_region and search_radius > 0:

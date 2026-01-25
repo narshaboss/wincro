@@ -273,6 +273,14 @@ class ScreenRecorder:
             self._init_error = str(e)
             self._ready_event.set()
         finally:
+            # VideoWriter 정리
+            if self._writer:
+                try:
+                    self._writer.release()
+                except Exception:
+                    pass
+                self._writer = None
+
             # dxcam 정리 (DirectX 리소스 명시적 해제)
             if dxcam_camera:
                 try:
