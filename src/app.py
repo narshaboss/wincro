@@ -10,7 +10,9 @@ from typing import Optional
 from .utils.logger import get_logger, set_log_level
 from .utils.config import get_config, save_config
 from .database import get_db
-from .ui import MainWindow, RecorderView, AnalyzerView, PlayerView, SettingsView, GuideView, show_help_dialog
+
+# 플레이 모드 경량화: MainWindow만 먼저 import, 나머지는 필요할 때 import
+from .ui.main_window import MainWindow
 
 logger = get_logger(__name__)
 
@@ -73,7 +75,14 @@ class WinCroApp:
             return False
 
     def _create_views(self) -> None:
-        """뷰 생성 및 메인 윈도우에 연결"""
+        """뷰 생성 및 메인 윈도우에 연결 (에디터 모드 전용)"""
+        # 지연 import - 플레이 모드에서는 이 함수가 호출되지 않으므로 메모리 절약
+        from .ui.recorder_view import RecorderView
+        from .ui.analyzer_view import AnalyzerView
+        from .ui.player_view import PlayerView
+        from .ui.settings_view import SettingsView
+        from .ui.guide_view import GuideView
+
         # 뷰 컨테이너 가져오기
         container = self._main_window.get_view_container()
 
@@ -113,6 +122,7 @@ class WinCroApp:
 
             # 시작 시 사용법 표시 (설정된 경우에만)
             if self._config.ui.show_help_on_startup:
+                from .ui.help_dialog import show_help_dialog
                 self._main_window.after(500, lambda: show_help_dialog(self._main_window))
 
             # 아두이노 자동 연결 (설정된 경우)
