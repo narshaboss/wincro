@@ -877,9 +877,9 @@ class RuleExecutor:
                             pause_wait_start = time.time()
 
                     # 이미지 검색 시작 로그 (첫 번째만)
-                    # 다음 액션의 인식률 사용 (하드코딩 0.65 제거)
-                    next_confidence = getattr(next_rule, 'confidence', 0.65) if next_rule else 0.65
-                    next_confidence = next_confidence if next_confidence > 0 else 0.65
+                    # "다음 화면 대기"는 화면 전환 확인용이므로 낮은 임계값(0.5) 사용
+                    # 사용자가 설정한 인식률은 실제 액션(모니터링, 감시 등)에만 적용
+                    next_confidence = 0.5  # 다음 화면 대기는 고정 50%
 
                     # 다음 액션의 검색 범위 계산 (search_radius가 있으면 사용)
                     next_search_region = None
@@ -897,7 +897,7 @@ class RuleExecutor:
                             next_search_region = [x1, y1, x2, y2]
 
                     if waited == 0:
-                        logger.debug(f"  [DEBUG] 이미지 검색 시작 (인식률={next_confidence:.0%}, 검색범위={next_search_region})")
+                        logger.info(f"  [다음화면대기] 인식률=50% (고정), 검색범위={next_search_region}")
 
                     search_start = time.time()
                     location = self._find_image_on_screen(next_target_image, next_confidence, search_region=next_search_region)
