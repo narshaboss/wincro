@@ -626,7 +626,7 @@ class MainWindow(ctk.CTk):
             fg_color=COLORS["bg_dark"],
             hover_color=COLORS["border"],
             font=ctk.CTkFont(size=12),
-            command=self._on_mini_refresh,
+            command=self._refresh_mini_plans,
         ).pack(side="right", padx=(0, 5), pady=8)
 
         # 중간 프레임 (플랜 선택 + 부분실행)
@@ -732,14 +732,14 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", padx=10, pady=(8, 5))
 
-        self._mini_log = ctk.CTkTextbox(
+        self._mini_log_text = ctk.CTkTextbox(
             log_frame,
             fg_color=COLORS["bg_dark"],
             text_color=COLORS["text_primary"],
             font=ctk.CTkFont(family="Consolas", size=11),
             wrap="word",
         )
-        self._mini_log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._mini_log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # 로그 핸들러 설정
         self._setup_mini_log_handler()
