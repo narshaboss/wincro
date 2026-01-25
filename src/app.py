@@ -60,8 +60,8 @@ class WinCroApp:
             # 메인 윈도우 생성
             self._main_window = MainWindow()
 
-            # 작은창 모드가 아닐 때만 뷰 생성
-            if self._config.ui.window_mode != "small":
+            # 플레이 모드가 아닐 때만 뷰 생성
+            if self._config.ui.window_mode != "play":
                 self._create_views()
 
             logger.info("애플리케이션 초기화 완료")
@@ -184,7 +184,7 @@ class WinCroApp:
             logger.error(f"아두이노 자동 연결 오류: {e}")
 
     def _auto_check_update(self) -> None:
-        """시작 시 자동 업데이트 확인"""
+        """시작 시 자동 업데이트 확인 및 자동 적용"""
         import threading
 
         def check_thread():
@@ -199,8 +199,9 @@ class WinCroApp:
                     new_version = result.get("version")
                     release_data = result.get("release_data")
 
-                    # 메인 스레드에서 UI 업데이트
-                    self._main_window.after(0, lambda: self._show_update_dialog(new_version, release_data))
+                    # 자동 업데이트 수행 (확인 없이)
+                    logger.info(f"새 버전 발견: v{new_version} - 자동 업데이트 시작")
+                    self._main_window.after(0, lambda: self._perform_auto_update(new_version, release_data))
 
             except Exception as e:
                 logger.error(f"자동 업데이트 확인 오류: {e}")
@@ -208,25 +209,291 @@ class WinCroApp:
         thread = threading.Thread(target=check_thread, daemon=True)
         thread.start()
 
-    def _show_update_dialog(self, new_version: str, release_data: dict) -> None:
-        """업데이트 알림 다이얼로그"""
-        from tkinter import messagebox
+    def _perform_auto_update(self, new_version: str, release_data: dict) -> None:
+        """자동 업데이트 수행 (확인 없이 바로 진행)"""
+        import threading
         from .utils.config import APP_VERSION
 
-        result = messagebox.askyesno(
-            "업데이트 알림",
-            f"새 버전이 있습니다!\n\n"
-            f"현재 버전: v{APP_VERSION}\n"
-            f"새 버전: v{new_version}\n\n"
-            f"지금 업데이트하시겠습니까?"
-        )
+        # 다운로드할 에셋 찾기 (zip 파일)
+        assets = release_data.get("assets", [])
+        zip_asset = None
 
-        if result:
-            # 설정 탭으로 이동해서 업데이트 진행
-            self._main_window.set_tab("settings")
-            if self._settings_view:
-                self._settings_view._latest_release = release_data
-                self._settings_view._perform_update()
+        for asset in assets:
+            name = asset.get("name", "").lower()
+            if name.endswith(".zip"):
+                zip_asset = asset
+                break
+
+        if not zip_asset:
+            logger.error("다운로드 가능한 zip 파일이 없습니다")
+            return
+
+        download_url = zip_asset.get("browser_download_url")
+        if not download_url:
+            logger.error("다운로드 URL을 찾을 수 없습니다")
+            return
+
+        logger.info(f"업데이트 다운로드 시작: v{APP_VERSION} → v{new_version}")
+
+        # 다운로드 스레드 시작
+        thread = threading.Thread(
+            target=self._download_update_thread,
+            args=(zip_asset, new_version),
+            daemon=True
+        )
+        thread.start()
+
+    def _download_update_thread(self, asset: dict, version: str) -> None:
+        """업데이트 다운로드 스레드 (자동 업데이트용)"""
+        import tempfile
+        import urllib.request
+        import urllib.error
+        import ssl
+        import socket
+        import zipfile
+        import os
+        import sys
+        import shutil
+        from datetime import datetime
+        from .utils.config import save_config, get_config
+
+        try:
+            download_url = asset.get("browser_download_url")
+            file_name = asset.get("name", "update.zip")
+
+            if not download_url:
+                logger.error("다운로드 URL이 없습니다")
+                return
+
+            if not file_name.endswith(".zip"):
+                file_name = f"{file_name}.zip"
+
+            logger.info(f"다운로드 시작: {download_url}")
+
+            # 임시 폴더
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, file_name)
+
+            # 요청 헤더
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'}
+
+            # SSL 다중 폴백 방식으로 연결 시도
+            response = None
+            last_error = None
+
+            # 방법 1: 기본 SSL
+            try:
+                ssl_ctx = ssl.create_default_context()
+                req = urllib.request.Request(download_url, headers=headers)
+                response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+            except Exception as e1:
+                last_error = e1
+                # 방법 2: SSL 검증 완화
+                try:
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+                    req = urllib.request.Request(download_url, headers=headers)
+                    response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                except Exception as e2:
+                    last_error = e2
+                    # 방법 3: SSL 없이
+                    try:
+                        req = urllib.request.Request(download_url, headers=headers)
+                        response = urllib.request.urlopen(req, timeout=60)
+                    except Exception as e3:
+                        last_error = e3
+                        # 방법 4: 프록시 핸들러
+                        try:
+                            proxy_handler = urllib.request.ProxyHandler({})
+                            opener = urllib.request.build_opener(proxy_handler)
+                            req = urllib.request.Request(download_url, headers=headers)
+                            response = opener.open(req, timeout=60)
+                        except Exception as e4:
+                            last_error = e4
+
+            if response is None:
+                logger.error(f"서버 연결 실패: {last_error}")
+                return
+
+            with response:
+                total_size = int(response.headers.get('Content-Length', 0))
+                downloaded = 0
+                last_log_percent = -1
+
+                with open(temp_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(131072)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total_size > 0:
+                            percent = int(downloaded / total_size * 100)
+                            if percent // 10 > last_log_percent // 10:
+                                last_log_percent = percent
+                                logger.info(f"다운로드 진행: {percent}%")
+
+                logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
+
+            # 개발 모드 체크
+            if not getattr(sys, 'frozen', False):
+                logger.info(f"개발 모드 - 다운로드 완료: {temp_path}")
+                return
+
+            # 현재 프로그램 폴더
+            current_exe = sys.executable
+            app_dir = os.path.dirname(current_exe)
+            exe_name = os.path.basename(current_exe)
+
+            # zip 압축 해제
+            extract_dir = os.path.join(temp_dir, "wincro_update_extract")
+
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir, ignore_errors=True)
+
+            logger.info("zip 파일 압축 해제 중...")
+            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            # exe가 있는 폴더 찾기
+            new_app_dir = None
+            found_exe = False
+
+            for item in os.listdir(extract_dir):
+                item_path = os.path.join(extract_dir, item)
+                if os.path.isdir(item_path):
+                    for sub_item in os.listdir(item_path):
+                        if sub_item.endswith(".exe"):
+                            new_app_dir = item_path
+                            found_exe = True
+                            break
+                    if found_exe:
+                        break
+                elif item.endswith(".exe"):
+                    new_app_dir = extract_dir
+                    found_exe = True
+                    break
+
+            if not found_exe or not new_app_dir:
+                logger.error("업데이트 파일에 exe가 없습니다")
+                return
+
+            # 배치 파일 생성
+            batch_path = os.path.join(temp_dir, "wincro_update.bat")
+            data_dir = os.path.join(app_dir, "_internal", "data")
+            data_backup = os.path.join(temp_dir, "wincro_data_backup")
+
+            batch_content = f'''@echo off
+chcp 65001 >nul
+echo.
+echo ========================================
+echo   WinCro 자동 업데이트 v{version}
+echo ========================================
+echo.
+
+echo [1/6] 프로그램 강제 종료 중...
+taskkill /f /im "{exe_name}" >nul 2>&1
+timeout /t 2 /nobreak >nul
+
+echo [2/6] 사용자 데이터 백업 중...
+if exist "{data_dir}" (
+    xcopy /E /I /Y /Q "{data_dir}" "{data_backup}" >nul 2>&1
+)
+
+echo [3/6] 기존 파일 삭제 중...
+rd /s /q "{app_dir}\\_internal" 2>nul
+del /q "{current_exe}" 2>nul
+
+echo [4/6] 새 파일 복사 중...
+xcopy /E /I /Y /Q "{new_app_dir}\\*" "{app_dir}\\" >nul 2>&1
+if errorlevel 1 (
+    echo [오류] 파일 복사 실패!
+    pause
+    exit /b 1
+)
+
+echo [5/6] 설정 파일 복원 중...
+if exist "{data_backup}\\config.json" (
+    copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
+)
+if exist "{data_backup}\\wincro.db" (
+    copy /y "{data_backup}\\wincro.db" "{app_dir}\\_internal\\data\\wincro.db" >nul 2>&1
+)
+if exist "{data_backup}\\window_positions.json" (
+    copy /y "{data_backup}\\window_positions.json" "{app_dir}\\_internal\\data\\window_positions.json" >nul 2>&1
+)
+if exist "{data_backup}\\.keyfile" (
+    copy /y "{data_backup}\\.keyfile" "{app_dir}\\_internal\\data\\.keyfile" >nul 2>&1
+)
+
+echo [6/6] 사용자 데이터 병합 중...
+if exist "{data_backup}\\recordings" (
+    xcopy /E /I /Y /Q "{data_backup}\\recordings\\*" "{app_dir}\\_internal\\data\\recordings\\" >nul 2>&1
+)
+if exist "{data_backup}\\sequences" (
+    xcopy /E /I /Y /Q "{data_backup}\\sequences\\*" "{app_dir}\\_internal\\data\\sequences\\" >nul 2>&1
+)
+if exist "{data_backup}\\templates" (
+    xcopy /E /I /Y /Q "{data_backup}\\templates\\*" "{app_dir}\\_internal\\data\\templates\\" >nul 2>&1
+)
+rd /s /q "{data_backup}" 2>nul
+
+echo.
+echo ========================================
+echo   업데이트 완료! 재시작 중...
+echo ========================================
+timeout /t 2 /nobreak >nul
+
+start "" "{app_dir}\\{exe_name}"
+
+rd /s /q "{extract_dir}" 2>nul
+del /q "{temp_path}" 2>nul
+del "%~f0"
+'''
+
+            with open(batch_path, 'w', encoding='utf-8') as f:
+                f.write(batch_content)
+
+            # 설정 저장
+            config = get_config()
+            config.update.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            config.update.last_version = version
+            save_config()
+
+            # 배치 파일 실행 및 종료
+            self._main_window.after(0, lambda: self._start_auto_update(batch_path))
+
+        except Exception as e:
+            logger.error(f"자동 업데이트 오류: {e}", exc_info=True)
+
+    def _start_auto_update(self, batch_path: str) -> None:
+        """배치 파일 실행 후 자동 종료"""
+        import subprocess
+        import sys
+        import os
+
+        if not os.path.exists(batch_path):
+            logger.error("업데이트 스크립트를 찾을 수 없습니다")
+            return
+
+        logger.info(f"자동 업데이트 적용 중... 프로그램이 재시작됩니다.")
+
+        try:
+            subprocess.Popen(
+                ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+        except Exception as e:
+            logger.error(f"배치 파일 실행 실패: {e}")
+            return
+
+        try:
+            self._main_window.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
 
     def _merge_user_plans(self) -> None:
         """업데이트 후 사용자 플랜 파일 병합 (새 버전 우선, 같은 이름은 덮어쓰기)"""

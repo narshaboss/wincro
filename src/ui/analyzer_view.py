@@ -53,12 +53,13 @@ def set_cached_thumbnail(image_path: str, size: tuple, ctk_image):
 class ScreenRegionSelector(tk.Toplevel):
     """화면에서 영역을 선택하기 위한 전체화면 오버레이 (tkinter 기반)"""
 
-    def __init__(self, parent, on_select: Callable[[int, int, int, int], None], on_cancel: Callable[[], None] = None):
+    def __init__(self, parent, on_select: Callable[[int, int, int, int], None], on_cancel: Callable[[], None] = None, existing_region: list = None):
         # tkinter.Toplevel 사용 (CTkToplevel보다 이벤트 처리가 안정적)
         super().__init__(parent)
 
         self._on_select = on_select
         self._on_cancel = on_cancel
+        self._existing_region = existing_region  # [x1, y1, x2, y2] 또는 None
         self._start_x = 0
         self._start_y = 0
         self._rect_id = None
@@ -87,13 +88,44 @@ class ScreenRegionSelector(tk.Toplevel):
         )
         self._canvas.pack(fill="both", expand=True)
 
-        # 안내 텍스트
-        self._canvas.create_text(
-            screen_w // 2, 50,
-            text="마우스로 드래그하여 검색 영역을 선택하세요 (ESC: 취소)",
-            font=("맑은 고딕", 16, "bold"),
-            fill="white"
-        )
+        # 기존 범위가 있으면 빨간색으로 표시
+        if existing_region and len(existing_region) == 4:
+            x1, y1, x2, y2 = existing_region
+            # 빨간색 테두리 (기존 범위) - 굵은 선
+            for offset in range(5):
+                self._canvas.create_rectangle(
+                    x1 - offset, y1 - offset, x2 + offset, y2 + offset,
+                    outline="#ff0000", width=2, fill="", dash=(8, 4)
+                )
+            # 기존 범위 라벨
+            self._canvas.create_text(
+                x1, y1 - 20,
+                text=f"기존 범위: ({x1}, {y1}) ~ ({x2}, {y2})",
+                font=("맑은 고딕", 13, "bold"),
+                fill="#ff0000",
+                anchor="sw"
+            )
+            # 안내 텍스트 (기존 범위가 있을 때)
+            self._canvas.create_text(
+                screen_w // 2, 50,
+                text="마우스로 드래그하여 새 검색 영역을 선택하세요 (ESC: 취소)",
+                font=("맑은 고딕", 16, "bold"),
+                fill="white"
+            )
+            self._canvas.create_text(
+                screen_w // 2, 80,
+                text="빨간색 점선 = 기존 범위  |  파란색 실선 = 새 범위",
+                font=("맑은 고딕", 12),
+                fill="#aaaaaa"
+            )
+        else:
+            # 안내 텍스트
+            self._canvas.create_text(
+                screen_w // 2, 50,
+                text="마우스로 드래그하여 검색 영역을 선택하세요 (ESC: 취소)",
+                font=("맑은 고딕", 16, "bold"),
+                fill="white"
+            )
 
         # 이벤트 바인딩 - 창과 캔버스 모두에 바인딩
         self._canvas.bind("<ButtonPress-1>", self._on_mouse_down)
@@ -991,8 +1023,14 @@ class ImageCropDialog(ctk.CTkToplevel):
             self.deiconify()
             self.grab_set()
 
+        # 기존 검색 범위 계산
+        existing_region = None
+        if self._rule and self._rule.search_radius and self._rule.action_x and self._rule.action_y:
+            cx, cy, r = self._rule.action_x, self._rule.action_y, self._rule.search_radius
+            existing_region = [cx - r, cy - r, cx + r, cy + r]
+
         # 잠시 후 영역 선택 시작 (다이얼로그 숨김 완료 후)
-        self.after(100, lambda: ScreenRegionSelector(self, on_region_select, on_cancel))
+        self.after(100, lambda: ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region))
 
     def _on_move_mouse_changed(self):
         """마우스 이동 옵션 변경"""

@@ -151,7 +151,7 @@ class SettingsView(BaseView):
         self._window_mode_var = ctk.StringVar()
         window_mode_combo = ctk.CTkComboBox(
             mode_frame,
-            values=["작은창", "중간창", "큰창"],
+            values=["플레이 모드", "에디터 모드"],
             variable=self._window_mode_var,
             width=150,
             height=32,
@@ -168,7 +168,7 @@ class SettingsView(BaseView):
 
         ctk.CTkLabel(
             mode_frame,
-            text="  (작은창: 미니 플레이어)",
+            text="  (플레이 모드: 간편 실행)",
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
         ).pack(side="left")
@@ -1864,9 +1864,11 @@ del "%~f0"
         self._minimize_var.set(config.ui.minimize_on_run)
         self._tooltips_var.set(config.ui.show_tooltips)
 
-        # 창 모드
-        mode_map = {"small": "작은창", "medium": "중간창", "large": "큰창"}
-        self._window_mode_var.set(mode_map.get(config.ui.window_mode, "중간창"))
+        # 창 모드 (이전 값 호환: small→play, medium/large→editor)
+        old_to_new = {"small": "play", "medium": "editor", "large": "editor"}
+        current_mode = old_to_new.get(config.ui.window_mode, config.ui.window_mode)
+        mode_map = {"play": "플레이 모드", "editor": "에디터 모드"}
+        self._window_mode_var.set(mode_map.get(current_mode, "에디터 모드"))
 
         # 관리자 권한 설정
         self._run_as_admin_var.set(config.ui.run_as_admin)
@@ -1924,8 +1926,8 @@ del "%~f0"
         config.ui.run_as_admin = self._run_as_admin_var.get()
 
         # 창 모드
-        mode_map = {"작은창": "small", "중간창": "medium", "큰창": "large"}
-        config.ui.window_mode = mode_map.get(self._window_mode_var.get(), "medium")
+        mode_map = {"플레이 모드": "play", "에디터 모드": "editor"}
+        config.ui.window_mode = mode_map.get(self._window_mode_var.get(), "editor")
 
         # 아두이노 설정
         config.arduino.enabled = self._arduino_enabled_var.get()

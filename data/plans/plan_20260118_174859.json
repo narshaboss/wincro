@@ -1292,7 +1292,7 @@
           "trigger_image": null,
           "trigger_x": null,
           "trigger_y": null,
-          "confidence": 0.65,
+          "confidence": 0.8022727272727272,
           "search_radius": 120,
           "move_mouse_before_search": false,
           "wait_after": 5.0,
@@ -1493,7 +1493,7 @@
           "trigger_image": null,
           "trigger_x": null,
           "trigger_y": null,
-          "confidence": 0.65,
+          "confidence": 0.8052272727272727,
           "search_radius": 120,
           "move_mouse_before_search": false,
           "wait_after": 6.799782752990723,
@@ -1578,7 +1578,7 @@
       "trigger_image": null,
       "trigger_x": null,
       "trigger_y": null,
-      "confidence": 0.65,
+      "confidence": 0.8022727272727272,
       "search_radius": 413,
       "move_mouse_before_search": false,
       "wait_after": 0.5,
@@ -2385,7 +2385,7 @@
       "monitoring_final_image": null,
       "monitoring_watches": [
         {
-          "image": "img_fa399563.png",
+          "image": "trigger_20260121_183524_166.png",
           "goto_index": 5,
           "search_region": [
             0,
@@ -2396,7 +2396,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\img_fa399563.png",
+              "image": "C:/Projects/wincro/data/templates/trigger_20260121_183524_166.png",
               "click_type": "double_click",
               "wait_after": 2.0,
               "wait_random": true,
@@ -2439,7 +2439,7 @@
           "confidence": 0.8
         },
         {
-          "image": "img_fa399563.png",
+          "image": "trigger_20260121_183524_166.png",
           "goto_index": 6,
           "search_region": [
             899,
@@ -2450,7 +2450,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\img_fa399563.png",
+              "image": "C:/Projects/wincro/data/templates/trigger_20260121_183524_166.png",
               "click_type": "double_click",
               "wait_after": 2.0,
               "wait_random": true,
@@ -2494,7 +2494,7 @@
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": 5,
+          "goto_index": -1,
           "search_region": [
             0,
             0,
@@ -2504,7 +2504,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\trigger_20260121_231533_002.png",
+              "image": "C:/Projects/wincro/data/templates/trigger_20260121_231533_002.png",
               "click_type": "double_click",
               "wait_after": 3.0,
               "wait_random": true,
@@ -2602,7 +2602,7 @@
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": 6,
+          "goto_index": -1,
           "search_region": [
             901,
             0,
@@ -2612,7 +2612,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\trigger_20260121_231533_002.png",
+              "image": "C:/Projects/wincro/data/templates/trigger_20260121_231533_002.png",
               "click_type": "double_click",
               "wait_after": 3.0,
               "wait_random": true,
@@ -2728,7 +2728,7 @@
       "trigger_image": null,
       "trigger_x": null,
       "trigger_y": null,
-      "confidence": 0.65,
+      "confidence": 0.8022727272727272,
       "search_radius": 413,
       "move_mouse_before_search": false,
       "wait_after": 0.5,
@@ -3441,7 +3441,7 @@
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": 5,
+          "goto_index": -1,
           "search_region": [
             0,
             0,
@@ -3549,7 +3549,7 @@
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": 6,
+          "goto_index": -1,
           "search_region": [
             901,
             0,

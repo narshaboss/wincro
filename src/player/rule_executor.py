@@ -1535,9 +1535,16 @@ class RuleExecutor:
             # ROI 기반 적응형 매칭 (이전 위치 근처 먼저 검색)
             result = matcher.match_with_roi(screenshot_bgr, image_path, confidence)
 
+            logger.debug(f"[이미지 검색] ROI매칭 결과: found={result.found}, conf={result.confidence:.2f}, "
+                        f"좌표=({result.x},{result.y}), 크기=({result.width}x{result.height}), "
+                        f"중심=({result.center_x},{result.center_y}), 방법={result.method_used}")
+
             if result.found and result.confidence >= confidence:
                 # 사용자 설정 confidence 이상일 때만 인정 (오탐 방지)
-                return (result.center_x + region_offset_x, result.center_y + region_offset_y, result.confidence)
+                final_x = result.center_x + region_offset_x
+                final_y = result.center_y + region_offset_y
+                logger.debug(f"[이미지 검색] 최종좌표: ({final_x}, {final_y}) = 중심({result.center_x},{result.center_y}) + 오프셋({region_offset_x},{region_offset_y})")
+                return (final_x, final_y, result.confidence)
 
             # 중지 체크 - ROI 매칭 실패 후 추가 매칭 전에 확인
             if self._stop_event.is_set():
@@ -1551,9 +1558,15 @@ class RuleExecutor:
                 min_threshold=min_threshold
             )
 
+            logger.debug(f"[이미지 검색] BestEffort 결과: found={result.found}, conf={result.confidence:.2f}, "
+                        f"중심=({result.center_x},{result.center_y}), 방법={result.method_used}")
+
             if result.found and result.confidence >= confidence:
                 # 사용자 설정 confidence 이상일 때만 인정
-                return (result.center_x + region_offset_x, result.center_y + region_offset_y, result.confidence)
+                final_x = result.center_x + region_offset_x
+                final_y = result.center_y + region_offset_y
+                logger.debug(f"[이미지 검색] 최종좌표: ({final_x}, {final_y})")
+                return (final_x, final_y, result.confidence)
 
             # 실패
             return None
@@ -2125,6 +2138,10 @@ class RuleExecutor:
                 click_type = monitor_action.get('click_type', 'click')
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
 
+                logger.debug(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}")
+                logger.debug(f"[이미지 클릭] 검색범위: {search_region}")
+                logger.debug(f"[이미지 클릭] 신뢰도: {search_confidence}")
+
                 # search_radius가 있고 search_region이 없으면 변환
                 if not search_region and search_radius > 0:
                     action_center_x = monitor_action.get('x') or monitor_action.get('center_x')
@@ -2136,11 +2153,14 @@ class RuleExecutor:
                         x2 = min(screen_w, action_center_x + search_radius)
                         y2 = min(screen_h, action_center_y + search_radius)
                         search_region = [x1, y1, x2, y2]
+                        logger.debug(f"[이미지 클릭] search_radius로 범위 계산: {search_region}")
 
                 if image_path and Path(image_path).exists():
                     location = self._find_image_on_screen(image_path, search_confidence, search_region=search_region)
                     if location:
                         x, y = location[0], location[1]
+                        conf = location[2] if len(location) > 2 else 0
+                        logger.info(f"[이미지 클릭] 찾음! 위치=({x}, {y}), 신뢰도={conf:.2f}")
                         input_ctrl = get_input_controller()
                         input_ctrl.move_to(x, y, duration=self._mouse_duration)
                         time.sleep(0.05)
@@ -2179,6 +2199,158 @@ class RuleExecutor:
             return None
 
         return None
+
+    def test_single_monitor_action(self, monitor_action: dict) -> Tuple[bool, str]:
+        """
+        단일 모니터링 액션 테스트 실행 (공개 메서드)
+
+        Args:
+            monitor_action: 모니터링 액션 딕셔너리
+
+        Returns:
+            (성공여부, 메시지) 튜플
+        """
+        try:
+            result = self._execute_monitor_action(monitor_action, confidence=0.7)
+            if result:
+                return True, result
+            else:
+                return False, f"실행 실패: {monitor_action.get('type', '알수없음')}"
+        except Exception as e:
+            return False, f"오류: {str(e)}"
+
+    def test_monitor_actions_sequence(
+        self,
+        monitor_actions: List[dict],
+        on_progress: Optional[Callable[[int, int, str], None]] = None,
+    ) -> Tuple[bool, List[str]]:
+        """
+        모니터링 액션 시퀀스 테스트 실행
+
+        Args:
+            monitor_actions: 모니터링 액션 리스트
+            on_progress: 진행 콜백 (current, total, message)
+
+        Returns:
+            (전체성공여부, 결과메시지 리스트) 튜플
+        """
+        results = []
+        all_success = True
+
+        for i, action in enumerate(monitor_actions):
+            if on_progress:
+                action_type = action.get('type', '알수없음')
+                on_progress(i + 1, len(monitor_actions), f"실행 중: {action_type}")
+
+            # 반복 횟수 처리
+            repeat_count = action.get('repeat_count', 1)
+            for rep in range(repeat_count):
+                success, msg = self.test_single_monitor_action(action)
+                if repeat_count > 1:
+                    results.append(f"[{i+1}] ({rep+1}/{repeat_count}) {msg}")
+                else:
+                    results.append(f"[{i+1}] {msg}")
+
+                if not success:
+                    all_success = False
+
+                # 반복 사이 대기
+                if rep < repeat_count - 1:
+                    repeat_delay = action.get('repeat_delay', 0.5)
+                    time.sleep(repeat_delay)
+
+            # 액션 간 대기
+            wait_after = action.get('wait_after', 0.3)
+            time.sleep(wait_after)
+
+        if on_progress:
+            on_progress(len(monitor_actions), len(monitor_actions), "완료")
+
+        return all_success, results
+
+    def test_single_rule(self, rule: AutomationRule) -> Tuple[bool, str]:
+        """
+        단일 규칙 테스트 실행 (공개 메서드)
+
+        Args:
+            rule: 실행할 AutomationRule
+
+        Returns:
+            (성공여부, 메시지) 튜플
+        """
+        try:
+            result = self._execute_rule(rule)
+            return result.success, result.message
+        except Exception as e:
+            logger.error(f"규칙 테스트 실행 오류: {e}")
+            return False, f"오류: {str(e)}"
+
+    def test_rule_with_children(
+        self,
+        rule: AutomationRule,
+        on_progress: Optional[Callable[[int, int, str], None]] = None,
+        stop_flag: Optional[List[bool]] = None,
+    ) -> Tuple[bool, List[str]]:
+        """
+        규칙과 모든 자식 규칙을 순차 실행 (공개 메서드)
+
+        Args:
+            rule: 실행할 AutomationRule (자식 포함)
+            on_progress: 진행 콜백 (current, total, message)
+            stop_flag: 정지 플래그 [bool] (외부에서 True로 설정하면 중지)
+
+        Returns:
+            (전체성공여부, 결과메시지 리스트) 튜플
+        """
+        results = []
+        all_success = True
+
+        # 모든 규칙 수집 (부모 + 자식들)
+        def collect_rules(r, depth=0):
+            collected = [(r, depth)]
+            for child in getattr(r, 'children', []) or []:
+                collected.extend(collect_rules(child, depth + 1))
+            return collected
+
+        all_rules = collect_rules(rule)
+        total = len(all_rules)
+
+        action_names = {
+            "click": "클릭", "double_click": "더블클릭", "right_click": "우클릭",
+            "type": "입력", "hotkey": "단축키", "key_press": "키", "scroll": "스크롤", "drag": "드래그",
+        }
+
+        for i, (r, depth) in enumerate(all_rules):
+            # 정지 체크
+            if stop_flag and stop_flag[0]:
+                logger.info(f"[규칙 테스트] 중지됨 ({i}/{total})")
+                break
+
+            action_type = action_names.get(r.action_type, r.action_type or "동작")
+            indent = "  " * depth
+            logger.info(f"[규칙 테스트] {indent}[{i+1}/{total}] {action_type}")
+
+            if on_progress:
+                on_progress(i + 1, total, f"{action_type}")
+
+            try:
+                result = self._execute_rule(r)
+                if result.success:
+                    results.append(f"[{i+1}] {indent}✓ {action_type}: {result.message}")
+                    logger.debug(f"[규칙 테스트] {indent}  ✓ 성공: {result.message}")
+                else:
+                    results.append(f"[{i+1}] {indent}✗ {action_type}: {result.message}")
+                    logger.warning(f"[규칙 테스트] {indent}  ✗ 실패: {result.message}")
+                    all_success = False
+            except Exception as e:
+                results.append(f"[{i+1}] {indent}✗ {action_type}: 오류 - {e}")
+                logger.error(f"[규칙 테스트] {indent}  ✗ 예외: {e}")
+                all_success = False
+
+        if on_progress:
+            on_progress(total, total, "완료")
+
+        return all_success, results
 
     def _make_result(
         self,

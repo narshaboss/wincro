@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.33"
+APP_VERSION = "1.0.35"
 
 
 @dataclass
@@ -78,7 +78,7 @@ class UIConfig:
     language: str = "ko"  # ko, en
     window_width: int = 1200
     window_height: int = 800
-    window_mode: str = "medium"  # small, medium, large (창 모드)
+    window_mode: str = "editor"  # play, editor (창 모드)
     show_tooltips: bool = True
     confirm_before_run: bool = True
     minimize_on_run: bool = True

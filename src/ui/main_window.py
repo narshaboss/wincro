@@ -448,16 +448,18 @@ class MainWindow(ctk.CTk):
         self._app_name = app_name  # 로고에서도 사용
         self.title(f"{app_name}")
 
-        # 창 모드별 크기 설정
-        window_mode = self._config.ui.window_mode or "medium"
-        self._window_mode = window_mode
+        # 창 모드별 크기 설정 (이전 값 호환)
+        window_mode = self._config.ui.window_mode or "editor"
+        # 이전 값 → 새 값 변환
         if window_mode == "small":
+            window_mode = "play"
+        elif window_mode in ("medium", "large"):
+            window_mode = "editor"
+        self._window_mode = window_mode
+        if window_mode == "play":
             self.geometry("480x320")
             self.minsize(450, 280)
-        elif window_mode == "large":
-            self.geometry("1600x1000")
-            self.minsize(1200, 800)
-        else:  # medium
+        else:  # editor
             self.geometry(f"{self._config.ui.window_width}x{self._config.ui.window_height}")
             self.minsize(1000, 700)
 
@@ -483,8 +485,8 @@ class MainWindow(ctk.CTk):
         # UI 구성
         self._setup_ui()
 
-        # UI 설정 후 전역 단축키 활성화 (작은창 모드 제외)
-        if self._window_mode != "small":
+        # UI 설정 후 전역 단축키 활성화 (플레이 모드 제외)
+        if self._window_mode != "play":
             self._setup_global_hotkey()
 
         # 창 위치 복원 및 자동 저장
@@ -498,8 +500,8 @@ class MainWindow(ctk.CTk):
         self._main_container = ctk.CTkFrame(self, fg_color=COLORS["bg_dark"])
         self._main_container.pack(fill="both", expand=True)
 
-        # 작은창 모드면 미니 플레이어 UI
-        if self._window_mode == "small":
+        # 플레이 모드면 미니 플레이어 UI
+        if self._window_mode == "play":
             self._setup_mini_player_ui()
             return
 
@@ -516,7 +518,7 @@ class MainWindow(ctk.CTk):
         self._setup_log_panel()
 
     def _setup_mini_player_ui(self):
-        """미니 플레이어 UI (작은창 모드)"""
+        """미니 플레이어 UI (플레이 모드)"""
         import json
         # 플랜 로드
         self._mini_plans = []
@@ -550,6 +552,20 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_secondary"],
         ).pack(side="left", padx=10, pady=8)
+
+        # 에디터 모드 전환 버튼 (오른쪽 끝)
+        ctk.CTkButton(
+            top_frame,
+            text="✏ 에디터",
+            width=70,
+            height=26,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLORS["bg_card_hover"],
+            hover_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            corner_radius=6,
+            command=lambda: self._change_window_mode("editor"),
+        ).pack(side="right", padx=(0, 10), pady=8)
 
         # 횟수 설정 (오른쪽)
         repeat_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
@@ -687,7 +703,7 @@ class MainWindow(ctk.CTk):
         )
         self._mini_log_text.pack(fill="both", expand=True, padx=2, pady=2)
 
-        # 로그 태그 설정 (색상) - 중간창과 동일
+        # 로그 태그 설정 (색상) - 에디터 모드와 동일
         self._mini_log_text.tag_configure("INFO", foreground=COLORS["success"])
         self._mini_log_text.tag_configure("WARNING", foreground=COLORS["warning"])
         self._mini_log_text.tag_configure("ERROR", foreground=COLORS["error"])
@@ -799,10 +815,7 @@ class MainWindow(ctk.CTk):
             activebackground=COLORS["accent"],
             activeforeground="white",
         )
-        menu.add_command(label="중간창 모드", command=lambda: self._change_window_mode("medium"))
-        menu.add_command(label="큰창 모드", command=lambda: self._change_window_mode("large"))
-        menu.add_separator()
-        menu.add_command(label="설정 열기", command=lambda: self._change_window_mode("medium"))
+        menu.add_command(label="에디터 모드", command=lambda: self._change_window_mode("editor"))
 
         # 버튼 위치에 메뉴 표시
         try:
@@ -1146,6 +1159,29 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["accent_blue"],
         )
         self._version_label.pack(padx=8, pady=4)
+
+        # 모드 전환 버튼 (버전 왼쪽)
+        current_mode = self._config.ui.window_mode
+        if current_mode == "play":
+            mode_text = "✏ 에디터"
+            next_mode = "editor"
+        else:
+            mode_text = "▶ 플레이"
+            next_mode = "play"
+
+        self._mode_switch_btn = ctk.CTkButton(
+            self._topbar,
+            text=mode_text,
+            width=80,
+            height=28,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"],
+            corner_radius=6,
+            command=lambda: self._change_window_mode(next_mode),
+        )
+        self._mode_switch_btn.pack(side="right", padx=(0, 10), pady=12)
 
     def _setup_content_area(self):
         self._content_area = ctk.CTkFrame(

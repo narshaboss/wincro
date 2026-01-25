@@ -89,15 +89,32 @@ class EnhancedMatcher:
         return self._bf_matcher
 
     def _load_and_preprocess(self, template_path: str) -> Optional[Dict[str, np.ndarray]]:
-        """템플릿 로드 및 전처리 (캐시 사용)"""
-        if template_path in self._cache:
-            return self._cache[template_path]
-
+        """템플릿 로드 및 전처리 (캐시 사용, 파일 수정시간 체크)"""
         try:
             path = Path(template_path)
             if not path.exists():
                 logger.error(f"템플릿 파일 없음: {template_path}")
+                # 캐시에서도 제거
+                if template_path in self._cache:
+                    del self._cache[template_path]
+                if template_path in self._last_positions:
+                    del self._last_positions[template_path]
                 return None
+
+            # 파일 수정 시간 체크
+            current_mtime = path.stat().st_mtime
+
+            # 캐시에 있고 수정시간이 같으면 캐시 사용
+            if template_path in self._cache:
+                cached = self._cache[template_path]
+                if cached.get('_mtime') == current_mtime:
+                    return cached
+                else:
+                    # 파일이 변경됨 - 캐시와 위치 기록 삭제
+                    logger.debug(f"템플릿 파일 변경 감지, 캐시 갱신: {path.name}")
+                    del self._cache[template_path]
+                    if template_path in self._last_positions:
+                        del self._last_positions[template_path]
 
             # 한글 경로 지원 (cv2.imread는 한글 경로 못 읽음)
             img_array = np.fromfile(str(path), np.uint8)
@@ -110,6 +127,7 @@ class EnhancedMatcher:
             preprocessed = {
                 'original': original,
                 'gray': cv2.cvtColor(original, cv2.COLOR_BGR2GRAY),
+                '_mtime': current_mtime,  # 수정 시간 저장
             }
 
             # 히스토그램 균등화 (그레이스케일)
@@ -630,6 +648,15 @@ class EnhancedMatcher:
         self._cache.clear()
         self._last_positions.clear()
         logger.debug("강화 매처 캐시 초기화")
+
+    def invalidate_template(self, template_path: str):
+        """특정 템플릿의 캐시 및 위치 기록 제거"""
+        if template_path in self._cache:
+            del self._cache[template_path]
+            logger.debug(f"템플릿 캐시 제거: {Path(template_path).name}")
+        if template_path in self._last_positions:
+            del self._last_positions[template_path]
+            logger.debug(f"템플릿 위치 기록 제거: {Path(template_path).name}")
 
 
 # 전역 인스턴스

@@ -1,184 +1,468 @@
-# WinCro (윈크로) - 프로젝트 컨텍스트
+# WinCro (윈크로) - 프로젝트 문서
 
 ## 프로젝트 개요
-영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 AI가 영상을 분석하여 마우스 동작, 클릭 위치, 키보드 입력 등 모든 행동을 추출하고, 이를 완벽하게 재현하는 지능형 RPA 솔루션.
+영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
+
+**현재 버전:** 1.0.34
+
+---
 
 ## 기술 스택
-- **언어**: Python 3.11+
-- **GUI**: CustomTkinter (다크 테마)
-- **데이터베이스**: SQLite
-- **AI API**: OpenAI (ChatGPT) - 변수 상황 대응용
-- **핵심 라이브러리**:
-  - mss: 화면 캡처/녹화
-  - opencv-python: 영상 분석, 이미지 매칭
-  - pyautogui: 마우스/키보드 자동화
-  - pynput: 입력 이벤트 감지 및 녹화
-  - pytesseract: OCR 텍스트 인식
-  - openai: ChatGPT API
-  - Pillow: 이미지 처리
-  - numpy: 데이터 처리
-  - cryptography: API 키 암호화
+
+| 분류 | 기술 |
+|------|------|
+| 언어 | Python 3.11+ |
+| GUI | CustomTkinter (다크 테마) |
+| 데이터베이스 | SQLite |
+| 화면 캡처 | dxcam (DirectX), mss (GDI 폴백) |
+| 입력 자동화 | pyautogui, pynput, Win32 API |
+| 이미지 처리 | OpenCV, Pillow, numpy |
+| 하드웨어 입력 | Arduino Leonardo (선택) |
+
+---
 
 ## 프로젝트 구조
+
 ```
 C:\Projects\wincro\
 ├── src/
-│   ├── __init__.py
-│   ├── main.py                 # 앱 진입점
-│   ├── app.py                  # 메인 앱 클래스
-│   ├── recorder/               # 화면 녹화 모듈
-│   │   ├── __init__.py
-│   │   ├── screen_recorder.py  # 화면 캡처
-│   │   └── input_logger.py     # 입력 이벤트 로깅
-│   ├── analyzer/               # 영상 분석 모듈
-│   │   ├── __init__.py
-│   │   ├── video_analyzer.py   # 영상 분석
-│   │   ├── action_extractor.py # 액션 추출
-│   │   └── template_matcher.py # 이미지 템플릿 매칭
-│   ├── player/                 # 동작 재현 모듈
-│   │   ├── __init__.py
-│   │   ├── action_player.py    # 액션 실행
-│   │   └── ai_intervention.py  # AI 변수 대응
-│   ├── database/               # 데이터베이스 모듈
-│   │   ├── __init__.py
-│   │   ├── models.py           # 데이터 모델
-│   │   └── db_manager.py       # DB 연결/쿼리
-│   ├── ui/                     # GUI 모듈
-│   │   ├── __init__.py
-│   │   ├── main_window.py      # 메인 윈도우
-│   │   ├── recorder_view.py    # 녹화 화면
-│   │   ├── analyzer_view.py    # 분석 화면
-│   │   ├── player_view.py      # 실행 화면
-│   │   └── settings_view.py    # 설정 화면
-│   ├── utils/                  # 유틸리티
-│   │   ├── __init__.py
-│   │   ├── config.py           # 설정 관리
-│   │   ├── security.py         # 암호화/보안
-│   │   └── logger.py           # 로깅 설정
-│   └── i18n/                   # 다국어 지원
-│       ├── __init__.py
-│       └── ko.py               # 한글 번역
+│   ├── main.py                    # CLI 진입점
+│   ├── app.py                     # WinCroApp 메인 클래스
+│   │
+│   ├── recorder/
+│   │   ├── screen_recorder.py     # 화면 녹화 (dxcam/mss)
+│   │   └── input_logger.py        # 입력 이벤트 로깅 (pynput)
+│   │
+│   ├── analyzer/
+│   │   ├── video_analyzer.py      # 영상 분석, 스크린샷 추출
+│   │   ├── action_extractor.py    # 입력 로그 → 액션 변환
+│   │   ├── automation_models.py   # AutomationPlan, AutomationRule
+│   │   ├── template_matcher.py    # 기본 템플릿 매칭
+│   │   └── enhanced_matcher.py    # 향상된 매칭 (다중 방법)
+│   │
+│   ├── player/
+│   │   ├── rule_executor.py       # 규칙 기반 실행 엔진
+│   │   └── action_player.py       # 액션 실행 (레거시)
+│   │
+│   ├── database/
+│   │   ├── models.py              # Action, Sequence, ExecutionLog
+│   │   └── db_manager.py          # SQLite 관리자
+│   │
+│   ├── ui/
+│   │   ├── main_window.py         # 메인 윈도우
+│   │   ├── recorder_view.py       # 녹화 탭
+│   │   ├── analyzer_view.py       # 분석 탭
+│   │   ├── player_view.py         # 실행 탭
+│   │   ├── settings_view.py       # 설정 탭
+│   │   ├── guide_view.py          # 가이드 탭
+│   │   ├── help_dialog.py         # 도움말 다이얼로그
+│   │   └── log_view.py            # 로그 패널
+│   │
+│   ├── utils/
+│   │   ├── config.py              # 설정 관리 (AppConfig)
+│   │   ├── logger.py              # 로깅 설정
+│   │   ├── input_controller.py    # 입력 추상화 (pyautogui/Arduino)
+│   │   ├── arduino_hid.py         # Arduino HID 통신
+│   │   ├── arduino_uploader.py    # Arduino 펌웨어 업로드
+│   │   ├── admin.py               # 관리자 권한
+│   │   ├── updater.py             # GitHub 업데이트 확인
+│   │   ├── security.py            # 암호화 (Fernet)
+│   │   ├── window_position.py     # 윈도우 위치 저장
+│   │   └── self_test.py           # 시스템 자가 진단
+│   │
+│   └── i18n/
+│       └── ko.py                  # 한글 번역
+│
+├── arduino/
+│   └── wincro_hid.ino             # Arduino Leonardo 펌웨어
+│
 ├── data/
-│   ├── recordings/             # 녹화 영상 저장
-│   ├── templates/              # 이미지 템플릿 저장
-│   ├── sequences/              # 시퀀스 JSON 저장
-│   └── wincro.db               # SQLite 데이터베이스
-├── logs/                       # 로그 파일
-├── tests/                      # 테스트 코드
-│   ├── __init__.py
-│   ├── test_recorder.py
-│   ├── test_analyzer.py
-│   └── test_player.py
-├── requirements.txt            # 의존성 목록
-├── setup.py                    # 패키지 설정
-├── README.md                   # 프로젝트 설명
-├── PROGRESS.md                 # 작업 진행 상태
-└── .env.example                # 환경변수 예시
+│   ├── config.json                # 사용자 설정
+│   ├── wincro.db                  # SQLite 데이터베이스
+│   ├── recordings/                # 녹화 영상 (.mp4) + 입력 로그 (.json)
+│   ├── templates/                 # 클릭 스크린샷 이미지
+│   ├── plans/                     # 자동화 플랜 (.json)
+│   ├── sequences/                 # 시퀀스 파일
+│   └── triggers/                  # 트리거 이미지
+│
+└── logs/                          # 로그 파일
 ```
 
-## 데이터베이스 스키마
-```sql
--- 시퀀스 테이블
-CREATE TABLE sequences (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    description TEXT,
-    actions JSON NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_run DATETIME,
-    run_count INTEGER DEFAULT 0,
-    success_rate REAL DEFAULT 0.0
-);
+---
 
--- 액션 템플릿 테이블
-CREATE TABLE action_templates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sequence_id INTEGER,
-    step_order INTEGER,
-    action_type TEXT NOT NULL,
-    target_image_path TEXT,
-    parameters JSON,
-    FOREIGN KEY (sequence_id) REFERENCES sequences(id)
-);
+## 핵심 워크플로우
 
--- 실행 로그 테이블
-CREATE TABLE execution_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sequence_id INTEGER,
-    started_at DATETIME,
-    ended_at DATETIME,
-    status TEXT,
-    error_message TEXT,
-    ai_interventions INTEGER DEFAULT 0,
-    FOREIGN KEY (sequence_id) REFERENCES sequences(id)
-);
 ```
+[1. 녹화]                    [2. 분석]                    [3. 실행]
+     │                            │                            │
+ScreenRecorder              VideoAnalyzer               RuleExecutor
+     │                            │                            │
+     ├─ dxcam (DirectX)          ├─ 입력로그 파싱              ├─ 이미지 매칭
+     ├─ mss (GDI 폴백)           ├─ 클릭 스크린샷 추출         ├─ pyautogui
+     └─ .mp4 저장                └─ AutomationPlan 생성       └─ Arduino HID
+     │                            │                            │
+InputLogger                 ActionExtractor             InputController
+     │                            │                            │
+     ├─ pynput                   ├─ 클릭/드래그 감지           ├─ 마우스 이동
+     ├─ 클릭 자동 캡처            ├─ 키보드 입력               ├─ 클릭
+     └─ .json 저장               └─ 대기시간 계산              └─ 타이핑
+```
+
+---
+
+## 주요 모듈 상세
+
+### 1. Recorder - 화면 녹화
+
+**파일:** `src/recorder/screen_recorder.py`
+
+**캡처 엔진:**
+- **dxcam (DirectX):** 우선 사용, 고성능
+- **mss (GDI):** 폴백, 항상 작동
+
+**주요 기능:**
+```python
+ScreenRecorder.start(region, output_name)   # 녹화 시작
+ScreenRecorder.stop()                        # 녹화 중지, 경로 반환
+ScreenRecorder.pause() / resume()            # 일시정지/재개
+ScreenRecorder.get_current_frame()           # 현재 프레임 (스크린샷용)
+```
+
+**녹화 흐름:**
+1. VideoWriter 초기화 (mp4v 코덱)
+2. dxcam 초기화 시도 → 실패 시 mss 폴백
+3. 캡처 루프 (설정된 FPS)
+4. 프레임을 VideoWriter + 버퍼에 저장
+
+---
+
+### 2. Recorder - 입력 로깅
+
+**파일:** `src/recorder/input_logger.py`
+
+**이벤트 타입:**
+- `mouse_move`, `mouse_click`, `mouse_scroll`
+- `mouse_drag_start`, `mouse_drag_end`
+- `key_press`, `key_release`
+
+**클릭 vs 드래그 판정:**
+```python
+# 드래그 조건 (둘 다 만족해야 함)
+distance >= drag_threshold_distance (기본 25px)
+duration >= drag_threshold_time (기본 0.15초)
+```
+
+**특수 키:**
+- **F7:** 녹화 중지
+- **F8:** 전체화면 스크린샷 캡처
+
+**RecordingSession:**
+- ScreenRecorder + InputLogger 통합
+- 클릭 시 자동 스크린샷 캡처
+
+---
+
+### 3. Analyzer - 영상 분석
+
+**파일:** `src/analyzer/video_analyzer.py`
+
+**분석 흐름:**
+```python
+1. 입력 로그에서 액션 추출 (ActionExtractor)
+2. 비디오 시간과 입력 로그 시간 동기화
+3. 클릭 위치 스크린샷 추출 (150x150 크롭)
+4. AutomationPlan 생성
+```
+
+**시간 동기화:**
+```python
+# 비디오와 입력 로그의 시간 차이가 10% 이상이면 보정
+time_scale = video_duration / input_log_duration
+adjusted_timestamp = original_timestamp * time_scale
+target_frame = int(adjusted_timestamp * fps) - 1  # 클릭 직전 프레임
+```
+
+**ActionExtractor** (`action_extractor.py`):
+- 입력 로그 JSON → Action 리스트 변환
+- 클릭, 더블클릭, 우클릭, 드래그, 스크롤, 키 입력 처리
+
+---
+
+### 4. Analyzer - 자동화 모델
+
+**파일:** `src/analyzer/automation_models.py`
+
+**AutomationRule:**
+```python
+rule_id: str              # 규칙 ID
+rule_type: str            # FIXED_SEQUENCE, TYPE_TEXT, HOTKEY 등
+action_type: str          # click, double_click, type, hotkey, scroll, drag
+action_x, action_y: int   # 클릭 좌표
+action_text: str          # 타이핑 텍스트
+action_keys: list         # 단축키 목록
+target_image: str         # 매칭 이미지 경로
+confidence: float         # 매칭 신뢰도 (기본 0.8)
+search_radius: int        # 검색 범위 (0=전체, >0=반경)
+wait_after: float         # 동작 후 대기시간
+timeout: float            # 이미지 탐색 타임아웃
+skip_on_not_found: bool   # 이미지 미발견 시 스킵
+drag_to_x, drag_to_y: int # 드래그 종료 좌표
+drag_duration: float      # 드래그 소요 시간
+```
+
+**AutomationPlan:**
+```python
+name: str                       # 플랜 이름
+initial_rules: List[Rule]       # 실행할 규칙 목록
+monitoring_rules: List[Rule]    # 모니터링 규칙
+video_path: str                 # 원본 영상 경로
+input_log_path: str             # 입력 로그 경로
+```
+
+---
+
+### 5. Player - 규칙 실행
+
+**파일:** `src/player/rule_executor.py`
+
+**실행 상태:**
+```
+IDLE → RUNNING_INITIAL → MONITORING → COMPLETED
+                ↓
+             PAUSED
+                ↓
+          STOPPED / FAILED
+```
+
+**이미지 매칭:**
+```python
+# search_radius가 설정된 경우 (클릭 액션은 기본 120px)
+# 해당 영역에서만 이미지 검색 → 오탐 방지
+search_area = (action_x - radius, action_y - radius,
+               action_x + radius, action_y + radius)
+```
+
+**마우스 제어 우선순위:**
+1. pynput MouseController (가장 안정적)
+2. ctypes SetCursorPos + mouse_event
+3. SendInput API (가장 저수준)
+
+**멀티모니터 지원:**
+- 가상 데스크톱 전체 좌표 사용
+- MOUSEEVENTF_VIRTUALDESK 플래그
+
+---
+
+### 6. Arduino HID
+
+**파일:** `src/utils/arduino_hid.py`
+
+**하드웨어:** Arduino Leonardo (ATmega32U4)
+
+**프로토콜:** Serial @ 115200 baud
+
+| 명령 | 설명 |
+|------|------|
+| `MC,L/R/M` | 마우스 클릭 |
+| `MP,L/R/M` | 마우스 버튼 누름 |
+| `MR,L/R/M` | 마우스 버튼 뗌 |
+| `MS,amount` | 스크롤 |
+| `KP,keycode` | 키 누름 |
+| `KR,keycode` | 키 뗌 |
+| `KT,text` | 텍스트 타이핑 |
+| `KD,delay_ms` | 타이핑 딜레이 설정 |
+| `KA` | 모든 키 해제 |
+| `PING` | 연결 테스트 (PONG 응답) |
+
+**InputController** (`input_controller.py`):
+- Arduino HID 활성화 시: 마우스 이동은 pyautogui, 클릭/키보드는 Arduino
+- 비활성화 시: 모두 pyautogui
+
+---
+
+### 7. 설정 구조
+
+**파일:** `src/utils/config.py`
+
+```python
+AppConfig:
+    recording:
+        fps: 30
+        quality: "high"
+        drag_threshold_distance: 25
+        drag_threshold_time: 0.15
+
+    analyzer:
+        template_match_threshold: 0.8
+        dialog_timeout_seconds: 300
+
+    player:
+        speed_multiplier: 1.0
+        default_wait_ms: 500
+        mouse_move_duration: 0.2
+        typing_interval: 0.05
+        retry_count: 3
+        emergency_stop_key: "escape"
+        emergency_stop_count: 2
+
+    ui:
+        theme: "dark"
+        language: "ko"
+        window_mode: "medium"  # small, medium, large
+        show_help_on_startup: False
+        run_as_admin: False
+        app_name: "Desktop"
+        random_name_mode: False
+
+    arduino:
+        enabled: False
+        com_port: ""
+        baud_rate: 115200
+        auto_connect: False
+
+    update:
+        github_repo: "narshaboss/wincro"
+        auto_check: False
+```
+
+---
+
+## UI 구조
+
+**윈도우 모드:**
+| 모드 | 크기 | 기능 |
+|------|------|------|
+| small | 480x320 | 미니 플레이어 |
+| medium | 1200x800 | 전체 UI |
+| large | 최대화 | 전체 UI |
+
+**탭 구성:**
+1. **녹화 (RecorderView):** 영역 선택, 녹화 제어
+2. **분석 (AnalyzerView):** 녹화 파일 선택, 분석 실행
+3. **실행 (PlayerView):** 플랜 선택, 실행 제어
+4. **설정 (SettingsView):** 모든 설정 관리
+5. **가이드 (GuideView):** 사용법 안내
+
+---
 
 ## 코딩 규칙
+
 - PEP 8 준수
-- 모든 함수/클래스에 한글 docstring 작성
+- 한글 docstring
 - 타입 힌트 사용
-- 로깅: logging 모듈 사용 (DEBUG, INFO, WARNING, ERROR)
-- 에러 처리: try-except로 예외 처리, 사용자 친화적 메시지
+- logging 모듈 사용 (DEBUG, INFO, WARNING, ERROR)
+- try-except 예외 처리
 
-## 핵심 기능 요구사항
-1. **화면 녹화**: 화면 + 입력 동시 녹화, 영상(.mp4) + 로그(.json) 출력
-2. **영상 분석**: AI가 영상 분석 → 재현 가능한 액션 시퀀스(JSON) 생성
-3. **동작 재현**: 액션 시퀀스 실행하여 사용자 동작 재현
-4. **AI 변수 대응**: 예상과 다른 상황 시 ChatGPT가 화면 분석 후 대응
-5. **시퀀스 관리**: CRUD, 내보내기/가져오기
+---
 
-## 필수 포함 사항
-- 긴급 중지: ESC 2번
-- 시퀀스 내보내기/가져오기 (JSON)
-- 실행 속도 조절 (0.5x ~ 2x)
-- 각 단계별 대기시간 설정
-- 반복 실행 (N회 또는 무한)
+## 단축키
 
-## 필수 제외 사항
-- 클라우드 업로드 금지 (모든 데이터 로컬)
-- 원격 제어 기능 금지
-- 사용자 추적/분석 금지
+| 키 | 기능 |
+|-----|------|
+| F7 | 녹화 중지 |
+| F8 | 전체화면 스크린샷 캡처 |
+| ESC×2 | 실행 긴급 중지 |
 
-## 성능 요구사항
-- 녹화 프레임: 최소 15fps, 권장 30fps
-- 영상 분석: 10분 영상 기준 5분 이내
-- 동작 재현 지연: 50ms 이내
-- 메모리 사용: 500MB 이하
+---
 
-## 배포 절차 (중요!)
-배포/업데이트 요청 시 반드시 아래 체크리스트 확인:
+## 배포 절차
 
-### 1. 코드 변경
-- [ ] src/ 폴더 내 변경된 파일 모두 커밋
-- [ ] src/utils/config.py 버전 번호 업데이트
+### 1. 버전 업데이트
+```python
+# src/utils/config.py
+APP_VERSION = "X.X.X"
+```
 
-### 2. 데이터 파일 (배포에 포함되어야 함)
-- [ ] data/plans/*.json - 플랜 파일
-- [ ] data/templates/*.png - 템플릿 이미지
-- [ ] data/sequences/*.json - 시퀀스 파일
-
-### 3. Git 작업
+### 2. Git 커밋
 ```bash
-# 변경된 코드 + 데이터 파일 모두 add
 git add src/
 git add data/plans/
 git add data/templates/
-git add data/sequences/
-
-# 커밋
 git commit -m "vX.X.X: 변경 내용"
-
-# 태그 생성 및 푸시
 git tag vX.X.X
 git push origin master
 git push origin vX.X.X
 ```
 
-### 4. 확인 사항
-- GitHub Actions 빌드 완료 확인
-- Release에 zip 파일 업로드 확인
+### 3. 확인
+- GitHub Actions 빌드 완료
+- Release에 zip 파일 업로드
 
-## 참고
-- 세션 재시작 시 PROGRESS.md를 읽고 작업 이어서 진행
-- 에러 발생 시 PROGRESS.md에 기록 후 가능한 범위까지 진행
+---
+
+## 데이터 경로
+
+**exe 실행 시:**
+```
+WinCro.exe
+└── _internal/
+    ├── data/
+    │   ├── config.json
+    │   ├── wincro.db
+    │   ├── recordings/
+    │   ├── templates/
+    │   └── plans/
+    └── logs/
+```
+
+**스크립트 실행 시:**
+```
+wincro/
+├── data/
+└── logs/
+```
+
+---
+
+## Claude 작업 지침
+
+### 대화 기록
+- **중요한 대화 내용은 주기적으로 이 문서에 기록할 것**
+- 새로운 기능 추가, 버그 수정, 설계 결정 등 중요 사항 기록
+- 세션 종료 전 작업 내용 요약 추가
+
+### 기록 위치
+아래 "작업 히스토리" 섹션에 날짜별로 기록
+
+---
+
+## 작업 히스토리
+
+### 2025-01-25
+- CLAUDE.md 문서 전면 재작성
+- 실제 코드에 없는 기능 제거 (AI Intervention, OCR 등)
+- 실제 코드 기반으로 정확한 문서 작성
+- **모니터링 액션 테스트 기능 추가:**
+  - `rule_executor.py`: `test_single_monitor_action()`, `test_monitor_actions_sequence()` 메서드 추가
+  - `player_view.py`: 모니터링 액션 카드에 ▶ 버튼 추가
+    - 해당 액션부터 현재 감시 끝까지 자동 순차 실행
+    - 토글 버튼: 재생(오렌지) ↔ 정지(초록)
+- **감시 레벨 재생 버튼 추가:**
+  - `rule_executor.py`: `test_single_rule()` 메서드 추가 (규칙 단일 실행)
+  - `player_view.py`: 감시 목록 헤더에 ▶ 버튼 추가
+    - 해당 감시의 모니터링 액션 전체 실행
+    - 점프 액션(goto_index) 실행
+    - 토글 버튼: 재생(오렌지) ↔ 정지(초록)
+- **이미지 클릭 액션 이미지 변경 기능:**
+  - 모니터링 액션 카드에 "IMG" 버튼 추가 (이미지 클릭 타입만)
+  - 이미지 있음: 보라색 "IMG", 없음: 빨간색 "IMG?"
+  - 클릭 시 파일 다이얼로그로 이미지 선택/변경 가능
+- **이미지 매칭 캐시 버그 수정:**
+  - `enhanced_matcher.py`: 파일 수정 시간 체크 추가 (같은 경로 파일 변경 시 캐시 갱신)
+  - `invalidate_template()` 메서드 추가 (특정 템플릿 캐시 제거)
+  - 이미지 변경 시 이전/새 이미지의 캐시와 위치 기록 무효화
+  - `rule_executor.py`: 이미지 클릭 디버그 로그 추가 (좌표, 신뢰도, 매칭 방법)
+- **검색 범위 선택 시 기존 범위 표시:**
+  - `ScreenRegionSelector`에 `existing_region` 파라미터 추가
+  - 새 범위를 드래그할 때 기존 범위가 빨간색 점선으로 화면에 표시
+  - 안내 텍스트: "빨간색 점선 = 기존 범위 | 파란색 실선 = 새 범위"
+  - 모니터링 액션/감시 이미지 모두 동일하게 적용
+
+---
+
+## 참고사항
+
+- 세션 재시작 시 이 문서와 PROGRESS.md 확인
+- 모든 데이터는 로컬 저장 (클라우드 업로드 없음)
+- API 키는 Fernet으로 암호화 저장
+- 중요한 대화 내용은 이 문서에 기록

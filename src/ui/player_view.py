@@ -8,6 +8,7 @@ import customtkinter as ctk
 from typing import Optional, List
 from pathlib import Path
 import json
+import time
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
@@ -2435,7 +2436,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         ).pack(anchor="w", padx=10, pady=(10, 5))
 
         # 부모 액션 목록 생성 (드롭다운용)
-        action_options = []  # [(display_text, index), ...]
+        action_options = [("점프 안 함", -1)]  # [(display_text, index), ...]
         action_names = {
             "click": "클릭", "double_click": "더블클릭", "right_click": "우클릭",
             "type": "입력", "hotkey": "단축키", "key_press": "키", "scroll": "스크롤", "drag": "드래그",
@@ -2592,6 +2593,144 @@ class PlanDetailDialog(ctk.CTkToplevel):
                         command=delete_action,
                     ).pack(side="right", padx=(2, 0))
 
+                    # 여기부터 끝까지 실행/정지 토글 버튼
+                    play_btn_ref = [None]  # 버튼 참조용
+                    stop_flag_ref = [False]  # 정지 플래그
+                    running_ref = [False]  # 실행 중 플래그
+
+                    def toggle_play(i=watch_idx, a=ai):
+                        logger.debug(f"[모니터링 테스트] 버튼 클릭: 감시{i+1}, 액션{a+1}, running={running_ref[0]}")
+
+                        # 실행 중이면 정지
+                        if running_ref[0]:
+                            logger.info(f"[모니터링 테스트] 정지 요청")
+                            stop_flag_ref[0] = True
+                            return
+
+                        if i >= len(watches_data) or "monitor_actions" not in watches_data[i]:
+                            logger.warning(f"[모니터링 테스트] 유효하지 않은 인덱스: i={i}, len={len(watches_data)}")
+                            return
+
+                        # 현재 감시의 현재 액션부터 끝까지만 실행
+                        all_actions_to_run = []
+                        current_watch_actions = watches_data[i].get("monitor_actions", [])
+                        logger.debug(f"[모니터링 테스트] 감시{i+1} 액션 수: {len(current_watch_actions)}, 시작: {a+1}번")
+                        all_actions_to_run.extend(current_watch_actions[a:])
+
+                        logger.info(f"[모니터링 테스트] 실행 대상: 감시{i+1}의 {a+1}~{len(current_watch_actions)}번 액션 ({len(all_actions_to_run)}개)")
+
+                        if not all_actions_to_run:
+                            logger.warning(f"[모니터링 테스트] 실행할 액션 없음")
+                            return
+
+                        # 액션 목록 상세 로그
+                        for idx, act in enumerate(all_actions_to_run):
+                            act_type = act.get('type', '?')
+                            act_detail = ""
+                            if act_type == "텍스트 입력":
+                                act_detail = f'"{act.get("text", "")[:20]}"'
+                            elif act_type == "키 입력":
+                                act_detail = f'{act.get("keys", [])}'
+                            elif act_type == "마우스 클릭":
+                                act_detail = f'({act.get("x")}, {act.get("y")})'
+                            elif act_type == "이미지 클릭":
+                                act_detail = f'{Path(act.get("image", "")).name if act.get("image") else "?"}'
+                            logger.debug(f"[모니터링 테스트] 대기열[{idx+1}]: {act_type} {act_detail}")
+
+                        from ..player.rule_executor import get_rule_executor
+                        executor = get_rule_executor()
+
+                        # 버튼 상태 변경 (재생 중 - 초록색)
+                        running_ref[0] = True
+                        stop_flag_ref[0] = False
+                        if play_btn_ref[0]:
+                            play_btn_ref[0].configure(text="■", fg_color="#27ae60", hover_color="#2ecc71")
+
+                        def run_actions():
+                            total = len(all_actions_to_run)
+                            logger.info(f"[모니터링 테스트] ▶ 시작: {total}개 액션")
+                            success_count = 0
+                            fail_count = 0
+
+                            try:
+                                for idx, act in enumerate(all_actions_to_run):
+                                    if stop_flag_ref[0]:
+                                        logger.info(f"[모니터링 테스트] ■ 중지됨 ({idx}/{total})")
+                                        break
+
+                                    action_type = act.get('type', '알수없음')
+                                    repeat_count = act.get('repeat_count', 1)
+                                    wait_after = act.get('wait_after', 0.3)
+
+                                    # 상세 정보
+                                    detail = ""
+                                    if action_type == "텍스트 입력":
+                                        detail = f' "{act.get("text", "")[:15]}..."' if len(act.get("text", "")) > 15 else f' "{act.get("text", "")}"'
+                                    elif action_type == "키 입력":
+                                        detail = f' [{"+".join(act.get("keys", []))}]'
+                                    elif action_type == "마우스 클릭":
+                                        detail = f' ({act.get("x")}, {act.get("y")})'
+                                    elif action_type == "이미지 클릭":
+                                        img_name = Path(act.get("image", "")).name if act.get("image") else "?"
+                                        detail = f' {img_name}'
+
+                                    logger.info(f"[모니터링 테스트] [{idx+1}/{total}] {action_type}{detail}")
+
+                                    try:
+                                        for rep in range(repeat_count):
+                                            if stop_flag_ref[0]:
+                                                break
+                                            if repeat_count > 1:
+                                                logger.debug(f"[모니터링 테스트]   반복 {rep+1}/{repeat_count}")
+
+                                            result = executor.test_single_monitor_action(act)
+                                            if result[0]:
+                                                logger.debug(f"[모니터링 테스트]   ✓ 성공: {result[1]}")
+                                            else:
+                                                logger.warning(f"[모니터링 테스트]   ✗ 실패: {result[1]}")
+
+                                            if rep < repeat_count - 1:
+                                                time.sleep(act.get('repeat_delay', 0.5))
+
+                                        success_count += 1
+
+                                        # 대기
+                                        if not stop_flag_ref[0] and wait_after > 0:
+                                            logger.debug(f"[모니터링 테스트]   대기: {wait_after}초")
+                                            time.sleep(wait_after)
+
+                                    except Exception as e:
+                                        logger.error(f"[모니터링 테스트]   ✗ 예외: {e}")
+                                        fail_count += 1
+                                        # 실패해도 다음 액션으로 계속
+
+                                logger.info(f"[모니터링 테스트] ★ 완료 (성공: {success_count}, 실패: {fail_count})")
+
+                            except Exception as e:
+                                logger.error(f"[모니터링 테스트] 전체 오류: {e}")
+                            finally:
+                                # 버튼 상태 복원 (재생 버튼으로)
+                                running_ref[0] = False
+                                stop_flag_ref[0] = False
+                                try:
+                                    if play_btn_ref[0]:
+                                        play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400")
+                                except Exception:
+                                    pass
+
+                        import threading
+                        threading.Thread(target=run_actions, daemon=True).start()
+
+                    play_btn = ctk.CTkButton(
+                        card_inner, text="▶", width=26, height=22,
+                        font=ctk.CTkFont(size=10),
+                        fg_color="#e67e22", hover_color="#d35400",
+                        text_color="white", corner_radius=4,
+                        command=toggle_play,
+                    )
+                    play_btn.pack(side="right", padx=(2, 0))
+                    play_btn_ref[0] = play_btn
+
                     # 위/아래 이동 버튼
                     move_frame = ctk.CTkFrame(card_inner, fg_color="#0d1f17", corner_radius=4)
                     move_frame.pack(side="right", padx=(2, 0))
@@ -2735,6 +2874,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
                         def edit_region(i=watch_idx, a=ai):
                             act = watches_data[i]["monitor_actions"][a]
+                            cur_region = act.get("search_region")
+
                             # 범위 설정 다이얼로그
                             region_dlg = ctk.CTkToplevel(dialog)
                             region_dlg.title("검색 범위 설정")
@@ -2742,8 +2883,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
                             region_dlg.transient(dialog)
                             region_dlg.grab_set()
                             region_dlg.configure(fg_color=COLORS["bg_dark"])
-
-                            cur_region = act.get("search_region")
 
                             ctk.CTkLabel(
                                 region_dlg, text="이미지 검색 범위 설정",
@@ -2757,7 +2896,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                             btn_frame = ctk.CTkFrame(region_dlg, fg_color="transparent")
                             btn_frame.pack(pady=15)
 
-                            def select_region_drag():
+                            def select_region_drag(existing=cur_region):
                                 region_dlg.withdraw()
                                 dialog.withdraw()
 
@@ -2776,7 +2915,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
                                 from src.ui.analyzer_view import ScreenRegionSelector
                                 self.after(100, lambda: ScreenRegionSelector(
-                                    self, on_region_select, on_cancel
+                                    self, on_region_select, on_cancel, existing_region=existing
                                 ))
 
                             ctk.CTkButton(
@@ -2812,6 +2951,56 @@ class PlanDetailDialog(ctk.CTkToplevel):
                             text_color="white" if has_region else COLORS["text_secondary"],
                             corner_radius=4,
                             command=edit_region,
+                        ).pack(side="right", padx=(2, 0))
+
+                        # 이미지 변경 버튼
+                        def change_image(i=watch_idx, a=ai):
+                            act = watches_data[i]["monitor_actions"][a]
+                            current_img = act.get("image", "")
+
+                            # 이미지 선택 다이얼로그
+                            templates_dir = DATA_DIR / "templates"
+                            templates_dir.mkdir(parents=True, exist_ok=True)
+
+                            # 현재 이미지가 있으면 그 폴더에서 시작
+                            initial_dir = str(Path(current_img).parent) if current_img and Path(current_img).exists() else str(templates_dir)
+
+                            new_path = filedialog.askopenfilename(
+                                title="이미지 선택",
+                                initialdir=initial_dir,
+                                filetypes=[("이미지 파일", "*.png *.jpg *.jpeg *.bmp")],
+                            )
+                            if new_path:
+                                # 이전 이미지의 캐시 무효화
+                                old_image = act.get("image")
+                                if old_image:
+                                    try:
+                                        from ..analyzer.enhanced_matcher import get_enhanced_matcher
+                                        get_enhanced_matcher().invalidate_template(old_image)
+                                    except Exception:
+                                        pass
+
+                                act["image"] = new_path
+
+                                # 새 이미지의 캐시도 무효화 (혹시 이전에 사용된 적 있으면)
+                                try:
+                                    from ..analyzer.enhanced_matcher import get_enhanced_matcher
+                                    get_enhanced_matcher().invalidate_template(new_path)
+                                except Exception:
+                                    pass
+
+                                refresh_monitor_actions(i)
+                                logger.info(f"[모니터링 액션] 이미지 변경: {Path(new_path).name}")
+
+                        has_image = bool(action.get("image"))
+                        ctk.CTkButton(
+                            card_inner, text="IMG" if has_image else "IMG?", width=36, height=22,
+                            font=ctk.CTkFont(size=9),
+                            fg_color="#9b59b6" if has_image else "#c0392b",
+                            hover_color="#8e44ad" if has_image else "#e74c3c",
+                            text_color="white",
+                            corner_radius=4,
+                            command=change_image,
                         ).pack(side="right", padx=(2, 0))
 
         def load_thumbnail(path, size=(40, 40)):
@@ -2914,7 +3103,109 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     anchor="w",
                 ).pack(side="left", fill="x", expand=True)
 
-                # 삭제 버튼
+                # 감시 재생 버튼 (모니터링 액션 + 점프 액션 실행)
+                watch_play_btn_ref = [None]
+                watch_running_ref = [False]
+                watch_stop_flag_ref = [False]
+
+                def toggle_watch_play(i=idx):
+                    logger.debug(f"[감시 테스트] 버튼 클릭: 감시{i+1}, running={watch_running_ref[0]}")
+
+                    # 실행 중이면 정지
+                    if watch_running_ref[0]:
+                        logger.info(f"[감시 테스트] 정지 요청")
+                        watch_stop_flag_ref[0] = True
+                        return
+
+                    if i >= len(watches_data):
+                        logger.warning(f"[감시 테스트] 유효하지 않은 인덱스: i={i}")
+                        return
+
+                    watch = watches_data[i]
+                    monitor_acts = watch.get("monitor_actions", [])
+                    goto_idx = watch.get("goto_index", 0)
+
+                    logger.info(f"[감시 테스트] 감시{i+1}: 모니터링 액션 {len(monitor_acts)}개 + 점프액션{goto_idx+1}")
+
+                    from ..player.rule_executor import get_rule_executor
+                    executor = get_rule_executor()
+
+                    # 버튼 상태 변경 (재생 중 - 초록색)
+                    watch_running_ref[0] = True
+                    watch_stop_flag_ref[0] = False
+                    if watch_play_btn_ref[0]:
+                        watch_play_btn_ref[0].configure(text="■", fg_color="#27ae60", hover_color="#2ecc71")
+
+                    def run_watch():
+                        try:
+                            # 1. 모니터링 액션들 실행
+                            logger.info(f"[감시 테스트] ▶ 모니터링 액션 시작 ({len(monitor_acts)}개)")
+                            for idx, act in enumerate(monitor_acts):
+                                if watch_stop_flag_ref[0]:
+                                    logger.info(f"[감시 테스트] ■ 중지됨 (모니터링 {idx}/{len(monitor_acts)})")
+                                    return
+
+                                action_type = act.get('type', '알수없음')
+                                repeat_count = act.get('repeat_count', 1)
+                                wait_after = act.get('wait_after', 0.3)
+
+                                logger.info(f"[감시 테스트] 모니터링 [{idx+1}/{len(monitor_acts)}] {action_type}")
+
+                                try:
+                                    for rep in range(repeat_count):
+                                        if watch_stop_flag_ref[0]:
+                                            break
+                                        result = executor.test_single_monitor_action(act)
+                                        if result[0]:
+                                            logger.debug(f"[감시 테스트]   ✓ 성공: {result[1]}")
+                                        else:
+                                            logger.warning(f"[감시 테스트]   ✗ 실패: {result[1]}")
+                                        if rep < repeat_count - 1:
+                                            time.sleep(act.get('repeat_delay', 0.5))
+
+                                    if not watch_stop_flag_ref[0] and wait_after > 0:
+                                        time.sleep(wait_after)
+
+                                except Exception as e:
+                                    logger.error(f"[감시 테스트]   ✗ 예외: {e}")
+
+                            # 2. 점프 액션 실행
+                            if not watch_stop_flag_ref[0] and 0 <= goto_idx < len(self._plan.initial_rules):
+                                jump_rule = self._plan.initial_rules[goto_idx]
+                                action_type_name = {
+                                    "click": "클릭", "double_click": "더블클릭", "right_click": "우클릭",
+                                    "type": "입력", "hotkey": "단축키", "key_press": "키", "scroll": "스크롤", "drag": "드래그",
+                                }.get(jump_rule.action_type, jump_rule.action_type or "동작")
+                                logger.info(f"[감시 테스트] ▶ 점프 액션 실행: 액션{goto_idx+1} ({action_type_name})")
+
+                                try:
+                                    success, msgs = executor.test_rule_with_children(jump_rule, stop_flag=watch_stop_flag_ref)
+                                    msg = "; ".join(msgs) if msgs else "완료"
+                                    if success:
+                                        logger.info(f"[감시 테스트]   ✓ 점프 액션 성공 (자식 포함): {msg}")
+                                    else:
+                                        logger.warning(f"[감시 테스트]   ✗ 점프 액션 실패: {msg}")
+                                except Exception as e:
+                                    logger.error(f"[감시 테스트]   ✗ 점프 액션 예외: {e}")
+
+                            logger.info(f"[감시 테스트] ★ 감시{i+1} 테스트 완료")
+
+                        except Exception as e:
+                            logger.error(f"[감시 테스트] 전체 오류: {e}")
+                        finally:
+                            # 버튼 상태 복원
+                            watch_running_ref[0] = False
+                            watch_stop_flag_ref[0] = False
+                            try:
+                                if watch_play_btn_ref[0]:
+                                    watch_play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400")
+                            except Exception:
+                                pass
+
+                    import threading
+                    threading.Thread(target=run_watch, daemon=True).start()
+
+                # 삭제 버튼 (먼저 pack → 오른쪽)
                 def delete_watch(i=idx):
                     watches_data.pop(i)
                     # 인덱스 재정렬
@@ -2934,6 +3225,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     fg_color=COLORS["error"], hover_color="#c0392b",
                     command=delete_watch,
                 ).pack(side="right")
+
+                # 재생 버튼 (나중에 pack → 삭제 버튼 왼쪽)
+                watch_play_btn = ctk.CTkButton(
+                    header_row, text="▶", width=26, height=24,
+                    font=ctk.CTkFont(size=10),
+                    fg_color="#e67e22", hover_color="#d35400",
+                    text_color="white", corner_radius=4,
+                    command=toggle_watch_play,
+                )
+                watch_play_btn.pack(side="right", padx=(0, 5))
+                watch_play_btn_ref[0] = watch_play_btn
 
                 # === 상세 설정 (펼쳤을 때만 표시) ===
                 if not is_collapsed:
@@ -2985,7 +3287,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     ).pack(side="left", padx=(0, 5))
 
                     option_texts = [opt[0] for opt in action_options]
-                    current_display = action_options[current_goto][0] if 0 <= current_goto < len(action_options) else ""
+                    current_display = "점프 안 함"
+                    for opt_text, opt_idx in action_options:
+                        if opt_idx == current_goto:
+                            current_display = opt_text
+                            break
 
                     goto_combo = ctk.CTkComboBox(
                         row1,
@@ -3280,6 +3586,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """드래그로 검색 범위 선택 (ScreenRegionSelector 사용)"""
         from src.ui.analyzer_view import ScreenRegionSelector
 
+        # 기존 범위 가져오기
+        existing_region = watches_data[watch_index].get("search_region")
+
         def on_region_select(x1, y1, x2, y2):
             """영역 선택 완료"""
             watches_data[watch_index]["search_region"] = [x1, y1, x2, y2]
@@ -3297,8 +3606,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             parent_dialog.grab_set()
             parent_dialog.focus_force()
 
-        # 영역 선택기 열기 (self를 부모로 사용해야 숨겨진 다이얼로그 문제 방지)
-        ScreenRegionSelector(self, on_region_select, on_cancel)
+        # 영역 선택기 열기 (기존 범위 전달)
+        ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region)
 
     def _detach_rule(self, rule: AutomationRule):
         """규칙을 부모에서 분리하여 최상위로 이동"""
