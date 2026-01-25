@@ -547,24 +547,61 @@ class MainWindow(ctk.CTk):
 
     def _create_mini_player_ui(self):
         """미니 플레이어 UI 요소 생성"""
-        # 상단 프레임 (재생목록)
+        # 상단 프레임 (플랜 선택 + 컨트롤)
         top_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
         top_frame.pack(fill="x", padx=10, pady=(10, 5))
 
-        ctk.CTkLabel(
+        # 플랜 드롭다운 (왼쪽)
+        plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
+        self._mini_plan_var = ctk.StringVar(value=plan_names[0] if plan_names else "(플랜 없음)")
+        self._mini_plan_dropdown = ctk.CTkComboBox(
             top_frame,
-            text="재생 목록",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["text_secondary"],
-        ).pack(side="left", padx=10, pady=8)
+            variable=self._mini_plan_var,
+            values=plan_names,
+            width=180,
+            height=28,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            button_color=COLORS["accent"],
+            button_hover_color=COLORS["accent_hover"],
+            dropdown_fg_color=COLORS["bg_card"],
+            dropdown_hover_color=COLORS["bg_card_hover"],
+            font=ctk.CTkFont(size=11),
+            state="readonly",
+        )
+        self._mini_plan_dropdown.pack(side="left", padx=(10, 5), pady=8)
+
+        # 부분실행 버튼
+        ctk.CTkButton(
+            top_frame,
+            text="📋",
+            width=28,
+            height=28,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["border"],
+            font=ctk.CTkFont(size=12),
+            command=self._open_partial_execution,
+        ).pack(side="left", padx=2, pady=8)
+
+        # 새로고침 버튼
+        ctk.CTkButton(
+            top_frame,
+            text="🔄",
+            width=28,
+            height=28,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["border"],
+            font=ctk.CTkFont(size=12),
+            command=self._refresh_mini_plans,
+        ).pack(side="left", padx=2, pady=8)
 
         # 에디터 모드 전환 버튼 (오른쪽 끝)
         ctk.CTkButton(
             top_frame,
-            text="✏ 에디터",
-            width=70,
-            height=26,
-            font=ctk.CTkFont(size=11, weight="bold"),
+            text="✏",
+            width=28,
+            height=28,
+            font=ctk.CTkFont(size=12),
             fg_color=COLORS["bg_card_hover"],
             hover_color=COLORS["border"],
             text_color=COLORS["text_primary"],
@@ -573,12 +610,10 @@ class MainWindow(ctk.CTk):
         ).pack(side="right", padx=(0, 10), pady=8)
 
         # 횟수 설정 (오른쪽)
-        repeat_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
-        repeat_frame.pack(side="right", padx=(0, 10), pady=8)
+        self._mini_repeat_var = ctk.StringVar(value="1")
 
-        # 재생횟수 저장 버튼
         self._mini_repeat_save_btn = ctk.CTkButton(
-            repeat_frame,
+            top_frame,
             text="저장",
             width=35,
             height=28,
@@ -587,20 +622,19 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=10),
             command=self._save_mini_repeat_count,
         )
-        self._mini_repeat_save_btn.pack(side="right", padx=2)
+        self._mini_repeat_save_btn.pack(side="right", padx=2, pady=8)
 
         ctk.CTkLabel(
-            repeat_frame,
+            top_frame,
             text="회",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
         ).pack(side="right")
 
-        self._mini_repeat_var = ctk.StringVar(value="1")
         self._mini_repeat_entry = ctk.CTkEntry(
-            repeat_frame,
+            top_frame,
             textvariable=self._mini_repeat_var,
-            width=40,
+            width=35,
             height=28,
             fg_color=COLORS["bg_dark"],
             border_color=COLORS["border"],
@@ -608,140 +642,96 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=11),
             justify="center",
         )
-        self._mini_repeat_entry.pack(side="right", padx=2)
+        self._mini_repeat_entry.pack(side="right", padx=2, pady=8)
 
         ctk.CTkLabel(
-            repeat_frame,
+            top_frame,
             text="반복:",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
-        ).pack(side="right", padx=(0, 5))
+        ).pack(side="right", padx=(5, 2))
 
-        # 새로고침 버튼
-        ctk.CTkButton(
-            top_frame,
-            text="🔄",
-            width=30,
-            height=26,
-            fg_color=COLORS["bg_dark"],
-            hover_color=COLORS["border"],
-            font=ctk.CTkFont(size=12),
-            command=self._refresh_mini_plans,
-        ).pack(side="right", padx=(0, 5), pady=8)
+        # 컨트롤 프레임 (실행/중지 버튼)
+        ctrl_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        ctrl_frame.pack(fill="x", padx=10, pady=5)
 
-        # 중간 프레임 (플랜 선택 + 부분실행)
-        middle_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
-        middle_frame.pack(fill="x", padx=10, pady=5)
-
-        # 플랜 드롭다운
-        plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
-        self._mini_plan_var = ctk.StringVar(value=plan_names[0] if plan_names else "(플랜 없음)")
-        self._mini_plan_dropdown = ctk.CTkComboBox(
-            middle_frame,
-            variable=self._mini_plan_var,
-            values=plan_names,
-            width=200,
-            height=32,
-            fg_color=COLORS["bg_dark"],
-            border_color=COLORS["border"],
-            button_color=COLORS["accent"],
-            button_hover_color=COLORS["accent_hover"],
-            dropdown_fg_color=COLORS["bg_card"],
-            dropdown_hover_color=COLORS["bg_card_hover"],
-            font=ctk.CTkFont(size=12),
-            state="readonly",
-        )
-        self._mini_plan_dropdown.pack(side="left", padx=10, pady=10)
-
-        # 부분 실행 버튼
-        ctk.CTkButton(
-            middle_frame,
-            text="📋 부분실행",
+        # 버튼들 (왼쪽)
+        self._mini_play_btn = ctk.CTkButton(
+            ctrl_frame,
+            text="▶ 실행",
             width=80,
             height=32,
-            fg_color=COLORS["bg_dark"],
-            hover_color=COLORS["border"],
-            text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=11),
-            command=self._open_partial_execution,
-        ).pack(side="left", padx=(0, 10), pady=10)
-
-        # 하단 프레임 (컨트롤)
-        bottom_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
-        bottom_frame.pack(fill="x", padx=10, pady=(5, 10))
-
-        # 실행/중지 버튼
-        btn_frame = ctk.CTkFrame(bottom_frame, fg_color="transparent")
-        btn_frame.pack(pady=10)
-
-        self._mini_play_btn = ctk.CTkButton(
-            btn_frame,
-            text="▶ 실행",
-            width=100,
-            height=40,
             fg_color=COLORS["success"],
             hover_color="#45a049",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
             command=self._mini_on_play,
         )
-        self._mini_play_btn.pack(side="left", padx=5)
+        self._mini_play_btn.pack(side="left", padx=(10, 5), pady=8)
 
         self._mini_pause_btn = ctk.CTkButton(
-            btn_frame,
-            text="⏸ 일시정지",
-            width=100,
-            height=40,
+            ctrl_frame,
+            text="⏸",
+            width=40,
+            height=32,
             fg_color=COLORS["warning"],
             hover_color="#e6a800",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=14),
             command=self._mini_on_pause,
             state="disabled",
         )
-        self._mini_pause_btn.pack(side="left", padx=5)
+        self._mini_pause_btn.pack(side="left", padx=2, pady=8)
 
         self._mini_stop_btn = ctk.CTkButton(
-            btn_frame,
-            text="■ 중지",
-            width=100,
-            height=40,
+            ctrl_frame,
+            text="■",
+            width=40,
+            height=32,
             fg_color=COLORS["error"],
             hover_color="#d32f2f",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=14),
             command=self._mini_on_stop,
             state="disabled",
         )
-        self._mini_stop_btn.pack(side="left", padx=5)
+        self._mini_stop_btn.pack(side="left", padx=2, pady=8)
 
-        # 상태 표시
+        # 상태 표시 (오른쪽)
         self._mini_status = ctk.CTkLabel(
-            bottom_frame,
+            ctrl_frame,
             text="대기 중",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
         )
-        self._mini_status.pack(pady=(0, 10))
+        self._mini_status.pack(side="right", padx=10, pady=8)
 
-        # 로그 영역 (최소 높이 200)
-        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"], height=200)
+        # 로그 영역 (남은 공간 전체 사용)
+        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
         log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        log_frame.pack_propagate(False)  # 자식 위젯에 의해 크기가 줄어들지 않도록
 
         ctk.CTkLabel(
             log_frame,
             text="실행 로그",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
-        ).pack(anchor="w", padx=10, pady=(8, 5))
+        ).pack(anchor="w", padx=10, pady=(5, 3))
 
         self._mini_log_text = ctk.CTkTextbox(
             log_frame,
             fg_color=COLORS["bg_dark"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(family="Consolas", size=11),
+            font=ctk.CTkFont(family="Consolas", size=14),
             wrap="word",
-            height=150,
         )
         self._mini_log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # 로그 색상 태그 설정
+        self._mini_log_text._textbox.tag_configure("DEBUG", foreground="#88c0d0")
+        self._mini_log_text._textbox.tag_configure("INFO", foreground=COLORS["success"])
+        self._mini_log_text._textbox.tag_configure("WARNING", foreground=COLORS["warning"])
+        self._mini_log_text._textbox.tag_configure("ERROR", foreground=COLORS["error"])
+        self._mini_log_text._textbox.tag_configure("ansi_cyan", foreground="#8be9fd")
+        self._mini_log_text._textbox.tag_configure("ansi_green", foreground="#50fa7b")
+        self._mini_log_text._textbox.tag_configure("ansi_yellow", foreground="#f1fa8c")
+        self._mini_log_text._textbox.tag_configure("ansi_pink", foreground="#ff79c6")
 
         # 로그 핸들러 설정
         self._setup_mini_log_handler()
