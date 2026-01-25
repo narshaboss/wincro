@@ -1088,6 +1088,74 @@ class MainWindow(ctk.CTk):
             logger.error(f"[미니플레이어] 플랜 실행 오류: {e}")
             self.after(0, lambda: self._mini_on_complete(False, str(e)))
 
+    def auto_run_plan(self, plan_path: str) -> bool:
+        """시작 시 자동 실행 - 지정된 플랜 파일 실행 (플레이 모드 전용)"""
+        import json
+        from pathlib import Path
+
+        logger.info(f"[자동실행] 플랜 자동 실행 시작: {plan_path}")
+
+        try:
+            plan_file = Path(plan_path)
+            if not plan_file.exists():
+                logger.error(f"[자동실행] 플랜 파일 없음: {plan_path}")
+                self._mini_status.configure(text="⚠ 자동실행 플랜 없음")
+                return False
+
+            # 플랜 로드
+            with open(plan_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                templates_dir = DATA_DIR / "templates"
+                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+
+            logger.info(f"[자동실행] 플랜 로드 성공: {plan.name}")
+
+            # 드롭다운에서 해당 플랜 선택 (UI 동기화)
+            if hasattr(self, '_mini_plan_var'):
+                self._mini_plan_var.set(plan.name)
+
+            # 횟수 설정 (미니 플레이어에 설정된 값 사용)
+            try:
+                repeat_count = int(self._mini_repeat_var.get())
+                if repeat_count < 1:
+                    repeat_count = 1
+                elif repeat_count > 9999:
+                    repeat_count = 9999
+            except (ValueError, AttributeError):
+                repeat_count = 1
+            self._mini_total_repeat = repeat_count
+            self._mini_current_repeat = 0
+            logger.info(f"[자동실행] 반복 횟수: {repeat_count}회")
+
+            # RuleExecutor 생성 및 실행
+            self._rule_executor = RuleExecutor()
+            self._rule_executor.set_callbacks(
+                on_progress=self._mini_on_progress,
+                on_complete=self._mini_on_repeat_complete,
+            )
+
+            self._is_running = True
+            self._mini_play_btn.configure(state="disabled")
+            self._mini_pause_btn.configure(state="normal")
+            self._mini_stop_btn.configure(state="normal")
+            self._mini_status.configure(text=f"▶ 자동실행 중... (1/{repeat_count}회)")
+
+            # 비동기 실행
+            import threading
+            thread = threading.Thread(
+                target=self._mini_execute_plan,
+                args=(plan,),
+                daemon=True
+            )
+            thread.start()
+            logger.info(f"[자동실행] 실행 스레드 시작")
+            return True
+
+        except Exception as e:
+            logger.error(f"[자동실행] 실행 오류: {e}")
+            self._mini_status.configure(text=f"✗ 자동실행 오류: {e}")
+            return False
+
     def _mini_on_pause(self):
         """미니 플레이어 - 일시중지/재개"""
         if not self._rule_executor:

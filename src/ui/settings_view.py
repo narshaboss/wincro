@@ -540,6 +540,87 @@ class SettingsView(BaseView):
             help_text="PC 부팅시 자동 시작"
         )
 
+        # 구분선
+        ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=10)
+
+        # 자동 실행 설정 라벨
+        auto_run_label = ctk.CTkLabel(
+            scroll_frame,
+            text="프로그램 시작 시 자동 실행",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        auto_run_label.pack(anchor="w", padx=10)
+
+        auto_run_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        auto_run_frame.pack(fill="x", padx=10, pady=(5, 10))
+
+        # 자동 실행 활성화 토글
+        self._auto_run_enabled_var = ctk.BooleanVar()
+        self._create_checkbox_with_help(
+            auto_run_frame,
+            "활성화",
+            self._auto_run_enabled_var,
+            help_text="프로그램 시작 시 지정한 플랜 자동 실행"
+        )
+
+        # 플랜 선택 드롭다운
+        plan_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        plan_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        plan_label = ctk.CTkLabel(
+            plan_frame,
+            text="플랜:",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+            width=50,
+            anchor="w",
+        )
+        plan_label.pack(side="left")
+
+        # 플랜 목록 로드
+        self._auto_run_plan_list = self._load_plan_list()
+        plan_names = [p["name"] for p in self._auto_run_plan_list] if self._auto_run_plan_list else ["(플랜 없음)"]
+
+        self._auto_run_plan_var = ctk.StringVar()
+        self._auto_run_plan_dropdown = ctk.CTkComboBox(
+            plan_frame,
+            variable=self._auto_run_plan_var,
+            values=plan_names,
+            width=250,
+            height=28,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            dropdown_fg_color=COLORS["bg_card"],
+            dropdown_hover_color=COLORS["bg_dark"],
+            command=self._on_auto_run_plan_changed,
+        )
+        self._auto_run_plan_dropdown.pack(side="left", padx=(5, 0))
+
+    def _load_plan_list(self) -> list:
+        """플랜 목록 로드"""
+        import json
+        from ..utils.config import DATA_DIR
+
+        plans = []
+        plans_dir = DATA_DIR / "plans"
+        if plans_dir.exists():
+            for plan_file in plans_dir.glob("*.json"):
+                try:
+                    with open(plan_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        plans.append({
+                            "name": data.get("name", plan_file.stem),
+                            "path": str(plan_file)
+                        })
+                except Exception:
+                    pass
+        return plans
+
+    def _on_auto_run_plan_changed(self, selected_name: str) -> None:
+        """플랜 선택 변경 시"""
+        self._on_setting_changed()
+
     def _setup_appearance_settings(self, parent) -> None:
         """외관 설정 + 버튼 섹션"""
         card = self.create_card(parent, title=SETTINGS["appearance"])
@@ -1907,6 +1988,18 @@ del "%~f0"
         self._retry_var.set(str(config.player.retry_count))
         self._stop_key_var.set(config.player.emergency_stop_key)
         self._auto_start_var.set(config.ui.auto_start)
+        self._auto_run_enabled_var.set(config.player.auto_run_enabled)
+        # 저장된 경로를 플랜 이름으로 변환
+        saved_path = config.player.auto_run_plan
+        plan_name = ""
+        for p in self._auto_run_plan_list:
+            if p["path"] == saved_path:
+                plan_name = p["name"]
+                break
+        if plan_name:
+            self._auto_run_plan_var.set(plan_name)
+        elif self._auto_run_plan_list:
+            self._auto_run_plan_var.set(self._auto_run_plan_list[0]["name"])
 
         # 외관 설정
         self._app_name_var.set(config.ui.app_name)
@@ -1985,6 +2078,15 @@ del "%~f0"
             validation_errors.append("재시도 횟수는 0-100 사이의 숫자여야 합니다")
 
         config.player.emergency_stop_key = self._stop_key_var.get()
+        config.player.auto_run_enabled = self._auto_run_enabled_var.get()
+        # 플랜 이름을 경로로 변환하여 저장
+        selected_plan_name = self._auto_run_plan_var.get()
+        plan_path = ""
+        for p in self._auto_run_plan_list:
+            if p["name"] == selected_plan_name:
+                plan_path = p["path"]
+                break
+        config.player.auto_run_plan = plan_path
 
         # 자동 시작 설정
         new_auto_start = self._auto_start_var.get()

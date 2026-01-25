@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.59"
+APP_VERSION = "1.0.61"
 
 
 @dataclass
@@ -69,6 +69,8 @@ class PlayerConfig:
     retry_delay_ms: int = 1000  # 재시도 대기 시간
     emergency_stop_key: str = "escape"  # 긴급 중지 키
     emergency_stop_count: int = 2  # 긴급 중지 키 입력 횟수
+    auto_run_enabled: bool = False  # 시작 시 자동 실행 활성화
+    auto_run_plan: str = ""  # 자동 실행할 플랜 파일 경로
 
 
 @dataclass

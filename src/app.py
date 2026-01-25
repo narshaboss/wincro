@@ -127,6 +127,11 @@ class WinCroApp:
             else:
                 logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
 
+            # 시작 시 자동 실행 (플레이 모드 + 설정된 경우) - 5초 후 (업데이트/아두이노 연결 완료 대기)
+            if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.auto_run_plan:
+                logger.info(f"[자동실행] 5초 후 플랜 자동 실행 예약: {self._config.player.auto_run_plan}")
+                self._main_window.after(5000, self._auto_run_plan)
+
             logger.info("애플리케이션 실행")
             self._main_window.mainloop()
 
@@ -175,6 +180,21 @@ class WinCroApp:
     def get_statistics(self) -> dict:
         """애플리케이션 통계 조회"""
         return self._db.get_statistics()
+
+    def _auto_run_plan(self) -> None:
+        """시작 시 자동 실행 - 지정된 플랜 실행"""
+        try:
+            plan_path = self._config.player.auto_run_plan
+            if not plan_path:
+                logger.warning("[자동실행] 플랜 경로가 설정되지 않음")
+                return
+
+            if self._main_window and hasattr(self._main_window, 'auto_run_plan'):
+                self._main_window.auto_run_plan(plan_path)
+            else:
+                logger.error("[자동실행] main_window에 auto_run_plan 메서드 없음")
+        except Exception as e:
+            logger.error(f"[자동실행] 오류: {e}")
 
     def _auto_connect_arduino(self) -> None:
         """아두이노 자동 연결"""

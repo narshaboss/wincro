@@ -514,6 +514,133 @@ if self._dxcam_camera is not None:
 **수정된 파일:**
 - `src/recorder/screen_recorder.py` - `_init_dxcam()` 함수 수정, `_cleanup()` dxcam 해제 추가
 
+### 2026-01-26: 프로그램 시작 시 자동 실행 기능 추가 (v1.0.60 ~ v1.0.61)
+
+**기능:** 플레이 모드에서 프로그램 시작 시 지정한 플랜 자동 실행
+
+**구현 내용:**
+
+#### 1. 설정 추가 (config.py - PlayerConfig)
+| 설정 | 설명 |
+|------|------|
+| `auto_run_enabled` | 자동 실행 활성화 여부 |
+| `auto_run_plan` | 자동 실행할 플랜 파일 경로 |
+
+#### 2. 환경설정 UI (settings_view.py)
+- 재생 설정에 "프로그램 시작 시 자동 실행" 섹션 추가
+- 활성화 토글
+- 플랜 선택 드롭다운 (분석된 플랜 목록 표시)
+
+#### 3. 자동 실행 로직 (app.py, main_window.py)
+- **플레이 모드일 때만** 동작
+- 5초 후 실행 (업데이트 확인, 아두이노 연결 완료 대기)
+- 미니 플레이어에 설정된 **반복 횟수** 적용
+
+**사용법:**
+1. 환경설정 → 재생 → "프로그램 시작 시 자동 실행" 활성화
+2. 드롭다운에서 실행할 플랜 선택
+3. 미니 플레이어에서 반복 횟수 설정 (예: 4회)
+4. 창 모드를 "플레이 모드"로 변경
+5. 프로그램 재시작 → 5초 후 자동 실행 (설정한 횟수만큼 반복)
+
+**수정된 파일:**
+- `src/utils/config.py` - PlayerConfig에 auto_run_enabled, auto_run_plan 추가
+- `src/ui/settings_view.py` - 자동 실행 설정 UI 추가
+- `src/ui/main_window.py` - auto_run_plan() 메서드 추가
+- `src/app.py` - _auto_run_plan() 메서드 추가, 5초 후 실행 예약
+
+---
+
+### 2026-01-25: 인식률 설정 통일 및 "다음 화면 대기" 버그 수정 (v1.0.53 ~ v1.0.59)
+
+**증상:**
+- 모니터링 액션을 **부분 실행**하면 인식률 97%로 정상 감지
+- 이전 액션에서 **순차 실행**으로 넘어오면 "인식률 부족: 0.49 < 0.65" 에러 발생
+- 사용자가 80% 인식률을 설정했는데 로그에는 0.65로 표시됨
+
+**원인 분석:**
+
+#### 1. 용어 혼란 (v1.0.53)
+| 문제 | 해결 |
+|------|------|
+| 로그에 "신뢰도", "임계값" 혼용 | 모든 로그를 "인식률"로 통일 |
+
+#### 2. 중복된 인식률 설정 (v1.0.53)
+| 문제 | 해결 |
+|------|------|
+| `rule.confidence`, `watch.confidence`, `monitor_action.confidence` 3개 존재 | `rule.confidence`만 남기고 모두 제거 |
+| 어떤 설정이 실제로 적용되는지 혼란 | UI에서 감시 이미지 인식률 슬라이더 제거 |
+
+#### 3. 인식률 변경이 JSON에 저장 안 됨 (v1.0.55)
+| 문제 | 해결 |
+|------|------|
+| UI에서 인식률 변경 시 `_modified = True`만 설정 | `_save_plan()` 즉시 호출 추가 |
+| JSON 파일에는 이전 값 유지됨 | 변경 즉시 파일에 저장 |
+
+```python
+# player_view.py 수정
+def save_confidence_only():
+    rule.confidence = conf_var.get() / 100.0
+    logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
+    self._modified = True
+    self._save_plan()  # 추가: JSON 파일에 즉시 저장
+```
+
+#### 4. "다음 화면 대기" 하드코딩된 임계값 (v1.0.56~v1.0.59)
+
+**"다음 화면 대기"란?**
+- 현재 액션 완료 후, **다음 액션의 타겟 이미지**가 화면에 나타날 때까지 대기하는 기능
+- 화면 전환이 완료됐는지 확인하는 용도
+
+| 문제 | 해결 |
+|------|------|
+| 하드코딩된 `0.65` 임계값 사용 | v1.0.56: `next_rule.confidence` 사용으로 변경 |
+| 검색 범위(`search_region`) 미적용 | v1.0.57: 다음 액션의 검색 범위 계산 및 전달 |
+| 사용자 인식률(80%)이 타겟 이미지에도 적용됨 | v1.0.58~59: **45% 고정**으로 변경 |
+
+**핵심 문제:**
+- 사용자가 설정한 80%는 **감시 이미지** 감지용
+- "다음 화면 대기"는 **타겟 이미지** 확인용 (다른 목적)
+- 타겟 이미지가 46%로만 매칭되는데 80% 임계값 적용 → 실패
+- 부분 실행 시에는 "다음 화면 대기" 없이 바로 감시 모드 진입 → 정상 작동
+
+```python
+# rule_executor.py - v1.0.59 최종 수정
+# "다음 화면 대기"는 화면 전환 확인용이므로 낮은 임계값(0.45) 사용
+next_confidence = 0.45  # 다음 화면 대기는 고정 45%
+
+# 다음 액션의 검색 범위 계산
+next_search_region = None
+if next_rule:
+    next_search_radius = getattr(next_rule, 'search_radius', 0) or 0
+    next_action_x = getattr(next_rule, 'action_x', None)
+    next_action_y = getattr(next_rule, 'action_y', None)
+    if next_search_radius > 0 and next_action_x is not None and next_action_y is not None:
+        import pyautogui
+        screen_w, screen_h = pyautogui.size()
+        x1 = max(0, next_action_x - next_search_radius)
+        y1 = max(0, next_action_y - next_search_radius)
+        x2 = min(screen_w, next_action_x + next_search_radius)
+        y2 = min(screen_h, next_action_y + next_search_radius)
+        next_search_region = [x1, y1, x2, y2]
+
+location = self._find_image_on_screen(next_target_image, next_confidence, search_region=next_search_region)
+```
+
+**수정된 파일:**
+- `src/player/rule_executor.py` - "다음 화면 대기" 로직, 로그 메시지
+- `src/ui/player_view.py` - 인식률 저장 로직, 감시 이미지 슬라이더 제거
+- `src/ui/analyzer_view.py` - UI 라벨 변경
+- `src/i18n/ko.py` - "신뢰도" → "인식률" 번역 변경
+- `src/utils/config.py` - 버전 업데이트 (1.0.53 → 1.0.59)
+
+**교훈:**
+- 같은 "이미지 인식률"이라도 용도가 다르면 별도 설정이 필요
+- 하드코딩된 값은 나중에 문제 찾기 어려움
+- 부분 실행과 순차 실행의 코드 경로가 다를 수 있음
+
+---
+
 ## 메모
 
 - 개발 완료: 2026-01-16
@@ -521,7 +648,7 @@ if self._dxcam_camera is not None:
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-21
+- 마지막 업데이트: 2026-01-26
 
 ---
 이 파일은 Claude가 자동으로 업데이트합니다.
