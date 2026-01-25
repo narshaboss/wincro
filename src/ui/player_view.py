@@ -1874,12 +1874,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 클릭한 규칙의 인덱스 찾기 (rule_id로 비교 - 객체 동일성 대신)
         rule_index = -1
-        logger.debug(f"[부분실행] 검색할 rule_id={rule.rule_id}, 전체 {len(all_rules_flat)}개 규칙")
+        logger.info(f"[부분실행] 검색할 rule_id={rule.rule_id}, action_type={rule.action_type}, 전체 {len(all_rules_flat)}개 규칙")
+        # 처음 10개와 마지막 5개 rule_id 표시 (디버그용)
+        if len(all_rules_flat) > 0:
+            preview = [f"{r.rule_id}:{r.action_type}" for r in all_rules_flat[:10]]
+            logger.info(f"[부분실행] 규칙 목록(앞10개): {preview}")
         for idx, r in enumerate(all_rules_flat):
-            logger.debug(f"[부분실행] [{idx}] rule_id={r.rule_id}, type={r.action_type}")
             if r.rule_id == rule.rule_id:
                 rule_index = idx
-                logger.info(f"[부분실행] 원본에서 찾음: idx={idx}")
+                logger.info(f"[부분실행] 원본에서 찾음: idx={idx}, 해당액션={r.action_type}")
                 break
 
         if rule_index < 0:
@@ -1895,6 +1898,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 r_copy = copy.copy(r)
                 r_copy.children = []  # children 비움 (이미 평탄화됨)
                 rules_to_run.append(r_copy)
+            # 첫 번째 액션 확인 로그
+            if rules_to_run:
+                first_r = rules_to_run[0]
+                logger.info(f"[부분실행] 첫번째 액션: rule_id={first_r.rule_id}, type={first_r.action_type}, desc={first_r.description}")
 
         # 실행할 액션 개수 (이미 평탄화됨)
         remaining_count = len(rules_to_run)
@@ -1935,12 +1942,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 logger.debug(f"[부분실행] from_dict 완료")
                 # 리로드된 플랜으로 규칙 재구성
                 all_rules_flat = flatten_rules(reloaded_plan.initial_rules)
+                logger.info(f"[부분실행] 리로드 후 전체 {len(all_rules_flat)}개 규칙")
                 # 인덱스 다시 찾기 (초기화 후 검색)
                 rule_index = -1  # 초기화 추가
                 for idx, r in enumerate(all_rules_flat):
                     if r.rule_id == rule.rule_id:
                         rule_index = idx
-                        logger.debug(f"[부분실행] 리로드 후 rule_id={rule.rule_id} 찾음, idx={idx}")
+                        logger.info(f"[부분실행] 리로드 후 찾음: idx={idx}, 해당액션={r.action_type}")
                         break
                 if rule_index >= 0:
                     import copy
@@ -1952,11 +1960,24 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     remaining_count = len(rules_to_run)
                     # 리로드 성공 시 리로드된 플랜의 규칙 사용
                     original_initial_rules = reloaded_plan.initial_rules
+                    # 리로드 후 첫 번째 액션 확인
+                    if rules_to_run:
+                        first_r = rules_to_run[0]
+                        logger.info(f"[부분실행] 리로드 후 첫번째 액션: rule_id={first_r.rule_id}, type={first_r.action_type}")
+                else:
+                    # 리로드 후 찾지 못하면 클릭한 규칙만 단독 실행
+                    logger.warning(f"[부분실행] 리로드 후 rule_id={rule.rule_id}를 찾지 못함! 클릭한 규칙만 실행")
+                    rules_to_run = [rule]
+                    remaining_count = 1
                 logger.info(f"[부분실행] 플랜 최신 버전 로드됨")
         except Exception as e:
             logger.warning(f"[부분실행] 플랜 리로드 실패, 기존 데이터 사용: {e}")
 
         logger.info(f"[부분실행] 준비: {rule.description or rule.action_type} ({remaining_count}개 액션)")
+        # 최종 확인: 실행할 첫번째 액션
+        if rules_to_run:
+            final_first = rules_to_run[0]
+            logger.info(f"[부분실행] 최종 실행 첫번째: rule_id={final_first.rule_id}, type={final_first.action_type}, desc={final_first.description}")
 
         # 부분 plan 생성
         partial_plan = AutomationPlan(
