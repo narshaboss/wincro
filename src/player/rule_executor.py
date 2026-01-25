@@ -880,11 +880,27 @@ class RuleExecutor:
                     # 다음 액션의 인식률 사용 (하드코딩 0.65 제거)
                     next_confidence = getattr(next_rule, 'confidence', 0.65) if next_rule else 0.65
                     next_confidence = next_confidence if next_confidence > 0 else 0.65
+
+                    # 다음 액션의 검색 범위 계산 (search_radius가 있으면 사용)
+                    next_search_region = None
+                    if next_rule:
+                        next_search_radius = getattr(next_rule, 'search_radius', 0) or 0
+                        next_action_x = getattr(next_rule, 'action_x', None)
+                        next_action_y = getattr(next_rule, 'action_y', None)
+                        if next_search_radius > 0 and next_action_x is not None and next_action_y is not None:
+                            import pyautogui
+                            screen_w, screen_h = pyautogui.size()
+                            x1 = max(0, next_action_x - next_search_radius)
+                            y1 = max(0, next_action_y - next_search_radius)
+                            x2 = min(screen_w, next_action_x + next_search_radius)
+                            y2 = min(screen_h, next_action_y + next_search_radius)
+                            next_search_region = [x1, y1, x2, y2]
+
                     if waited == 0:
-                        logger.debug(f"  [DEBUG] 이미지 검색 시작 (인식률={next_confidence:.0%})")
+                        logger.debug(f"  [DEBUG] 이미지 검색 시작 (인식률={next_confidence:.0%}, 검색범위={next_search_region})")
 
                     search_start = time.time()
-                    location = self._find_image_on_screen(next_target_image, next_confidence)
+                    location = self._find_image_on_screen(next_target_image, next_confidence, search_region=next_search_region)
                     search_time = time.time() - search_start
 
                     # 검색이 오래 걸리면 로그
