@@ -129,6 +129,15 @@ class AutomationRule:
             watch_copy = watch.copy()
             if "image" in watch_copy and watch_copy["image"]:
                 watch_copy["image"] = _to_relative_path(watch_copy["image"])
+            # monitor_actions 내의 이미지 경로도 변환
+            if "monitor_actions" in watch_copy:
+                actions_copy = []
+                for action in watch_copy["monitor_actions"]:
+                    action_copy = action.copy()
+                    if "image" in action_copy and action_copy["image"]:
+                        action_copy["image"] = _to_relative_path(action_copy["image"])
+                    actions_copy.append(action_copy)
+                watch_copy["monitor_actions"] = actions_copy
             watches_for_save.append(watch_copy)
 
         return {
@@ -193,6 +202,15 @@ class AutomationRule:
             watch_copy = watch.copy()
             if "image" in watch_copy and watch_copy["image"]:
                 watch_copy["image"] = _to_absolute_path(watch_copy["image"], templates_dir)
+            # monitor_actions 내의 이미지 경로도 절대 경로로 복원
+            if "monitor_actions" in watch_copy:
+                actions_copy = []
+                for action in watch_copy["monitor_actions"]:
+                    action_copy = action.copy()
+                    if "image" in action_copy and action_copy["image"]:
+                        action_copy["image"] = _to_absolute_path(action_copy["image"], templates_dir)
+                    actions_copy.append(action_copy)
+                watch_copy["monitor_actions"] = actions_copy
             watches_restored.append(watch_copy)
 
         # target_images 복원

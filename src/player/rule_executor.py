@@ -2155,27 +2155,33 @@ class RuleExecutor:
                         search_region = [x1, y1, x2, y2]
                         logger.debug(f"[이미지 클릭] search_radius로 범위 계산: {search_region}")
 
-                if image_path and Path(image_path).exists():
-                    location = self._find_image_on_screen(image_path, search_confidence, search_region=search_region)
-                    if location:
-                        x, y = location[0], location[1]
-                        conf = location[2] if len(location) > 2 else 0
-                        logger.info(f"[이미지 클릭] 찾음! 위치=({x}, {y}), 신뢰도={conf:.2f}")
-                        input_ctrl = get_input_controller()
-                        input_ctrl.move_to(x, y, duration=self._mouse_duration)
-                        time.sleep(0.05)
-                        if click_type == 'double_click':
-                            input_ctrl.double_click()  # 이미 이동했으므로 좌표 없이 클릭
-                            return f"이미지 더블클릭: {Path(image_path).name}"
-                        elif click_type == 'right_click':
-                            input_ctrl.right_click()  # 이미 이동했으므로 좌표 없이 클릭
-                            return f"이미지 우클릭: {Path(image_path).name}"
-                        else:
-                            input_ctrl.click()  # 이미 이동했으므로 좌표 없이 클릭
-                            return f"이미지 클릭: {Path(image_path).name}"
+                if not image_path:
+                    logger.warning(f"[이미지 클릭] 이미지 경로가 설정되지 않음")
+                    return None
+                if not Path(image_path).exists():
+                    logger.warning(f"[이미지 클릭] 이미지 파일 없음: {image_path}")
+                    return None
+
+                location = self._find_image_on_screen(image_path, search_confidence, search_region=search_region)
+                if location:
+                    x, y = location[0], location[1]
+                    conf = location[2] if len(location) > 2 else 0
+                    logger.info(f"[이미지 클릭] 찾음! 위치=({x}, {y}), 신뢰도={conf:.2f}")
+                    input_ctrl = get_input_controller()
+                    input_ctrl.move_to(x, y, duration=self._mouse_duration)
+                    time.sleep(0.05)
+                    if click_type == 'double_click':
+                        input_ctrl.double_click()  # 이미 이동했으므로 좌표 없이 클릭
+                        return f"이미지 더블클릭: {Path(image_path).name}"
+                    elif click_type == 'right_click':
+                        input_ctrl.right_click()  # 이미 이동했으므로 좌표 없이 클릭
+                        return f"이미지 우클릭: {Path(image_path).name}"
                     else:
-                        logger.warning(f"  모니터링 액션 이미지 찾지 못함: {Path(image_path).name}")
-                        return None
+                        input_ctrl.click()  # 이미 이동했으므로 좌표 없이 클릭
+                        return f"이미지 클릭: {Path(image_path).name}"
+                else:
+                    logger.warning(f"  모니터링 액션 이미지 찾지 못함: {Path(image_path).name}")
+                    return None
 
             elif action_type == '스크롤':
                 amount = monitor_action.get('amount', 0)
