@@ -996,6 +996,11 @@ class MainWindow(ctk.CTk):
                     data = json.load(f)
                     templates_dir = DATA_DIR / "templates"
                     selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                # 모니터링 모드 확인 로그
+                for idx, rule in enumerate(selected_plan.initial_rules):
+                    if getattr(rule, 'is_monitoring_mode', False):
+                        watches = getattr(rule, 'monitoring_watches', []) or []
+                        logger.info(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
                 logger.info(f"[미니플레이어] 플랜 최신 버전 로드: {plan_name}")
             except Exception as e:
                 logger.warning(f"[미니플레이어] 플랜 재로드 실패, 캐시 사용: {e}")

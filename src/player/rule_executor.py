@@ -645,6 +645,7 @@ class RuleExecutor:
                 self._update_progress(f"[{step_num}] {action_name}")
 
                 # 모니터링 모드인 경우 별도 처리
+                logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}")
                 if getattr(rule, 'is_monitoring_mode', False):
                     result = self._execute_monitoring_mode(rule, all_rules, i)
                     self._results.append(result)
