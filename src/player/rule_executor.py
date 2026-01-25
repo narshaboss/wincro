@@ -877,11 +877,14 @@ class RuleExecutor:
                             pause_wait_start = time.time()
 
                     # 이미지 검색 시작 로그 (첫 번째만)
+                    # 다음 액션의 인식률 사용 (하드코딩 0.65 제거)
+                    next_confidence = getattr(next_rule, 'confidence', 0.65) if next_rule else 0.65
+                    next_confidence = next_confidence if next_confidence > 0 else 0.65
                     if waited == 0:
-                        logger.debug(f"  [DEBUG] 이미지 검색 시작")
+                        logger.debug(f"  [DEBUG] 이미지 검색 시작 (인식률={next_confidence:.0%})")
 
                     search_start = time.time()
-                    location = self._find_image_on_screen(next_target_image, 0.65)
+                    location = self._find_image_on_screen(next_target_image, next_confidence)
                     search_time = time.time() - search_start
 
                     # 검색이 오래 걸리면 로그
