@@ -2356,6 +2356,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.confidence = conf_var.get() / 100.0
             logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
             self._modified = True
+            self._save_plan()  # JSON 파일에 즉시 저장
             from tkinter import messagebox
             messagebox.showinfo("저장 완료", f"인식률이 {int(conf_var.get())}%로 저장되었습니다.")
 
@@ -2385,10 +2386,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except ValueError:
                 rule.trigger_x = None
                 rule.trigger_y = None
-            # 신뢰도 저장
+            # 인식률 저장
             rule.confidence = conf_var.get() / 100.0
             logger.info(f"트리거 이미지 인식률 설정: {int(conf_var.get())}%")
             self._modified = True
+            self._save_plan()  # JSON 파일에 즉시 저장
             dialog.destroy()
 
         ctk.CTkButton(

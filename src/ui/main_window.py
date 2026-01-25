@@ -1019,6 +1019,8 @@ class MainWindow(ctk.CTk):
                     selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
                 # 모니터링 모드 확인 로그 (디버그용 상세 출력)
                 for idx, rule in enumerate(selected_plan.initial_rules):
+                    rule_conf = getattr(rule, 'confidence', 0)
+                    logger.info(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
                     if getattr(rule, 'is_monitoring_mode', False):
                         watches = getattr(rule, 'monitoring_watches', []) or []
                         logger.info(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
