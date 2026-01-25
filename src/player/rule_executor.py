@@ -770,7 +770,7 @@ class RuleExecutor:
         # trigger_image가 설정되어 있으면 해당 이미지가 나타날 때까지 대기
         if rule.trigger_image:
             timeout = rule.timeout if rule.timeout > 0 else 30.0
-            trigger_confidence = rule.confidence if rule.confidence > 0 else 0.7
+            trigger_confidence = rule.confidence if rule.confidence > 0 else 0.65
             self._update_progress(f"트리거 대기 중: {rule.description}")
 
             # 새로운 단순화된 트리거 대기
@@ -878,7 +878,7 @@ class RuleExecutor:
                         logger.debug(f"  [DEBUG] 이미지 검색 시작")
 
                     search_start = time.time()
-                    location = self._find_image_on_screen(next_target_image, 0.7)
+                    location = self._find_image_on_screen(next_target_image, 0.65)
                     search_time = time.time() - search_start
 
                     # 검색이 오래 걸리면 로그
@@ -1581,7 +1581,7 @@ class RuleExecutor:
     def _wait_for_trigger(
         self,
         image_path: str,
-        confidence: float = 0.7,
+        confidence: float = 0.65,
         timeout: float = 30.0,
     ) -> Optional[tuple]:
         """
@@ -2221,7 +2221,7 @@ class RuleExecutor:
             (성공여부, 메시지) 튜플
         """
         try:
-            result = self._execute_monitor_action(monitor_action, confidence=0.7)
+            result = self._execute_monitor_action(monitor_action, confidence=0.65)
             if result:
                 return True, result
             else:
