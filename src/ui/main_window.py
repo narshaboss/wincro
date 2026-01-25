@@ -803,7 +803,7 @@ class MainWindow(ctk.CTk):
 
         handler = GUILogHandler(add_log, max_lines=100)
         handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', '%H:%M:%S'))
-        handler.setLevel(logging.INFO)
+        handler.setLevel(logging.DEBUG)
         logging.getLogger().addHandler(handler)
 
     def _show_mode_menu(self):
