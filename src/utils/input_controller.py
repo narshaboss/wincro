@@ -6,7 +6,6 @@ pyautogui와 Arduino HID를 추상화하여 설정에 따라 적절한 입력 �
 
 import time
 import ctypes
-import threading
 from typing import Optional, List, Tuple
 import pyautogui
 
@@ -27,44 +26,41 @@ def _release_mouse_capture():
 # 전역 Arduino HID 인스턴스 (지연 로딩)
 _arduino_hid = None
 _arduino_load_failed = False  # 로드 실패 플래그
-_arduino_lock = threading.Lock()  # 스레드 안전성
 
 
 def _get_arduino():
-    """Arduino HID 인스턴스 반환 (지연 로딩, 재시도 지원, 스레드 안전)"""
+    """Arduino HID 인스턴스 반환 (지연 로딩, 재시도 지원)"""
     global _arduino_hid, _arduino_load_failed
 
-    with _arduino_lock:
-        # 이미 연결되어 있으면 반환
-        if _arduino_hid is not None:
-            return _arduino_hid
-
-        # 이전에 모듈 로드 자체가 실패했으면 None 반환 (ImportError는 재시도 의미 없음)
-        if _arduino_load_failed:
-            return None
-
-        try:
-            from .arduino_hid import get_arduino_hid
-            _arduino_hid = get_arduino_hid()
-        except ImportError:
-            logger.warning("Arduino HID 모듈을 불러올 수 없습니다")
-            _arduino_load_failed = True
-            _arduino_hid = None
-        except Exception as e:
-            # 연결 실패는 다음에 재시도 가능
-            logger.debug(f"Arduino HID 초기화 실패 (재시도 가능): {e}")
-            _arduino_hid = None
-
+    # 이미 연결되어 있으면 반환
+    if _arduino_hid is not None:
         return _arduino_hid
+
+    # 이전에 모듈 로드 자체가 실패했으면 None 반환 (ImportError는 재시도 의미 없음)
+    if _arduino_load_failed:
+        return None
+
+    try:
+        from .arduino_hid import get_arduino_hid
+        _arduino_hid = get_arduino_hid()
+    except ImportError:
+        logger.warning("Arduino HID 모듈을 불러올 수 없습니다")
+        _arduino_load_failed = True
+        _arduino_hid = None
+    except Exception as e:
+        # 연결 실패는 다음에 재시도 가능
+        logger.debug(f"Arduino HID 초기화 실패 (재시도 가능): {e}")
+        _arduino_hid = None
+
+    return _arduino_hid
 
 
 def reset_arduino_connection():
-    """Arduino 연결 상태 초기화 (재연결 시도용, 스레드 안전)"""
+    """Arduino 연결 상태 초기화 (재연결 시도용)"""
     global _arduino_hid, _arduino_load_failed
-    with _arduino_lock:
-        _arduino_hid = None
-        # ImportError가 아닌 경우에만 재시도 허용
-        # _arduino_load_failed는 그대로 유지
+    _arduino_hid = None
+    # ImportError가 아닌 경우에만 재시도 허용
+    # _arduino_load_failed는 그대로 유지
 
 
 def is_arduino_enabled() -> bool:

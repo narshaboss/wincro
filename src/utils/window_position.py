@@ -22,37 +22,35 @@ _positions_cache: Optional[dict] = None
 
 
 def _load_positions() -> dict:
-    """위치 데이터 로드 (스레드 안전)"""
+    """위치 데이터 로드"""
     global _positions_cache
-    with _positions_lock:
-        if _positions_cache is not None:
-            return _positions_cache
-
-        try:
-            if POSITIONS_FILE.exists():
-                with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
-                    _positions_cache = json.load(f)
-            else:
-                _positions_cache = {}
-        except (json.JSONDecodeError, IOError):
-            _positions_cache = {}
-
+    if _positions_cache is not None:
         return _positions_cache
+
+    try:
+        if POSITIONS_FILE.exists():
+            with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
+                _positions_cache = json.load(f)
+        else:
+            _positions_cache = {}
+    except (json.JSONDecodeError, IOError):
+        _positions_cache = {}
+
+    return _positions_cache
 
 
 def _save_positions(positions: dict) -> bool:
-    """위치 데이터 저장 (스레드 안전)"""
+    """위치 데이터 저장"""
     global _positions_cache
-    with _positions_lock:
-        try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(POSITIONS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(positions, f, ensure_ascii=False, indent=2)
-            _positions_cache = positions
-            return True
-        except IOError as e:
-            logger.error(f"창 위치 저장 실패: {e}")
-            return False
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(POSITIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(positions, f, ensure_ascii=False, indent=2)
+        _positions_cache = positions
+        return True
+    except IOError as e:
+        logger.error(f"창 위치 저장 실패: {e}")
+        return False
 
 
 def get_window_position(window_id: str) -> Optional[Tuple[int, int]]:

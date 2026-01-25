@@ -32,7 +32,6 @@ class DatabaseManager:
 
     _instance: Optional['DatabaseManager'] = None
     _lock: threading.Lock = threading.Lock()
-    _conn_lock: threading.RLock = threading.RLock()  # 연결 동시 접근 방지
 
     def __new__(cls) -> 'DatabaseManager':
         """싱글톤 인스턴스 생성 (스레드 안전)"""
@@ -60,27 +59,26 @@ class DatabaseManager:
 
     @contextmanager
     def _get_connection(self):
-        """데이터베이스 연결 컨텍스트 매니저 (스레드 안전)"""
-        with self._conn_lock:  # 동시 접근 방지
-            conn = None
-            try:
-                conn = sqlite3.connect(self._db_path, timeout=30.0)
-                conn.row_factory = sqlite3.Row
-            except sqlite3.Error as e:
-                logger.error(f"데이터베이스 연결 실패: {e}")
-                raise
+        """데이터베이스 연결 컨텍스트 매니저"""
+        conn = None
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error as e:
+            logger.error(f"데이터베이스 연결 실패: {e}")
+            raise
 
-            try:
-                yield conn
-                conn.commit()
-            except Exception as e:
-                if conn:
-                    conn.rollback()
-                logger.error(f"데이터베이스 오류: {e}")
-                raise
-            finally:
-                if conn:
-                    conn.close()
+        try:
+            yield conn
+            conn.commit()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"데이터베이스 오류: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """테이블 생성"""

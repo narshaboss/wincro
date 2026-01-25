@@ -273,14 +273,6 @@ class ScreenRecorder:
             self._init_error = str(e)
             self._ready_event.set()
         finally:
-            # VideoWriter 정리
-            if self._writer:
-                try:
-                    self._writer.release()
-                except Exception:
-                    pass
-                self._writer = None
-
             # dxcam 정리 (DirectX 리소스 명시적 해제)
             if dxcam_camera:
                 try:
@@ -411,10 +403,9 @@ class ScreenRecorder:
         - 녹화 중: 마지막 캡처된 프레임 반환 (dxcam/mss)
         - 녹화 중 아님: mss로 새로 캡처
         """
-        if self._recording:
+        if self._recording and self._last_frame is not None:
             with self._frame_lock:
-                if self._last_frame is not None:
-                    return self._last_frame.copy()
+                return self._last_frame.copy()
         return self.capture_screenshot()
 
     def save_screenshot(
