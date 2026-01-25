@@ -866,8 +866,10 @@ class MainWindow(ctk.CTk):
 
     def _change_window_mode(self, mode: str):
         """창 모드 변경 후 자동 재시작"""
+        logger.info(f"[모드변경] 현재 auto_check={self._config.update.auto_check}, 변경할 모드={mode}")
         self._config.ui.window_mode = mode
         save_config()
+        logger.info(f"[모드변경] 설정 저장 완료, auto_check={self._config.update.auto_check}")
 
         logger.info(f"창 모드 변경: {mode}, 자동 재시작...")
 

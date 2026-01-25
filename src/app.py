@@ -36,6 +36,7 @@ class WinCroApp:
         self._guide_view: Optional[GuideView] = None
 
         logger.info("WinCro 애플리케이션 초기화")
+        logger.debug(f"[설정 로드] window_mode={self._config.ui.window_mode}, auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}")
 
     def initialize(self) -> bool:
         """
@@ -119,8 +120,12 @@ class WinCroApp:
                 self._main_window.after(1500, self._auto_connect_arduino)
 
             # 자동 업데이트 확인 (설정된 경우)
+            logger.info(f"[자동업데이트] auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}, window_mode={self._config.ui.window_mode}")
             if self._config.update.auto_check and self._config.update.github_repo:
+                logger.info("[자동업데이트] 2초 후 업데이트 확인 예약")
                 self._main_window.after(2000, self._auto_check_update)
+            else:
+                logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
 
             logger.info("애플리케이션 실행")
             self._main_window.mainloop()
@@ -186,6 +191,7 @@ class WinCroApp:
     def _auto_check_update(self) -> None:
         """시작 시 자동 업데이트 확인 및 자동 적용"""
         import threading
+        logger.info(f"[자동업데이트] 업데이트 확인 시작 (window_mode={self._config.ui.window_mode})")
 
         def check_thread():
             try:
@@ -193,7 +199,9 @@ class WinCroApp:
                 from .utils.config import APP_VERSION
 
                 repo = self._config.update.github_repo
+                logger.info(f"[자동업데이트] 서버 확인 중... repo={repo}, current={APP_VERSION}")
                 result = check_for_update(repo, APP_VERSION)
+                logger.info(f"[자동업데이트] 서버 응답: {result}")
 
                 if result and result.get("update_available"):
                     new_version = result.get("version")
@@ -384,6 +392,9 @@ class WinCroApp:
             batch_path = os.path.join(temp_dir, "wincro_update.bat")
             data_dir = os.path.join(app_dir, "_internal", "data")
             data_backup = os.path.join(temp_dir, "wincro_data_backup")
+            internal_backup = os.path.join(app_dir, "_internal_old")
+            exe_backup = os.path.join(app_dir, f"{exe_name}.old")
+            recovery_bat = os.path.join(app_dir, "recovery.bat")
 
             batch_content = f'''@echo off
 chcp 65001 >nul
@@ -393,28 +404,84 @@ echo   WinCro 자동 업데이트 v{version}
 echo ========================================
 echo.
 
-echo [1/6] 프로그램 강제 종료 중...
+echo [1/8] 프로그램 강제 종료 중...
 taskkill /f /im "{exe_name}" >nul 2>&1
 timeout /t 2 /nobreak >nul
 
-echo [2/6] 사용자 데이터 백업 중...
+echo [2/8] 사용자 데이터 백업 중...
 if exist "{data_dir}" (
     xcopy /E /I /Y /Q "{data_dir}" "{data_backup}" >nul 2>&1
 )
 
-echo [3/6] 기존 파일 삭제 중...
-rd /s /q "{app_dir}\\_internal" 2>nul
-del /q "{current_exe}" 2>nul
+echo [3/8] 기존 파일 백업 중... (삭제 아님)
+if exist "{internal_backup}" rd /s /q "{internal_backup}" 2>nul
+if exist "{exe_backup}" del /q "{exe_backup}" 2>nul
+if exist "{app_dir}\\_internal" (
+    ren "{app_dir}\\_internal" "_internal_old" 2>nul
+)
+if exist "{current_exe}" (
+    ren "{current_exe}" "{exe_name}.old" 2>nul
+)
 
-echo [4/6] 새 파일 복사 중...
+echo [4/8] 새 파일 복사 중...
 xcopy /E /I /Y /Q "{new_app_dir}\\*" "{app_dir}\\" >nul 2>&1
 if errorlevel 1 (
-    echo [오류] 파일 복사 실패!
-    pause
+    echo.
+    echo [오류] 파일 복사 실패! 롤백 중...
+    echo.
+
+    REM 롤백: 백업된 파일 복원
+    if exist "{internal_backup}" (
+        if exist "{app_dir}\\_internal" rd /s /q "{app_dir}\\_internal" 2>nul
+        ren "{internal_backup}" "_internal" 2>nul
+    )
+    if exist "{exe_backup}" (
+        if exist "{current_exe}" del /q "{current_exe}" 2>nul
+        ren "{exe_backup}" "{exe_name}" 2>nul
+    )
+
+    echo [복구 완료] 이전 버전으로 복원되었습니다.
+    echo 프로그램을 다시 시작합니다...
+    timeout /t 3 /nobreak >nul
+    start "" "{app_dir}\\{exe_name}"
     exit /b 1
 )
 
-echo [5/6] 설정 파일 복원 중...
+echo [5/8] 새 파일 무결성 검사 중...
+if not exist "{app_dir}\\{exe_name}" (
+    echo.
+    echo [오류] exe 파일이 없습니다! 롤백 중...
+    echo.
+    if exist "{internal_backup}" (
+        if exist "{app_dir}\\_internal" rd /s /q "{app_dir}\\_internal" 2>nul
+        ren "{internal_backup}" "_internal" 2>nul
+    )
+    if exist "{exe_backup}" (
+        ren "{exe_backup}" "{exe_name}" 2>nul
+    )
+    echo [복구 완료] 이전 버전으로 복원되었습니다.
+    timeout /t 3 /nobreak >nul
+    start "" "{app_dir}\\{exe_name}"
+    exit /b 1
+)
+if not exist "{app_dir}\\_internal" (
+    echo.
+    echo [오류] _internal 폴더가 없습니다! 롤백 중...
+    echo.
+    if exist "{internal_backup}" (
+        ren "{internal_backup}" "_internal" 2>nul
+    )
+    if exist "{exe_backup}" (
+        if exist "{current_exe}" del /q "{current_exe}" 2>nul
+        ren "{exe_backup}" "{exe_name}" 2>nul
+    )
+    echo [복구 완료] 이전 버전으로 복원되었습니다.
+    timeout /t 3 /nobreak >nul
+    start "" "{app_dir}\\{exe_name}"
+    exit /b 1
+)
+
+echo [6/8] 설정 파일 복원 중...
 if exist "{data_backup}\\config.json" (
     copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
 )
@@ -428,7 +495,7 @@ if exist "{data_backup}\\.keyfile" (
     copy /y "{data_backup}\\.keyfile" "{app_dir}\\_internal\\data\\.keyfile" >nul 2>&1
 )
 
-echo [6/6] 사용자 데이터 병합 중...
+echo [7/8] 사용자 데이터 병합 중...
 if exist "{data_backup}\\recordings" (
     xcopy /E /I /Y /Q "{data_backup}\\recordings\\*" "{app_dir}\\_internal\\data\\recordings\\" >nul 2>&1
 )
@@ -438,7 +505,15 @@ if exist "{data_backup}\\sequences" (
 if exist "{data_backup}\\templates" (
     xcopy /E /I /Y /Q "{data_backup}\\templates\\*" "{app_dir}\\_internal\\data\\templates\\" >nul 2>&1
 )
+if exist "{data_backup}\\plans" (
+    REM 사용자 플랜을 plans_user_backup으로 복사 (앱 시작 시 병합됨)
+    xcopy /E /I /Y /Q "{data_backup}\\plans\\*" "{app_dir}\\_internal\\data\\plans_user_backup\\" >nul 2>&1
+)
+
+echo [8/8] 정리 중...
 rd /s /q "{data_backup}" 2>nul
+rd /s /q "{internal_backup}" 2>nul
+if exist "{exe_backup}" del /q "{exe_backup}" 2>nul
 
 echo.
 echo ========================================
@@ -452,6 +527,72 @@ rd /s /q "{extract_dir}" 2>nul
 del /q "{temp_path}" 2>nul
 del "%~f0"
 '''
+
+            # 복구 배치 파일 생성 (앱이 깨졌을 때 수동 복구용)
+            recovery_content = f'''@echo off
+chcp 65001 >nul
+echo.
+echo ========================================
+echo   WinCro 복구 도구
+echo ========================================
+echo.
+
+set "APP_DIR={app_dir}"
+set "EXE_NAME={exe_name}"
+
+REM 백업된 _internal 폴더 복원
+if exist "%APP_DIR%\\_internal_old" (
+    echo [발견] 백업된 _internal_old 폴더
+    echo 복원 중...
+    if exist "%APP_DIR%\\_internal" rd /s /q "%APP_DIR%\\_internal" 2>nul
+    ren "%APP_DIR%\\_internal_old" "_internal" 2>nul
+    echo _internal 복원 완료!
+    echo.
+)
+
+REM 백업된 exe 파일 복원
+if exist "%APP_DIR%\\%EXE_NAME%.old" (
+    echo [발견] 백업된 %EXE_NAME%.old 파일
+    if exist "%APP_DIR%\\%EXE_NAME%" del /q "%APP_DIR%\\%EXE_NAME%" 2>nul
+    ren "%APP_DIR%\\%EXE_NAME%.old" "%EXE_NAME%" 2>nul
+    echo exe 복원 완료!
+    echo.
+)
+
+REM 복원 가능한 백업이 없는 경우
+if not exist "%APP_DIR%\\_internal" (
+    if not exist "%APP_DIR%\\_internal_old" (
+        echo [경고] 복원할 백업 파일이 없습니다.
+        echo.
+        echo 수동 복구 방법:
+        echo 1. GitHub에서 최신 버전 다운로드
+        echo    https://github.com/narshaboss/wincro/releases
+        echo 2. 압축 해제 후 이 폴더에 덮어쓰기
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
+echo.
+echo ========================================
+echo   복구 완료!
+echo ========================================
+echo.
+echo 프로그램을 시작하시겠습니까? (Y/N)
+set /p choice=
+if /i "%choice%"=="Y" (
+    start "" "%APP_DIR%\\%EXE_NAME%"
+)
+'''
+
+            # 복구 배치 파일 저장 (앱 폴더에)
+            try:
+                with open(recovery_bat, 'w', encoding='utf-8') as f:
+                    f.write(recovery_content)
+                logger.info(f"복구 스크립트 생성: {recovery_bat}")
+            except Exception as e:
+                logger.warning(f"복구 스크립트 생성 실패: {e}")
 
             with open(batch_path, 'w', encoding='utf-8') as f:
                 f.write(batch_content)

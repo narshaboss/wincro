@@ -1568,7 +1568,9 @@ class RuleExecutor:
                 logger.debug(f"[이미지 검색] 최종좌표: ({final_x}, {final_y})")
                 return (final_x, final_y, result.confidence)
 
-            # 실패
+            # 실패 - 이유 로깅
+            if result.found:
+                logger.debug(f"[이미지 검색] 신뢰도 부족: {result.confidence:.2f} < 임계값 {confidence:.2f}")
             return None
 
         except Exception as e:
@@ -1949,6 +1951,7 @@ class RuleExecutor:
                         y2 = min(screen_h, watch_center_y + watch_search_radius)
                         search_region = [x1, y1, x2, y2]
 
+                logger.debug(f"[감시] {watch_name} 검색 중... (임계값={watch_confidence:.2f}, 검색범위={search_region})")
                 watch_result = self._find_image_on_screen(
                     watch_image, watch_confidence,
                     search_region=search_region
