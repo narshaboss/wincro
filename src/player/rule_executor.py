@@ -1939,8 +1939,9 @@ class RuleExecutor:
                 goto_index = watch.get('goto_index')
                 watch_name = Path(watch_image).name
                 search_region = watch.get('search_region')
-                # watch별 confidence 사용 (없으면 rule의 confidence 사용)
-                watch_confidence = watch.get('confidence', confidence)
+                # watch별 confidence 사용 (None 값 처리 강화, 없으면 rule의 confidence 사용)
+                w_confidence = watch.get('confidence')
+                watch_confidence = w_confidence if w_confidence is not None and w_confidence > 0 else confidence
 
                 # search_radius가 있고 search_region이 없으면 변환
                 watch_search_radius = watch.get('search_radius', 0)
@@ -1975,6 +1976,13 @@ class RuleExecutor:
                     # 하위 호환: 단수형 monitor_action도 지원
                     if not monitor_actions and watch.get('monitor_action'):
                         monitor_actions = [watch.get('monitor_action')]
+
+                    # 디버그: watch 및 monitor_actions 확인
+                    logger.debug(f"[모니터링] watch 키: {list(watch.keys())}")
+                    logger.debug(f"[모니터링] watch['confidence']: {watch.get('confidence', 'NOT FOUND')}")
+                    logger.debug(f"[모니터링] monitor_actions 개수: {len(monitor_actions)}")
+                    for ma_idx, ma in enumerate(monitor_actions):
+                        logger.debug(f"[모니터링] monitor_action[{ma_idx}] 키: {list(ma.keys()) if ma else 'None'}")
 
                     for monitor_action in monitor_actions:
                         if self._stop_event.is_set():
@@ -2086,14 +2094,21 @@ class RuleExecutor:
         """
         action_type = monitor_action.get('type', '없음')
 
+        # 디버그: monitor_action의 모든 키와 값 확인
+        logger.debug(f"[모니터링 액션] 전달된 confidence 파라미터: {confidence}")
+        logger.debug(f"[모니터링 액션] monitor_action 키: {list(monitor_action.keys())}")
+        logger.debug(f"[모니터링 액션] monitor_action['confidence']: {monitor_action.get('confidence', 'NOT FOUND')}")
+        logger.debug(f"[모니터링 액션] monitor_action['search_region']: {monitor_action.get('search_region', 'NOT FOUND')}")
+
         # 타이핑 랜덤 옵션
         typing_random = monitor_action.get('typing_random', False)
         typing_delay = monitor_action.get('typing_delay', 0.1)
         typing_delay_range = monitor_action.get('typing_delay_range', 0.05)
 
-        # 이미지 검색 옵션
-        search_confidence = monitor_action.get('confidence', confidence)
-        search_radius = monitor_action.get('search_radius', 0)
+        # 이미지 검색 옵션 (None 값 처리 강화)
+        ma_confidence = monitor_action.get('confidence')
+        search_confidence = ma_confidence if ma_confidence is not None and ma_confidence > 0 else confidence
+        search_radius = monitor_action.get('search_radius', 0) or 0
 
         try:
             if action_type == '텍스트 입력':
@@ -2145,9 +2160,8 @@ class RuleExecutor:
                 click_type = monitor_action.get('click_type', 'click')
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
 
-                logger.debug(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}")
-                logger.debug(f"[이미지 클릭] 검색범위: {search_region}")
-                logger.debug(f"[이미지 클릭] 신뢰도: {search_confidence}")
+                # INFO 레벨로 실제 사용 값 출력 (디버깅용)
+                logger.info(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}, 신뢰도: {search_confidence:.2f}, 검색범위: {search_region}")
 
                 # search_radius가 있고 search_region이 없으면 변환
                 if not search_region and search_radius > 0:

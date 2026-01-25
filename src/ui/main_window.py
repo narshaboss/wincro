@@ -537,11 +537,12 @@ class MainWindow(ctk.CTk):
         logger.info(f"[미니플레이어] 총 {len(self._mini_plans)}개 플랜 로드됨")
 
         self._rule_executor = None
-        self._is_running = False
-        self._is_paused = False
-        self._mini_current_repeat = 0
-        self._mini_total_repeat = 1
 
+        # UI 생성
+        self._create_mini_player_ui()
+
+    def _create_mini_player_ui(self):
+        """미니 플레이어 UI 요소 생성"""
         # 상단 프레임 (재생목록)
         top_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
         top_frame.pack(fill="x", padx=10, pady=(10, 5))
@@ -600,149 +601,170 @@ class MainWindow(ctk.CTk):
             fg_color=COLORS["bg_dark"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             justify="center",
         )
         self._mini_repeat_entry.pack(side="right", padx=2)
 
         ctk.CTkLabel(
             repeat_frame,
-            text="횟수:",
+            text="반복:",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
         ).pack(side="right", padx=(0, 5))
 
-        # 플랜 선택 콤보박스
-        self._mini_plan_var = ctk.StringVar()
-        plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
-
-        self._mini_plan_combo = ctk.CTkComboBox(
+        # 새로고침 버튼
+        ctk.CTkButton(
             top_frame,
-            values=plan_names,
+            text="🔄",
+            width=30,
+            height=26,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["border"],
+            font=ctk.CTkFont(size=12),
+            command=self._on_mini_refresh,
+        ).pack(side="right", padx=(0, 5), pady=8)
+
+        # 중간 프레임 (플랜 선택 + 부분실행)
+        middle_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        middle_frame.pack(fill="x", padx=10, pady=5)
+
+        # 플랜 드롭다운
+        plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
+        self._mini_plan_var = ctk.StringVar(value=plan_names[0] if plan_names else "(플랜 없음)")
+        self._mini_plan_dropdown = ctk.CTkComboBox(
+            middle_frame,
             variable=self._mini_plan_var,
-            width=160,
+            values=plan_names,
+            width=200,
             height=32,
             fg_color=COLORS["bg_dark"],
             border_color=COLORS["border"],
-            button_color=COLORS["border"],
-            button_hover_color=COLORS["accent"],
+            button_color=COLORS["accent"],
+            button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["bg_card"],
-            dropdown_hover_color=COLORS["bg_dark"],
-            text_color=COLORS["text_primary"],
+            dropdown_hover_color=COLORS["bg_card_hover"],
             font=ctk.CTkFont(size=12),
-            command=self._on_mini_plan_changed,
+            state="readonly",
         )
-        self._mini_plan_combo.pack(side="right", padx=5, pady=8)
-        if plan_names:
-            self._mini_plan_var.set(plan_names[0])
-            # 초기 선택된 플랜의 재생횟수 불러오기
-            self._on_mini_plan_changed(plan_names[0])
+        self._mini_plan_dropdown.pack(side="left", padx=10, pady=10)
 
-        # 하단 프레임 (버튼들)
-        btn_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"], corner_radius=8)
-        btn_frame.pack(fill="x", padx=10, pady=(5, 10))
+        # 부분 실행 버튼
+        ctk.CTkButton(
+            middle_frame,
+            text="📋 부분실행",
+            width=80,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11),
+            command=self._open_partial_execution,
+        ).pack(side="left", padx=(0, 10), pady=10)
 
-        # 실행 버튼
+        # 하단 프레임 (컨트롤)
+        bottom_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        bottom_frame.pack(fill="x", padx=10, pady=(5, 10))
+
+        # 실행/중지 버튼
+        btn_frame = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        btn_frame.pack(pady=10)
+
         self._mini_play_btn = ctk.CTkButton(
             btn_frame,
             text="▶ 실행",
-            command=lambda: self._mini_on_play(),
             width=100,
             height=40,
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
+            fg_color=COLORS["success"],
+            hover_color="#45a049",
             font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._mini_on_play,
         )
-        self._mini_play_btn.pack(side="left", padx=5, pady=10, expand=True, fill="x")
-        logger.info(f"[미니플레이어] 실행 버튼 생성됨: {self._mini_play_btn}")
+        self._mini_play_btn.pack(side="left", padx=5)
 
-        # 일시중지 버튼
         self._mini_pause_btn = ctk.CTkButton(
             btn_frame,
-            text="⏸ 일시중지",
-            command=lambda: self._mini_on_pause(),
+            text="⏸ 일시정지",
             width=100,
             height=40,
-            fg_color=COLORS["accent_orange"],
-            hover_color="#e5a825",
+            fg_color=COLORS["warning"],
+            hover_color="#e6a800",
             font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._mini_on_pause,
             state="disabled",
         )
-        self._mini_pause_btn.pack(side="left", padx=5, pady=10, expand=True, fill="x")
+        self._mini_pause_btn.pack(side="left", padx=5)
 
-        # 중지 버튼
         self._mini_stop_btn = ctk.CTkButton(
             btn_frame,
             text="■ 중지",
-            command=lambda: self._mini_on_stop(),
             width=100,
             height=40,
-            fg_color=COLORS["danger"],
-            hover_color="#f85149",
+            fg_color=COLORS["error"],
+            hover_color="#d32f2f",
             font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._mini_on_stop,
             state="disabled",
         )
-        self._mini_stop_btn.pack(side="left", padx=5, pady=10, expand=True, fill="x")
-
-        # 로그 표시 영역
-        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_log"], corner_radius=6)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
-
-        self._mini_log_text = tk.Text(
-            log_frame,
-            wrap="word",
-            font=("Consolas", 11),
-            bg=COLORS["bg_log"],
-            fg=COLORS["text_secondary"],
-            insertbackground=COLORS["text_primary"],
-            relief="flat",
-            padx=8,
-            pady=5,
-            height=6,
-            state="disabled",
-        )
-        self._mini_log_text.pack(fill="both", expand=True, padx=2, pady=2)
-
-        # 로그 태그 설정 (색상) - 에디터 모드와 동일
-        self._mini_log_text.tag_configure("INFO", foreground=COLORS["success"])
-        self._mini_log_text.tag_configure("WARNING", foreground=COLORS["warning"])
-        self._mini_log_text.tag_configure("ERROR", foreground=COLORS["error"])
-        self._mini_log_text.tag_configure("DEBUG", foreground="#88c0d0")
-        # ANSI 색상 태그
-        self._mini_log_text.tag_configure("ansi_cyan", foreground="#8be9fd")     # 청록 (액션 번호)
-        self._mini_log_text.tag_configure("ansi_green", foreground="#50fa7b")    # 초록 (성공)
-        self._mini_log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")   # 노랑
-        self._mini_log_text.tag_configure("ansi_pink", foreground="#ff79c6")     # 분홍 (중지)
-        self._mini_log_text.tag_configure("ansi_red", foreground="#ff5555")      # 빨강 (실패)
-
-        # 미니 플레이어용 로그 핸들러 설정
-        self._setup_mini_log_handler()
-
-        # 하단 상태 + 모드 변경
-        bottom_frame = ctk.CTkFrame(self._main_container, fg_color="transparent")
-        bottom_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self._mini_stop_btn.pack(side="left", padx=5)
 
         # 상태 표시
         self._mini_status = ctk.CTkLabel(
             bottom_frame,
             text="대기 중",
             font=ctk.CTkFont(size=11),
-            text_color=COLORS["text_muted"],
+            text_color=COLORS["text_secondary"],
         )
-        self._mini_status.pack(side="left", padx=5)
+        self._mini_status.pack(pady=(0, 10))
 
-        # 모드 변경 버튼
-        mode_btn = ctk.CTkButton(
-            bottom_frame,
-            text="⚙",
-            command=self._show_mode_menu,
-            width=30,
-            height=25,
-            fg_color=COLORS["bg_card"],
-            hover_color=COLORS["bg_card_hover"],
-            font=ctk.CTkFont(size=14),
+        # 로그 영역
+        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        ctk.CTkLabel(
+            log_frame,
+            text="실행 로그",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(anchor="w", padx=10, pady=(8, 5))
+
+        self._mini_log = ctk.CTkTextbox(
+            log_frame,
+            fg_color=COLORS["bg_dark"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(family="Consolas", size=11),
+            wrap="word",
         )
-        mode_btn.pack(side="right", padx=5)
+        self._mini_log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # 로그 핸들러 설정
+        self._setup_mini_log_handler()
+
+    def _refresh_mini_plans(self):
+        """플랜 목록 새로고침 - 디스크에서 최신 버전 로드"""
+        import json
+        old_count = len(self._mini_plans)
+        self._mini_plans = []
+        if PLANS_DIR.exists():
+            templates_dir = DATA_DIR / "templates"
+            for plan_file in PLANS_DIR.glob("*.json"):
+                try:
+                    with open(plan_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                        self._mini_plans.append(plan)
+                except Exception as e:
+                    logger.error(f"[미니플레이어] 플랜 새로고침 실패: {plan_file} - {e}")
+        logger.info(f"[미니플레이어] 플랜 새로고침 완료: {old_count} → {len(self._mini_plans)}개")
+
+        # 드롭다운 업데이트
+        if hasattr(self, '_mini_plan_dropdown') and self._mini_plan_dropdown:
+            plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
+            self._mini_plan_dropdown.configure(values=plan_names)
+            # 현재 선택 유지 또는 첫번째 선택
+            current = self._mini_plan_var.get()
+            if current not in plan_names:
+                self._mini_plan_var.set(plan_names[0] if plan_names else "(플랜 없음)")
 
     def _setup_mini_log_handler(self):
         """미니 플레이어용 로그 핸들러 설정"""
@@ -962,6 +984,9 @@ class MainWindow(ctk.CTk):
             self._mini_status.configure(text="⚠ 플랜을 선택하세요")
             return
 
+        # 실행 전 플랜 목록 새로고침 (에디터에서 변경된 내용 반영)
+        self._refresh_mini_plans()
+
         # 횟수 파싱
         try:
             repeat_count = int(self._mini_repeat_var.get())
@@ -996,15 +1021,32 @@ class MainWindow(ctk.CTk):
                     data = json.load(f)
                     templates_dir = DATA_DIR / "templates"
                     selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                # 모니터링 모드 확인 로그
+                # 모니터링 모드 확인 로그 (디버그용 상세 출력)
                 for idx, rule in enumerate(selected_plan.initial_rules):
                     if getattr(rule, 'is_monitoring_mode', False):
                         watches = getattr(rule, 'monitoring_watches', []) or []
                         logger.info(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
+                        # 상세 디버그 로그
+                        for w_idx, watch in enumerate(watches):
+                            logger.debug(f"[미니플레이어] watch[{w_idx}] 키: {list(watch.keys())}")
+                            logger.debug(f"[미니플레이어] watch[{w_idx}]['confidence']: {watch.get('confidence', 'NOT FOUND')}")
+                            logger.debug(f"[미니플레이어] watch[{w_idx}]['search_region']: {watch.get('search_region', 'NOT FOUND')}")
+                            monitor_actions = watch.get('monitor_actions', [])
+                            for ma_idx, ma in enumerate(monitor_actions):
+                                logger.debug(f"[미니플레이어] watch[{w_idx}].monitor_action[{ma_idx}] 키: {list(ma.keys()) if ma else 'None'}")
+                                logger.debug(f"[미니플레이어] watch[{w_idx}].monitor_action[{ma_idx}]['confidence']: {ma.get('confidence', 'NOT FOUND') if ma else 'None'}")
+                                logger.debug(f"[미니플레이어] watch[{w_idx}].monitor_action[{ma_idx}]['search_region']: {ma.get('search_region', 'NOT FOUND') if ma else 'None'}")
                 logger.info(f"[미니플레이어] 플랜 최신 버전 로드: {plan_name}")
             except Exception as e:
+                import traceback
                 logger.warning(f"[미니플레이어] 플랜 재로드 실패, 캐시 사용: {e}")
+                logger.warning(f"[미니플레이어] 상세 오류: {traceback.format_exc()}")
                 selected_plan = cached_plan
+                # 캐시 버전 정보 로그
+                for idx, rule in enumerate(selected_plan.initial_rules):
+                    if getattr(rule, 'is_monitoring_mode', False):
+                        watches = getattr(rule, 'monitoring_watches', []) or []
+                        logger.warning(f"[미니플레이어] 캐시 룰 {idx+1}: 감시={len(watches)}개 (이전 버전일 수 있음!)")
         else:
             selected_plan = cached_plan
 
