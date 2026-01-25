@@ -7,6 +7,7 @@ WinCro 설정 화면 모듈
 import tkinter as tk
 import customtkinter as ctk
 from typing import Optional
+from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, config_manager
@@ -522,6 +523,21 @@ class SettingsView(BaseView):
             ["escape", "f12", "pause"],
             row=3,
             help_text="2번 누르면 즉시 중지"
+        )
+
+        # 구분선
+        ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=10)
+
+        # 시작 설정
+        start_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        start_frame.pack(fill="x", padx=10)
+
+        self._auto_start_var = ctk.BooleanVar()
+        self._create_checkbox_with_help(
+            start_frame,
+            "윈도우 시작시 자동실행",
+            self._auto_start_var,
+            help_text="PC 부팅시 자동 시작"
         )
 
     def _setup_appearance_settings(self, parent) -> None:
@@ -1890,6 +1906,7 @@ del "%~f0"
         self._wait_var.set(str(config.player.default_wait_ms))
         self._retry_var.set(str(config.player.retry_count))
         self._stop_key_var.set(config.player.emergency_stop_key)
+        self._auto_start_var.set(config.ui.auto_start)
 
         # 외관 설정
         self._app_name_var.set(config.ui.app_name)
@@ -1969,6 +1986,15 @@ del "%~f0"
 
         config.player.emergency_stop_key = self._stop_key_var.get()
 
+        # 자동 시작 설정
+        new_auto_start = self._auto_start_var.get()
+        old_auto_start = config.ui.auto_start
+        config.ui.auto_start = new_auto_start
+
+        # 자동 시작 설정이 변경되면 레지스트리 업데이트
+        if new_auto_start != old_auto_start:
+            self._update_auto_start_registry(new_auto_start)
+
         # 외관 설정
         app_name = self._app_name_var.get().strip()
         if app_name:
@@ -2019,6 +2045,52 @@ del "%~f0"
         except (ValueError, TypeError):
             logger.warning(f"{field_name} 변환 실패: {value}")
             return None
+
+    def _update_auto_start_registry(self, enable: bool) -> None:
+        """윈도우 시작시 자동실행 레지스트리 설정"""
+        import sys
+        import winreg
+
+        app_name = "WinCro"
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+        try:
+            # 실행 파일 경로 결정
+            if getattr(sys, 'frozen', False):
+                # exe로 실행 중
+                exe_path = sys.executable
+            else:
+                # 스크립트로 실행 중 - pythonw.exe 사용
+                python_exe = sys.executable.replace("python.exe", "pythonw.exe")
+                script_path = str(Path(__file__).parent.parent / "app.py")
+                exe_path = f'"{python_exe}" "{script_path}"'
+
+            # 레지스트리 키 열기
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                key_path,
+                0,
+                winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+            )
+
+            if enable:
+                # 시작프로그램에 추가
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                logger.info(f"[자동시작] 레지스트리 등록: {exe_path}")
+            else:
+                # 시작프로그램에서 제거
+                try:
+                    winreg.DeleteValue(key, app_name)
+                    logger.info("[자동시작] 레지스트리에서 제거됨")
+                except FileNotFoundError:
+                    # 이미 없는 경우
+                    pass
+
+            winreg.CloseKey(key)
+
+        except Exception as e:
+            logger.error(f"[자동시작] 레지스트리 설정 실패: {e}")
+            self._show_message("오류", f"자동시작 설정 실패: {e}")
 
     def _reset_settings(self) -> None:
         """설정 초기화"""

@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.45"
+APP_VERSION = "1.0.46"
 
 
 @dataclass
@@ -86,6 +86,7 @@ class UIConfig:
     run_as_admin: bool = False  # 시작 시 관리자 권한으로 실행
     app_name: str = "Desktop"  # 프로그램 이름 (사용자 지정 가능)
     random_name_mode: bool = False  # 랜덤 이름 모드
+    auto_start: bool = False  # 윈도우 시작시 자동실행
 
 
 @dataclass

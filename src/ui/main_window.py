@@ -721,9 +721,10 @@ class MainWindow(ctk.CTk):
         )
         self._mini_status.pack(pady=(0, 10))
 
-        # 로그 영역
-        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        # 로그 영역 (최소 높이 200)
+        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"], height=200)
         log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        log_frame.pack_propagate(False)  # 자식 위젯에 의해 크기가 줄어들지 않도록
 
         ctk.CTkLabel(
             log_frame,
@@ -738,6 +739,7 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["text_primary"],
             font=ctk.CTkFont(family="Consolas", size=11),
             wrap="word",
+            height=150,
         )
         self._mini_log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
