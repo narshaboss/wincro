@@ -1880,6 +1880,9 @@ class RuleExecutor:
         watches = getattr(rule, 'monitoring_watches', []) or []
         confidence = rule.confidence if rule.confidence > 0 else 0.65
 
+        # 디버그: 실제 사용되는 인식률 로그
+        logger.info(f"[모니터링] rule.confidence={rule.confidence}, 사용 인식률={confidence:.0%}, rule_id={rule.rule_id}")
+
         if not final_image:
             return self._make_result(rule, False, "타겟 이미지가 설정되지 않음", start_time)
 
@@ -2045,6 +2048,7 @@ class RuleExecutor:
 
                             # 디버그: 실행할 액션 정보 상세 출력
                             logger.info(f"  📌 goto 실행: 액션 {goto_index + 1} ({parent_rule.action_type}) - {parent_rule.description or ''}")
+                            logger.info(f"  📌 goto 액션 인식률: {parent_rule.confidence if parent_rule.confidence > 0 else 0.65:.0%}")
                             if children_count > 0:
                                 logger.info(f"  📂 부모 액션 + 하위 {children_count}개 실행")
 
