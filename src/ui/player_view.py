@@ -1850,7 +1850,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _test_run_rule(self, rule: AutomationRule):
         """해당 규칙부터 끝까지 실행 (토글 방식: 실행 중이면 중지)"""
-        logger.info(f"[부분실행] 클릭됨: {rule.description or rule.action_type}")
+        logger.info(f"[부분실행] 클릭됨: {rule.description or rule.action_type}, rule_id={rule.rule_id}")
         from tkinter import messagebox
         from ..player.rule_executor import get_rule_executor
         from ..analyzer.automation_models import AutomationPlan
@@ -1872,13 +1872,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         all_rules_flat = flatten_rules(self._plan.initial_rules)
 
-        # 클릭한 규칙의 인덱스 찾기 (평탄화된 리스트에서)
-        try:
-            rule_index = all_rules_flat.index(rule)
-        except ValueError:
+        # 클릭한 규칙의 인덱스 찾기 (rule_id로 비교 - 객체 동일성 대신)
+        rule_index = -1
+        logger.debug(f"[부분실행] 검색할 rule_id={rule.rule_id}, 전체 {len(all_rules_flat)}개 규칙")
+        for idx, r in enumerate(all_rules_flat):
+            logger.debug(f"[부분실행] [{idx}] rule_id={r.rule_id}, type={r.action_type}")
+            if r.rule_id == rule.rule_id:
+                rule_index = idx
+                logger.info(f"[부분실행] 원본에서 찾음: idx={idx}")
+                break
+
+        if rule_index < 0:
             # 리스트에 없으면 해당 규칙만 실행
+            logger.warning(f"[부분실행] rule_id={rule.rule_id}를 찾지 못함, 단일 실행")
             rules_to_run = [rule]
-            rule_index = -1
         else:
             # 해당 인덱스부터 끝까지 모든 규칙 포함
             # executor가 다시 평탄화하므로 children을 비운 복사본 사용
@@ -1915,6 +1922,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 실행 전 플랜 파일에서 최신 데이터 리로드 (업데이트 반영)
         logger.info(f"[부분실행] 플랜 리로드 시작...")
+        original_initial_rules = self._plan.initial_rules  # 기본값: 현재 플랜
         try:
             plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
             logger.debug(f"[부분실행] 플랜 파일: {plan_file}")
@@ -1927,10 +1935,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 logger.debug(f"[부분실행] from_dict 완료")
                 # 리로드된 플랜으로 규칙 재구성
                 all_rules_flat = flatten_rules(reloaded_plan.initial_rules)
-                # 인덱스 다시 찾기
+                # 인덱스 다시 찾기 (초기화 후 검색)
+                rule_index = -1  # 초기화 추가
                 for idx, r in enumerate(all_rules_flat):
                     if r.rule_id == rule.rule_id:
                         rule_index = idx
+                        logger.debug(f"[부분실행] 리로드 후 rule_id={rule.rule_id} 찾음, idx={idx}")
                         break
                 if rule_index >= 0:
                     import copy
@@ -1940,6 +1950,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                         r_copy.children = []
                         rules_to_run.append(r_copy)
                     remaining_count = len(rules_to_run)
+                    # 리로드 성공 시 리로드된 플랜의 규칙 사용
+                    original_initial_rules = reloaded_plan.initial_rules
                 logger.info(f"[부분실행] 플랜 최신 버전 로드됨")
         except Exception as e:
             logger.warning(f"[부분실행] 플랜 리로드 실패, 기존 데이터 사용: {e}")
@@ -1953,8 +1965,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             initial_rules=rules_to_run,
             monitoring_rules=[],
         )
-        # goto 점프 시 원본 계획의 rules를 참조할 수 있도록 저장
-        partial_plan._original_initial_rules = self._plan.initial_rules
+        # goto 점프 시 원본 계획의 rules를 참조할 수 있도록 저장 (리로드 성공 시 리로드된 규칙 사용)
+        partial_plan._original_initial_rules = original_initial_rules
 
         # 전역 executor 사용
         executor = get_rule_executor()
