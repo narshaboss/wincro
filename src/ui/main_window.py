@@ -568,6 +568,7 @@ class MainWindow(ctk.CTk):
             dropdown_hover_color=COLORS["bg_card_hover"],
             font=ctk.CTkFont(size=11),
             state="readonly",
+            command=self._on_mini_plan_changed,
         )
         self._mini_plan_dropdown.pack(side="left", padx=(10, 5), pady=8)
 
@@ -735,6 +736,16 @@ class MainWindow(ctk.CTk):
 
         # 로그 핸들러 설정
         self._setup_mini_log_handler()
+
+        # 초기 플랜의 재생횟수 불러오기
+        if self._mini_plans:
+            initial_plan_name = self._mini_plan_var.get()
+            for plan in self._mini_plans:
+                if plan.name == initial_plan_name:
+                    saved_repeat = getattr(plan, 'total_repeat_count', 1) or 1
+                    self._mini_repeat_var.set(str(saved_repeat))
+                    logger.info(f"[미니플레이어] 초기 재생횟수 로드: {saved_repeat}회")
+                    break
 
     def _refresh_mini_plans(self):
         """플랜 목록 새로고침 - 디스크에서 최신 버전 로드"""
