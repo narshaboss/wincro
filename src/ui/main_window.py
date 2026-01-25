@@ -815,13 +815,54 @@ class MainWindow(ctk.CTk):
             activebackground=COLORS["accent"],
             activeforeground="white",
         )
-        menu.add_command(label="에디터 모드", command=lambda: self._change_window_mode("editor"))
+        menu.add_command(label="부분 액션 실행", command=self._open_partial_execution)
 
         # 버튼 위치에 메뉴 표시
         try:
             menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
         finally:
             menu.grab_release()
+
+    def _open_partial_execution(self):
+        """에디터 모드의 계획 수정 다이얼로그 열기 (플레이 모드 방식으로 플랜 로드)"""
+        import json
+        from .player_view import PlanDetailDialog, PLANS_DIR
+
+        # 선택된 플랜 가져오기
+        plan_name = self._mini_plan_var.get()
+        if not plan_name or plan_name == "(플랜 없음)":
+            logger.warning("플랜을 먼저 선택하세요")
+            return
+
+        # 플랜 찾기 (plan_id 확인용)
+        cached_plan = None
+        for p in self._mini_plans:
+            if p.name == plan_name:
+                cached_plan = p
+                break
+
+        if not cached_plan:
+            logger.warning("플랜을 찾을 수 없습니다")
+            return
+
+        # 플레이 모드처럼 JSON에서 플랜 새로 로드
+        plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
+        if not plan_file.exists():
+            logger.error(f"플랜 파일 없음: {plan_file}")
+            return
+
+        try:
+            with open(plan_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                templates_dir = DATA_DIR / "templates"
+                loaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+            logger.info(f"[플레이모드 테스트] 플랜 로드: {plan_name}")
+        except Exception as e:
+            logger.error(f"플랜 로드 실패: {e}")
+            return
+
+        # 계획 수정 다이얼로그 열기 (에디터 모드와 동일한 UI)
+        PlanDetailDialog(self, loaded_plan)
 
     def _change_window_mode(self, mode: str):
         """창 모드 변경 후 자동 재시작"""
@@ -987,7 +1028,10 @@ class MainWindow(ctk.CTk):
         except Exception as e:
             logger.error(f"[미니플레이어] 실행 오류: {e}")
             self._mini_status.configure(text=f"✗ 오류: {e}")
+            self._is_running = False
             self._mini_play_btn.configure(state="normal")
+            self._mini_pause_btn.configure(state="disabled", text="⏸ 일시중지")
+            self._mini_stop_btn.configure(state="disabled")
 
     def _mini_execute_plan(self, plan):
         """미니 플레이어 - 플랜 실행 (스레드)"""

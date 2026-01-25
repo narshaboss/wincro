@@ -1133,12 +1133,12 @@ class RuleExecutor:
 
                 # 클릭 실행
                 if click_x is not None and click_y is not None:
-                    # 검색 범위가 설정된 경우, 클릭 좌표가 범위 안에 있는지 확인
+                    # 검색 범위가 설정된 경우, 클릭 좌표가 범위 안에 있는지 확인 (경고만, 차단 안 함)
                     if rule.search_radius > 0 and rule.action_x is not None and rule.action_y is not None:
                         dist_from_center = ((click_x - rule.action_x) ** 2 + (click_y - rule.action_y) ** 2) ** 0.5
                         if dist_from_center > rule.search_radius:
-                            logger.error(f"\033[91m  ✗ 클릭 좌표가 설정된 범위를 벗어남\033[0m")
-                            return self._make_result(rule, False, "클릭 좌표가 설정 범위 밖", start_time)
+                            # 범위 밖이어도 경고만 하고 클릭은 진행 (해상도/스케일링 차이 허용)
+                            logger.warning(f"\033[93m  ⚠ 클릭 좌표가 검색 범위를 벗어남 (거리: {dist_from_center:.0f}px, 범위: {rule.search_radius}px) - 클릭 진행\033[0m")
 
                     # 클릭 전 사용자 개입 확인
                     if self._check_user_intervention():
