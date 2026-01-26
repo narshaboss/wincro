@@ -895,27 +895,64 @@ class MainWindow(ctk.CTk):
 
     def _change_window_mode(self, mode: str):
         """창 모드 변경 후 자동 재시작"""
+        import sys
+        import subprocess
+        import os
+
         logger.info(f"[모드변경] 현재 auto_check={self._config.update.auto_check}, 변경할 모드={mode}")
+
+        # 미니 플레이어에서 실행 중인 작업 중지
+        if hasattr(self, '_is_running') and self._is_running:
+            logger.info("[모드변경] 실행 중인 작업 중지...")
+            if hasattr(self, '_rule_executor') and self._rule_executor:
+                try:
+                    self._rule_executor.stop()
+                except Exception as e:
+                    logger.warning(f"[모드변경] 작업 중지 실패: {e}")
+            self._is_running = False
+
         self._config.ui.window_mode = mode
         save_config()
         logger.info(f"[모드변경] 설정 저장 완료, auto_check={self._config.update.auto_check}")
 
         logger.info(f"창 모드 변경: {mode}, 자동 재시작...")
 
-        # 자동 재시작
-        import sys
-        import subprocess
+        # 리소스 정리 먼저 수행
+        if self._keyboard_listener:
+            try:
+                self._keyboard_listener.stop()
+                self._keyboard_listener = None
+            except (OSError, RuntimeError):
+                pass
 
-        # 현재 실행 파일 경로
-        python = sys.executable
-        script = sys.argv[0]
-
-        # 새 프로세스 시작
-        subprocess.Popen([python, script])
+        # 새 프로세스 시작 (부모 프로세스와 분리)
+        try:
+            if getattr(sys, 'frozen', False):
+                # exe로 실행 중 - 인자 없이 실행
+                exe_path = sys.executable
+                # DETACHED_PROCESS로 완전히 분리된 프로세스 생성
+                subprocess.Popen(
+                    [exe_path],
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                # 스크립트로 실행 중
+                python = sys.executable
+                script = sys.argv[0]
+                subprocess.Popen(
+                    [python, script],
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            logger.info("[모드변경] 새 프로세스 시작됨")
+        except Exception as e:
+            logger.error(f"[모드변경] 프로세스 시작 실패: {e}")
 
         # 현재 프로세스 종료
-        self.destroy()
-        sys.exit(0)
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)  # sys.exit() 대신 즉시 종료
 
     def _on_mini_plan_changed(self, plan_name: str):
         """미니 플레이어 - 플랜 변경 시 재생횟수 불러오기"""
