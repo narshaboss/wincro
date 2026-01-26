@@ -292,8 +292,12 @@ class WinCroApp:
         import os
         import sys
         import shutil
+        import time
         from datetime import datetime
         from .utils.config import save_config, get_config
+
+        # UI 안정화를 위한 짧은 대기
+        time.sleep(0.5)
 
         try:
             download_url = asset.get("browser_download_url")
@@ -323,7 +327,7 @@ class WinCroApp:
             try:
                 ssl_ctx = ssl.create_default_context()
                 req = urllib.request.Request(download_url, headers=headers)
-                response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
             except Exception as e1:
                 last_error = e1
                 # 방법 2: SSL 검증 완화
@@ -332,13 +336,13 @@ class WinCroApp:
                     ssl_ctx.check_hostname = False
                     ssl_ctx.verify_mode = ssl.CERT_NONE
                     req = urllib.request.Request(download_url, headers=headers)
-                    response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                    response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
                 except Exception as e2:
                     last_error = e2
                     # 방법 3: SSL 없이
                     try:
                         req = urllib.request.Request(download_url, headers=headers)
-                        response = urllib.request.urlopen(req, timeout=60)
+                        response = urllib.request.urlopen(req, timeout=30)
                     except Exception as e3:
                         last_error = e3
                         # 방법 4: 프록시 핸들러
@@ -346,7 +350,7 @@ class WinCroApp:
                             proxy_handler = urllib.request.ProxyHandler({})
                             opener = urllib.request.build_opener(proxy_handler)
                             req = urllib.request.Request(download_url, headers=headers)
-                            response = opener.open(req, timeout=60)
+                            response = opener.open(req, timeout=30)
                         except Exception as e4:
                             last_error = e4
 
@@ -361,7 +365,7 @@ class WinCroApp:
 
                 with open(temp_path, 'wb') as f:
                     while True:
-                        chunk = response.read(131072)
+                        chunk = response.read(32768)  # 32KB로 축소 (UI 반응성 향상)
                         if not chunk:
                             break
                         f.write(chunk)
@@ -372,6 +376,9 @@ class WinCroApp:
                             if percent // 10 > last_log_percent // 10:
                                 last_log_percent = percent
                                 logger.info(f"다운로드 진행: {percent}%")
+
+                        # UI 응답성을 위한 짧은 yield
+                        time.sleep(0.001)
 
                 logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
 
@@ -393,7 +400,12 @@ class WinCroApp:
 
             logger.info("zip 파일 압축 해제 중...")
             with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
+                members = zip_ref.namelist()
+                for i, member in enumerate(members):
+                    zip_ref.extract(member, extract_dir)
+                    # 100개마다 yield (UI 응답성 유지)
+                    if i % 100 == 0:
+                        time.sleep(0.01)
 
             # exe가 있는 폴더 찾기
             new_app_dir = None

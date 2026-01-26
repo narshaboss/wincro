@@ -1,14 +1,14 @@
 {
   "MainWindow": {
-    "x": 279,
-    "y": 27
+    "x": 373,
+    "y": 158
   },
   "PlanDetailDialog": {
-    "x": 146,
-    "y": 83
+    "x": 932,
+    "y": 99
   },
   "ImageCropDialog": {
-    "x": 926,
-    "y": 172
+    "x": 39,
+    "y": 247
   }
 }
