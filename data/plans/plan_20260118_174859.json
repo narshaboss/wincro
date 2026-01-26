@@ -1520,21 +1520,21 @@
           "rule_type": "fixed_sequence",
           "description": "",
           "action_type": "double_click",
-          "action_x": 53,
-          "action_y": 16,
+          "action_x": 88,
+          "action_y": 41,
           "action_text": null,
           "action_keys": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
           "scroll_amount": 0,
-          "target_image": "img_49eb5a60.png",
+          "target_image": "trigger_20260121_141355_602.png",
           "target_images": [],
           "trigger_image": null,
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
-          "search_radius": 53,
+          "search_radius": 85,
           "move_mouse_before_search": false,
           "wait_after": 0.5,
           "wait_random": true,
@@ -2396,7 +2396,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:/Projects/wincro/data/templates/trigger_20260121_183524_166.png",
+              "image": "trigger_20260121_183524_166.png",
               "click_type": "double_click",
               "wait_after": 2.0,
               "wait_random": true,
@@ -2450,7 +2450,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:/Projects/wincro/data/templates/trigger_20260121_183524_166.png",
+              "image": "trigger_20260121_183524_166.png",
               "click_type": "double_click",
               "wait_after": 2.0,
               "wait_random": true,
@@ -2504,7 +2504,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:/Projects/wincro/data/templates/trigger_20260121_231533_002.png",
+              "image": "trigger_20260121_231533_002.png",
               "click_type": "double_click",
               "wait_after": 3.0,
               "wait_random": true,
@@ -2612,7 +2612,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:/Projects/wincro/data/templates/trigger_20260121_231533_002.png",
+              "image": "trigger_20260121_231533_002.png",
               "click_type": "double_click",
               "wait_after": 3.0,
               "wait_random": true,
@@ -3343,7 +3343,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\img_fa399563.png",
+              "image": "img_fa399563.png",
               "click_type": "double_click",
               "wait_after": 2.0,
               "wait_random": true,
@@ -3397,7 +3397,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\img_fa399563.png",
+              "image": "img_fa399563.png",
               "click_type": "double_click",
               "wait_after": 2.0,
               "wait_random": true,
@@ -3451,7 +3451,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\trigger_20260121_231533_002.png",
+              "image": "trigger_20260121_231533_002.png",
               "click_type": "double_click",
               "wait_after": 3.0,
               "wait_random": true,
@@ -3559,7 +3559,7 @@
           "monitor_actions": [
             {
               "type": "이미지 클릭",
-              "image": "C:\\Projects\\wincro\\data\\templates\\trigger_20260121_231533_002.png",
+              "image": "trigger_20260121_231533_002.png",
               "click_type": "double_click",
               "wait_after": 3.0,
               "wait_random": true,

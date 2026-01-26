@@ -514,6 +514,59 @@ if self._dxcam_camera is not None:
 **수정된 파일:**
 - `src/recorder/screen_recorder.py` - `_init_dxcam()` 함수 수정, `_cleanup()` dxcam 해제 추가
 
+### 2026-01-26: 플레이 모드 경량화 (v1.0.63)
+
+**목적:** 저사양 PC에서 플레이 모드 메모리/CPU 점유율 감소
+
+**구현 내용:**
+- 플레이 모드에서 불필요한 뷰 모듈 지연 로딩
+- 에디터 모드에서만 로드되는 모듈:
+  - RecorderView (녹화) - dxcam, cv2, screen_recorder 등
+  - AnalyzerView (분석) - video_analyzer, template_matcher 등
+  - PlayerView (에디터 실행)
+  - SettingsView (설정)
+  - GuideView (가이드)
+
+**변경 방식:**
+```python
+# 변경 전: 최상단에서 모두 import
+from .ui import MainWindow, RecorderView, AnalyzerView, PlayerView, SettingsView, GuideView
+
+# 변경 후: MainWindow만 import, 나머지는 필요할 때 import
+from .ui.main_window import MainWindow
+
+def _create_views(self):  # 에디터 모드에서만 호출
+    from .ui.recorder_view import RecorderView
+    from .ui.analyzer_view import AnalyzerView
+    # ...
+```
+
+**영향 없는 기능:**
+- 플레이 모드 실행 기능 (RuleExecutor)
+- 아두이노 마우스/키보드 (InputController, ArduinoHID)
+- 이미지 매칭 (EnhancedMatcher)
+
+**수정된 파일:**
+- `src/app.py` - 지연 로딩 적용
+
+---
+
+### 2026-01-26: 플레이 모드 재생횟수 저장/로드 수정 (v1.0.62)
+
+**문제:** 재생횟수를 4회로 저장하고 재시작하면 1회로 표시됨
+
+**원인:** UI 초기화 시 기본값 "1"로 설정, 저장된 값 불러오기 안 함
+
+**해결:**
+- 시작 시 선택된 플랜의 저장된 재생횟수 자동 로드
+- 플랜 변경 시 해당 플랜의 재생횟수 자동 로드
+- 드롭다운에 command 연결 추가
+
+**수정된 파일:**
+- `src/ui/main_window.py` - 초기 재생횟수 로드, 플랜 변경 시 로드
+
+---
+
 ### 2026-01-26: 프로그램 시작 시 자동 실행 기능 추가 (v1.0.60 ~ v1.0.61)
 
 **기능:** 플레이 모드에서 프로그램 시작 시 지정한 플랜 자동 실행

@@ -23,27 +23,30 @@
     "retry_count": 3,
     "retry_delay_ms": 1000,
     "emergency_stop_key": "escape",
-    "emergency_stop_count": 2
+    "emergency_stop_count": 2,
+    "auto_run_enabled": false,
+    "auto_run_plan": "C:\\Projects\\wincro\\data\\plans\\plan_20260118_174859.json"
   },
   "ui": {
     "theme": "dark",
     "language": "ko",
     "window_width": 1200,
     "window_height": 800,
-    "window_mode": "medium",
+    "window_mode": "editor",
     "show_tooltips": true,
     "confirm_before_run": true,
     "minimize_on_run": true,
     "show_help_on_startup": false,
-    "run_as_admin": false,
+    "run_as_admin": true,
     "app_name": "Desktop",
-    "random_name_mode": false
+    "random_name_mode": true,
+    "auto_start": true
   },
   "arduino": {
-    "enabled": false,
+    "enabled": true,
     "com_port": "COM7",
     "baud_rate": 115200,
-    "auto_connect": false
+    "auto_connect": true
   },
   "update": {
     "github_repo": "narshaboss/wincro",
@@ -53,5 +56,5 @@
   },
   "version": "1.0.0",
   "first_run": false,
-  "last_opened": "2026-01-23T22:11:28.804432"
+  "last_opened": "2026-01-26T18:00:49.079993"
 }
