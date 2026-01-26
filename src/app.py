@@ -6,8 +6,10 @@ WinCro 메인 앱 클래스
 
 from datetime import datetime
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+import atexit
 
-from .utils.logger import get_logger, set_log_level
+from .utils.logger import get_logger, set_log_level, apply_performance_config
 from .utils.config import get_config, save_config
 from .database import get_db
 
@@ -15,6 +17,28 @@ from .database import get_db
 from .ui.main_window import MainWindow
 
 logger = get_logger(__name__)
+
+# 전역 스레드풀 (백그라운드 작업용)
+_thread_pool: Optional[ThreadPoolExecutor] = None
+
+
+def get_thread_pool() -> ThreadPoolExecutor:
+    """전역 스레드풀 반환 (지연 초기화)"""
+    global _thread_pool
+    if _thread_pool is None:
+        config = get_config()
+        pool_size = getattr(config.performance, 'thread_pool_size', 4)
+        _thread_pool = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="wincro_bg")
+        atexit.register(_shutdown_thread_pool)
+    return _thread_pool
+
+
+def _shutdown_thread_pool():
+    """프로그램 종료 시 스레드풀 정리"""
+    global _thread_pool
+    if _thread_pool:
+        _thread_pool.shutdown(wait=False)
+        _thread_pool = None
 
 
 class WinCroApp:
@@ -29,6 +53,9 @@ class WinCroApp:
         self._config = get_config()
         self._db = get_db()
         self._main_window: Optional[MainWindow] = None
+
+        # 성능 설정 적용 (DEBUG 로그 비활성화 등)
+        apply_performance_config()
 
         # 뷰 인스턴스
         self._recorder_view: Optional[RecorderView] = None
@@ -220,10 +247,9 @@ class WinCroApp:
 
     def _auto_check_update(self) -> None:
         """시작 시 자동 업데이트 확인 및 자동 적용"""
-        import threading
         logger.info(f"[자동업데이트] 업데이트 확인 시작 (window_mode={self._config.ui.window_mode})")
 
-        def check_thread():
+        def check_task():
             try:
                 from .utils.updater import check_for_update
                 from .utils.config import APP_VERSION
@@ -244,8 +270,8 @@ class WinCroApp:
             except Exception as e:
                 logger.error(f"자동 업데이트 확인 오류: {e}")
 
-        thread = threading.Thread(target=check_thread, daemon=True)
-        thread.start()
+        # 스레드풀에서 실행
+        get_thread_pool().submit(check_task)
 
     def _perform_auto_update(self, new_version: str, release_data: dict) -> None:
         """자동 업데이트 수행 (확인 없이 바로 진행)"""
@@ -273,13 +299,8 @@ class WinCroApp:
 
         logger.info(f"업데이트 다운로드 시작: v{APP_VERSION} → v{new_version}")
 
-        # 다운로드 스레드 시작
-        thread = threading.Thread(
-            target=self._download_update_thread,
-            args=(zip_asset, new_version),
-            daemon=True
-        )
-        thread.start()
+        # 스레드풀에서 다운로드 실행 (매번 스레드 생성 대신)
+        get_thread_pool().submit(self._download_update_thread, zip_asset, new_version)
 
     def _download_update_thread(self, asset: dict, version: str) -> None:
         """업데이트 다운로드 스레드 (자동 업데이트용)"""

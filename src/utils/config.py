@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.67"
+APP_VERSION = "1.0.68"
 
 
 @dataclass
@@ -110,6 +110,13 @@ class UpdateConfig:
 
 
 @dataclass
+class PerformanceConfig:
+    """성능 설정"""
+    debug_logging: bool = False  # DEBUG 로그 활성화 (비활성화하면 성능 향상)
+    thread_pool_size: int = 4  # 백그라운드 작업용 스레드풀 크기
+
+
+@dataclass
 class AppConfig:
     """전체 애플리케이션 설정"""
     recording: RecordingConfig = field(default_factory=RecordingConfig)
@@ -118,6 +125,7 @@ class AppConfig:
     ui: UIConfig = field(default_factory=UIConfig)
     arduino: ArduinoConfig = field(default_factory=ArduinoConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    performance: PerformanceConfig = field(default_factory=PerformanceConfig)
 
     # 메타 정보
     version: str = "1.0.0"

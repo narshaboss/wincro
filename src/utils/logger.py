@@ -248,6 +248,19 @@ def set_log_level(level: str) -> None:
     logger_manager.set_level(level)
 
 
+def apply_performance_config() -> None:
+    """성능 설정에 따라 로그 레벨 조정"""
+    try:
+        from .config import get_config
+        config = get_config()
+        if not config.performance.debug_logging:
+            # DEBUG 로그 비활성화 - INFO 이상만 출력
+            logger_manager.set_level('INFO')
+            logging.getLogger().info("[성능] DEBUG 로그 비활성화됨")
+    except Exception:
+        pass  # 설정 로드 실패 시 무시
+
+
 def create_execution_logger(sequence_name: str) -> logging.Logger:
     """실행 로거 생성 헬퍼 함수"""
     return logger_manager.create_execution_logger(sequence_name)
