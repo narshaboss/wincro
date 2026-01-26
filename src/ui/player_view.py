@@ -2092,7 +2092,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("트리거 이미지 설정")
-        dialog.geometry("500x720")
+        dialog.geometry("500x780")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.transient(self)
@@ -2101,7 +2101,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 중앙 배치
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() - 500) // 2
-        y = (dialog.winfo_screenheight() - 500) // 2
+        y = (dialog.winfo_screenheight() - 780) // 2
         dialog.geometry(f"+{x}+{y}")
 
         main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
