@@ -749,11 +749,11 @@ class MainWindow(ctk.CTk):
                     logger.info(f"[미니플레이어] 초기 재생횟수 로드: {saved_repeat}회")
                     break
 
-    def _refresh_mini_plans(self):
-        """플랜 목록 새로고침 - 디스크에서 최신 버전 로드"""
+    def _refresh_mini_plans_sync(self):
+        """플랜 목록 새로고침 - 디스크에서 최신 버전 로드 (백그라운드 스레드에서 호출)"""
         import json
         old_count = len(self._mini_plans)
-        self._mini_plans = []
+        plans = []
         if PLANS_DIR.exists():
             templates_dir = DATA_DIR / "templates"
             for plan_file in PLANS_DIR.glob("*.json"):
@@ -761,16 +761,22 @@ class MainWindow(ctk.CTk):
                     with open(plan_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                        self._mini_plans.append(plan)
+                        plans.append(plan)
                 except Exception as e:
                     logger.error(f"[미니플레이어] 플랜 새로고침 실패: {plan_file} - {e}")
+        self._mini_plans = plans
         logger.info(f"[미니플레이어] 플랜 새로고침 완료: {old_count} → {len(self._mini_plans)}개")
 
-        # 드롭다운 업데이트
+    def _refresh_mini_plans(self):
+        """플랜 목록 새로고침 + UI 업데이트 (메인 스레드에서 호출)"""
+        self._refresh_mini_plans_sync()
+        self._update_mini_plan_dropdown()
+
+    def _update_mini_plan_dropdown(self):
+        """플랜 드롭다운 UI 업데이트 (메인 스레드에서 호출)"""
         if hasattr(self, '_mini_plan_dropdown') and self._mini_plan_dropdown:
             plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
             self._mini_plan_dropdown.configure(values=plan_names)
-            # 현재 선택 유지 또는 첫번째 선택
             current = self._mini_plan_var.get()
             if current not in plan_names:
                 self._mini_plan_var.set(plan_names[0] if plan_names else "(플랜 없음)")
@@ -1052,9 +1058,6 @@ class MainWindow(ctk.CTk):
             self._mini_status.configure(text="⚠ 플랜을 선택하세요")
             return
 
-        # 실행 전 플랜 목록 새로고침 (에디터에서 변경된 내용 반영)
-        self._refresh_mini_plans()
-
         # 횟수 파싱
         try:
             repeat_count = int(self._mini_repeat_var.get())
@@ -1067,61 +1070,69 @@ class MainWindow(ctk.CTk):
         self._mini_total_repeat = repeat_count
         self._mini_current_repeat = 0
 
-        # 플랜 찾기 (캐시에서 plan_id 확인)
-        cached_plan = None
-        for p in self._mini_plans:
-            if p.name == plan_name:
-                cached_plan = p
-                break
+        # UI 즉시 업데이트 (로딩 상태 표시)
+        self._mini_play_btn.configure(state="disabled")
+        self._mini_status.configure(text="⏳ 플랜 로드 중...")
 
-        if not cached_plan:
-            self._mini_status.configure(text="⚠ 플랜을 찾을 수 없음")
-            return
-
-        # JSON에서 최신 플랜 다시 로드 (수정사항 반영)
-        import json
-        from .player_view import PLANS_DIR
-        plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
-        selected_plan = None
-        if plan_file.exists():
+        # 백그라운드에서 플랜 로드 후 실행 (메인 스레드 블로킹 방지)
+        import threading
+        def load_and_start():
             try:
-                with open(plan_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    templates_dir = DATA_DIR / "templates"
-                    selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                # 모니터링 모드 확인 로그 (디버그용 상세 출력)
-                for idx, rule in enumerate(selected_plan.initial_rules):
-                    rule_conf = getattr(rule, 'confidence', 0)
-                    logger.info(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
-                    if getattr(rule, 'is_monitoring_mode', False):
-                        watches = getattr(rule, 'monitoring_watches', []) or []
-                        logger.info(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
-                        # 상세 디버그 로그
-                        for w_idx, watch in enumerate(watches):
-                            logger.debug(f"[미니플레이어] watch[{w_idx}] 키: {list(watch.keys())}")
-                            logger.debug(f"[미니플레이어] watch[{w_idx}]['confidence']: {watch.get('confidence', 'NOT FOUND')}")
-                            logger.debug(f"[미니플레이어] watch[{w_idx}]['search_region']: {watch.get('search_region', 'NOT FOUND')}")
-                            monitor_actions = watch.get('monitor_actions', [])
-                            for ma_idx, ma in enumerate(monitor_actions):
-                                logger.debug(f"[미니플레이어] watch[{w_idx}].monitor_action[{ma_idx}] 키: {list(ma.keys()) if ma else 'None'}")
-                                logger.debug(f"[미니플레이어] watch[{w_idx}].monitor_action[{ma_idx}]['confidence']: {ma.get('confidence', 'NOT FOUND') if ma else 'None'}")
-                                logger.debug(f"[미니플레이어] watch[{w_idx}].monitor_action[{ma_idx}]['search_region']: {ma.get('search_region', 'NOT FOUND') if ma else 'None'}")
-                logger.info(f"[미니플레이어] 플랜 최신 버전 로드: {plan_name}")
-            except Exception as e:
-                import traceback
-                logger.warning(f"[미니플레이어] 플랜 재로드 실패, 캐시 사용: {e}")
-                logger.warning(f"[미니플레이어] 상세 오류: {traceback.format_exc()}")
-                selected_plan = cached_plan
-                # 캐시 버전 정보 로그
-                for idx, rule in enumerate(selected_plan.initial_rules):
-                    if getattr(rule, 'is_monitoring_mode', False):
-                        watches = getattr(rule, 'monitoring_watches', []) or []
-                        logger.warning(f"[미니플레이어] 캐시 룰 {idx+1}: 감시={len(watches)}개 (이전 버전일 수 있음!)")
-        else:
-            selected_plan = cached_plan
+                # 플랜 새로고침 (디스크 I/O - 백그라운드에서)
+                self._refresh_mini_plans_sync()
 
+                # 플랜 찾기
+                cached_plan = None
+                for p in self._mini_plans:
+                    if p.name == plan_name:
+                        cached_plan = p
+                        break
+
+                if not cached_plan:
+                    self.after(0, lambda: self._mini_on_load_failed("⚠ 플랜을 찾을 수 없음"))
+                    return
+
+                # JSON에서 최신 플랜 로드
+                import json
+                from .player_view import PLANS_DIR
+                plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
+                selected_plan = None
+                if plan_file.exists():
+                    try:
+                        with open(plan_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            templates_dir = DATA_DIR / "templates"
+                            selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                        for idx, rule in enumerate(selected_plan.initial_rules):
+                            rule_conf = getattr(rule, 'confidence', 0)
+                            logger.info(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
+                            if getattr(rule, 'is_monitoring_mode', False):
+                                watches = getattr(rule, 'monitoring_watches', []) or []
+                                logger.info(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
+                        logger.info(f"[미니플레이어] 플랜 최신 버전 로드: {plan_name}")
+                    except Exception as e:
+                        logger.warning(f"[미니플레이어] 플랜 재로드 실패, 캐시 사용: {e}")
+                        selected_plan = cached_plan
+                else:
+                    selected_plan = cached_plan
+
+                # 메인 스레드에서 실행 시작
+                self.after(0, lambda: self._mini_start_execution(selected_plan, repeat_count))
+
+            except Exception as e:
+                logger.error(f"[미니플레이어] 플랜 로드 오류: {e}")
+                self.after(0, lambda: self._mini_on_load_failed(f"✗ 로드 오류: {e}"))
+
+        threading.Thread(target=load_and_start, daemon=True).start()
+
+    def _mini_on_load_failed(self, message: str):
+        """플랜 로드 실패 시 UI 복원"""
+        self._mini_status.configure(text=message)
+        self._mini_play_btn.configure(state="normal")
+
+    def _mini_start_execution(self, selected_plan, repeat_count: int):
+        """플랜 로드 완료 후 실행 시작 (메인 스레드에서 호출)"""
         try:
-            # RuleExecutor 생성 및 실행
             logger.info(f"[미니플레이어] RuleExecutor 생성, 반복: {repeat_count}회")
             self._rule_executor = RuleExecutor()
             self._rule_executor.set_callbacks(
@@ -1130,7 +1141,6 @@ class MainWindow(ctk.CTk):
             )
 
             self._is_running = True
-            self._mini_play_btn.configure(state="disabled")
             self._mini_pause_btn.configure(state="normal")
             self._mini_stop_btn.configure(state="normal")
             self._mini_status.configure(text=f"▶ 실행 중... (1/{repeat_count}회)")

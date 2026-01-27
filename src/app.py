@@ -323,8 +323,8 @@ class WinCroApp:
         from datetime import datetime
         from .utils.config import save_config, get_config
 
-        # UI 안정화를 위한 짧은 대기
-        time.sleep(0.5)
+        # 짧은 초기화 대기
+        time.sleep(0.1)
 
         try:
             download_url = asset.get("browser_download_url")
@@ -394,7 +394,7 @@ class WinCroApp:
                     with open(temp_path, 'wb') as f:
                         while True:
                             try:
-                                chunk = response.read(32768)  # 32KB로 축소 (UI 반응성 향상)
+                                chunk = response.read(262144)  # 256KB (다운로드 속도 향상)
                             except Exception as read_err:
                                 logger.error(f"다운로드 중 읽기 오류: {read_err}")
                                 return
@@ -409,8 +409,7 @@ class WinCroApp:
                                     last_log_percent = percent
                                     logger.info(f"다운로드 진행: {percent}%")
 
-                            # UI 응답성을 위한 짧은 yield
-                            time.sleep(0.001)
+                            # 불필요한 sleep 제거 (이미 백그라운드 스레드)
 
                     logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
             except Exception as download_err:
@@ -438,9 +437,6 @@ class WinCroApp:
                 members = zip_ref.namelist()
                 for i, member in enumerate(members):
                     zip_ref.extract(member, extract_dir)
-                    # 100개마다 yield (UI 응답성 유지)
-                    if i % 100 == 0:
-                        time.sleep(0.01)
 
             # exe가 있는 폴더 찾기
             new_app_dir = None
@@ -689,7 +685,6 @@ if /i "%choice%"=="Y" (
     def _start_auto_update(self, batch_path: str) -> None:
         """배치 파일 실행 후 자동 종료"""
         import subprocess
-        import sys
         import os
 
         if not os.path.exists(batch_path):
@@ -698,10 +693,26 @@ if /i "%choice%"=="Y" (
 
         logger.info(f"자동 업데이트 적용 중... 프로그램이 재시작됩니다.")
 
+        # 실행 중인 작업 먼저 중지 (프리징 방지)
+        try:
+            if hasattr(self._main_window, '_rule_executor') and self._main_window._rule_executor:
+                self._main_window._rule_executor.stop()
+                self._main_window._is_running = False
+        except Exception as e:
+            logger.warning(f"실행 중 작업 중지 실패: {e}")
+
+        # 키보드 리스너 정리
+        try:
+            if hasattr(self._main_window, '_keyboard_listener') and self._main_window._keyboard_listener:
+                self._main_window._keyboard_listener.stop()
+                self._main_window._keyboard_listener = None
+        except (OSError, RuntimeError):
+            pass
+
         try:
             subprocess.Popen(
                 ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except Exception as e:
             logger.error(f"배치 파일 실행 실패: {e}")
@@ -711,7 +722,9 @@ if /i "%choice%"=="Y" (
             self._main_window.destroy()
         except Exception:
             pass
-        sys.exit(0)
+
+        # os._exit으로 즉시 종료 (sys.exit는 스레드 정리 중 블로킹 가능)
+        os._exit(0)
 
     def _merge_user_plans(self) -> None:
         """업데이트 후 사용자 플랜 파일 병합 (새 버전 우선, 같은 이름은 덮어쓰기)"""

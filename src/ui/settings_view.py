@@ -1366,7 +1366,7 @@ class SettingsView(BaseView):
                 self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 1)"))
                 ssl_ctx = ssl.create_default_context()
                 req = urllib.request.Request(download_url, headers=headers)
-                response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
                 logger.info("방법 1 성공")
             except Exception as e1:
                 last_error = e1
@@ -1380,7 +1380,7 @@ class SettingsView(BaseView):
                     ssl_ctx.check_hostname = False
                     ssl_ctx.verify_mode = ssl.CERT_NONE
                     req = urllib.request.Request(download_url, headers=headers)
-                    response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
+                    response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
                     logger.info("방법 2 성공")
                 except Exception as e2:
                     last_error = e2
@@ -1391,7 +1391,7 @@ class SettingsView(BaseView):
                         logger.info("다운로드 시도 3: SSL 없음")
                         self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 3)"))
                         req = urllib.request.Request(download_url, headers=headers)
-                        response = urllib.request.urlopen(req, timeout=60)
+                        response = urllib.request.urlopen(req, timeout=30)
                         logger.info("방법 3 성공")
                     except Exception as e3:
                         last_error = e3
@@ -1404,7 +1404,7 @@ class SettingsView(BaseView):
                             proxy_handler = urllib.request.ProxyHandler({})
                             opener = urllib.request.build_opener(proxy_handler)
                             req = urllib.request.Request(download_url, headers=headers)
-                            response = opener.open(req, timeout=60)
+                            response = opener.open(req, timeout=30)
                             logger.info("방법 4 성공")
                         except Exception as e4:
                             last_error = e4
@@ -1457,8 +1457,8 @@ class SettingsView(BaseView):
 
                         if total_size > 0:
                             percent = int(downloaded / total_size * 100)
-                            # 1% 변할 때마다만 UI 업데이트
-                            if percent != last_percent:
+                            # 5% 변할 때마다만 UI 업데이트 (콜백 폭증 방지)
+                            if percent >= last_percent + 5 or percent == 100:
                                 last_percent = percent
                                 mb_down = downloaded / (1024 * 1024)
                                 mb_total = total_size / (1024 * 1024)
