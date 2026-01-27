@@ -5,6 +5,7 @@ WinCro 설정 화면 모듈
 """
 
 import tkinter as tk
+import threading
 import customtkinter as ctk
 from typing import Optional
 from pathlib import Path
