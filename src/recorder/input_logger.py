@@ -77,6 +77,8 @@ class InputLogger:
 
         # 상태
         self._pressed_keys: set = set()
+        self._pressed_keys_lock = threading.Lock()
+        self._events_lock = threading.Lock()
         self._mouse_pressed = False
         self._drag_start_pos: Optional[tuple] = None
         self._drag_start_time: Optional[float] = None
@@ -98,11 +100,13 @@ class InputLogger:
 
     @property
     def event_count(self) -> int:
-        return len(self._events)
+        with self._events_lock:
+            return len(self._events)
 
     @property
     def events(self) -> List[InputEvent]:
-        return self._events.copy()
+        with self._events_lock:
+            return self._events.copy()
 
     def set_f7_callback(self, callback: Optional[Callable[[], None]]) -> None:
         self._on_f7_pressed = callback
@@ -128,8 +132,10 @@ class InputLogger:
             self._output_path = recordings_dir / f"{output_name}.json"
 
             # 상태 초기화
-            self._events.clear()
-            self._pressed_keys.clear()
+            with self._events_lock:
+                self._events.clear()
+            with self._pressed_keys_lock:
+                self._pressed_keys.clear()
             self._mouse_pressed = False
             self._drag_start_pos = None
             self._drag_start_time = None
@@ -216,13 +222,15 @@ class InputLogger:
             'alt': ['Key.alt_l', 'Key.alt_r', 'Key.alt'],
             'shift': ['Key.shift_l', 'Key.shift_r', 'Key.shift'],
         }
-        for mod, keys in mod_map.items():
-            if any(k in self._pressed_keys for k in keys):
-                modifiers.append(mod)
+        with self._pressed_keys_lock:
+            for mod, keys in mod_map.items():
+                if any(k in self._pressed_keys for k in keys):
+                    modifiers.append(mod)
         return modifiers
 
     def _add_event(self, event: InputEvent) -> None:
-        self._events.append(event)
+        with self._events_lock:
+            self._events.append(event)
 
     # === 마우스 이벤트 ===
 
@@ -369,10 +377,10 @@ class InputLogger:
         key_str = self._key_to_string(key)
 
         # 키 반복(key repeat) 이벤트 무시 - 이미 눌린 키는 다시 기록하지 않음
-        if key_str in self._pressed_keys:
-            return
-
-        self._pressed_keys.add(key_str)
+        with self._pressed_keys_lock:
+            if key_str in self._pressed_keys:
+                return
+            self._pressed_keys.add(key_str)
 
         self._add_event(InputEvent(
             event_type=InputEventType.KEY_PRESS.value,
@@ -389,7 +397,8 @@ class InputLogger:
             return
 
         key_str = self._key_to_string(key)
-        self._pressed_keys.discard(key_str)
+        with self._pressed_keys_lock:
+            self._pressed_keys.discard(key_str)
 
         self._add_event(InputEvent(
             event_type=InputEventType.KEY_RELEASE.value,
@@ -402,12 +411,14 @@ class InputLogger:
             return None
 
         try:
+            with self._events_lock:
+                events_snapshot = list(self._events)
             log_data = {
                 "version": "1.0",
                 "created_at": datetime.now().isoformat(),
                 "duration_seconds": self._get_timestamp(),
-                "event_count": len(self._events),
-                "events": [e.to_dict() for e in self._events],
+                "event_count": len(events_snapshot),
+                "events": [e.to_dict() for e in events_snapshot],
             }
             with open(self._output_path, 'w', encoding='utf-8') as f:
                 json.dump(log_data, f, ensure_ascii=False, indent=2)
@@ -509,7 +520,7 @@ class RecordingSession:
 
         if not self._input_logger.start(
             output_name=f"{session_name}_input",
-            start_time=self._screen_recorder.start_time
+            start_time=self._screen_recorder.start_time or time.time()
         ):
             self._screen_recorder.stop()
             return False

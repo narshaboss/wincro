@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.78"
+APP_VERSION = "1.0.79"
 
 
 @dataclass
@@ -227,7 +227,8 @@ class ConfigManager:
         Returns:
             AppConfig: 초기화된 설정 객체
         """
-        self._config = AppConfig()
+        with self._lock:
+            self._config = AppConfig()
         self.save()
         return self._config
 
@@ -241,11 +242,10 @@ class ConfigManager:
         Returns:
             bool: 업데이트 성공 여부
         """
-        # 먼저 설정이 로드되었는지 확인 (락 외부에서)
-        if self._config is None:
-            self.load()
-
         with self._lock:
+            # 설정이 로드되었는지 확인 (락 내부에서)
+            if self._config is None:
+                self.load()
             try:
                 for key, value in kwargs.items():
                     if hasattr(self._config, key):

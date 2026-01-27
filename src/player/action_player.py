@@ -745,7 +745,9 @@ class ActionPlayer:
                                 logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name}")
                         time.sleep(0.5)  # 0.5초마다 재검색
 
-                if len(locations) == 1:
+                if not locations:
+                    return False, "이미지를 찾을 수 없습니다"
+                elif len(locations) == 1:
                     x, y = locations[0]
                     logger.info(f"이미지 매칭 성공: ({x}, {y})")
                 else:

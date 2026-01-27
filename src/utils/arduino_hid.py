@@ -215,11 +215,11 @@ class ArduinoHID:
     def mouse_double_click(self, button: str = 'left') -> bool:
         """마우스 더블 클릭"""
         btn = 'L' if button.lower() == 'left' else ('R' if button.lower() == 'right' else 'M')
-        self._send_command(f"MC,{btn}")
+        first = self._send_command(f"MC,{btn}")
         time.sleep(0.08)
-        self._send_command(f"MC,{btn}")
+        second = self._send_command(f"MC,{btn}")
         time.sleep(0.05)
-        return True
+        return first and second
 
     def mouse_scroll(self, amount: int) -> bool:
         """마우스 스크롤 (양수: 위, 음수: 아래)"""

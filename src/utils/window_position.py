@@ -43,7 +43,7 @@ def _load_positions() -> dict:
 
 
 def _save_positions(positions: dict) -> bool:
-    """위치 데이터 저장"""
+    """위치 데이터 저장 (호출자가 _positions_lock을 이미 획득한 상태여야 함)"""
     global _positions_cache
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)

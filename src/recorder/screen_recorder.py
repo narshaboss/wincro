@@ -50,6 +50,8 @@ class RecordingRegion:
     def full_screen(cls, monitor_index: int = 1) -> 'RecordingRegion':
         """전체 화면 영역 생성"""
         with mss.mss() as sct:
+            if monitor_index < 0 or monitor_index >= len(sct.monitors):
+                monitor_index = 1 if len(sct.monitors) > 1 else 0
             monitor = sct.monitors[monitor_index]
             return cls(
                 left=monitor["left"],
@@ -87,6 +89,9 @@ class ScreenRecorder:
         self._last_frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
 
+        # pause/resume 상태 보호용 락
+        self._pause_lock = threading.Lock()
+
     @property
     def is_recording(self) -> bool:
         return self._recording_event.is_set()
@@ -119,9 +124,11 @@ class ScreenRecorder:
     def elapsed_time(self) -> float:
         if self._start_time is None:
             return 0.0
-        elapsed = time.time() - self._start_time - self._total_pause_duration
-        if self._paused and self._pause_start:
-            elapsed -= (time.time() - self._pause_start)
+        with self._pause_lock:
+            now = time.time()
+            elapsed = now - self._start_time - self._total_pause_duration
+            if self._paused and self._pause_start:
+                elapsed -= (now - self._pause_start)
         return max(0.0, elapsed)
 
     @property
@@ -205,7 +212,8 @@ class ScreenRecorder:
 
         self._thread = None
         self._region = None
-        self._last_frame = None  # 프레임 버퍼 정리
+        with self._frame_lock:
+            self._last_frame = None  # 프레임 버퍼 정리
 
         return output_path
 
@@ -213,8 +221,9 @@ class ScreenRecorder:
         """일시 정지"""
         if not self._recording or self._paused:
             return False
-        self._paused = True
-        self._pause_start = time.time()
+        with self._pause_lock:
+            self._paused = True
+            self._pause_start = time.time()
         logger.info("녹화 일시 정지")
         return True
 
@@ -222,10 +231,11 @@ class ScreenRecorder:
         """재개"""
         if not self._recording or not self._paused:
             return False
-        if self._pause_start:
-            self._total_pause_duration += time.time() - self._pause_start
-            self._pause_start = None
-        self._paused = False
+        with self._pause_lock:
+            if self._pause_start:
+                self._total_pause_duration += time.time() - self._pause_start
+                self._pause_start = None
+            self._paused = False
         logger.info("녹화 재개")
         return True
 

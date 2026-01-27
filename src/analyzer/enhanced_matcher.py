@@ -102,10 +102,11 @@ class EnhancedMatcher:
             if not path.exists():
                 logger.error(f"템플릿 파일 없음: {template_path}")
                 # 캐시에서도 제거
-                if template_path in self._cache:
-                    del self._cache[template_path]
-                if template_path in self._last_positions:
-                    del self._last_positions[template_path]
+                with self._cache_lock:
+                    if template_path in self._cache:
+                        del self._cache[template_path]
+                    if template_path in self._last_positions:
+                        del self._last_positions[template_path]
                 return None
 
             # 파일 수정 시간 체크
@@ -412,15 +413,15 @@ class EnhancedMatcher:
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
                 if max_val >= threshold:
-                    # 원본 템플릿 위치로 변환
+                    # 원본 템플릿 위치로 변환 (max_loc는 매칭된 부분 영역의 좌상단)
                     if name == 'top':
                         est_x, est_y = max_loc[0], max_loc[1]
                     elif name == 'bottom':
-                        est_x, est_y = max_loc[0], max_loc[1] - (h - margin)
+                        est_x, est_y = max_loc[0], max_loc[1] + (h - margin)
                     elif name == 'left':
                         est_x, est_y = max_loc[0], max_loc[1]
                     elif name == 'right':
-                        est_x, est_y = max_loc[0] - (w - margin), max_loc[1]
+                        est_x, est_y = max_loc[0] + (w - margin), max_loc[1]
 
                     matches.append({
                         'region': name,

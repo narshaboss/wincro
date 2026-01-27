@@ -49,7 +49,11 @@ def _shutdown_thread_pool():
     global _thread_pool
     with _thread_pool_lock:
         if _thread_pool:
-            _thread_pool.shutdown(wait=False)
+            try:
+                _thread_pool.shutdown(wait=True, cancel_futures=True)
+            except TypeError:
+                # Python 3.8 이하: cancel_futures 미지원
+                _thread_pool.shutdown(wait=False)
             _thread_pool = None
 
 
@@ -69,12 +73,12 @@ class WinCroApp:
         # 성능 설정 적용 (DEBUG 로그 비활성화 등)
         apply_performance_config()
 
-        # 뷰 인스턴스
-        self._recorder_view: Optional[RecorderView] = None
-        self._analyzer_view: Optional[AnalyzerView] = None
-        self._player_view: Optional[PlayerView] = None
-        self._settings_view: Optional[SettingsView] = None
-        self._guide_view: Optional[GuideView] = None
+        # 뷰 인스턴스 (지연 import이므로 문자열 타입 힌트 사용)
+        self._recorder_view: Optional['RecorderView'] = None
+        self._analyzer_view: Optional['AnalyzerView'] = None
+        self._player_view: Optional['PlayerView'] = None
+        self._settings_view: Optional['SettingsView'] = None
+        self._guide_view: Optional['GuideView'] = None
 
         logger.info("WinCro 애플리케이션 초기화")
         logger.debug(f"[설정 로드] window_mode={self._config.ui.window_mode}, auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}")
@@ -620,10 +624,9 @@ if /i "%choice%"=="Y" (
             logger.error(f"배치 파일 실행 실패: {e}")
             return
 
-        # 데이터베이스 정리
+        # 데이터베이스 정리 (DatabaseManager는 컨텍스트 매니저 기반이므로 별도 close 불필요)
         try:
-            from .database import get_db
-            get_db().close()
+            save_config()
         except Exception:
             pass
 
@@ -632,7 +635,11 @@ if /i "%choice%"=="Y" (
         except Exception:
             pass
 
+        # 스레드풀 정리
+        _shutdown_thread_pool()
+
         # os._exit으로 즉시 종료 (sys.exit는 스레드 정리 중 블로킹 가능)
+        import os
         os._exit(0)
 
     def _merge_user_plans(self) -> None:

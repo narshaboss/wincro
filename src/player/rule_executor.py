@@ -1835,8 +1835,8 @@ class RuleExecutor:
                 roi_x2 = min(screen_w, center_x + search_radius)
                 roi_y2 = min(screen_h, center_y + search_radius)
 
-                # ROI가 템플릿보다 작으면 전체 화면 검색
-                if (roi_x2 - roi_x1) > w and (roi_y2 - roi_y1) > h:
+                # ROI가 유효하고 템플릿보다 큰 경우만 적용
+                if roi_x2 > roi_x1 and roi_y2 > roi_y1 and (roi_x2 - roi_x1) > w and (roi_y2 - roi_y1) > h:
                     screenshot_gray = screenshot_gray[roi_y1:roi_y2, roi_x1:roi_x2]
                     roi_offset_x, roi_offset_y = roi_x1, roi_y1
 
@@ -2007,6 +2007,9 @@ class RuleExecutor:
 
                 watch_image = watch.get('image')
                 goto_index = watch.get('goto_index')
+                if not watch_image:
+                    logger.warning(f"{_YELLOW}  ⚠ 감시 이미지 경로가 설정되지 않음 - 건너뜀{_RESET}")
+                    continue
                 watch_name = Path(watch_image).name
                 search_region = watch.get('search_region')
                 # rule의 confidence 통일 사용 (watch별 개별 설정 제거됨)

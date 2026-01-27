@@ -428,6 +428,31 @@ wincro/
 
 ## 작업 히스토리
 
+### 2026-01-27: 전체 코드베이스 심층 버그 수정 (v1.0.78 → v1.0.79)
+- **분석 범위:** recorder, analyzer, player, utils, ui, database, app 모듈 전체
+- **CRITICAL 수정:**
+  - `app.py`: `get_db().close()` 호출 제거 (DatabaseManager에 close() 메서드 없음 → AttributeError)
+  - `rule_executor.py`: `watch.get('image')` None일 때 `Path(None).name` → TypeError 크래시 방지
+- **HIGH 수정:**
+  - `screen_recorder.py`: pause/resume/elapsed_time에 `_pause_lock` 추가 (경쟁 조건 해결)
+  - `screen_recorder.py`: stop()에서 `_last_frame` 해제 시 `_frame_lock` 보호 추가
+  - `screen_recorder.py`: `full_screen()` 모니터 인덱스 범위 검증 추가 (IndexError 방지)
+  - `input_logger.py`: `_events` 리스트에 `_events_lock` 추가 (마우스/키보드 스레드 동시 접근)
+  - `input_logger.py`: `_pressed_keys` 셋에 `_pressed_keys_lock` 추가 (스레드 안전성)
+  - `config.py`: `reset()` 메서드에 `_lock` 추가 (스레드 안전)
+  - `config.py`: `update()` 메서드의 `load()` 호출을 락 내부로 이동 (경쟁 조건 해결)
+  - `enhanced_matcher.py`: `match_edge_regions()` bottom/right 좌표 계산 오류 수정 (- → +)
+  - `action_player.py`: 빈 locations 리스트 접근 시 IndexError 방지 (방어 코드 추가)
+  - `app.py`: type hint NameError 방지 (문자열 참조로 변경)
+  - `app.py`: `_start_auto_update`에서 스레드풀 정리 추가 후 os._exit
+- **MEDIUM 수정:**
+  - `arduino_hid.py`: `mouse_double_click()` 첫 번째 클릭 결과 확인하도록 수정
+  - `rule_executor.py`: ROI 크기 0 검증 추가 (빈 배열 슬라이싱 방지)
+  - `app.py`: 스레드풀 shutdown에 `cancel_futures=True` 추가
+  - `db_manager.py`: WAL 초기화를 `_lock`으로 보호 (경쟁 조건 해결)
+  - `enhanced_matcher.py`: 파일 미존재 시 캐시 삭제를 `_cache_lock`으로 보호
+  - `input_logger.py`: RecordingSession start_time None 폴백 추가
+
 ### 2026-01-27: 전체 코드베이스 버그 수정 (v1.0.70)
 - **분석 범위:** recorder, analyzer, player, utils, ui, database 모듈 전체
 - **수정된 버그:**
