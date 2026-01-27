@@ -786,14 +786,39 @@ class MainWindow(ctk.CTk):
             '\033[91m': 'ansi_red',     # 빨강
         }
 
-        def add_log(msg: str, level: str):
+        def update_log_ui(msg: str, level: str, tag: str):
+            """UI 업데이트 (메인 스레드에서 실행)"""
             try:
+                if not self.winfo_exists():
+                    return
                 self._mini_log_text.configure(state="normal")
                 # 최대 100줄 유지
                 line_count = int(self._mini_log_text.index('end-1c').split('.')[0])
                 if line_count > 100:
                     self._mini_log_text.delete('1.0', '2.0')
 
+                self._mini_log_text.insert("end", f"{msg}\n", tag)
+                self._mini_log_text.see("end")
+                self._mini_log_text.configure(state="disabled")
+            except (tk.TclError, RuntimeError, AttributeError):
+                pass
+
+        def update_status_ui(action_num: str, action_name: str):
+            """상태 업데이트 (메인 스레드에서 실행)"""
+            try:
+                if not self.winfo_exists():
+                    return
+                if hasattr(self, '_mini_status'):
+                    self._mini_status.configure(
+                        text=f"▶ [{action_num}] {action_name[:20]}",
+                        text_color=COLORS["accent"]
+                    )
+            except (tk.TclError, RuntimeError, AttributeError):
+                pass
+
+        def add_log(msg: str, level: str):
+            """로그 추가 (백그라운드 스레드에서 호출됨)"""
+            try:
                 # 타임스탬프 제거하고 메시지만 표시
                 if " - " in msg:
                     msg = msg.split(" - ", 1)[-1]
@@ -814,19 +839,16 @@ class MainWindow(ctk.CTk):
 
                 # 액션 번호가 있으면 상태 업데이트 (예: [3-1] 또는 [1])
                 action_match = re.search(r'\[([0-9\-]+)\]', msg)
-                if action_match and hasattr(self, '_mini_status'):
+                if action_match:
                     action_num = action_match.group(1)
                     # 액션 이름 추출
                     action_name = msg.split(']', 1)[-1].strip() if ']' in msg else ""
                     if action_name:
-                        self._mini_status.configure(
-                            text=f"▶ [{action_num}] {action_name[:20]}",
-                            text_color=COLORS["accent"]
-                        )
+                        # 메인 스레드에서 상태 UI 업데이트
+                        self.after(0, lambda: update_status_ui(action_num, action_name))
 
-                self._mini_log_text.insert("end", f"{msg}\n", tag)
-                self._mini_log_text.see("end")
-                self._mini_log_text.configure(state="disabled")
+                # 메인 스레드에서 로그 UI 업데이트
+                self.after(0, lambda m=msg, l=level, t=tag: update_log_ui(m, l, t))
             except (tk.TclError, RuntimeError):
                 pass
 
