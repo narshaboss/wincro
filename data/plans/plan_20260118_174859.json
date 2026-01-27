@@ -2515,8 +2515,7 @@
               "confidence": 0.65,
               "search_radius": 0
             }
-          ],
-          "confidence": 0.8
+          ]
         },
         {
           "image": "trigger_20260121_183524_166.png",
@@ -2569,12 +2568,11 @@
               "confidence": 0.65,
               "search_radius": 0
             }
-          ],
-          "confidence": 0.8
+          ]
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": -1,
+          "goto_index": 5,
           "search_region": [
             0,
             0,
@@ -2677,12 +2675,11 @@
               "confidence": 0.65,
               "search_radius": 0
             }
-          ],
-          "confidence": 0.8
+          ]
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": -1,
+          "goto_index": 6,
           "search_region": [
             901,
             0,
@@ -2785,8 +2782,7 @@
               "confidence": 0.65,
               "search_radius": 0
             }
-          ],
-          "confidence": 0.8
+          ]
         }
       ]
     },
@@ -3561,7 +3557,7 @@
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": -1,
+          "goto_index": 5,
           "search_region": [
             0,
             0,
@@ -3668,7 +3664,7 @@
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": -1,
+          "goto_index": 6,
           "search_region": [
             901,
             0,
