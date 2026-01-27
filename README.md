@@ -25,7 +25,7 @@ WinCro는 사용자가 화면을 녹화하면 AI가 영상을 분석하여 마�
 
 ```bash
 # 저장소 클론
-git clone https://github.com/your-repo/wincro.git
+git clone https://github.com/narshaboss/wincro.git
 cd wincro
 
 # 가상환경 생성 (권장)

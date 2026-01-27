@@ -701,7 +701,7 @@ location = self._find_image_on_screen(next_target_image, next_confidence, search
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-26
+- 마지막 업데이트: 2026-01-27
 
 ---
 이 파일은 Claude가 자동으로 업데이트합니다.
