@@ -765,7 +765,8 @@ class DatabaseManager:
 
         # 분석된 재생목록(시퀀스)은 삭제하지 않음 - 사용자 데이터 보존
 
-        # 실제 파일 삭제
+        # 실제 파일 삭제 (파일 삭제 실패 시 DB 삭제도 진행하지 않음)
+        file_delete_failed = False
         if delete_files:
             # 비디오 파일 삭제
             if recording.video_path and os.path.exists(recording.video_path):
@@ -773,7 +774,8 @@ class DatabaseManager:
                     os.remove(recording.video_path)
                     logger.info(f"비디오 파일 삭제: {recording.video_path}")
                 except Exception as e:
-                    logger.warning(f"비디오 파일 삭제 실패: {e}")
+                    logger.error(f"비디오 파일 삭제 실패: {e}")
+                    file_delete_failed = True
 
             # 입력 로그 파일 삭제
             if recording.input_log_path and os.path.exists(recording.input_log_path):
@@ -782,10 +784,16 @@ class DatabaseManager:
                     logger.info(f"입력 로그 삭제: {recording.input_log_path}")
                 except Exception as e:
                     logger.warning(f"입력 로그 삭제 실패: {e}")
+                    # 입력 로그 삭제 실패는 경고만 (비디오가 중요)
 
             # 템플릿 이미지와 자동화 계획(플랜)은 삭제하지 않음
             # - 이미지: "미사용 이미지 정리" 버튼으로 별도 관리
             # - 플랜: 실행 탭에서 별도 관리
+
+        # 비디오 파일 삭제 실패 시 DB 삭제 중단 (데이터 불일치 방지)
+        if file_delete_failed:
+            logger.error(f"파일 삭제 실패로 녹화 삭제 중단: {recording.name} (ID: {recording_id})")
+            return False
 
         # DB에서 녹화 삭제
         with self._get_connection() as conn:

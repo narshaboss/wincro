@@ -222,8 +222,14 @@ class EmergencyStopHandler:
     def stop(self) -> None:
         """핸들러 중지"""
         if self._listener:
-            self._listener.stop()
-            self._listener = None
+            try:
+                self._listener.stop()
+                # 리스너 스레드 종료 대기 (최대 1초)
+                self._listener.join(timeout=1.0)
+            except (OSError, RuntimeError):
+                pass
+            finally:
+                self._listener = None
 
     def reset(self) -> None:
         """상태 초기화"""
@@ -409,6 +415,12 @@ class ActionPlayer:
         self._emergency_stop.stop()
         self._update_progress("사용자에 의해 중지됨")
         logger.info("실행 중지")
+
+        # 스레드 종료 대기 (최대 2초)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("실행 스레드가 2초 후에도 응답 없음")
 
         self._finalize_execution(False, "사용자에 의해 중지됨")
         return True

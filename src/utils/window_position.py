@@ -17,26 +17,29 @@ logger = get_logger(__name__)
 
 # 창 위치 저장 파일
 POSITIONS_FILE = DATA_DIR / "window_positions.json"
-_positions_lock = threading.Lock()
+_positions_lock = threading.RLock()
 _positions_cache: Optional[dict] = None
 
 
 def _load_positions() -> dict:
-    """위치 데이터 로드"""
+    """위치 데이터 로드 (스레드 안전)"""
     global _positions_cache
-    if _positions_cache is not None:
-        return _positions_cache
 
-    try:
-        if POSITIONS_FILE.exists():
-            with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
-                _positions_cache = json.load(f)
-        else:
+    # 락 내에서 캐시 체크 및 로드 (레이스 컨디션 방지)
+    with _positions_lock:
+        if _positions_cache is not None:
+            return _positions_cache
+
+        try:
+            if POSITIONS_FILE.exists():
+                with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
+                    _positions_cache = json.load(f)
+            else:
+                _positions_cache = {}
+        except (json.JSONDecodeError, IOError):
             _positions_cache = {}
-    except (json.JSONDecodeError, IOError):
-        _positions_cache = {}
 
-    return _positions_cache
+        return _positions_cache
 
 
 def _save_positions(positions: dict) -> bool:
@@ -63,13 +66,13 @@ def get_window_position(window_id: str) -> Optional[Tuple[int, int]]:
     Returns:
         (x, y) 튜플 또는 None
     """
-    with _positions_lock:
-        positions = _load_positions()
-        pos = positions.get(window_id)
-        if pos and isinstance(pos, dict):
-            x, y = pos.get("x"), pos.get("y")
-            if x is not None and y is not None:
-                return (int(x), int(y))
+    # _load_positions()가 이미 락을 사용하므로 중복 락 제거
+    positions = _load_positions()
+    pos = positions.get(window_id)
+    if pos and isinstance(pos, dict):
+        x, y = pos.get("x"), pos.get("y")
+        if x is not None and y is not None:
+            return (int(x), int(y))
     return None
 
 

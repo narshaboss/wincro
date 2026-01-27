@@ -391,8 +391,9 @@ class RuleExecutor:
         self._pause_event = threading.Event()
         self._pause_event.set()  # 기본값: 일시정지 아님
 
-        # 모니터링 스레드
+        # 스레드 추적
         self._monitor_thread: Optional[threading.Thread] = None
+        self._execution_thread: Optional[threading.Thread] = None
 
         # 진행 상태
         self._progress = ExecutionProgress()
@@ -492,9 +493,9 @@ class RuleExecutor:
             message="실행 시작",
         )
 
-        # 실행 스레드 시작
-        thread = threading.Thread(target=self._execution_loop, daemon=True)
-        thread.start()
+        # 실행 스레드 시작 (인스턴스 변수에 저장하여 추적)
+        self._execution_thread = threading.Thread(target=self._execution_loop, daemon=True)
+        self._execution_thread.start()
 
         return True
 
@@ -550,6 +551,19 @@ class RuleExecutor:
                 self._update_progress("실행 중지됨")
             except Exception as e:
                 logger.debug(f"중지 UI 업데이트 실패: {e}")
+
+            # 실행 스레드 종료 대기
+            if self._execution_thread and self._execution_thread.is_alive():
+                self._execution_thread.join(timeout=3.0)
+                if self._execution_thread.is_alive():
+                    logger.warning("실행 스레드가 3초 후에도 응답 없음")
+
+            # 모니터링 스레드 종료 대기
+            if self._monitor_thread and self._monitor_thread.is_alive():
+                self._monitor_thread.join(timeout=2.0)
+                if self._monitor_thread.is_alive():
+                    logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
+
             logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
         except Exception as e:
             logger.error(f"중지 오류: {e}")

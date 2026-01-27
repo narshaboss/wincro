@@ -2027,11 +2027,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
             logger.info(f"[부분실행] 완료: {msg}")
             # UI 스레드에서 상태 복원
             try:
+                if not self.winfo_exists():
+                    return
                 self.after(0, self._on_execution_complete)
                 # 창 복원
                 if config.ui.minimize_on_run and main_window:
                     self.after(100, lambda: main_window.deiconify())
-            except (tk.TclError, KeyError, AttributeError):
+            except (tk.TclError, KeyError, AttributeError, RuntimeError):
                 pass
 
         def on_error(msg, failed_rule):
@@ -2039,8 +2041,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             # 창 복원
             if config.ui.minimize_on_run and main_window:
                 try:
+                    if not self.winfo_exists():
+                        return
                     self.after(100, lambda: main_window.deiconify())
-                except tk.TclError:
+                except (tk.TclError, RuntimeError):
                     pass
 
         executor.set_callbacks(on_complete=on_complete, on_error=on_error)
@@ -2749,8 +2753,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                                 try:
                                     if play_btn_ref[0]:
                                         play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400")
-                                except Exception:
-                                    pass
+                                except (tk.TclError, RuntimeError, AttributeError) as e:
+                                    logger.debug(f"[모니터링 테스트] 버튼 복원 실패: {e}")
 
                         import threading
                         threading.Thread(target=run_actions, daemon=True).start()
@@ -3233,8 +3237,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                             try:
                                 if watch_play_btn_ref[0]:
                                     watch_play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400")
-                            except Exception:
-                                pass
+                            except (tk.TclError, RuntimeError, AttributeError) as e:
+                                logger.debug(f"[감시 테스트] 버튼 복원 실패: {e}")
 
                     import threading
                     threading.Thread(target=run_watch, daemon=True).start()
@@ -7119,29 +7123,49 @@ class PlayerView(BaseView):
 
     def _on_plan_progress_callback(self, progress) -> None:
         """자동화 계획 진행 상태 콜백 (ExecutionProgress 객체)"""
-        self.after(
-            0,
-            lambda: self._update_plan_progress(
-                progress.current_step,
-                progress.total_steps,
-                progress.current_rule_description,
-            ),
-        )
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(
+                0,
+                lambda: self._update_plan_progress(
+                    progress.current_step,
+                    progress.total_steps,
+                    progress.current_rule_description,
+                ),
+            )
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _on_plan_progress(self, current: int, total: int, message: str) -> None:
         """자동화 계획 진행 상태 업데이트"""
-        self.after(0, lambda: self._update_plan_progress(current, total, message))
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(0, lambda: self._update_plan_progress(current, total, message))
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _update_plan_progress(self, current: int, total: int, message: str) -> None:
         """자동화 계획 진행 상태 UI 업데이트"""
-        self._step_label.configure(text=f"{PLAYER['current_step']}: {current} / {total}")
-        if total > 0:
-            self._progress_bar.set(current / total)
-        self._current_action_label.configure(text=message)
+        try:
+            if not self.winfo_exists():
+                return
+            self._step_label.configure(text=f"{PLAYER['current_step']}: {current} / {total}")
+            if total > 0:
+                self._progress_bar.set(current / total)
+            self._current_action_label.configure(text=message)
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
 
     def _on_plan_complete(self, success: bool, message: str) -> None:
         """자동화 계획 실행 완료"""
-        self.after(0, lambda: self._show_plan_complete(success, message))
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(0, lambda: self._show_plan_complete(success, message))
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _show_plan_complete(self, success: bool, message: str) -> None:
         """자동화 계획 완료 표시"""
@@ -7222,22 +7246,42 @@ class PlayerView(BaseView):
 
     def _on_progress(self, progress: PlaybackProgress) -> None:
         """진행 상태 업데이트"""
-        self.after(0, lambda: self._update_progress(progress))
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(0, lambda: self._update_progress(progress))
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _update_progress(self, progress: PlaybackProgress) -> None:
         """진행 상태 UI 업데이트"""
-        self._step_label.configure(
-            text=f"{PLAYER['current_step']}: {progress.current_step} / {progress.total_steps}"
-        )
-        self._progress_bar.set(progress.progress_percent / 100)
+        try:
+            if not self.winfo_exists():
+                return
+            self._step_label.configure(
+                text=f"{PLAYER['current_step']}: {progress.current_step} / {progress.total_steps}"
+            )
+            self._progress_bar.set(progress.progress_percent / 100)
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
 
     def _on_action_start(self, index: int, action: Action) -> None:
         """액션 시작 콜백"""
-        self.after(0, lambda: self._current_action_label.configure(text=str(action)))
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(0, lambda: self._current_action_label.configure(text=str(action)))
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _on_complete(self, success: bool, message: str) -> None:
         """실행 완료"""
-        self.after(0, lambda: self._show_complete(success, message))
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(0, lambda: self._show_complete(success, message))
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _show_complete(self, success: bool, message: str) -> None:
         """실행 완료 표시"""
@@ -7292,8 +7336,19 @@ class PlayerView(BaseView):
 
     def cleanup(self) -> None:
         """리소스 정리"""
+        # 배치 렌더링 타이머 취소
+        if hasattr(self, '_batch_render_id') and self._batch_render_id:
+            try:
+                self.after_cancel(self._batch_render_id)
+            except (ValueError, tk.TclError):
+                pass
+            self._batch_render_id = None
+
         if self._action_player.is_running:
             self._action_player.stop()
         if self._rule_executor:
-            self._rule_executor.stop()
+            try:
+                self._rule_executor.stop()
+            except Exception as e:
+                logger.warning(f"rule_executor 정리 오류: {e}")
             self._rule_executor = None
