@@ -202,22 +202,38 @@ class Sequence:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Sequence':
         """딕셔너리에서 생성"""
+        # JSON 파싱 (예외 처리 포함)
         actions_data = data.get("actions", "[]")
         if isinstance(actions_data, str):
-            actions_data = json.loads(actions_data)
+            try:
+                actions_data = json.loads(actions_data)
+            except json.JSONDecodeError:
+                actions_data = []
 
         tags_data = data.get("tags", "[]")
         if isinstance(tags_data, str):
-            tags_data = json.loads(tags_data)
+            try:
+                tags_data = json.loads(tags_data)
+            except json.JSONDecodeError:
+                tags_data = []
+
+        # datetime 파싱 헬퍼 함수
+        def parse_datetime(value: Optional[str]) -> Optional[datetime]:
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(value)
+            except (ValueError, TypeError):
+                return None
 
         return cls(
             id=data.get("id"),
             name=data.get("name", ""),
             description=data.get("description", ""),
             actions=[Action.from_dict(a) for a in actions_data],
-            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
-            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None,
-            last_run=datetime.fromisoformat(data["last_run"]) if data.get("last_run") else None,
+            created_at=parse_datetime(data.get("created_at")),
+            updated_at=parse_datetime(data.get("updated_at")),
+            last_run=parse_datetime(data.get("last_run")),
             run_count=data.get("run_count", 0),
             success_count=data.get("success_count", 0),
             failure_count=data.get("failure_count", 0),
@@ -350,12 +366,21 @@ class ExecutionLog:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ExecutionLog':
         """딕셔너리에서 생성"""
+        # datetime 파싱 헬퍼 함수
+        def parse_datetime(value: Optional[str]) -> Optional[datetime]:
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(value)
+            except (ValueError, TypeError):
+                return None
+
         return cls(
             id=data.get("id"),
             sequence_id=data.get("sequence_id"),
             sequence_name=data.get("sequence_name", ""),
-            started_at=datetime.fromisoformat(data["started_at"]) if data.get("started_at") else None,
-            ended_at=datetime.fromisoformat(data["ended_at"]) if data.get("ended_at") else None,
+            started_at=parse_datetime(data.get("started_at")),
+            ended_at=parse_datetime(data.get("ended_at")),
             status=data.get("status", ExecutionStatus.PENDING.value),
             error_message=data.get("error_message"),
             ai_interventions=data.get("ai_interventions", 0),
@@ -412,6 +437,15 @@ class Recording:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Recording':
         """딕셔너리에서 생성"""
+        # datetime 파싱 헬퍼 함수
+        def parse_datetime(value: Optional[str]) -> Optional[datetime]:
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(value)
+            except (ValueError, TypeError):
+                return None
+
         return cls(
             id=data.get("id"),
             name=data.get("name", ""),
@@ -421,7 +455,7 @@ class Recording:
             fps=data.get("fps", 30),
             resolution_width=data.get("resolution_width", 1920),
             resolution_height=data.get("resolution_height", 1080),
-            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
+            created_at=parse_datetime(data.get("created_at")),
             analyzed=data.get("analyzed", False),
             ai_analyzed=data.get("ai_analyzed", False),
             sequence_id=data.get("sequence_id"),

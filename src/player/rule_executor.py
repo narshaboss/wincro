@@ -1076,7 +1076,9 @@ class RuleExecutor:
                     found_image = None
                     wait_count = 0
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
-                    skip_timeout = rule.wait_after if skip_on_not_found else float('inf')
+                    # 무한 대기 방지: 최대 300초(5분) 타임아웃 설정
+                    max_wait_timeout = 300.0
+                    skip_timeout = rule.wait_after if skip_on_not_found else max_wait_timeout
                     search_start = time.time()
                     if skip_on_not_found:
                         logger.debug(f"  [DEBUG] 현재액션 스킵설정: wait_after={rule.wait_after}초")
@@ -1087,10 +1089,15 @@ class RuleExecutor:
                         if self._stop_event.is_set():
                             return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                        # 스킵 모드: 대기시간 초과시 다음 액션으로
-                        if skip_on_not_found and (time.time() - search_start) >= skip_timeout:
-                            logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵){_RESET}")
-                            return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
+                        # 타임아웃 체크: 대기시간 초과시 스킵 또는 실패
+                        elapsed = time.time() - search_start
+                        if elapsed >= skip_timeout:
+                            if skip_on_not_found:
+                                logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵){_RESET}")
+                                return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
+                            else:
+                                logger.error(f"{_RED}{self._step_prefix}✗ 타임아웃: 이미지를 찾지 못함 ({max_wait_timeout:.0f}초 대기){_RESET}")
+                                return self._make_result(rule, False, f"타임아웃: 이미지 없음 ({max_wait_timeout:.0f}초 대기)", start_time)
 
                         # 일시정지 대기 (pause_event가 clear되면 일시정지)
                         while not self._pause_event.is_set():
@@ -1140,16 +1147,23 @@ class RuleExecutor:
                                 pass
 
                         if not locations:
-                            # 이미지 검색 후 스킵 체크 (검색이 오래 걸릴 수 있음)
-                            if skip_on_not_found and (time.time() - search_start) >= skip_timeout:
-                                logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵){_RESET}")
-                                logger.info(f"{self._step_prefix}→ 스킵 처리 중... 다음 액션으로 이동")
-                                return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
+                            elapsed = time.time() - search_start
+                            # 이미지 검색 후 타임아웃 체크
+                            if elapsed >= skip_timeout:
+                                if skip_on_not_found:
+                                    logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵){_RESET}")
+                                    logger.info(f"{self._step_prefix}→ 스킵 처리 중... 다음 액션으로 이동")
+                                    return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
+                                else:
+                                    # 최대 대기 시간 초과 - 실패 처리
+                                    logger.error(f"{_RED}{self._step_prefix}✗ 타임아웃: 이미지를 찾지 못함 ({max_wait_timeout:.0f}초 대기){_RESET}")
+                                    return self._make_result(rule, False, f"타임아웃: 이미지 없음 ({max_wait_timeout:.0f}초 대기)", start_time)
 
                             wait_count += 1
                             if wait_count % 20 == 1:  # 10초마다 로그
-                                skip_info = f" (스킵: {skip_timeout:.1f}초 후)" if skip_on_not_found else ""
-                                logger.info(f"{self._step_prefix}⏳ 타겟 이미지 대기 중... {wait_count * 0.5:.0f}초{skip_info}")
+                                remaining = skip_timeout - elapsed
+                                skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
+                                logger.info(f"{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{skip_info}")
                             time.sleep(0.5)  # 0.5초마다 재검색
 
                     # 찾은 이미지 이름

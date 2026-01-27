@@ -47,7 +47,7 @@ def _get_file_mtime(image_path: str) -> float:
     """파일 수정 시간 가져오기"""
     try:
         return Path(image_path).stat().st_mtime
-    except:
+    except (OSError, FileNotFoundError, ValueError):
         return 0
 
 
@@ -70,7 +70,7 @@ def set_cached_thumbnail(image_path: str, size: tuple, ctk_image):
             try:
                 first_key = next(iter(_thumbnail_cache))
                 del _thumbnail_cache[first_key]
-            except:
+            except (StopIteration, KeyError, RuntimeError):
                 pass
         _thumbnail_cache[cache_key] = ctk_image
 
@@ -191,7 +191,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         for widget in self._visible_widgets.values():
             try:
                 widget.destroy()
-            except:
+            except (tk.TclError, RuntimeError, AttributeError):
                 pass
         self._visible_widgets.clear()
 
@@ -274,7 +274,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         for idx in to_remove:
             try:
                 self._visible_widgets[idx].destroy()
-            except:
+            except (tk.TclError, RuntimeError, AttributeError):
                 pass
             del self._visible_widgets[idx]
 
@@ -308,7 +308,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
             widget.bind("<Button-5>", self._on_mousewheel_linux, add="+")
             for child in widget.winfo_children():
                 self._bind_mousewheel_recursive(child)
-        except:
+        except (tk.TclError, RuntimeError, AttributeError):
             pass
 
     def scroll_to_item(self, index: int):
@@ -4577,7 +4577,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if hasattr(self, '_batch_render_id') and self._batch_render_id:
             try:
                 self.after_cancel(self._batch_render_id)
-            except:
+            except (tk.TclError, ValueError):
                 pass
             self._batch_render_id = None
 

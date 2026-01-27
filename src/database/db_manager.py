@@ -45,10 +45,12 @@ class DatabaseManager:
 
     def __init__(self):
         """데이터베이스 관리자 초기화"""
-        if not self._initialized:
-            self._db_path = DB_PATH
-            self._ensure_database()
-            self._initialized = True
+        # 초기화 플래그 체크를 락으로 보호 (경쟁 조건 방지)
+        with self._lock:
+            if not self._initialized:
+                self._db_path = DB_PATH
+                self._ensure_database()
+                self._initialized = True
 
     def _ensure_database(self) -> None:
         """데이터베이스 파일 및 테이블 생성"""
@@ -62,8 +64,12 @@ class DatabaseManager:
         """데이터베이스 연결 컨텍스트 매니저"""
         conn = None
         try:
-            conn = sqlite3.connect(self._db_path)
+            conn = sqlite3.connect(self._db_path, timeout=30.0)
             conn.row_factory = sqlite3.Row
+            # Foreign key 제약 조건 활성화
+            conn.execute("PRAGMA foreign_keys = ON")
+            # WAL 모드 활성화 (동시 읽기/쓰기 성능 향상)
+            conn.execute("PRAGMA journal_mode = WAL")
         except sqlite3.Error as e:
             logger.error(f"데이터베이스 연결 실패: {e}")
             raise
@@ -157,13 +163,25 @@ class DatabaseManager:
         ''')
 
         # 기존 테이블에 새 컬럼 추가 (마이그레이션)
+        # 주의: 테이블/컬럼명은 하드코딩된 값만 사용 (SQL 인젝션 방지)
         migrations = [
             ('recordings', 'ai_analyzed', 'INTEGER DEFAULT 0'),
             ('recordings', 'automation_plan_id', 'TEXT'),
             ('recordings', 'locked', 'INTEGER DEFAULT 0'),
         ]
+        # 허용된 테이블명 (화이트리스트)
+        allowed_tables = {'sequences', 'action_templates', 'execution_logs', 'recordings'}
         for table, column, col_type in migrations:
+            # 테이블명 검증
+            if table not in allowed_tables:
+                logger.warning(f"마이그레이션: 허용되지 않은 테이블명 '{table}' 스킵")
+                continue
+            # 컬럼명 검증 (영문자, 숫자, 언더스코어만 허용)
+            if not column.replace('_', '').isalnum():
+                logger.warning(f"마이그레이션: 유효하지 않은 컬럼명 '{column}' 스킵")
+                continue
             try:
+                # 안전한 값만 사용하므로 f-string 사용 허용
                 cursor.execute(f'ALTER TABLE {table} ADD COLUMN {column} {col_type}')
                 logger.debug(f"마이그레이션: {table}.{column} 컬럼 추가됨")
             except sqlite3.OperationalError:

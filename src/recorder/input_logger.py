@@ -189,6 +189,17 @@ class InputLogger:
         return output_path
 
     def _cleanup(self) -> None:
+        """리소스 정리 - 리스너 중지 후 참조 해제"""
+        if self._mouse_listener:
+            try:
+                self._mouse_listener.stop()
+            except Exception:
+                pass
+        if self._keyboard_listener:
+            try:
+                self._keyboard_listener.stop()
+            except Exception:
+                pass
         self._mouse_listener = None
         self._keyboard_listener = None
         self._logging = False
@@ -335,7 +346,7 @@ class InputLogger:
             if hasattr(key, 'char') and key.char:
                 return key.char
             return str(key)
-        except:
+        except (AttributeError, TypeError):
             return str(key)
 
     def _on_key_press(self, key) -> None:

@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.68
+**현재 버전:** 1.0.70
 
 ---
 
@@ -427,6 +427,20 @@ wincro/
 ---
 
 ## 작업 히스토리
+
+### 2026-01-27: 전체 코드베이스 버그 수정 (v1.0.70)
+- **분석 범위:** recorder, analyzer, player, utils, ui, database 모듈 전체
+- **수정된 버그:**
+  - `input_logger.py`: bare except 수정 (`except:` → `except (AttributeError, TypeError):`)
+  - `input_logger.py`: `_cleanup()` 메서드에서 리스너 중지 후 참조 해제하도록 수정
+  - `rule_executor.py`: 이미지 대기 시 무한 루프 버그 수정 (`float('inf')` → 최대 300초 타임아웃)
+  - `rule_executor.py`: 타임아웃 도달 시 실패 처리 추가
+  - `models.py`: JSON 및 datetime 파싱 시 예외 처리 추가 (JSONDecodeError, ValueError 방지)
+  - `db_manager.py`: `__init__` 초기화 경쟁 조건 수정 (락 보호 추가)
+  - `db_manager.py`: Foreign key 및 WAL 모드 활성화 (동시성 개선)
+  - `db_manager.py`: 마이그레이션 코드 화이트리스트 검증 추가
+  - `player_view.py`: bare except 6개 수정 (구체적 예외 타입으로 변경)
+- **코드 품질 개선:** 예외 처리 강화, 리소스 누수 방지, 스레드 안전성 향상
 
 ### 2026-01-26: 플레이 모드 경량화 (v1.0.63)
 - 플레이 모드에서 불필요한 뷰 모듈 지연 로딩
