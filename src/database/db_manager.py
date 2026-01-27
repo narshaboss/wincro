@@ -70,10 +70,11 @@ class DatabaseManager:
             # Foreign key 제약 조건 활성화
             conn.execute("PRAGMA foreign_keys = ON")
             # WAL 모드 활성화 (최초 1회만 - WAL은 persistent 설정)
-            with self._lock:
-                if not self._wal_initialized:
-                    conn.execute("PRAGMA journal_mode = WAL")
-                    self._wal_initialized = True
+            # 참고: _wal_initialized는 __init__의 _lock 내에서 최초 설정됨.
+            # 이후 중복 실행되더라도 PRAGMA journal_mode = WAL은 무해함.
+            if not self._wal_initialized:
+                conn.execute("PRAGMA journal_mode = WAL")
+                self._wal_initialized = True
         except sqlite3.Error as e:
             logger.error(f"데이터베이스 연결 실패: {e}")
             raise

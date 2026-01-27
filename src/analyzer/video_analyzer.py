@@ -22,7 +22,7 @@ from .automation_models import AutomationPlan, AutomationRule, RuleType
 logger = get_logger(__name__)
 
 # 스크린샷 크롭 크기 (클릭 위치 기준 ±픽셀)
-SCREENSHOT_SCREENSHOT_CROP_SIZE = 75
+SCREENSHOT_CROP_SIZE = 75
 
 
 @dataclass

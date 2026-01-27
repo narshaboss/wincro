@@ -21,6 +21,9 @@ data/window_positions.json
 data/recordings/
 data/.keyfile
 
+# 빌드 ZIP 파일
+*.zip
+
 # 배포용 데이터 (포함)
 !data/plans/
 !data/templates/

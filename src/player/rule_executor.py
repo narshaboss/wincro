@@ -122,7 +122,7 @@ def _get_cached_template(image_path: str):
     try:
         path = Path(image_path)
         if not path.exists():
-            return None, 0, 0
+            return None
         mtime = path.stat().st_mtime
 
         # 캐시 확인 (락 사용)
@@ -139,7 +139,7 @@ def _get_cached_template(image_path: str):
         img_array = np.fromfile(image_path, np.uint8)
         template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if template is None:
-            return None, 0, 0
+            return None
         template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
         h, w = template_gray.shape
 
@@ -155,7 +155,7 @@ def _get_cached_template(image_path: str):
 
         return template_gray, h, w
     except Exception:
-        return None, 0, 0
+        return None
 
 
 def _perform_mouse_click(click_type: str = "click") -> None:
@@ -1223,10 +1223,6 @@ class RuleExecutor:
                             click_x, click_y, found_conf = locations[0]
                             click_method = f"{len(locations)}개 중 첫번째"
                             logger.info(f"{_YELLOW}{self._step_prefix}✓ 타겟 발견 [{found_name}] ({int(found_conf * 100)}%) - 첫번째{_RESET}")
-                    else:
-                        click_x, click_y, found_conf = locations[0]
-                        click_method = "이미지"
-                        logger.info(f"{_YELLOW}{self._step_prefix}✓ 타겟 발견 [{found_name}] ({int(found_conf * 100)}%){_RESET}")
 
                 # 클릭 실행
                 if click_x is not None and click_y is not None:

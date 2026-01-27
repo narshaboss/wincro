@@ -278,6 +278,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         """특정 watch의 모니터링 액션 영역만 업데이트"""
         if watch_idx not in self._watch_row3_containers:
             return
+        if watch_idx >= len(self._watches_data):
+            return
 
         row3 = self._watch_row3_containers[watch_idx]
         for child in row3.winfo_children():

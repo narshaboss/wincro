@@ -428,6 +428,16 @@ wincro/
 
 ## 작업 히스토리
 
+### 2026-01-27: 2차 심층 분석 버그 수정 (v1.0.79 → v1.0.80)
+- **분석 범위:** 로직 오류, UI 안전성, 이미지 처리 심층 분석
+- **CRITICAL 수정:**
+  - `db_manager.py:73`: `_get_connection()` 내 WAL 초기화에서 `with self._lock:` 제거 → **앱 시작 데드락 해결** (`__init__`이 이미 `_lock`을 보유한 상태에서 재획득 시도 → `threading.Lock`은 비재진입이므로 무한 대기)
+  - `video_analyzer.py:25`: `SCREENSHOT_SCREENSHOT_CROP_SIZE` 오타 → `SCREENSHOT_CROP_SIZE`로 수정 (NameError 크래시)
+  - `rule_executor.py:119-158`: `_get_cached_template()` 실패 시 `(None, 0, 0)` 튜플 반환 → `None` 반환으로 수정 (호출부 `if cached is None:` 체크가 튜플에 매칭되지 않는 버그)
+- **HIGH 수정:**
+  - `rule_executor.py:1226-1229`: 도달 불가능한 dead else 블록 제거 (`len(locations)==0`은 이미 상위에서 처리됨, 도달 시 IndexError)
+  - `monitoring_editor.py:279`: `_refresh_monitor_actions()`에 `watch_idx` 범위 검증 추가 (KeyError 방지)
+
 ### 2026-01-27: 전체 코드베이스 심층 버그 수정 (v1.0.78 → v1.0.79)
 - **분석 범위:** recorder, analyzer, player, utils, ui, database, app 모듈 전체
 - **CRITICAL 수정:**
