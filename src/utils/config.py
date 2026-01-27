@@ -243,9 +243,17 @@ class ConfigManager:
             bool: 업데이트 성공 여부
         """
         with self._lock:
-            # 설정이 로드되었는지 확인 (락 내부에서)
+            # 설정이 로드되었는지 확인 (락 내부에서 직접 로드)
             if self._config is None:
-                self.load()
+                if CONFIG_FILE.exists():
+                    try:
+                        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        self._config = self._dict_to_config(data)
+                    except (json.JSONDecodeError, KeyError):
+                        self._config = AppConfig()
+                else:
+                    self._config = AppConfig()
             try:
                 for key, value in kwargs.items():
                     if hasattr(self._config, key):
