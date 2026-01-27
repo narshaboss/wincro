@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 import atexit
+import threading
 
 from .utils.logger import get_logger, set_log_level, apply_performance_config
 from .utils.config import get_config, save_config
@@ -18,27 +19,32 @@ from .ui.main_window import MainWindow
 
 logger = get_logger(__name__)
 
-# 전역 스레드풀 (백그라운드 작업용)
+# 전역 스레드풀 (백그라운드 작업용) - Double-check locking 적용
 _thread_pool: Optional[ThreadPoolExecutor] = None
+_thread_pool_lock = threading.Lock()
 
 
 def get_thread_pool() -> ThreadPoolExecutor:
-    """전역 스레드풀 반환 (지연 초기화)"""
+    """전역 스레드풀 반환 (지연 초기화, 스레드 안전)"""
     global _thread_pool
     if _thread_pool is None:
-        config = get_config()
-        pool_size = getattr(config.performance, 'thread_pool_size', 4)
-        _thread_pool = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="wincro_bg")
-        atexit.register(_shutdown_thread_pool)
+        with _thread_pool_lock:
+            # Double-check locking
+            if _thread_pool is None:
+                config = get_config()
+                pool_size = getattr(config.performance, 'thread_pool_size', 4)
+                _thread_pool = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="wincro_bg")
+                atexit.register(_shutdown_thread_pool)
     return _thread_pool
 
 
 def _shutdown_thread_pool():
     """프로그램 종료 시 스레드풀 정리"""
     global _thread_pool
-    if _thread_pool:
-        _thread_pool.shutdown(wait=False)
-        _thread_pool = None
+    with _thread_pool_lock:
+        if _thread_pool:
+            _thread_pool.shutdown(wait=False)
+            _thread_pool = None
 
 
 class WinCroApp:
@@ -379,29 +385,37 @@ class WinCroApp:
                 logger.error(f"서버 연결 실패: {last_error}")
                 return
 
-            with response:
-                total_size = int(response.headers.get('Content-Length', 0))
-                downloaded = 0
-                last_log_percent = -1
+            try:
+                with response:
+                    total_size = int(response.headers.get('Content-Length', 0) or 0)
+                    downloaded = 0
+                    last_log_percent = -1
 
-                with open(temp_path, 'wb') as f:
-                    while True:
-                        chunk = response.read(32768)  # 32KB로 축소 (UI 반응성 향상)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
+                    with open(temp_path, 'wb') as f:
+                        while True:
+                            try:
+                                chunk = response.read(32768)  # 32KB로 축소 (UI 반응성 향상)
+                            except Exception as read_err:
+                                logger.error(f"다운로드 중 읽기 오류: {read_err}")
+                                return
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
 
-                        if total_size > 0:
-                            percent = int(downloaded / total_size * 100)
-                            if percent // 10 > last_log_percent // 10:
-                                last_log_percent = percent
-                                logger.info(f"다운로드 진행: {percent}%")
+                            if total_size > 0:
+                                percent = int(downloaded / total_size * 100)
+                                if percent // 10 > last_log_percent // 10:
+                                    last_log_percent = percent
+                                    logger.info(f"다운로드 진행: {percent}%")
 
-                        # UI 응답성을 위한 짧은 yield
-                        time.sleep(0.001)
+                            # UI 응답성을 위한 짧은 yield
+                            time.sleep(0.001)
 
-                logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
+                    logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
+            except Exception as download_err:
+                logger.error(f"다운로드 처리 오류: {download_err}")
+                return
 
             # 개발 모드 체크
             if not getattr(sys, 'frozen', False):

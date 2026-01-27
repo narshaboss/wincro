@@ -174,14 +174,25 @@ class ScreenRecorder:
 
         self._recording = False
 
+        # 스레드 종료 대기 (최대 3초)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
+            if self._thread.is_alive():
+                logger.warning("녹화 스레드가 3초 후에도 응답 없음")
+
+        # 스레드가 완전히 멈출 시간 확보
+        time.sleep(0.2)
 
         output_path = str(self._output_path) if self._output_path and self._output_path.exists() else None
 
+        # VideoWriter 안전하게 정리
         if self._writer:
-            self._writer.release()
-            self._writer = None
+            try:
+                self._writer.release()
+            except Exception as e:
+                logger.error(f"VideoWriter 정리 실패: {e}")
+            finally:
+                self._writer = None
 
         logger.info(f"녹화 완료: {output_path} ({self._frame_count} 프레임)")
 
@@ -273,6 +284,15 @@ class ScreenRecorder:
             self._init_error = str(e)
             self._ready_event.set()
         finally:
+            # VideoWriter 정리 (예외 발생 시에도 반드시 정리)
+            if self._writer:
+                try:
+                    self._writer.release()
+                except Exception as e:
+                    logger.warning(f"VideoWriter 정리 중 오류: {e}")
+                finally:
+                    self._writer = None
+
             # dxcam 정리 (DirectX 리소스 명시적 해제)
             if dxcam_camera:
                 try:

@@ -513,28 +513,46 @@ class RuleExecutor:
 
     def pause(self) -> None:
         """실행 일시정지"""
-        self._pause_event.clear()
-        self._state = ExecutionState.PAUSED
-        self._update_progress("일시정지됨")
-        logger.info("실행 일시정지")
+        try:
+            self._pause_event.clear()
+            self._state = ExecutionState.PAUSED
+            try:
+                self._update_progress("일시정지됨")
+            except Exception as e:
+                logger.debug(f"일시정지 UI 업데이트 실패: {e}")
+            logger.info("실행 일시정지")
+        except Exception as e:
+            logger.error(f"일시정지 오류: {e}")
 
     def resume(self) -> None:
         """실행 재개"""
-        self._pause_event.set()
-        if self._progress.initial_completed < self._progress.initial_total:
-            self._state = ExecutionState.RUNNING_INITIAL
-        else:
-            self._state = ExecutionState.MONITORING
-        self._update_progress("실행 재개")
-        logger.info("실행 재개")
+        try:
+            self._pause_event.set()
+            if self._progress.initial_completed < self._progress.initial_total:
+                self._state = ExecutionState.RUNNING_INITIAL
+            else:
+                self._state = ExecutionState.MONITORING
+            try:
+                self._update_progress("실행 재개")
+            except Exception as e:
+                logger.debug(f"재개 UI 업데이트 실패: {e}")
+            logger.info("실행 재개")
+        except Exception as e:
+            logger.error(f"재개 오류: {e}")
 
     def stop(self) -> None:
         """실행 중지"""
-        self._stop_event.set()
-        self._pause_event.set()  # 일시정지 상태에서도 종료 가능하게
-        self._state = ExecutionState.STOPPED
-        self._update_progress("실행 중지됨")
-        logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
+        try:
+            self._stop_event.set()
+            self._pause_event.set()  # 일시정지 상태에서도 종료 가능하게
+            self._state = ExecutionState.STOPPED
+            try:
+                self._update_progress("실행 중지됨")
+            except Exception as e:
+                logger.debug(f"중지 UI 업데이트 실패: {e}")
+            logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
+        except Exception as e:
+            logger.error(f"중지 오류: {e}")
 
     def _check_user_intervention(self) -> bool:
         """
@@ -2441,10 +2459,13 @@ class RuleExecutor:
 
     def _update_progress(self, message: str) -> None:
         """진행 상태 업데이트"""
-        self._progress.state = self._state
-        self._progress.message = message
-        if self._on_progress:
-            self._on_progress(self._progress)
+        try:
+            self._progress.state = self._state
+            self._progress.message = message
+            if self._on_progress:
+                self._on_progress(self._progress)
+        except Exception as e:
+            logger.debug(f"진행 상태 업데이트 실패: {e}")
 
 
 # 전역 실행 엔진 인스턴스

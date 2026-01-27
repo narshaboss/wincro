@@ -282,7 +282,7 @@ class LogPanel(ctk.CTkFrame):
         return result
 
     def _update_display(self, message: str, level: str):
-        current_filter = self._filter_var.get()
+        current_filter = self._filter_var.get() or "전체"
         # 한글 필터 매핑
         filter_map = {"전체": "ALL", "정보": "INFO", "경고": "WARNING", "오류": "ERROR"}
         mapped_filter = filter_map.get(current_filter, current_filter)
@@ -290,6 +290,8 @@ class LogPanel(ctk.CTkFrame):
             return
 
         try:
+            if not self.winfo_exists():
+                return
             self._log_text.configure(state="normal")
 
             # ANSI 코드 파싱 및 색상 적용
@@ -1255,38 +1257,59 @@ class MainWindow(ctk.CTk):
 
     def _mini_on_progress(self, progress):
         """미니 플레이어 - 진행 콜백 (ExecutionProgress 객체)"""
-        current = progress.initial_completed
-        total = progress.initial_total
-        message = progress.message or progress.current_rule or ""
-        repeat_info = f"({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)" if self._mini_total_repeat > 1 else ""
-        self.after(0, lambda: self._mini_status.configure(
-            text=f"▶ {current}/{total} {repeat_info} - {message}"
-        ))
+        try:
+            current = progress.initial_completed
+            total = progress.initial_total
+            message = progress.message or progress.current_rule or ""
+            repeat_info = f"({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)" if self._mini_total_repeat > 1 else ""
+
+            def update_status():
+                try:
+                    if self.winfo_exists() and hasattr(self, '_mini_status'):
+                        self._mini_status.configure(text=f"▶ {current}/{total} {repeat_info} - {message}")
+                except (tk.TclError, RuntimeError):
+                    pass
+
+            self.after(0, update_status)
+        except Exception as e:
+            logger.debug(f"진행 콜백 오류: {e}")
 
     def _mini_on_repeat_complete(self, success, message):
         """미니 플레이어 - 1회 실행 완료 콜백 (반복 처리)"""
-        if not success:
-            # 실패하면 중지
-            self.after(0, lambda: self._mini_on_complete(False, message))
-            return
+        try:
+            if not self.winfo_exists():
+                return
 
-        self._mini_current_repeat += 1
+            if not success:
+                # 실패하면 중지
+                self.after(0, lambda: self._mini_on_complete(False, message))
+                return
 
-        if self._mini_current_repeat >= self._mini_total_repeat:
-            # 모든 반복 완료
-            self.after(0, lambda: self._mini_on_complete(True, ""))
-            return
+            self._mini_current_repeat += 1
 
-        if not self._is_running:
-            # 중지됨
-            self.after(0, lambda: self._mini_on_complete(False, "중지됨"))
-            return
+            if self._mini_current_repeat >= self._mini_total_repeat:
+                # 모든 반복 완료
+                self.after(0, lambda: self._mini_on_complete(True, ""))
+                return
 
-        # 다음 반복 실행
-        logger.info(f"[미니플레이어] 반복 {self._mini_current_repeat + 1}/{self._mini_total_repeat} 시작")
-        self.after(0, lambda: self._mini_status.configure(
-            text=f"▶ 실행 중... ({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)"
-        ))
+            if not self._is_running:
+                # 중지됨
+                self.after(0, lambda: self._mini_on_complete(False, "중지됨"))
+                return
+
+            # 다음 반복 실행
+            logger.info(f"[미니플레이어] 반복 {self._mini_current_repeat + 1}/{self._mini_total_repeat} 시작")
+
+            def update_repeat_status():
+                try:
+                    if self.winfo_exists() and hasattr(self, '_mini_status'):
+                        self._mini_status.configure(text=f"▶ 실행 중... ({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)")
+                except (tk.TclError, RuntimeError):
+                    pass
+
+            self.after(0, update_repeat_status)
+        except (tk.TclError, RuntimeError):
+            logger.debug("UI가 파괴되어 반복 콜백 중단")
 
         # 현재 선택된 플랜 다시 실행
         plan_name = self._mini_plan_var.get()
