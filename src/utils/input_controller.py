@@ -88,9 +88,28 @@ class InputController:
         """Arduino 사용 여부"""
         return is_arduino_enabled()
 
+    def _with_arduino_fallback(self, arduino_fn, fallback_fn):
+        """
+        Arduino가 활성화되면 arduino_fn 실행, 아니면 fallback_fn 실행.
+        Arduino 인스턴스가 None이면 fallback_fn으로 폴백.
+        """
+        if self._use_arduino():
+            arduino = _get_arduino()
+            if arduino is not None:
+                return arduino_fn(arduino)
+        return fallback_fn()
+
     # ==================== 마우스 동작 ====================
     # 마우스 이동: 소프트웨어 (pyautogui)
     # 마우스 클릭/버튼: 하드웨어 (Arduino)
+
+    def _move_before_action(self, x: Optional[int], y: Optional[int],
+                            duration: float = 0.0) -> None:
+        """액션 전 마우스 이동 (공통 로직)"""
+        _release_mouse_capture()
+        if x is not None and y is not None:
+            pyautogui.moveTo(x, y, duration=duration)
+            time.sleep(0.05)
 
     def move_to(self, x: int, y: int, duration: float = 0.0) -> None:
         """마우스를 절대 좌표로 이동 (항상 소프트웨어)"""
@@ -104,189 +123,109 @@ class InputController:
     def click(self, x: Optional[int] = None, y: Optional[int] = None,
               button: str = 'left', duration: float = 0.0) -> None:
         """마우스 클릭 (이동: 소프트웨어, 클릭: 하드웨어)"""
-        _release_mouse_capture()
-
-        # 이동은 항상 소프트웨어
-        if x is not None and y is not None:
-            pyautogui.moveTo(x, y, duration=duration)
-            time.sleep(0.05)
-
-        # 클릭은 Arduino 사용 시 하드웨어
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_click(button)
-            else:
-                pyautogui.click(button=button)
-        else:
-            pyautogui.click(button=button)
+        self._move_before_action(x, y, duration)
+        self._with_arduino_fallback(
+            lambda a: a.mouse_click(button),
+            lambda: pyautogui.click(button=button)
+        )
 
     def double_click(self, x: Optional[int] = None, y: Optional[int] = None,
                      duration: float = 0.0) -> None:
         """마우스 더블 클릭 (이동: 소프트웨어, 클릭: 하드웨어)"""
-        _release_mouse_capture()
-
-        # 이동은 항상 소프트웨어
-        if x is not None and y is not None:
-            pyautogui.moveTo(x, y, duration=duration)
-            time.sleep(0.05)
-
-        # 더블클릭은 Arduino 사용 시 하드웨어
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_double_click()
-            else:
-                pyautogui.doubleClick()
-        else:
-            pyautogui.doubleClick()
+        self._move_before_action(x, y, duration)
+        self._with_arduino_fallback(
+            lambda a: a.mouse_double_click(),
+            lambda: pyautogui.doubleClick()
+        )
 
     def right_click(self, x: Optional[int] = None, y: Optional[int] = None,
                     duration: float = 0.0) -> None:
         """마우스 우클릭 (이동: 소프트웨어, 클릭: 하드웨어)"""
-        _release_mouse_capture()
-
-        # 이동은 항상 소프트웨어
-        if x is not None and y is not None:
-            pyautogui.moveTo(x, y, duration=duration)
-            time.sleep(0.05)
-
-        # 우클릭은 Arduino 사용 시 하드웨어
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_click('right')
-            else:
-                pyautogui.rightClick()
-        else:
-            pyautogui.rightClick()
+        self._move_before_action(x, y, duration)
+        self._with_arduino_fallback(
+            lambda a: a.mouse_click('right'),
+            lambda: pyautogui.rightClick()
+        )
 
     def mouse_down(self, button: str = 'left') -> None:
         """마우스 버튼 누르기 (하드웨어)"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_press(button)
-            else:
-                pyautogui.mouseDown(button=button)
-        else:
-            pyautogui.mouseDown(button=button)
+        self._with_arduino_fallback(
+            lambda a: a.mouse_press(button),
+            lambda: pyautogui.mouseDown(button=button)
+        )
 
     def mouse_up(self, button: str = 'left') -> None:
         """마우스 버튼 떼기 (하드웨어)"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_release(button)
-            else:
-                pyautogui.mouseUp(button=button)
-        else:
-            pyautogui.mouseUp(button=button)
+        self._with_arduino_fallback(
+            lambda a: a.mouse_release(button),
+            lambda: pyautogui.mouseUp(button=button)
+        )
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int,
              duration: float = 0.5, button: str = 'left') -> None:
         """마우스 드래그 (이동: 소프트웨어, 버튼: 하드웨어)"""
         _release_mouse_capture()
-
-        # 시작 위치로 이동 (소프트웨어)
         pyautogui.moveTo(start_x, start_y)
         time.sleep(0.05)
 
         if self._use_arduino():
             arduino = _get_arduino()
             if arduino is not None:
-                # 버튼 누르기 (하드웨어)
                 arduino.mouse_press(button)
                 time.sleep(0.05)
-                # 끝 위치로 이동 (소프트웨어)
                 pyautogui.moveTo(end_x, end_y, duration=duration)
                 time.sleep(0.05)
-                # 버튼 떼기 (하드웨어)
                 arduino.mouse_release(button)
-            else:
-                dx = end_x - start_x
-                dy = end_y - start_y
-                pyautogui.drag(dx, dy, duration=duration, button=button)
-        else:
-            dx = end_x - start_x
-            dy = end_y - start_y
-            pyautogui.drag(dx, dy, duration=duration, button=button)
+                return
+
+        dx = end_x - start_x
+        dy = end_y - start_y
+        pyautogui.drag(dx, dy, duration=duration, button=button)
 
     def scroll(self, amount: int, x: Optional[int] = None, y: Optional[int] = None) -> None:
         """마우스 스크롤 (이동: 소프트웨어, 스크롤: 하드웨어)"""
-        _release_mouse_capture()
-
-        # 이동은 항상 소프트웨어
-        if x is not None and y is not None:
-            pyautogui.moveTo(x, y)
-            time.sleep(0.05)
-
-        # 스크롤은 Arduino 사용 시 하드웨어
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_scroll(amount)
-            else:
-                pyautogui.scroll(amount)
-        else:
-            pyautogui.scroll(amount)
+        self._move_before_action(x, y)
+        self._with_arduino_fallback(
+            lambda a: a.mouse_scroll(amount),
+            lambda: pyautogui.scroll(amount)
+        )
 
     # ==================== 키보드 동작 ====================
 
     def press(self, key: str) -> None:
         """키 누르고 떼기"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.key_tap(key)
-            else:
-                pyautogui.press(key)
-        else:
-            pyautogui.press(key)
+        self._with_arduino_fallback(
+            lambda a: a.key_tap(key),
+            lambda: pyautogui.press(key)
+        )
 
     def key_down(self, key: str) -> None:
         """키 누르기"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.key_press(key)
-            else:
-                pyautogui.keyDown(key)
-        else:
-            pyautogui.keyDown(key)
+        self._with_arduino_fallback(
+            lambda a: a.key_press(key),
+            lambda: pyautogui.keyDown(key)
+        )
 
     def key_up(self, key: str) -> None:
         """키 떼기"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.key_release(key)
-            else:
-                pyautogui.keyUp(key)
-        else:
-            pyautogui.keyUp(key)
+        self._with_arduino_fallback(
+            lambda a: a.key_release(key),
+            lambda: pyautogui.keyUp(key)
+        )
 
     def hotkey(self, *keys) -> None:
         """단축키 조합"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.hotkey(*keys)
-            else:
-                pyautogui.hotkey(*keys)
-        else:
-            pyautogui.hotkey(*keys)
+        self._with_arduino_fallback(
+            lambda a: a.hotkey(*keys),
+            lambda: pyautogui.hotkey(*keys)
+        )
 
     def type_text(self, text: str, interval: float = 0.0) -> None:
         """텍스트 입력 (ASCII만)"""
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.type_text(text, interval)
-            else:
-                pyautogui.write(text, interval=interval)
-        else:
-            pyautogui.write(text, interval=interval)
+        self._with_arduino_fallback(
+            lambda a: a.type_text(text, interval),
+            lambda: pyautogui.write(text, interval=interval)
+        )
 
     def release_all(self) -> None:
         """모든 키/버튼 떼기"""
@@ -294,7 +233,6 @@ class InputController:
             arduino = _get_arduino()
             if arduino is not None:
                 arduino.release_all()
-        # pyautogui에는 release_all이 없음
 
 
 # 전역 인스턴스

@@ -406,7 +406,7 @@ class ActionPlayer:
         return True
 
     def stop(self) -> bool:
-        """실행 중지"""
+        """실행 중지 (비차단 — UI 스레드에서 안전하게 호출 가능)"""
         if not self.is_running:
             return False
 
@@ -416,13 +416,17 @@ class ActionPlayer:
         self._update_progress("사용자에 의해 중지됨")
         logger.info("실행 중지")
 
-        # 스레드 종료 대기 (최대 2초)
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-            if self._thread.is_alive():
-                logger.warning("실행 스레드가 2초 후에도 응답 없음")
+        # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
+        import threading as _threading
 
-        self._finalize_execution(False, "사용자에 의해 중지됨")
+        def _join_and_finalize():
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=2.0)
+                if self._thread.is_alive():
+                    logger.warning("실행 스레드가 2초 후에도 응답 없음")
+            self._finalize_execution(False, "사용자에 의해 중지됨")
+
+        _threading.Thread(target=_join_and_finalize, daemon=True).start()
         return True
 
     def _on_emergency_stop(self) -> None:

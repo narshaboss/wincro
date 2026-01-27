@@ -197,6 +197,7 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
     Returns:
         성공 여부
     """
+    temp_path = None
     try:
         RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
         save_path = RECORDINGS_DIR / filename
@@ -205,6 +206,9 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
         if save_path.exists():
             logger.info(f"이미 존재하는 파일: {filename}")
             return True
+
+        # 임시 파일에 다운로드 (불완전한 파일 방지)
+        temp_path = RECORDINGS_DIR / f"{filename}.tmp"
 
         headers = {
             'User-Agent': 'WinCro-Updater',
@@ -215,7 +219,7 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
             total_size = int(response.headers.get('Content-Length', 0))
             downloaded = 0
 
-            with open(save_path, 'wb') as f:
+            with open(temp_path, 'wb') as f:
                 while True:
                     chunk = response.read(8192)
                     if not chunk:
@@ -227,11 +231,21 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
                         percent = int(downloaded / total_size * 100)
                         progress_callback(percent)
 
+        # 다운로드 완료 후 최종 파일명으로 이동
+        temp_path.rename(save_path)
+        temp_path = None  # 성공적으로 이동했으므로 정리 불필요
+
         logger.info(f"녹화 파일 다운로드 완료: {filename}")
         return True
 
     except Exception as e:
         logger.error(f"녹화 파일 다운로드 오류: {e}")
+        # 임시 파일 정리
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
         return False
 
 

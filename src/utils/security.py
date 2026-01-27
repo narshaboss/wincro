@@ -54,8 +54,10 @@ class SecurityManager:
                 winreg.HKEY_LOCAL_MACHINE,
                 r"SOFTWARE\Microsoft\Cryptography"
             )
-            machine_id = winreg.QueryValueEx(key, "MachineGuid")[0]
-            winreg.CloseKey(key)
+            try:
+                machine_id = winreg.QueryValueEx(key, "MachineGuid")[0]
+            finally:
+                winreg.CloseKey(key)
         except (OSError, FileNotFoundError, PermissionError, ImportError):
             # 레지스트리 접근 실패 시 사용자명과 컴퓨터명 조합
             machine_id = f"{os.getenv('COMPUTERNAME', 'WINCRO')}-{os.getenv('USERNAME', 'USER')}"

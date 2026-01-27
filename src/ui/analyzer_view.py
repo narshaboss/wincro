@@ -2746,76 +2746,94 @@ class AnalyzerView(BaseView):
         return self._last_automation_plan
 
     def _cleanup_unused_images(self) -> None:
-        """미사용 이미지 파일 정리"""
+        """미사용 이미지 파일 정리 (스캔은 백그라운드, UI는 메인 스레드)"""
         from tkinter import messagebox
+        import threading
 
         templates_dir = DATA_DIR / "templates"
         if not templates_dir.exists():
             messagebox.showinfo("정리 완료", "templates 폴더가 없습니다.")
             return
 
-        # 1. 모든 플랜에서 사용 중인 이미지 경로 수집
-        used_images = set()
+        def _scan_and_cleanup():
+            """백그라운드에서 이미지 스캔 후 메인 스레드에서 확인/삭제"""
+            # 1. 모든 플랜에서 사용 중인 이미지 경로 수집
+            used_images = set()
 
-        def collect_images_from_rules(rules):
-            """규칙들에서 이미지 경로 수집 (재귀)"""
-            for rule in rules:
-                if rule.target_image:
-                    used_images.add(Path(rule.target_image).resolve())
-                if rule.trigger_image:
-                    used_images.add(Path(rule.trigger_image).resolve())
-                if rule.children:
-                    collect_images_from_rules(rule.children)
+            def collect_images_from_rules(rules):
+                for rule in rules:
+                    if rule.target_image:
+                        used_images.add(Path(rule.target_image).resolve())
+                    if rule.trigger_image:
+                        used_images.add(Path(rule.trigger_image).resolve())
+                    if rule.children:
+                        collect_images_from_rules(rule.children)
 
-        # 모든 플랜 파일 스캔 (승인 여부 무관)
-        if PLANS_DIR.exists():
-            for plan_file in PLANS_DIR.glob("*.json"):
-                try:
-                    with open(plan_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                    collect_images_from_rules(plan.initial_rules)
-                    collect_images_from_rules(plan.monitoring_rules)
-                except Exception as e:
-                    logger.error(f"플랜 로드 실패 ({plan_file}): {e}")
+            if PLANS_DIR.exists():
+                for plan_file in PLANS_DIR.glob("*.json"):
+                    try:
+                        with open(plan_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                        collect_images_from_rules(plan.initial_rules)
+                        collect_images_from_rules(plan.monitoring_rules)
+                    except Exception as e:
+                        logger.error(f"플랜 로드 실패 ({plan_file}): {e}")
 
-        # 2. templates 폴더의 모든 이미지 파일 수집
-        all_images = set()
-        for ext in ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"]:
-            for img_file in templates_dir.glob(ext):
-                all_images.add(img_file.resolve())
+            # 2. templates 폴더의 모든 이미지 파일 수집
+            all_images = set()
+            for ext in ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"]:
+                for img_file in templates_dir.glob(ext):
+                    all_images.add(img_file.resolve())
 
-        # 3. 미사용 이미지 찾기
-        unused_images = all_images - used_images
+            # 3. 미사용 이미지 찾기
+            unused_images = all_images - used_images
 
-        if not unused_images:
-            messagebox.showinfo("정리 완료", "삭제할 미사용 이미지가 없습니다.")
-            return
+            # 4. 메인 스레드에서 확인 UI 표시 및 삭제
+            def _confirm_and_delete():
+                if not unused_images:
+                    messagebox.showinfo("정리 완료", "삭제할 미사용 이미지가 없습니다.")
+                    return
 
-        # 4. 확인 후 삭제
-        confirm = messagebox.askyesno(
-            "이미지 정리",
-            f"미사용 이미지 {len(unused_images)}개를 삭제하시겠습니까?\n\n"
-            f"전체 이미지: {len(all_images)}개\n"
-            f"사용 중: {len(used_images)}개\n"
-            f"삭제 대상: {len(unused_images)}개"
-        )
+                confirm = messagebox.askyesno(
+                    "이미지 정리",
+                    f"미사용 이미지 {len(unused_images)}개를 삭제하시겠습니까?\n\n"
+                    f"전체 이미지: {len(all_images)}개\n"
+                    f"사용 중: {len(used_images)}개\n"
+                    f"삭제 대상: {len(unused_images)}개"
+                )
 
-        if not confirm:
-            return
+                if not confirm:
+                    return
 
-        # 삭제 실행
-        deleted_count = 0
-        for img_path in unused_images:
+                # 삭제도 백그라운드에서 수행
+                def _do_delete():
+                    deleted_count = 0
+                    for img_path in unused_images:
+                        try:
+                            img_path.unlink()
+                            deleted_count += 1
+                            logger.info(f"미사용 이미지 삭제: {img_path}")
+                        except Exception as e:
+                            logger.error(f"이미지 삭제 실패 ({img_path}): {e}")
+
+                    final_count = deleted_count
+                    def _show_result():
+                        messagebox.showinfo("정리 완료", f"미사용 이미지 {final_count}개를 삭제했습니다.")
+                    try:
+                        self.after(0, _show_result)
+                    except (tk.TclError, RuntimeError):
+                        pass
+                    logger.info(f"이미지 정리 완료: {deleted_count}개 삭제")
+
+                threading.Thread(target=_do_delete, daemon=True).start()
+
             try:
-                img_path.unlink()
-                deleted_count += 1
-                logger.info(f"미사용 이미지 삭제: {img_path}")
-            except Exception as e:
-                logger.error(f"이미지 삭제 실패 ({img_path}): {e}")
+                self.after(0, _confirm_and_delete)
+            except (tk.TclError, RuntimeError):
+                pass
 
-        messagebox.showinfo("정리 완료", f"미사용 이미지 {deleted_count}개를 삭제했습니다.")
-        logger.info(f"이미지 정리 완료: {deleted_count}개 삭제")
+        threading.Thread(target=_scan_and_cleanup, daemon=True).start()
 
     def refresh(self):
         """뷰 새로고침"""

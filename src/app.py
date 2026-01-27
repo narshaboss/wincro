@@ -19,6 +19,12 @@ from .ui.main_window import MainWindow
 
 logger = get_logger(__name__)
 
+# 초기화 지연 시간 상수 (밀리초)
+HELP_DELAY_MS = 500               # 사용법 표시 지연
+ARDUINO_DELAY_MS = 1500           # 아두이노 자동연결 지연
+UPDATE_CHECK_DELAY_MS = 2000      # 업데이트 확인 지연
+AUTO_RUN_DELAY_MS = 5000          # 자동 실행 지연
+
 # 전역 스레드풀 (백그라운드 작업용) - Double-check locking 적용
 _thread_pool: Optional[ThreadPoolExecutor] = None
 _thread_pool_lock = threading.Lock()
@@ -156,24 +162,24 @@ class WinCroApp:
             # 시작 시 사용법 표시 (설정된 경우에만)
             if self._config.ui.show_help_on_startup:
                 from .ui.help_dialog import show_help_dialog
-                self._main_window.after(500, lambda: show_help_dialog(self._main_window))
+                self._main_window.after(HELP_DELAY_MS, lambda: show_help_dialog(self._main_window))
 
             # 아두이노 자동 연결 (설정된 경우)
             if self._config.arduino.enabled and self._config.arduino.auto_connect and self._config.arduino.com_port:
-                self._main_window.after(1500, self._auto_connect_arduino)
+                self._main_window.after(ARDUINO_DELAY_MS, self._auto_connect_arduino)
 
             # 자동 업데이트 확인 (설정된 경우)
             logger.info(f"[자동업데이트] auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}, window_mode={self._config.ui.window_mode}")
             if self._config.update.auto_check and self._config.update.github_repo:
                 logger.info("[자동업데이트] 2초 후 업데이트 확인 예약")
-                self._main_window.after(2000, self._auto_check_update)
+                self._main_window.after(UPDATE_CHECK_DELAY_MS, self._auto_check_update)
             else:
                 logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
 
             # 시작 시 자동 실행 (플레이 모드 + 설정된 경우) - 5초 후 (업데이트/아두이노 연결 완료 대기)
             if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.auto_run_plan:
                 logger.info(f"[자동실행] 5초 후 플랜 자동 실행 예약: {self._config.player.auto_run_plan}")
-                self._main_window.after(5000, self._auto_run_plan)
+                self._main_window.after(AUTO_RUN_DELAY_MS, self._auto_run_plan)
 
             logger.info("애플리케이션 실행")
             self._main_window.mainloop()
@@ -281,19 +287,10 @@ class WinCroApp:
 
     def _perform_auto_update(self, new_version: str, release_data: dict) -> None:
         """자동 업데이트 수행 (확인 없이 바로 진행)"""
-        import threading
         from .utils.config import APP_VERSION
+        from .utils.update_service import find_zip_asset
 
-        # 다운로드할 에셋 찾기 (zip 파일)
-        assets = release_data.get("assets", [])
-        zip_asset = None
-
-        for asset in assets:
-            name = asset.get("name", "").lower()
-            if name.endswith(".zip"):
-                zip_asset = asset
-                break
-
+        zip_asset = find_zip_asset(release_data)
         if not zip_asset:
             logger.error("다운로드 가능한 zip 파일이 없습니다")
             return
@@ -310,18 +307,14 @@ class WinCroApp:
 
     def _download_update_thread(self, asset: dict, version: str) -> None:
         """업데이트 다운로드 스레드 (자동 업데이트용)"""
-        import tempfile
-        import urllib.request
-        import urllib.error
-        import ssl
-        import socket
-        import zipfile
         import os
         import sys
-        import shutil
         import time
-        from datetime import datetime
-        from .utils.config import save_config, get_config
+        from .utils.update_service import (
+            ssl_fallback_connect, download_file,
+            extract_and_find_exe, save_update_config,
+            get_update_paths,
+        )
 
         # 짧은 초기화 대기
         time.sleep(0.1)
@@ -339,79 +332,19 @@ class WinCroApp:
 
             logger.info(f"다운로드 시작: {download_url}")
 
-            # 임시 폴더
-            temp_dir = tempfile.gettempdir()
-            temp_path = os.path.join(temp_dir, file_name)
-
-            # 요청 헤더
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'}
+            paths = get_update_paths()
+            temp_path = os.path.join(paths["temp_dir"], file_name)
 
             # SSL 다중 폴백 방식으로 연결 시도
-            response = None
-            last_error = None
-
-            # 방법 1: 기본 SSL
             try:
-                ssl_ctx = ssl.create_default_context()
-                req = urllib.request.Request(download_url, headers=headers)
-                response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
-            except Exception as e1:
-                last_error = e1
-                # 방법 2: SSL 검증 완화
-                try:
-                    ssl_ctx = ssl.create_default_context()
-                    ssl_ctx.check_hostname = False
-                    ssl_ctx.verify_mode = ssl.CERT_NONE
-                    req = urllib.request.Request(download_url, headers=headers)
-                    response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
-                except Exception as e2:
-                    last_error = e2
-                    # 방법 3: SSL 없이
-                    try:
-                        req = urllib.request.Request(download_url, headers=headers)
-                        response = urllib.request.urlopen(req, timeout=30)
-                    except Exception as e3:
-                        last_error = e3
-                        # 방법 4: 프록시 핸들러
-                        try:
-                            proxy_handler = urllib.request.ProxyHandler({})
-                            opener = urllib.request.build_opener(proxy_handler)
-                            req = urllib.request.Request(download_url, headers=headers)
-                            response = opener.open(req, timeout=30)
-                        except Exception as e4:
-                            last_error = e4
-
-            if response is None:
-                logger.error(f"서버 연결 실패: {last_error}")
+                response = ssl_fallback_connect(download_url)
+            except ConnectionError as e:
+                logger.error(str(e))
                 return
 
             try:
                 with response:
-                    total_size = int(response.headers.get('Content-Length', 0) or 0)
-                    downloaded = 0
-                    last_log_percent = -1
-
-                    with open(temp_path, 'wb') as f:
-                        while True:
-                            try:
-                                chunk = response.read(262144)  # 256KB (다운로드 속도 향상)
-                            except Exception as read_err:
-                                logger.error(f"다운로드 중 읽기 오류: {read_err}")
-                                return
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            downloaded += len(chunk)
-
-                            if total_size > 0:
-                                percent = int(downloaded / total_size * 100)
-                                if percent // 10 > last_log_percent // 10:
-                                    last_log_percent = percent
-                                    logger.info(f"다운로드 진행: {percent}%")
-
-                            # 불필요한 sleep 제거 (이미 백그라운드 스레드)
-
-                    logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
+                    download_file(response, temp_path)
             except Exception as download_err:
                 logger.error(f"다운로드 처리 오류: {download_err}")
                 return
@@ -421,50 +354,22 @@ class WinCroApp:
                 logger.info(f"개발 모드 - 다운로드 완료: {temp_path}")
                 return
 
-            # 현재 프로그램 폴더
-            current_exe = sys.executable
-            app_dir = os.path.dirname(current_exe)
-            exe_name = os.path.basename(current_exe)
-
-            # zip 압축 해제
-            extract_dir = os.path.join(temp_dir, "wincro_update_extract")
-
-            if os.path.exists(extract_dir):
-                shutil.rmtree(extract_dir, ignore_errors=True)
-
-            logger.info("zip 파일 압축 해제 중...")
-            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                members = zip_ref.namelist()
-                for i, member in enumerate(members):
-                    zip_ref.extract(member, extract_dir)
-
-            # exe가 있는 폴더 찾기
-            new_app_dir = None
-            found_exe = False
-
-            for item in os.listdir(extract_dir):
-                item_path = os.path.join(extract_dir, item)
-                if os.path.isdir(item_path):
-                    for sub_item in os.listdir(item_path):
-                        if sub_item.endswith(".exe"):
-                            new_app_dir = item_path
-                            found_exe = True
-                            break
-                    if found_exe:
-                        break
-                elif item.endswith(".exe"):
-                    new_app_dir = extract_dir
-                    found_exe = True
-                    break
-
-            if not found_exe or not new_app_dir:
-                logger.error("업데이트 파일에 exe가 없습니다")
+            # 압축 해제 및 exe 찾기
+            try:
+                new_app_dir = extract_and_find_exe(temp_path, paths["extract_dir"])
+            except FileNotFoundError as e:
+                logger.error(str(e))
                 return
 
             # 배치 파일 생성
-            batch_path = os.path.join(temp_dir, "wincro_update.bat")
-            data_dir = os.path.join(app_dir, "_internal", "data")
-            data_backup = os.path.join(temp_dir, "wincro_data_backup")
+            current_exe = paths["current_exe"]
+            app_dir = paths["app_dir"]
+            exe_name = paths["exe_name"]
+            temp_dir = paths["temp_dir"]
+            extract_dir = paths["extract_dir"]
+            batch_path = paths["batch_path"]
+            data_dir = paths["data_dir"]
+            data_backup = paths["data_backup"]
             internal_backup = os.path.join(app_dir, "_internal_old")
             exe_backup = os.path.join(app_dir, f"{exe_name}.old")
             recovery_bat = os.path.join(app_dir, "recovery.bat")
@@ -671,10 +576,7 @@ if /i "%choice%"=="Y" (
                 f.write(batch_content)
 
             # 설정 저장
-            config = get_config()
-            config.update.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            config.update.last_version = version
-            save_config()
+            save_update_config(version)
 
             # 배치 파일 실행 및 종료
             self._main_window.after(0, lambda: self._start_auto_update(batch_path))
@@ -717,6 +619,13 @@ if /i "%choice%"=="Y" (
         except Exception as e:
             logger.error(f"배치 파일 실행 실패: {e}")
             return
+
+        # 데이터베이스 정리
+        try:
+            from .database import get_db
+            get_db().close()
+        except Exception:
+            pass
 
         try:
             self._main_window.destroy()

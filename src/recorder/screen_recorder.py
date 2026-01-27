@@ -64,10 +64,11 @@ class ScreenRecorder:
 
     def __init__(self):
         self._config = get_config()
-        self._recording = False
+        self._recording_event = threading.Event()  # 스레드 안전한 녹화 상태
         self._paused = False
         self._thread: Optional[threading.Thread] = None
         self._writer: Optional[cv2.VideoWriter] = None
+        self._writer_lock = threading.Lock()  # VideoWriter 이중 해제 방지
         self._output_path: Optional[Path] = None
         self._region: Optional[RecordingRegion] = None
         self._frame_count = 0
@@ -88,7 +89,7 @@ class ScreenRecorder:
 
     @property
     def is_recording(self) -> bool:
-        return self._recording
+        return self._recording_event.is_set()
 
     @property
     def is_paused(self) -> bool:
@@ -101,6 +102,18 @@ class ScreenRecorder:
     @property
     def start_time(self) -> Optional[float]:
         return self._start_time
+
+    @property
+    def _recording(self) -> bool:
+        """하위 호환용 프로퍼티"""
+        return self._recording_event.is_set()
+
+    @_recording.setter
+    def _recording(self, value: bool):
+        if value:
+            self._recording_event.set()
+        else:
+            self._recording_event.clear()
 
     @property
     def elapsed_time(self) -> float:
@@ -186,13 +199,7 @@ class ScreenRecorder:
         output_path = str(self._output_path) if self._output_path and self._output_path.exists() else None
 
         # VideoWriter 안전하게 정리
-        if self._writer:
-            try:
-                self._writer.release()
-            except Exception as e:
-                logger.error(f"VideoWriter 정리 실패: {e}")
-            finally:
-                self._writer = None
+        self._release_writer()
 
         logger.info(f"녹화 완료: {output_path} ({self._frame_count} 프레임)")
 
@@ -221,6 +228,17 @@ class ScreenRecorder:
         self._paused = False
         logger.info("녹화 재개")
         return True
+
+    def _release_writer(self) -> None:
+        """VideoWriter 안전하게 해제 (이중 해제 방지)"""
+        with self._writer_lock:
+            if self._writer:
+                try:
+                    self._writer.release()
+                except Exception as e:
+                    logger.warning(f"VideoWriter 정리 중 오류: {e}")
+                finally:
+                    self._writer = None
 
     def _record_loop(self) -> None:
         """녹화 메인 루프 (별도 스레드)"""
@@ -285,13 +303,7 @@ class ScreenRecorder:
             self._ready_event.set()
         finally:
             # VideoWriter 정리 (예외 발생 시에도 반드시 정리)
-            if self._writer:
-                try:
-                    self._writer.release()
-                except Exception as e:
-                    logger.warning(f"VideoWriter 정리 중 오류: {e}")
-                finally:
-                    self._writer = None
+            self._release_writer()
 
             # dxcam 정리 (DirectX 리소스 명시적 해제)
             if dxcam_camera:

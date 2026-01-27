@@ -215,9 +215,10 @@ class ConfigManager:
         Returns:
             AppConfig: 현재 설정 객체
         """
-        if self._config is None:
-            self.load()
-        return self._config
+        with self._lock:
+            if self._config is None:
+                self.load()
+            return self._config
 
     def reset(self) -> AppConfig:
         """
@@ -268,6 +269,7 @@ class ConfigManager:
             'ui': asdict(config.ui),
             'arduino': asdict(config.arduino),
             'update': asdict(config.update),
+            'performance': asdict(config.performance),
             'version': config.version,
             'first_run': config.first_run,
             'last_opened': config.last_opened
@@ -289,6 +291,7 @@ class ConfigManager:
             ui=UIConfig(**filter_known_keys(UIConfig, data.get('ui', {}))),
             arduino=ArduinoConfig(**filter_known_keys(ArduinoConfig, data.get('arduino', {}))),
             update=UpdateConfig(**filter_known_keys(UpdateConfig, data.get('update', {}))),
+            performance=PerformanceConfig(**filter_known_keys(PerformanceConfig, data.get('performance', {}))),
             version=data.get('version', '1.0.0'),
             first_run=data.get('first_run', True),
             last_opened=data.get('last_opened', '')

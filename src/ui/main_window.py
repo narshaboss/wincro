@@ -54,30 +54,8 @@ RANDOM_NAMES = [
 
 logger = get_logger(__name__)
 
-# 컬러 팔레트 (프리미엄 다크 테마)
-COLORS = {
-    "bg_dark": "#0d1117",
-    "bg_sidebar": "#161b22",
-    "bg_content": "#0d1117",
-    "bg_card": "#21262d",
-    "bg_card_hover": "#30363d",
-    "bg_log": "#010409",
-    "accent": "#238636",
-    "accent_hover": "#2ea043",
-    "accent_blue": "#58a6ff",
-    "accent_orange": "#d29922",
-    "accent_red": "#f85149",
-    "text_primary": "#f0f6fc",
-    "text_secondary": "#8b949e",
-    "text_muted": "#484f58",
-    "border": "#30363d",
-    "success": "#3fb950",
-    "warning": "#d29922",
-    "error": "#f85149",
-    "danger": "#f85149",
-    "danger_hover": "#da3633",
-    "info": "#58a6ff",
-}
+# 컬러 팔레트 (theme.py에서 통합 관리)
+from .theme import COLORS
 
 
 class GUILogHandler(logging.Handler):
@@ -521,31 +499,46 @@ class MainWindow(ctk.CTk):
 
     def _setup_mini_player_ui(self):
         """미니 플레이어 UI (플레이 모드)"""
-        import json
-        # 플랜 로드
-        self._mini_plans = []
-        logger.info(f"[미니플레이어] 플랜 폴더: {PLANS_DIR}")
-        if PLANS_DIR.exists():
-            templates_dir = DATA_DIR / "templates"
-            for plan_file in PLANS_DIR.glob("*.json"):
-                try:
-                    with open(plan_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                        self._mini_plans.append(plan)
-                        logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
-                except Exception as e:
-                    logger.error(f"플랜 로드 실패: {plan_file} - {e}")
-        logger.info(f"[미니플레이어] 총 {len(self._mini_plans)}개 플랜 로드됨")
+        import threading
 
+        self._mini_plans = []
         self._rule_executor = None
         self._is_running = False
         self._is_paused = False
         self._mini_current_repeat = 0
         self._mini_total_repeat = 1
 
-        # UI 생성
+        # UI 먼저 생성 (빠르게)
         self._create_mini_player_ui()
+
+        # 플랜 파일 로드는 백그라운드에서 수행
+        def _load_plans_bg():
+            import json
+            plans = []
+            logger.info(f"[미니플레이어] 플랜 폴더: {PLANS_DIR}")
+            if PLANS_DIR.exists():
+                templates_dir = DATA_DIR / "templates"
+                for plan_file in PLANS_DIR.glob("*.json"):
+                    try:
+                        with open(plan_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                            plans.append(plan)
+                            logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
+                    except Exception as e:
+                        logger.error(f"플랜 로드 실패: {plan_file} - {e}")
+            logger.info(f"[미니플레이어] 총 {len(plans)}개 플랜 로드됨")
+
+            def _apply_plans():
+                self._mini_plans = plans
+                self._update_mini_plan_dropdown()
+
+            try:
+                self.after(0, _apply_plans)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(target=_load_plans_bg, daemon=True).start()
 
     def _create_mini_player_ui(self):
         """미니 플레이어 UI 요소 생성"""
@@ -768,9 +761,14 @@ class MainWindow(ctk.CTk):
         logger.info(f"[미니플레이어] 플랜 새로고침 완료: {old_count} → {len(self._mini_plans)}개")
 
     def _refresh_mini_plans(self):
-        """플랜 목록 새로고침 + UI 업데이트 (메인 스레드에서 호출)"""
-        self._refresh_mini_plans_sync()
-        self._update_mini_plan_dropdown()
+        """플랜 목록 새로고침 + UI 업데이트 (비차단)"""
+        import threading
+
+        def _load_and_update():
+            self._refresh_mini_plans_sync()
+            self.after(0, self._update_mini_plan_dropdown)
+
+        threading.Thread(target=_load_and_update, daemon=True).start()
 
     def _update_mini_plan_dropdown(self):
         """플랜 드롭다운 UI 업데이트 (메인 스레드에서 호출)"""
@@ -784,6 +782,8 @@ class MainWindow(ctk.CTk):
     def _setup_mini_log_handler(self):
         """미니 플레이어용 로그 핸들러 설정"""
         import re
+        import threading
+        import collections
 
         # ANSI 색상 코드 매핑
         ansi_map = {
@@ -794,38 +794,57 @@ class MainWindow(ctk.CTk):
             '\033[91m': 'ansi_red',     # 빨강
         }
 
-        def update_log_ui(msg: str, level: str, tag: str):
-            """UI 업데이트 (메인 스레드에서 실행)"""
+        # 로그 배칭을 위한 버퍼와 상태
+        _log_buffer = collections.deque(maxlen=200)
+        _log_lock = threading.Lock()
+        _flush_scheduled = [False]
+        _last_status = [None, None]  # [action_num, action_name]
+
+        LOG_FLUSH_INTERVAL_MS = 100  # 100ms마다 배치 플러시
+
+        def _flush_log_buffer():
+            """버퍼에 쌓인 로그를 한꺼번에 UI에 반영 (메인 스레드에서 실행)"""
+            _flush_scheduled[0] = False
             try:
                 if not self.winfo_exists():
                     return
-                self._mini_log_text.configure(state="normal")
-                # 최대 100줄 유지
-                line_count = int(self._mini_log_text.index('end-1c').split('.')[0])
-                if line_count > 100:
-                    self._mini_log_text.delete('1.0', '2.0')
 
-                self._mini_log_text.insert("end", f"{msg}\n", tag)
-                self._mini_log_text.see("end")
-                self._mini_log_text.configure(state="disabled")
-            except (tk.TclError, RuntimeError, AttributeError):
-                pass
+                # 버퍼에서 모든 로그 꺼내기
+                with _log_lock:
+                    batch = list(_log_buffer)
+                    _log_buffer.clear()
+                    status_update = tuple(_last_status)
+                    _last_status[0] = None
+                    _last_status[1] = None
 
-        def update_status_ui(action_num: str, action_name: str):
-            """상태 업데이트 (메인 스레드에서 실행)"""
-            try:
-                if not self.winfo_exists():
+                if not batch and not status_update[0]:
                     return
-                if hasattr(self, '_mini_status'):
+
+                # 상태 UI 업데이트 (마지막 것만)
+                if status_update[0] and hasattr(self, '_mini_status'):
                     self._mini_status.configure(
-                        text=f"▶ [{action_num}] {action_name[:20]}",
+                        text=f"▶ [{status_update[0]}] {status_update[1][:20]}",
                         text_color=COLORS["accent"]
                     )
+
+                # 로그 UI 일괄 업데이트
+                if batch:
+                    self._mini_log_text.configure(state="normal")
+                    for msg, level, tag in batch:
+                        self._mini_log_text.insert("end", f"{msg}\n", tag)
+
+                    # 최대 100줄 유지 - 초과분 한번에 삭제
+                    line_count = int(self._mini_log_text.index('end-1c').split('.')[0])
+                    if line_count > 100:
+                        self._mini_log_text.delete('1.0', f'{line_count - 100}.0')
+
+                    self._mini_log_text.see("end")
+                    self._mini_log_text.configure(state="disabled")
             except (tk.TclError, RuntimeError, AttributeError):
                 pass
 
         def add_log(msg: str, level: str):
-            """로그 추가 (백그라운드 스레드에서 호출됨)"""
+            """로그 추가 (백그라운드 스레드에서 호출됨) - 버퍼에 쌓고 배치 플러시"""
             try:
                 # 타임스탬프 제거하고 메시지만 표시
                 if " - " in msg:
@@ -845,18 +864,27 @@ class MainWindow(ctk.CTk):
                     # ANSI 코드 제거
                     msg = re.sub(r'\033\[[0-9;]*m', '', msg)
 
-                # 액션 번호가 있으면 상태 업데이트 (예: [3-1] 또는 [1])
+                # 액션 번호가 있으면 상태 업데이트용으로 저장
                 action_match = re.search(r'\[([0-9\-]+)\]', msg)
                 if action_match:
                     action_num = action_match.group(1)
-                    # 액션 이름 추출
                     action_name = msg.split(']', 1)[-1].strip() if ']' in msg else ""
                     if action_name:
-                        # 메인 스레드에서 상태 UI 업데이트
-                        self.after(0, lambda: update_status_ui(action_num, action_name))
+                        with _log_lock:
+                            _last_status[0] = action_num
+                            _last_status[1] = action_name
 
-                # 메인 스레드에서 로그 UI 업데이트
-                self.after(0, lambda m=msg, l=level, t=tag: update_log_ui(m, l, t))
+                # 버퍼에 추가
+                with _log_lock:
+                    _log_buffer.append((msg, level, tag))
+
+                # 플러시가 예약되지 않았으면 예약
+                if not _flush_scheduled[0]:
+                    _flush_scheduled[0] = True
+                    try:
+                        self.after(LOG_FLUSH_INTERVAL_MS, _flush_log_buffer)
+                    except (tk.TclError, RuntimeError):
+                        _flush_scheduled[0] = False
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -977,12 +1005,19 @@ class MainWindow(ctk.CTk):
         except Exception as e:
             logger.error(f"[모드변경] 프로세스 시작 실패: {e}")
 
+        # 데이터베이스 정리
+        try:
+            from ..database import get_db
+            get_db().close()
+        except Exception:
+            pass
+
         # 현재 프로세스 종료
         try:
             self.destroy()
         except Exception:
             pass
-        os._exit(0)  # sys.exit() 대신 즉시 종료
+        os._exit(0)  # sys.exit() 대신 즉시 종료 (스레드 정리 중 블로킹 방지)
 
     def _on_mini_plan_changed(self, plan_name: str):
         """미니 플레이어 - 플랜 변경 시 재생횟수 불러오기"""
@@ -1493,48 +1528,44 @@ class MainWindow(ctk.CTk):
         self._recording_active = active
 
     def _capture_full_screen(self):
-        """전체 화면 캡쳐 (F8) - 캡쳐 후 크롭 다이얼로그 자동 열기"""
-        try:
-            logger.debug("_capture_full_screen 호출됨")
+        """전체 화면 캡쳐 (F8) - 백그라운드에서 캡쳐 후 크롭 다이얼로그 열기"""
+        import threading
 
-            # templates 폴더 확인/생성 (트리거 이미지도 templates에 저장)
-            templates_dir = DATA_DIR / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"템플릿 폴더: {templates_dir}")
+        def _capture():
+            try:
+                templates_dir = DATA_DIR / "templates"
+                templates_dir.mkdir(parents=True, exist_ok=True)
 
-            # 화면 캡쳐 (mss 사용 - 녹화와 동일한 방식)
-            with mss.mss() as sct:
-                if not sct.monitors:
-                    logger.error("모니터를 찾을 수 없습니다")
-                    return
-                monitor = sct.monitors[0]  # 전체 화면
-                screenshot = sct.grab(monitor)
-                screenshot_arr = np.array(screenshot)
-                # 채널 수 확인 후 변환
-                if len(screenshot_arr.shape) == 3 and screenshot_arr.shape[2] == 4:
-                    screenshot_bgr = cv2.cvtColor(screenshot_arr, cv2.COLOR_BGRA2BGR)
-                elif len(screenshot_arr.shape) == 3 and screenshot_arr.shape[2] == 3:
-                    screenshot_bgr = cv2.cvtColor(screenshot_arr, cv2.COLOR_RGB2BGR)
+                with mss.mss() as sct:
+                    if not sct.monitors:
+                        logger.error("모니터를 찾을 수 없습니다")
+                        return
+                    monitor = sct.monitors[0]
+                    screenshot = sct.grab(monitor)
+                    screenshot_arr = np.array(screenshot)
+                    if len(screenshot_arr.shape) == 3 and screenshot_arr.shape[2] == 4:
+                        screenshot_bgr = cv2.cvtColor(screenshot_arr, cv2.COLOR_BGRA2BGR)
+                    elif len(screenshot_arr.shape) == 3 and screenshot_arr.shape[2] == 3:
+                        screenshot_bgr = cv2.cvtColor(screenshot_arr, cv2.COLOR_RGB2BGR)
+                    else:
+                        screenshot_bgr = screenshot_arr
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                filename = f"trigger_{timestamp}.png"
+                filepath = templates_dir / filename
+
+                success = cv2.imwrite(str(filepath), screenshot_bgr)
+                if success:
+                    logger.info(f"F8 전체화면 캡쳐 저장: {filepath}")
+                    self.after(0, lambda: self._open_crop_dialog(str(filepath)))
                 else:
-                    screenshot_bgr = screenshot_arr
-            logger.debug(f"스크린샷 크기: {screenshot_bgr.shape}")
+                    logger.error(f"이미지 저장 실패: {filepath}")
 
-            # 파일 저장
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            filename = f"trigger_{timestamp}.png"
-            filepath = templates_dir / filename
+            except Exception as e:
+                import traceback
+                logger.error(f"화면 캡쳐 실패: {e}\n{traceback.format_exc()}")
 
-            success = cv2.imwrite(str(filepath), screenshot_bgr)
-            if success:
-                logger.info(f"F8 전체화면 캡쳐 저장: {filepath}")
-                # 크롭 다이얼로그 열기 (UI 스레드에서 실행)
-                self.after(100, lambda: self._open_crop_dialog(str(filepath)))
-            else:
-                logger.error(f"이미지 저장 실패: {filepath}")
-
-        except Exception as e:
-            import traceback
-            logger.error(f"화면 캡쳐 실패: {e}\n{traceback.format_exc()}")
+        threading.Thread(target=_capture, daemon=True).start()
 
     def _open_crop_dialog(self, filepath: str):
         """크롭 다이얼로그 열기"""

@@ -28,8 +28,27 @@ class SettingsView(BaseView):
         """설정 뷰 초기화"""
         super().__init__(parent, **kwargs)
 
+        self._stop_flag = threading.Event()
+        self._active_threads: list = []
+
         self._setup_ui()
         self._load_settings()
+
+    def cleanup(self) -> None:
+        """리소스 정리 - 백그라운드 스레드 중지 (논블로킹)"""
+        self._stop_flag.set()
+        # 스레드 join을 별도 데몬 스레드에서 수행하여 UI 차단 방지
+        threads_to_join = list(self._active_threads)
+        self._active_threads.clear()
+        if threads_to_join:
+            import threading
+            def _join_all():
+                for t in threads_to_join:
+                    try:
+                        t.join(timeout=1.0)
+                    except Exception:
+                        pass
+            threading.Thread(target=_join_all, daemon=True).start()
 
     def _setup_ui(self) -> None:
         """UI 구성"""
@@ -963,6 +982,8 @@ class SettingsView(BaseView):
         self._update_status_label.configure(text="버전 확인 중...", text_color=COLORS["warning"])
 
         thread = threading.Thread(target=self._check_version_thread, args=(repo,), daemon=True)
+        self._active_threads = [t for t in self._active_threads if t.is_alive()]
+        self._active_threads.append(thread)
         thread.start()
 
     def _check_version_thread(self, repo: str) -> None:
@@ -1321,23 +1342,18 @@ class SettingsView(BaseView):
 
     def _download_update_thread(self, asset: dict, version: str) -> None:
         """업데이트 다운로드 스레드 (전체 폴더 교체 방식) - SSL 다중 폴백"""
-        import tempfile
-        import urllib.request
-        import urllib.error
-        import ssl
-        import socket
-        import zipfile
         import os
         import sys
-        import shutil
-        from datetime import datetime
-        from ..utils.config import PROJECT_ROOT
+        from ..utils.update_service import (
+            ssl_fallback_connect, download_file,
+            extract_and_find_exe, save_update_config,
+            get_update_paths, classify_error,
+        )
 
         try:
             download_url = asset.get("browser_download_url")
             file_name = asset.get("name", "update.zip")
 
-            # URL 검증
             if not download_url:
                 self.after(0, lambda: self._update_failed("다운로드 URL이 없습니다"))
                 return
@@ -1348,130 +1364,44 @@ class SettingsView(BaseView):
             logger.info(f"다운로드 시작: {download_url}")
             self.after(0, lambda: self._update_status_label.configure(text="연결 중..."))
 
-            # 임시 폴더 생성
-            temp_dir = tempfile.gettempdir()
-            temp_path = os.path.join(temp_dir, file_name)
+            paths = get_update_paths()
+            temp_path = os.path.join(paths["temp_dir"], file_name)
             logger.info(f"다운로드 경로: {temp_path}")
 
-            # 요청 헤더
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'}
-
             # SSL 다중 폴백 방식으로 연결 시도
-            response = None
-            last_error = None
-
-            # 방법 1: 기본 SSL
             try:
-                logger.info("다운로드 시도 1: 기본 SSL")
-                self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 1)"))
-                ssl_ctx = ssl.create_default_context()
-                req = urllib.request.Request(download_url, headers=headers)
-                response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
-                logger.info("방법 1 성공")
-            except Exception as e1:
-                last_error = e1
-                logger.warning(f"방법 1 실패: {e1}")
-
-                # 방법 2: SSL 검증 완화
-                try:
-                    logger.info("다운로드 시도 2: SSL 검증 완화")
-                    self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 2)"))
-                    ssl_ctx = ssl.create_default_context()
-                    ssl_ctx.check_hostname = False
-                    ssl_ctx.verify_mode = ssl.CERT_NONE
-                    req = urllib.request.Request(download_url, headers=headers)
-                    response = urllib.request.urlopen(req, timeout=30, context=ssl_ctx)
-                    logger.info("방법 2 성공")
-                except Exception as e2:
-                    last_error = e2
-                    logger.warning(f"방법 2 실패: {e2}")
-
-                    # 방법 3: SSL 없이
-                    try:
-                        logger.info("다운로드 시도 3: SSL 없음")
-                        self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 3)"))
-                        req = urllib.request.Request(download_url, headers=headers)
-                        response = urllib.request.urlopen(req, timeout=30)
-                        logger.info("방법 3 성공")
-                    except Exception as e3:
-                        last_error = e3
-                        logger.warning(f"방법 3 실패: {e3}")
-
-                        # 방법 4: 프록시 핸들러
-                        try:
-                            logger.info("다운로드 시도 4: 프록시 핸들러")
-                            self.after(0, lambda: self._update_status_label.configure(text="서버 연결 중... (방법 4)"))
-                            proxy_handler = urllib.request.ProxyHandler({})
-                            opener = urllib.request.build_opener(proxy_handler)
-                            req = urllib.request.Request(download_url, headers=headers)
-                            response = opener.open(req, timeout=30)
-                            logger.info("방법 4 성공")
-                        except Exception as e4:
-                            last_error = e4
-                            logger.error(f"방법 4 실패: {e4}")
-
-            # 모든 방법 실패
-            if response is None:
-                error_msg = "서버 연결 실패"
-                if last_error:
-                    if "SSL" in str(last_error) or "CERTIFICATE" in str(last_error).upper():
-                        error_msg = "SSL 인증서 오류 - 네트워크 확인 필요"
-                    elif "timeout" in str(last_error).lower():
-                        error_msg = "서버 연결 시간 초과"
-                    elif "Connection refused" in str(last_error):
-                        error_msg = "서버 연결 거부됨"
-                    else:
-                        error_msg = f"연결 실패: {str(last_error)[:30]}"
-                self.after(0, lambda msg=error_msg: self._update_failed(msg))
+                response = ssl_fallback_connect(
+                    download_url,
+                    on_status=lambda msg: self.after(0, lambda m=msg:
+                        self._update_status_label.configure(text=m)),
+                )
+            except ConnectionError as e:
+                self.after(0, lambda msg=str(e): self._update_failed(msg))
                 return
 
             with response:
-                # 리다이렉트된 최종 URL 확인
-                final_url = response.geturl()
-                if final_url != download_url:
-                    logger.info(f"리다이렉트됨: {final_url}")
-
                 total_size = int(response.headers.get('Content-Length', 0))
                 logger.info(f"파일 크기: {total_size / (1024*1024):.1f} MB")
+                last_ui_percent = -1
 
-                downloaded = 0
-                last_percent = -1
-                last_log_percent = -1
+                def _on_progress(downloaded, total):
+                    nonlocal last_ui_percent
+                    if total > 0:
+                        percent = int(downloaded / total * 100)
+                        if percent >= last_ui_percent + 5 or percent == 100:
+                            last_ui_percent = percent
+                            mb_down = downloaded / (1024 * 1024)
+                            mb_total = total / (1024 * 1024)
+                            self.after(0, lambda p=percent, d=mb_down, t=mb_total:
+                                self._update_status_label.configure(
+                                    text=f"다운로드 중... {p}% ({d:.1f}/{t:.1f}MB)"
+                                ))
 
                 self.after(0, lambda t=total_size: self._update_status_label.configure(
                     text=f"다운로드 중... 0% (0/{t/(1024*1024):.1f}MB)"
                 ))
 
-                with open(temp_path, 'wb') as f:
-                    while True:
-                        try:
-                            chunk = response.read(131072)  # 128KB chunks
-                        except Exception as read_err:
-                            logger.error(f"읽기 오류: {read_err}")
-                            raise
-
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-
-                        if total_size > 0:
-                            percent = int(downloaded / total_size * 100)
-                            # 5% 변할 때마다만 UI 업데이트 (콜백 폭증 방지)
-                            if percent >= last_percent + 5 or percent == 100:
-                                last_percent = percent
-                                mb_down = downloaded / (1024 * 1024)
-                                mb_total = total_size / (1024 * 1024)
-                                self.after(0, lambda p=percent, d=mb_down, t=mb_total:
-                                    self._update_status_label.configure(
-                                        text=f"다운로드 중... {p}% ({d:.1f}/{t:.1f}MB)"
-                                    ))
-                                # 10% 단위로 로그
-                                if percent // 10 > last_log_percent // 10:
-                                    last_log_percent = percent
-                                    logger.info(f"다운로드 진행: {percent}%")
-
-                logger.info(f"다운로드 완료: {downloaded / (1024*1024):.1f} MB")
+                download_file(response, temp_path, chunk_size=131072, on_progress=_on_progress)
 
             self.after(0, lambda: self._update_status_label.configure(text="압축 해제 중..."))
 
@@ -1480,69 +1410,25 @@ class SettingsView(BaseView):
                 self.after(0, lambda: self._update_success_dev(version, temp_path))
                 return
 
-            # 현재 프로그램 폴더 (exe가 있는 폴더)
-            current_exe = sys.executable
-            app_dir = os.path.dirname(current_exe)
-            exe_name = os.path.basename(current_exe)
-
-            # zip 압축 해제
-            if not file_name.endswith(".zip"):
-                self.after(0, lambda: self._update_failed("zip 파일만 지원됩니다"))
-                return
-
-            # 다운로드된 파일 존재 확인
-            if not os.path.exists(temp_path):
-                self.after(0, lambda: self._update_failed("다운로드 파일을 찾을 수 없습니다"))
-                return
-
-            extract_dir = os.path.join(temp_dir, "wincro_update_extract")
-            logger.info(f"압축 해제 경로: {extract_dir}")
-
-            # 기존 추출 폴더 삭제
-            if os.path.exists(extract_dir):
-                shutil.rmtree(extract_dir, ignore_errors=True)
-
-            # zip 압축 해제
-            logger.info("zip 파일 압축 해제 중...")
-            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-            logger.info("압축 해제 완료")
-
-            # 추출된 폴더에서 exe가 있는 폴더 찾기
-            new_app_dir = None
-            found_exe = False
-
-            for item in os.listdir(extract_dir):
-                item_path = os.path.join(extract_dir, item)
-                if os.path.isdir(item_path):
-                    # 하위 폴더에서 exe 파일 찾기
-                    for sub_item in os.listdir(item_path):
-                        if sub_item.endswith(".exe"):
-                            new_app_dir = item_path
-                            found_exe = True
-                            logger.info(f"exe 발견: {os.path.join(item_path, sub_item)}")
-                            break
-                    if found_exe:
-                        break
-                elif item.endswith(".exe"):
-                    # 루트에 exe가 있는 경우
-                    new_app_dir = extract_dir
-                    found_exe = True
-                    logger.info(f"exe 발견: {os.path.join(extract_dir, item)}")
-                    break
-
-            if not found_exe or not new_app_dir:
+            # 압축 해제 및 exe 찾기
+            try:
+                new_app_dir = extract_and_find_exe(temp_path, paths["extract_dir"])
+            except FileNotFoundError:
                 self.after(0, lambda: self._update_failed("업데이트 파일에 exe가 없습니다"))
                 return
 
             logger.info(f"새 앱 디렉토리: {new_app_dir}")
-
             self.after(0, lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
 
             # 배치 파일 생성 (전체 폴더 교체)
-            batch_path = os.path.join(temp_dir, "wincro_update.bat")
-            data_dir = os.path.join(app_dir, "_internal", "data")
-            data_backup = os.path.join(temp_dir, "wincro_data_backup")
+            current_exe = paths["current_exe"]
+            app_dir = paths["app_dir"]
+            exe_name = paths["exe_name"]
+            temp_dir = paths["temp_dir"]
+            extract_dir = paths["extract_dir"]
+            batch_path = paths["batch_path"]
+            data_dir = paths["data_dir"]
+            data_backup = paths["data_backup"]
 
             batch_content = f'''@echo off
 chcp 65001 >nul
@@ -1618,66 +1504,13 @@ del "%~f0"
                 f.write(batch_content)
 
             # 마지막 업데이트 시간 저장
-            config = get_config()
-            config.update.last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            config.update.last_version = version
-            save_config()
+            save_update_config(version)
 
             # 배치 파일 실행하고 프로그램 종료
             self.after(0, lambda: self._start_update_and_exit(batch_path))
 
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                error_msg = "릴리즈 파일을 찾을 수 없습니다 (404)"
-            elif e.code == 403:
-                error_msg = "접근 권한 없음 (403) - 잠시 후 재시도"
-            elif e.code >= 500:
-                error_msg = f"서버 오류 ({e.code}) - 잠시 후 재시도"
-            else:
-                error_msg = f"HTTP 오류 {e.code}"
-            logger.error(f"업데이트 다운로드 HTTP 오류: {e.code} {e.reason}")
-            self.after(0, lambda msg=error_msg: self._update_failed(msg))
-        except urllib.error.URLError as e:
-            reason = str(e.reason)
-            if "SSL" in reason or "CERTIFICATE" in reason.upper():
-                error_msg = "SSL 인증서 오류 - VPN/방화벽 확인"
-            elif "Connection refused" in reason:
-                error_msg = "연결 거부됨 - 네트워크 확인"
-            elif "Name or service not known" in reason:
-                error_msg = "서버를 찾을 수 없음 - 인터넷 확인"
-            elif "timed out" in reason.lower():
-                error_msg = "연결 시간 초과 - 네트워크 확인"
-            else:
-                error_msg = f"연결 오류: {reason[:30]}"
-            logger.error(f"업데이트 다운로드 URL 오류: {e}")
-            self.after(0, lambda msg=error_msg: self._update_failed(msg))
-        except ssl.SSLError as e:
-            error_msg = "SSL 보안 연결 실패 - VPN/방화벽 확인"
-            logger.error(f"SSL 오류: {e}")
-            self.after(0, lambda msg=error_msg: self._update_failed(msg))
-        except socket.timeout:
-            error_msg = "서버 연결 시간 초과 - 네트워크 확인"
-            logger.error("업데이트 다운로드 타임아웃")
-            self.after(0, lambda: self._update_failed(error_msg))
-        except zipfile.BadZipFile:
-            error_msg = "손상된 zip 파일 - 재시도 필요"
-            logger.error("다운로드된 zip 파일이 손상됨")
-            self.after(0, lambda: self._update_failed(error_msg))
-        except OSError as e:
-            if "No space" in str(e):
-                error_msg = "디스크 공간 부족"
-            elif "Permission" in str(e):
-                error_msg = "파일 접근 권한 없음"
-            else:
-                error_msg = f"파일 오류: {str(e)[:30]}"
-            logger.error(f"업데이트 파일 처리 오류: {e}")
-            self.after(0, lambda msg=error_msg: self._update_failed(msg))
         except Exception as e:
-            error_str = str(e)
-            if "SSL" in error_str or "CERTIFICATE" in error_str.upper():
-                error_msg = "SSL 연결 실패 - 네트워크 설정 확인"
-            else:
-                error_msg = f"오류: {error_str[:35]}"
+            error_msg = classify_error(e)
             logger.error(f"업데이트 다운로드 오류: {e}", exc_info=True)
             self.after(0, lambda msg=error_msg: self._update_failed(msg))
 
@@ -2223,9 +2056,10 @@ del "%~f0"
         return messagebox.askyesno(title, message)
 
     def _test_pyautogui(self) -> None:
-        """pyautogui moveTo 테스트"""
+        """pyautogui moveTo 테스트 (백그라운드 스레드에서 실행)"""
         import pyautogui
         import time
+        import threading
         from tkinter import messagebox
 
         # 안내 메시지
@@ -2241,56 +2075,68 @@ del "%~f0"
         # 창 최소화
         top = self.winfo_toplevel()
         top.iconify()
-        time.sleep(0.5)
 
-        # 카운트다운
-        for i in range(3, 0, -1):
-            logger.info(f"테스트 시작까지 {i}초...")
-            time.sleep(1)
+        def _run_test():
+            """백그라운드에서 마우스 테스트 실행"""
+            time.sleep(0.5)
 
-        results = []
-        screen_w, screen_h = pyautogui.size()
-        results.append(f"화면 크기: {screen_w} x {screen_h}")
-        results.append(f"시작 위치: {pyautogui.position()}")
-        results.append("")
+            # 카운트다운
+            for i in range(3, 0, -1):
+                logger.info(f"테스트 시작까지 {i}초...")
+                time.sleep(1)
 
-        # 테스트할 좌표들
-        test_coords = [
-            (100, 100, "좌상단"),
-            (screen_w // 2, screen_h // 2, "중앙"),
-            (screen_w - 100, 100, "우측 y=100"),
-            (screen_w - 100, 300, "우측 y=300"),
-            (screen_w - 100, screen_h // 2, "우측 중앙"),
-            (2000, 540, "x=2000"),
-            (2200, 540, "x=2200"),
-            (2400, 540, "x=2400"),
-        ]
+            results = []
+            screen_w, screen_h = pyautogui.size()
+            results.append(f"화면 크기: {screen_w} x {screen_h}")
+            results.append(f"시작 위치: {pyautogui.position()}")
+            results.append("")
 
-        for x, y, name in test_coords:
-            pyautogui.moveTo(x, y, duration=0.2)
-            time.sleep(0.1)
-            actual = pyautogui.position()
+            # 테스트할 좌표들
+            test_coords = [
+                (100, 100, "좌상단"),
+                (screen_w // 2, screen_h // 2, "중앙"),
+                (screen_w - 100, 100, "우측 y=100"),
+                (screen_w - 100, 300, "우측 y=300"),
+                (screen_w - 100, screen_h // 2, "우측 중앙"),
+                (2000, 540, "x=2000"),
+                (2200, 540, "x=2200"),
+                (2400, 540, "x=2400"),
+            ]
 
-            diff_x = abs(actual.x - x)
-            diff_y = abs(actual.y - y)
+            for x, y, name in test_coords:
+                pyautogui.moveTo(x, y, duration=0.2)
+                time.sleep(0.1)
+                actual = pyautogui.position()
 
-            if diff_x <= 5 and diff_y <= 5:
-                results.append(f"✓ {name} ({x}, {y}) - 성공")
-            else:
-                results.append(f"✗ {name} ({x}, {y}) - 실패!")
-                results.append(f"   실제 위치: ({actual.x}, {actual.y})")
-                results.append(f"   오차: x={diff_x}, y={diff_y}")
+                diff_x = abs(actual.x - x)
+                diff_y = abs(actual.y - y)
 
-        # 결과 표시
-        result_text = "\n".join(results)
-        logger.info(f"pyautogui 테스트 결과:\n{result_text}")
+                if diff_x <= 5 and diff_y <= 5:
+                    results.append(f"✓ {name} ({x}, {y}) - 성공")
+                else:
+                    results.append(f"✗ {name} ({x}, {y}) - 실패!")
+                    results.append(f"   실제 위치: ({actual.x}, {actual.y})")
+                    results.append(f"   오차: x={diff_x}, y={diff_y}")
 
-        # 창 복원
-        top.deiconify()
-        top.lift()
-        time.sleep(0.3)
+            # 결과 표시
+            result_text = "\n".join(results)
+            logger.info(f"pyautogui 테스트 결과:\n{result_text}")
 
-        # 복사 가능한 다이얼로그 표시
+            # 메인 스레드에서 창 복원 및 결과 표시
+            def _show_results():
+                top.deiconify()
+                top.lift()
+                self._show_test_results(result_text)
+
+            try:
+                self.after(0, _show_results)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(target=_run_test, daemon=True).start()
+
+    def _show_test_results(self, result_text: str) -> None:
+        """마우스 테스트 결과 다이얼로그 표시"""
         dialog = ctk.CTkToplevel(self)
         dialog.title("마우스 이동 테스트 결과")
         dialog.geometry("400x350")
@@ -2329,7 +2175,7 @@ del "%~f0"
                 try:
                     copy_btn.configure(text="복사")
                 except (tk.TclError, RuntimeError):
-                    pass  # 다이얼로그가 이미 닫힌 경우 무시
+                    pass
             dialog.after(1500, reset_button_text)
 
         copy_btn = ctk.CTkButton(

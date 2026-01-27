@@ -4,6 +4,9 @@ WinCro 강화된 이미지 매칭 모듈
 여러 매칭 기법을 조합하여 인식률을 높입니다.
 """
 
+import threading
+from collections import OrderedDict
+
 import cv2
 import numpy as np
 from pathlib import Path
@@ -67,10 +70,14 @@ class EnhancedMatcher:
     여러 매칭 기법을 조합하여 더 정확한 이미지 인식을 제공합니다.
     """
 
+    MAX_CACHE_SIZE = 50
+    MAX_POSITIONS_SIZE = 200
+
     def __init__(self):
         self._config = get_config()
-        self._cache: Dict[str, Dict[str, np.ndarray]] = {}  # 전처리된 템플릿 캐시
-        self._last_positions: Dict[str, Tuple[int, int]] = {}  # 마지막 발견 위치
+        self._cache: OrderedDict = OrderedDict()  # LRU 캐시
+        self._last_positions: OrderedDict = OrderedDict()  # LRU 위치 기록
+        self._cache_lock = threading.Lock()
 
         # ORB 특징점 검출기 (지연 로딩)
         self._orb = None
@@ -105,16 +112,18 @@ class EnhancedMatcher:
             current_mtime = path.stat().st_mtime
 
             # 캐시에 있고 수정시간이 같으면 캐시 사용
-            if template_path in self._cache:
-                cached = self._cache[template_path]
-                if cached.get('_mtime') == current_mtime:
-                    return cached
-                else:
-                    # 파일이 변경됨 - 캐시와 위치 기록 삭제
-                    logger.debug(f"템플릿 파일 변경 감지, 캐시 갱신: {path.name}")
-                    del self._cache[template_path]
-                    if template_path in self._last_positions:
-                        del self._last_positions[template_path]
+            with self._cache_lock:
+                if template_path in self._cache:
+                    cached = self._cache[template_path]
+                    if cached.get('_mtime') == current_mtime:
+                        self._cache.move_to_end(template_path)
+                        return cached
+                    else:
+                        # 파일이 변경됨 - 캐시와 위치 기록 삭제
+                        logger.debug(f"템플릿 파일 변경 감지, 캐시 갱신: {path.name}")
+                        del self._cache[template_path]
+                        if template_path in self._last_positions:
+                            del self._last_positions[template_path]
 
             # 한글 경로 지원 (cv2.imread는 한글 경로 못 읽음)
             img_array = np.fromfile(str(path), np.uint8)
@@ -144,7 +153,11 @@ class EnhancedMatcher:
             preprocessed['orb_kp'] = keypoints
             preprocessed['orb_desc'] = descriptors
 
-            self._cache[template_path] = preprocessed
+            with self._cache_lock:
+                self._cache[template_path] = preprocessed
+                # LRU: 캐시 크기 제한
+                while len(self._cache) > self.MAX_CACHE_SIZE:
+                    self._cache.popitem(last=False)
             return preprocessed
 
         except Exception as e:
@@ -484,8 +497,12 @@ class EnhancedMatcher:
         ROI 기반 매칭 - 마지막 위치 근처에서 먼저 검색
         """
         # 마지막 위치 근처에서 먼저 검색 (더 빠름)
-        if template_path in self._last_positions:
-            last_x, last_y = self._last_positions[template_path]
+        last_pos = None
+        with self._cache_lock:
+            if template_path in self._last_positions:
+                last_pos = self._last_positions[template_path]
+        if last_pos is not None:
+            last_x, last_y = last_pos
 
             h, w = screen.shape[:2]
             roi_x1 = max(0, last_x - roi_padding)
@@ -641,22 +658,28 @@ class EnhancedMatcher:
     def _update_last_position(self, template_path: str, result: EnhancedMatchResult):
         """마지막 발견 위치 업데이트"""
         if result.found:
-            self._last_positions[template_path] = (result.center_x, result.center_y)
+            with self._cache_lock:
+                self._last_positions[template_path] = (result.center_x, result.center_y)
+                # LRU: 위치 기록 크기 제한
+                while len(self._last_positions) > self.MAX_POSITIONS_SIZE:
+                    self._last_positions.popitem(last=False)
 
     def clear_cache(self):
         """캐시 및 위치 기록 초기화"""
-        self._cache.clear()
-        self._last_positions.clear()
+        with self._cache_lock:
+            self._cache.clear()
+            self._last_positions.clear()
         logger.debug("강화 매처 캐시 초기화")
 
     def invalidate_template(self, template_path: str):
         """특정 템플릿의 캐시 및 위치 기록 제거"""
-        if template_path in self._cache:
-            del self._cache[template_path]
-            logger.debug(f"템플릿 캐시 제거: {Path(template_path).name}")
-        if template_path in self._last_positions:
-            del self._last_positions[template_path]
-            logger.debug(f"템플릿 위치 기록 제거: {Path(template_path).name}")
+        with self._cache_lock:
+            if template_path in self._cache:
+                del self._cache[template_path]
+                logger.debug(f"템플릿 캐시 제거: {Path(template_path).name}")
+            if template_path in self._last_positions:
+                del self._last_positions[template_path]
+                logger.debug(f"템플릿 위치 기록 제거: {Path(template_path).name}")
 
 
 # 전역 인스턴스

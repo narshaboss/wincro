@@ -21,6 +21,9 @@ from .automation_models import AutomationPlan, AutomationRule, RuleType
 
 logger = get_logger(__name__)
 
+# 스크린샷 크롭 크기 (클릭 위치 기준 ±픽셀)
+SCREENSHOT_SCREENSHOT_CROP_SIZE = 75
+
 
 @dataclass
 class AnalysisProgress:
@@ -415,8 +418,6 @@ class VideoAnalyzer:
             # ===== 5단계: 스크린샷 저장 =====
             self._update_progress("이미지 추출", "저장 중...", total_clicks, total_clicks)
 
-            CROP_SIZE = 75
-
             def save_screenshot(click):
                 try:
                     frame = click['frame']
@@ -429,10 +430,10 @@ class VideoAnalyzer:
                     x = max(0, min(x, w - 1))
                     y = max(0, min(y, h - 1))
 
-                    x1 = max(0, x - CROP_SIZE)
-                    y1 = max(0, y - CROP_SIZE)
-                    x2 = min(w, x + CROP_SIZE)
-                    y2 = min(h, y + CROP_SIZE)
+                    x1 = max(0, x - SCREENSHOT_CROP_SIZE)
+                    y1 = max(0, y - SCREENSHOT_CROP_SIZE)
+                    x2 = min(w, x + SCREENSHOT_CROP_SIZE)
+                    y2 = min(h, y + SCREENSHOT_CROP_SIZE)
 
                     if x2 - x1 < 10 or y2 - y1 < 10:
                         return False, click['idx']

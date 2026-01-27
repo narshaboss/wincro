@@ -12,19 +12,8 @@ from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 컬러 팔레트
-COLORS = {
-    "bg_dark": "#0d1117",
-    "bg_card": "#21262d",
-    "bg_card_hover": "#30363d",
-    "accent": "#238636",
-    "accent_hover": "#2ea043",
-    "accent_blue": "#58a6ff",
-    "text_primary": "#f0f6fc",
-    "text_secondary": "#8b949e",
-    "text_muted": "#484f58",
-    "border": "#30363d",
-}
+# 컬러 팔레트 (theme.py에서 통합 관리)
+from .theme import COLORS
 
 
 class GuideView(ctk.CTkFrame):

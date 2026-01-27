@@ -81,10 +81,22 @@ _RED = "\033[91m"
 _MAGENTA = "\033[95m"
 _RESET = "\033[0m"
 
+# 실행 엔진 상수
+PIXEL_TOLERANCE_SMALL = 10        # 마우스 위치 확인 허용 오차 (작은)
+PIXEL_TOLERANCE_LARGE = 15        # 마우스 위치 확인 허용 오차 (큰)
+MAX_FAIL_COUNT = 10               # 연속 실패 시 중단 임계값
+MIN_WAIT_SECONDS = 0.8            # 최소 대기 시간 (초)
+MIN_MOUSE_DURATION = 0.4          # 최소 마우스 이동 시간 (초)
+INTERVENTION_DISTANCE_PX = 50     # 사용자 개입 감지 거리 (픽셀)
+NEXT_SCREEN_CONFIDENCE = 0.45     # 다음 화면 대기 신뢰도
+EXECUTION_TIMEOUT = 300.0         # 실행 타임아웃 (초, 5분)
+MAX_MOVE_ATTEMPTS = 10            # 마우스 이동 최대 재시도
+
 # 성능 최적화용 캐시
 _screen_size_cache = None
 _screen_size_cache_time = 0
 _SCREEN_SIZE_CACHE_TTL = 5.0
+_screen_size_lock = threading.Lock()
 
 # OrderedDict로 진정한 LRU 캐시 구현
 from collections import OrderedDict
@@ -94,13 +106,14 @@ _MAX_TEMPLATE_CACHE = 50
 
 
 def _get_screen_size_cached() -> Tuple[int, int]:
-    """캐시된 화면 크기 반환"""
+    """캐시된 화면 크기 반환 (스레드 안전)"""
     global _screen_size_cache, _screen_size_cache_time
     current_time = time.time()
-    if _screen_size_cache is None or (current_time - _screen_size_cache_time) > _SCREEN_SIZE_CACHE_TTL:
-        _screen_size_cache = pyautogui.size()
-        _screen_size_cache_time = current_time
-    return _screen_size_cache
+    with _screen_size_lock:
+        if _screen_size_cache is None or (current_time - _screen_size_cache_time) > _SCREEN_SIZE_CACHE_TTL:
+            _screen_size_cache = pyautogui.size()
+            _screen_size_cache_time = current_time
+        return _screen_size_cache
 
 
 def _get_cached_template(image_path: str):
@@ -145,6 +158,25 @@ def _get_cached_template(image_path: str):
         return None, 0, 0
 
 
+def _perform_mouse_click(click_type: str = "click") -> None:
+    """마우스 클릭만 실행 (이동 없이, mouse_event 사용)"""
+    user32 = ctypes.windll.user32
+    if click_type == "double_click":
+        for _ in range(2):
+            user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.02)
+            user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            time.sleep(0.05)
+    elif click_type == "right_click":
+        user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        time.sleep(0.02)
+        user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+    else:
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.02)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+
 def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
     """
     멀티모니터 지원 마우스 이동 및 클릭 (pynput 우선, Win32 대체)
@@ -166,7 +198,7 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
 
             # 위치 확인
             actual = _pynput_mouse.position
-            if abs(actual[0] - x) < 10 and abs(actual[1] - y) < 10:
+            if abs(actual[0] - x) < PIXEL_TOLERANCE_SMALL and abs(actual[1] - y) < PIXEL_TOLERANCE_SMALL:
                 # 클릭
                 btn = Button.left
                 if click_type == "right_click":
@@ -191,22 +223,8 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
 
         # 위치 확인
         actual_pos = pyautogui.position()
-        if abs(actual_pos[0] - x) < 10 and abs(actual_pos[1] - y) < 10:
-            # 클릭
-            if click_type == "click":
-                ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.02)
-                ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            elif click_type == "double_click":
-                for _ in range(2):
-                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                    time.sleep(0.02)
-                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                    time.sleep(0.05)
-            elif click_type == "right_click":
-                ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-                time.sleep(0.02)
-                ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+        if abs(actual_pos[0] - x) < PIXEL_TOLERANCE_SMALL and abs(actual_pos[1] - y) < PIXEL_TOLERANCE_SMALL:
+            _perform_mouse_click(click_type)
             return True
         else:
             logger.warning(f"[Win32] SetCursorPos 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
@@ -244,7 +262,7 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
 
         # 위치 확인
         actual_pos = pyautogui.position()
-        if abs(actual_pos[0] - x) >= 15 or abs(actual_pos[1] - y) >= 15:
+        if abs(actual_pos[0] - x) >= PIXEL_TOLERANCE_LARGE or abs(actual_pos[1] - y) >= PIXEL_TOLERANCE_LARGE:
             logger.warning(f"[SendInput] 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
             return False
 
@@ -301,21 +319,7 @@ def _win32_force_click_at(x: int, y: int, click_type: str = "click") -> bool:
         time.sleep(0.05)
 
         # 클릭 실행
-        if click_type == "double_click":
-            for _ in range(2):
-                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.02)
-                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.05)
-        elif click_type == "right_click":
-            user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-            time.sleep(0.02)
-            user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
-        else:
-            user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            time.sleep(0.02)
-            user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
+        _perform_mouse_click(click_type)
         time.sleep(0.05)
         logger.info(f"[클릭] 완료 ({x}, {y})")
         return True
@@ -412,8 +416,8 @@ class RuleExecutor:
         pyautogui.PAUSE = 0.3  # 기본 대기 시간
 
         # 속도 설정 (자연스러운 속도를 위해 최소값 설정)
-        self._default_wait = max(self._config.player.default_wait_ms / 1000, 0.8)  # 최소 0.8초 대기
-        self._mouse_duration = max(self._config.player.mouse_move_duration, 0.4)  # 최소 0.4초 이동
+        self._default_wait = max(self._config.player.default_wait_ms / 1000, MIN_WAIT_SECONDS)
+        self._mouse_duration = max(self._config.player.mouse_move_duration, MIN_MOUSE_DURATION)
         self._typing_interval = self._config.player.typing_interval
 
         # 사용자 개입 감지
@@ -542,7 +546,7 @@ class RuleExecutor:
             logger.error(f"재개 오류: {e}")
 
     def stop(self) -> None:
-        """실행 중지"""
+        """실행 중지 (비차단 — UI 스레드에서 안전하게 호출 가능)"""
         try:
             self._stop_event.set()
             self._pause_event.set()  # 일시정지 상태에서도 종료 가능하게
@@ -552,21 +556,33 @@ class RuleExecutor:
             except Exception as e:
                 logger.debug(f"중지 UI 업데이트 실패: {e}")
 
-            # 실행 스레드 종료 대기
-            if self._execution_thread and self._execution_thread.is_alive():
-                self._execution_thread.join(timeout=3.0)
-                if self._execution_thread.is_alive():
-                    logger.warning("실행 스레드가 3초 후에도 응답 없음")
+            # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
+            def _join_threads():
+                if self._execution_thread and self._execution_thread.is_alive():
+                    self._execution_thread.join(timeout=3.0)
+                    if self._execution_thread.is_alive():
+                        logger.warning("실행 스레드가 3초 후에도 응답 없음")
+                if self._monitor_thread and self._monitor_thread.is_alive():
+                    self._monitor_thread.join(timeout=2.0)
+                    if self._monitor_thread.is_alive():
+                        logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
 
-            # 모니터링 스레드 종료 대기
-            if self._monitor_thread and self._monitor_thread.is_alive():
-                self._monitor_thread.join(timeout=2.0)
-                if self._monitor_thread.is_alive():
-                    logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
+            threading.Thread(target=_join_threads, daemon=True).start()
 
             logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
         except Exception as e:
             logger.error(f"중지 오류: {e}")
+
+    def _wait_for_resume(self) -> bool:
+        """일시정지 상태에서 재개를 대기 (중지 이벤트를 주기적으로 체크).
+
+        Returns:
+            True면 중지 요청됨 (루프 탈출 필요), False면 재개됨.
+        """
+        while not self._pause_event.wait(timeout=0.3):
+            if self._stop_event.is_set():
+                return True
+        return self._stop_event.is_set()
 
     def _check_user_intervention(self) -> bool:
         """
@@ -589,7 +605,7 @@ class RuleExecutor:
 
             # 마우스가 50픽셀 이상 이동했으면 사용자 개입으로 판단
             distance = ((current_pos[0] - last_x) ** 2 + (current_pos[1] - last_y) ** 2) ** 0.5
-            if distance > 50:
+            if distance > INTERVENTION_DISTANCE_PX:
                 logger.info(f"[개입감지] 마우스 이동 감지: ({last_x}, {last_y}) -> ({current_pos[0]}, {current_pos[1]}) 거리={distance:.0f}px")
                 return True
         except (TypeError, ValueError, AttributeError):
@@ -671,9 +687,8 @@ class RuleExecutor:
                 if self._stop_event.is_set():
                     break
 
-                # 일시정지 대기
-                self._pause_event.wait()
-                if self._stop_event.is_set():
+                # 일시정지 대기 (중지 이벤트 주기적 체크)
+                if self._wait_for_resume():
                     break
 
                 # 단계 번호와 이름 구성 (step_num이 없으면 인덱스 사용)
@@ -772,9 +787,8 @@ class RuleExecutor:
         check_interval = 0.5  # 0.5초마다 확인
 
         while not self._stop_event.is_set():
-            # 일시정지 대기
-            self._pause_event.wait()
-            if self._stop_event.is_set():
+            # 일시정지 대기 (중지 이벤트 주기적 체크)
+            if self._wait_for_resume():
                 break
 
             # 각 모니터링 규칙 확인
@@ -864,10 +878,8 @@ class RuleExecutor:
                     return self._make_result(rule, False, "실행 중지됨", start_time)
 
                 # 일시정지 체크
-                while not self._pause_event.is_set():
-                    time.sleep(0.1)
-                    if self._stop_event.is_set():
-                        return self._make_result(rule, False, "실행 중지됨", start_time)
+                if self._wait_for_resume():
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
 
                 if repeat_count > 1:
                     logger.info(f"{_CYAN}  [반복 {rep + 1}/{repeat_count}] {rule.description or rule.action_type}{_RESET}")
@@ -914,28 +926,21 @@ class RuleExecutor:
                     max_wait_time = next_wait
                     logger.info(f"{_YELLOW}{step_prefix}다음 화면 대기 중: {Path(next_target_image).name} (스킵 대기: {max_wait_time:.1f}초){_RESET}")
                 else:
-                    max_wait_time = 300.0  # 5분 타임아웃
+                    max_wait_time = EXECUTION_TIMEOUT
                     logger.info(f"{_YELLOW}{step_prefix}다음 화면 대기 중: {Path(next_target_image).name if next_target_image else 'None'}{_RESET}")
 
                 while waited < max_wait_time:
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                    # 일시정지 체크 (타임아웃 추가)
-                    pause_wait_start = time.time()
-                    while not self._pause_event.is_set():
-                        time.sleep(0.1)
-                        if self._stop_event.is_set():
-                            return self._make_result(rule, False, "실행 중지됨", start_time)
-                        # 일시정지 대기 5초 초과시 로그
-                        if time.time() - pause_wait_start > 5:
-                            logger.warning(f"  ⏸ 일시정지 대기 중...")
-                            pause_wait_start = time.time()
+                    # 일시정지 체크
+                    if self._wait_for_resume():
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
 
                     # 이미지 검색 시작 로그 (첫 번째만)
                     # "다음 화면 대기"는 화면 전환 확인용이므로 낮은 임계값(0.45) 사용
                     # 사용자가 설정한 인식률은 실제 액션(모니터링, 감시 등)에만 적용
-                    next_confidence = 0.45  # 다음 화면 대기는 고정 45%
+                    next_confidence = NEXT_SCREEN_CONFIDENCE
 
                     # 다음 액션의 검색 범위 계산 (search_radius가 있으면 사용)
                     next_search_region = None
@@ -1109,7 +1114,7 @@ class RuleExecutor:
                     wait_count = 0
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
                     # 무한 대기 방지: 최대 300초(5분) 타임아웃 설정
-                    max_wait_timeout = 300.0
+                    max_wait_timeout = EXECUTION_TIMEOUT
                     skip_timeout = rule.wait_after if skip_on_not_found else max_wait_timeout
                     search_start = time.time()
                     if skip_on_not_found:
@@ -1131,11 +1136,9 @@ class RuleExecutor:
                                 logger.error(f"{_RED}{self._step_prefix}✗ 타임아웃: 이미지를 찾지 못함 ({max_wait_timeout:.0f}초 대기){_RESET}")
                                 return self._make_result(rule, False, f"타임아웃: 이미지 없음 ({max_wait_timeout:.0f}초 대기)", start_time)
 
-                        # 일시정지 대기 (pause_event가 clear되면 일시정지)
-                        while not self._pause_event.is_set():
-                            time.sleep(0.1)
-                            if self._stop_event.is_set():
-                                return self._make_result(rule, False, "실행 중지됨", start_time)
+                        # 일시정지 대기
+                        if self._wait_for_resume():
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
 
                         # 사용자 개입 확인 (이미지 대기 중에도)
                         if self._check_user_intervention():
@@ -1257,7 +1260,7 @@ class RuleExecutor:
                         return self._make_result(rule, True, f"{action_type} 완료", start_time)
 
                     # 마우스 이동 시도 (로딩 등으로 마우스가 잠겨있을 수 있으므로 반복 시도)
-                    max_move_attempts = 10  # 최대 10번 시도 (약 5초)
+                    max_move_attempts = MAX_MOVE_ATTEMPTS
                     move_success = False
 
                     for move_attempt in range(max_move_attempts):
@@ -1277,7 +1280,7 @@ class RuleExecutor:
                         self._is_moving_mouse = False
 
                         pos_after_move = pyautogui.position()
-                        if abs(pos_after_move[0] - click_x) < 10 and abs(pos_after_move[1] - click_y) < 10:
+                        if abs(pos_after_move[0] - click_x) < PIXEL_TOLERANCE_SMALL and abs(pos_after_move[1] - click_y) < PIXEL_TOLERANCE_SMALL:
                             move_success = True
                             break
 
@@ -1301,20 +1304,7 @@ class RuleExecutor:
                             return self._make_result(rule, True, f"{action_type} 완료", start_time)
 
                         # 절대 좌표 클릭 실패 시 기존 방식으로 폴백
-                        if action_type == "double_click":
-                            for _ in range(2):
-                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                                time.sleep(0.02)
-                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                                time.sleep(0.05)
-                        elif action_type == "right_click":
-                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-                            time.sleep(0.02)
-                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
-                        else:
-                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                            time.sleep(0.02)
-                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                        _perform_mouse_click(action_type)
 
                         logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
                         self._last_mouse_pos = pyautogui.position()
@@ -1705,10 +1695,8 @@ class RuleExecutor:
                     return None
 
                 # 일시정지 체크
-                while not self._pause_event.is_set():
-                    time.sleep(0.1)
-                    if self._stop_event.is_set():
-                        return None
+                if self._wait_for_resume():
+                    return None
 
                 # 화면 캡처 및 매칭
                 screenshot = ImageGrab.grab()
@@ -1932,7 +1920,7 @@ class RuleExecutor:
         pyautogui.moveTo(x, y, duration=self._mouse_duration)
         pos = pyautogui.position()
 
-        if abs(pos[0] - x) < 10 and abs(pos[1] - y) < 10:
+        if abs(pos[0] - x) < PIXEL_TOLERANCE_SMALL and abs(pos[1] - y) < PIXEL_TOLERANCE_SMALL:
             # PyAutoGUI 성공
             time.sleep(0.1)
             pyautogui.click(x, y)
@@ -2002,10 +1990,8 @@ class RuleExecutor:
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
             # 일시정지 대기
-            while not self._pause_event.is_set():
-                time.sleep(0.1)
-                if self._stop_event.is_set():
-                    return self._make_result(rule, False, "실행 중지됨", start_time)
+            if self._wait_for_resume():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
 
             # 1. 최종 이미지 검색 (search_radius가 있으면 해당 범위에서만 검색)
             final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)

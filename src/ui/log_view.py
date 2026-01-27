@@ -13,41 +13,10 @@ from threading import Lock
 
 import customtkinter as ctk
 
-from .main_window import BaseView
+from .main_window import BaseView, GUILogHandler
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-class GUILogHandler(logging.Handler):
-    """
-    GUI 로그 핸들러
-
-    로그 메시지를 GUI로 전달합니다.
-    """
-
-    def __init__(self, callback, max_lines: int = 1000):
-        """
-        GUI 로그 핸들러 초기화
-
-        Args:
-            callback: 로그 메시지를 받을 콜백 함수
-            max_lines: 최대 저장 라인 수
-        """
-        super().__init__()
-        self._callback = callback
-        self._max_lines = max_lines
-        self._lock = Lock()
-
-    def emit(self, record: logging.LogRecord) -> None:
-        """로그 레코드 처리"""
-        try:
-            msg = self.format(record)
-            level = record.levelname
-            with self._lock:
-                self._callback(msg, level)
-        except (RuntimeError, ValueError, OSError):
-            self.handleError(record)
 
 
 class LogView(BaseView):

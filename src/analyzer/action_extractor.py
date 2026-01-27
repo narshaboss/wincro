@@ -28,6 +28,16 @@ class ExtractedClick:
     modifiers: List[str]
 
 
+# 더블클릭 감지 상수
+DOUBLE_CLICK_TIME_MS = 500        # 더블클릭 판정 시간 (밀리초)
+DOUBLE_CLICK_POSITION_PX = 5      # 더블클릭 판정 위치 오차 (픽셀)
+DOUBLE_CLICK_POST_TIME = 0.5      # 후처리 더블클릭 판정 시간 (초)
+
+# 대기 시간 상수
+MIN_WAIT_TIME = 0.1               # 최소 대기 시간 (초)
+MAX_WAIT_TIME = 5.0               # 최대 대기 시간 (초)
+
+
 class ActionExtractor:
     """
     액션 추출기 클래스
@@ -146,10 +156,10 @@ class ActionExtractor:
                         same_position = False
                     else:
                         same_position = (
-                            abs(event.x - next_press.x) <= 5 and
-                            abs(event.y - next_press.y) <= 5
+                            abs(event.x - next_press.x) <= DOUBLE_CLICK_POSITION_PX and
+                            abs(event.y - next_press.y) <= DOUBLE_CLICK_POSITION_PX
                         )
-                    if time_diff < 500 and event.button == next_press.button and same_position:
+                    if time_diff < DOUBLE_CLICK_TIME_MS and event.button == next_press.button and same_position:
                         # 더블클릭
                         action = Action(
                             action_type=ActionType.DOUBLE_CLICK.value,
@@ -385,8 +395,8 @@ class ActionExtractor:
             return actions
 
         result = []
-        min_wait = 0.1  # 최소 대기 시간 (초)
-        max_wait = 5.0  # 최대 대기 시간 (초)
+        min_wait = MIN_WAIT_TIME
+        max_wait = MAX_WAIT_TIME
 
         for i, action in enumerate(actions):
             if i > 0:
@@ -451,7 +461,7 @@ class ActionExtractor:
                     action.button == next_action.button):
 
                     time_diff = next_action.timestamp - action.timestamp
-                    if time_diff < 0.5:
+                    if time_diff < DOUBLE_CLICK_POST_TIME:
                         # 더블클릭으로 변환
                         double_click = Action(
                             action_type=ActionType.DOUBLE_CLICK.value,
