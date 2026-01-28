@@ -560,12 +560,94 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             if a < 0 or a >= len(actions):
                 return
             act = actions[a]
-            cur = act.get("repeat_count", 1)
-            dlg = ctk.CTkInputDialog(text=f"반복 횟수 (현재: {cur}):", title="반복 횟수")
-            val = dlg.get_input()
-            if val and val.isdigit():
-                act["repeat_count"] = max(1, int(val))
-                self._refresh_monitor_actions(i)
+
+            dlg = ctk.CTkToplevel(self)
+            dlg.title("반복 설정")
+            dlg.geometry("350x420")
+            dlg.resizable(False, False)
+            dlg.configure(fg_color=COLORS["bg_dark"])
+            dlg.transient(self)
+            dlg.grab_set()
+
+            dlg.update_idletasks()
+            dx = (dlg.winfo_screenwidth() - 350) // 2
+            dy = (dlg.winfo_screenheight() - 420) // 2
+            dlg.geometry(f"+{dx}+{dy}")
+
+            main_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+            main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+
+            # 반복 횟수
+            ctk.CTkLabel(main_frame, text="반복 횟수",
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
+
+            count_entry = ctk.CTkEntry(main_frame, width=200, height=38, font=ctk.CTkFont(size=14))
+            count_entry.insert(0, str(act.get("repeat_count", 1)))
+            count_entry.pack(anchor="w")
+
+            ctk.CTkLabel(main_frame, text="1 = 1회 실행, 2 = 2회 반복...",
+                         font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
+
+            # 반복 대기시간
+            ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(15, 5))
+
+            delay_entry = ctk.CTkEntry(main_frame, width=200, height=38, font=ctk.CTkFont(size=14))
+            delay_entry.insert(0, f"{act.get('repeat_delay', 0.5):.2f}")
+            delay_entry.pack(anchor="w")
+
+            ctk.CTkLabel(main_frame, text="반복 사이의 대기시간",
+                         font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
+
+            # 랜덤 대기시간
+            delay_random_var = ctk.BooleanVar(value=act.get("repeat_delay_random", False))
+            ctk.CTkCheckBox(main_frame, text="랜덤시간 활성화", variable=delay_random_var,
+                            font=ctk.CTkFont(size=13)).pack(anchor="w", pady=(10, 5))
+
+            delay_range_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+            delay_range_frame.pack(anchor="w", pady=5)
+
+            ctk.CTkLabel(delay_range_frame, text="±범위:", font=ctk.CTkFont(size=12)).pack(side="left")
+            delay_range_entry = ctk.CTkEntry(delay_range_frame, width=100, height=32, font=ctk.CTkFont(size=13))
+            delay_range_entry.insert(0, f"{act.get('repeat_delay_random_range', 0.3):.2f}")
+            delay_range_entry.pack(side="left", padx=(5, 10))
+            ctk.CTkLabel(delay_range_frame, text="초", font=ctk.CTkFont(size=12),
+                         text_color=COLORS["text_secondary"]).pack(side="left")
+
+            def save():
+                try:
+                    count = int(count_entry.get().strip())
+                    delay = float(delay_entry.get().strip().replace(',', '.'))
+                    delay_range = float(delay_range_entry.get().strip().replace(',', '.'))
+                    if count < 1:
+                        from tkinter import messagebox
+                        messagebox.showerror("오류", "반복 횟수는 1 이상이어야 합니다")
+                        return
+                    if delay < 0:
+                        from tkinter import messagebox
+                        messagebox.showerror("오류", "대기시간은 0 이상이어야 합니다")
+                        return
+                    if delay_range < 0:
+                        from tkinter import messagebox
+                        messagebox.showerror("오류", "±범위는 0 이상이어야 합니다")
+                        return
+                    act["repeat_count"] = count
+                    act["repeat_delay"] = delay
+                    act["repeat_delay_random"] = delay_random_var.get()
+                    act["repeat_delay_random_range"] = delay_range
+                    self._refresh_monitor_actions(i)
+                    dlg.destroy()
+                except ValueError:
+                    from tkinter import messagebox
+                    messagebox.showerror("오류", "숫자를 입력하세요")
+
+            btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+            btn_frame.pack(pady=10)
+            ctk.CTkButton(btn_frame, text="저장", width=100, height=36,
+                          font=ctk.CTkFont(size=13, weight="bold"), command=save).pack(side="left", padx=8)
+            ctk.CTkButton(btn_frame, text="취소", width=100, height=36,
+                          font=ctk.CTkFont(size=13, weight="bold"), fg_color=COLORS["bg_card"],
+                          command=dlg.destroy).pack(side="left", padx=8)
 
         ctk.CTkButton(
             card_inner, text=f"x{repeat_count}", width=32, height=22,
