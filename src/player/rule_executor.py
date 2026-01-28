@@ -2139,8 +2139,39 @@ class RuleExecutor:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result
-                    logger.info(f"{_GREEN}{self._step_prefix}✓ 최종 이미지 발견! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
-                    return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
+                    logger.info(f"{_YELLOW}{self._step_prefix}최종 이미지 감지 [{final_name}] ({int(final_conf * 100)}%) - 감시이미지 재확인 대기{_RESET}")
+                    time.sleep(0.5)
+                    # 감시이미지 재확인: 뒤늦게 나타난 감시이미지가 있으면 감시 우선 처리
+                    recheck_watch_found = False
+                    for watch in valid_watches:
+                        if self._stop_event.is_set():
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+                        watch_image = watch.get('image')
+                        if not watch_image:
+                            continue
+                        search_region = watch.get('search_region')
+                        watch_search_radius = watch.get('search_radius', 0)
+                        if not search_region and watch_search_radius > 0:
+                            watch_center_x = watch.get('center_x') or watch.get('x')
+                            watch_center_y = watch.get('center_y') or watch.get('y')
+                            if watch_center_x is not None and watch_center_y is not None:
+                                screen_w, screen_h = pyautogui.size()
+                                x1 = max(0, watch_center_x - watch_search_radius)
+                                y1 = max(0, watch_center_y - watch_search_radius)
+                                x2 = min(screen_w, watch_center_x + watch_search_radius)
+                                y2 = min(screen_h, watch_center_y + watch_search_radius)
+                                search_region = [x1, y1, x2, y2]
+                        recheck_result = self._find_image_on_screen(watch_image, confidence, search_region=search_region)
+                        if recheck_result:
+                            recheck_watch_found = True
+                            logger.info(f"{_YELLOW}{self._step_prefix}⚡ 감시 이미지 뒤늦게 발견! [{Path(watch_image).name}] - 최종 이미지 무시, 모니터링 계속{_RESET}")
+                            break
+                    if not recheck_watch_found:
+                        logger.info(f"{_GREEN}{self._step_prefix}✓ 최종 이미지 확정! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
+                        return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
+                    # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
+                    wait_count = 0
+                    continue
 
             # 3. 대기
             wait_count += 1
