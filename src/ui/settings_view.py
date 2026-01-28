@@ -1194,14 +1194,30 @@ class SettingsView(BaseView):
     def _check_version_thread(self, repo: str) -> None:
         """버전 확인 스레드 - 여러 방법 시도"""
         from ..utils.config import APP_VERSION
+        from ..utils.updater import check_for_update
         import urllib.request
         import urllib.error
         import ssl
         import json
         import socket
 
+        # 캐싱된 업데이트 체크 사용 (API 제한 방지)
+        result = check_for_update(repo, APP_VERSION)
+        if result:
+            if result.get("cached"):
+                logger.info("캐시된 업데이트 정보 사용")
+            if result.get("update_available"):
+                ver = result["version"]
+                rel_data = result.get("release_data")
+                self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
+            else:
+                ver = APP_VERSION
+                self.after(0, lambda v=ver: self._show_up_to_date(v))
+            return
+
+        # updater 실패 시 기존 방법으로 폴백
         api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-        logger.info(f"버전 확인 시작: {api_url}")
+        logger.info(f"버전 확인 시작 (폴백): {api_url}")
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',

@@ -8,6 +8,7 @@ import json
 import os
 import ssl
 import socket
+import time
 import urllib.request
 import urllib.error
 from typing import Optional, Dict, List, Any
@@ -17,6 +18,10 @@ from .logger import get_logger
 from .config import PROJECT_ROOT, DATA_DIR
 
 logger = get_logger(__name__)
+
+# 업데이트 체크 캐시 (API 제한 방지)
+UPDATE_CACHE_FILE = DATA_DIR / "update_cache.json"
+UPDATE_CACHE_DURATION = 1800  # 30분 (초)
 
 
 def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
@@ -68,22 +73,63 @@ def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
 RECORDINGS_DIR = DATA_DIR / "recordings"
 
 
-def check_for_update(repo: str, current_version: str) -> Optional[Dict[str, Any]]:
+def _load_update_cache() -> Optional[Dict[str, Any]]:
+    """캐시된 업데이트 정보 로드"""
+    try:
+        if UPDATE_CACHE_FILE.exists():
+            with open(UPDATE_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _save_update_cache(result: Dict[str, Any], current_version: str):
+    """업데이트 결과 캐시 저장"""
+    try:
+        cache_data = {
+            "timestamp": time.time(),
+            "current_version": current_version,
+            "result": result
+        }
+        UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(UPDATE_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f)
+    except Exception as e:
+        logger.debug(f"캐시 저장 실패: {e}")
+
+
+def check_for_update(repo: str, current_version: str, force: bool = False) -> Optional[Dict[str, Any]]:
     """
     GitHub에서 새 버전 확인
 
     Args:
         repo: GitHub 저장소 (예: "username/repo")
         current_version: 현재 버전 (예: "1.0.0")
+        force: True면 캐시 무시하고 강제 확인
 
     Returns:
         업데이트 정보 딕셔너리 또는 None
         {
             "update_available": bool,
             "version": str,
-            "release_data": dict
+            "release_data": dict,
+            "cached": bool (캐시된 결과인지)
         }
     """
+    # 캐시 확인 (force가 아니면)
+    if not force:
+        cache = _load_update_cache()
+        if cache:
+            cache_age = time.time() - cache.get("timestamp", 0)
+            cached_version = cache.get("current_version", "")
+            if cache_age < UPDATE_CACHE_DURATION and cached_version == current_version:
+                result = cache.get("result", {})
+                result["cached"] = True
+                remaining_min = int((UPDATE_CACHE_DURATION - cache_age) / 60)
+                logger.info(f"캐시된 업데이트 정보 사용 (다음 확인까지 {remaining_min}분)")
+                return result
+
     try:
         api_url = f"https://api.github.com/repos/{repo}/releases/latest"
         headers = {
@@ -97,20 +143,29 @@ def check_for_update(repo: str, current_version: str) -> Optional[Dict[str, Any]
         latest_version = data.get("tag_name", "").lstrip("v")
 
         if _compare_versions(latest_version, current_version) > 0:
-            return {
+            result = {
                 "update_available": True,
                 "version": latest_version,
-                "release_data": data
+                "release_data": data,
+                "cached": False
             }
         else:
-            return {
+            result = {
                 "update_available": False,
                 "version": current_version,
-                "release_data": None
+                "release_data": None,
+                "cached": False
             }
 
+        # 결과 캐시 저장
+        _save_update_cache(result, current_version)
+        return result
+
     except urllib.error.HTTPError as e:
-        logger.error(f"GitHub API 오류: {e.code}")
+        if e.code == 403:
+            logger.error(f"GitHub API 제한 (시간당 60회 초과). 30분 후 다시 시도하세요.")
+        else:
+            logger.error(f"GitHub API 오류: {e.code}")
         return None
     except Exception as e:
         error_str = str(e)
