@@ -532,6 +532,15 @@ class MainWindow(ctk.CTk):
             def _apply_plans():
                 self._mini_plans = plans
                 self._update_mini_plan_dropdown()
+                # 선택된 플랜의 저장된 재생횟수 로드
+                if self._mini_plans:
+                    selected_name = self._mini_plan_var.get()
+                    for plan in self._mini_plans:
+                        if plan.name == selected_name:
+                            saved_repeat = getattr(plan, 'total_repeat_count', 1) or 1
+                            self._mini_repeat_var.set(str(saved_repeat))
+                            logger.info(f"[미니플레이어] 초기 재생횟수 로드: {saved_repeat}회")
+                            break
 
             try:
                 self.after(0, _apply_plans)
