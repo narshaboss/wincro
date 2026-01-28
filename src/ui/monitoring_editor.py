@@ -53,6 +53,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._action_options = []
         self._watch_scroll = None
         self._is_monitoring_var = None
+        self._monitor_action_clipboard = None
 
         self._setup_dialog()
         self._init_data()
@@ -299,6 +300,28 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text_color="#2ecc71",
         ).pack(side="left")
 
+        # 붙여넣기 버튼
+        import copy
+        def paste_action(i=watch_idx):
+            clipboard = getattr(self, '_monitor_action_clipboard', None)
+            if clipboard is None:
+                messagebox.showinfo("클립보드 비어있음", "먼저 모니터링 액션을 복사(CP)하세요.")
+                return
+            if i < len(self._watches_data):
+                if "monitor_actions" not in self._watches_data[i]:
+                    self._watches_data[i]["monitor_actions"] = []
+                self._watches_data[i]["monitor_actions"].append(copy.deepcopy(clipboard))
+                logger.info(f"[모니터링] 액션 붙여넣기: {clipboard.get('type', '알수없음')}")
+                self._refresh_monitor_actions(i)
+
+        ctk.CTkButton(
+            header_frame, text="붙여넣기", width=60, height=20,
+            font=ctk.CTkFont(size=10),
+            fg_color="#7c3aed", hover_color="#8b5cf6",
+            text_color="white", corner_radius=4,
+            command=paste_action,
+        ).pack(side="left", padx=(8, 0))
+
         # 각 모니터링 액션을 카드 형태로 표시
         for ai, action in enumerate(current_actions):
             self._build_action_card(row3, watch_idx, ai, action)
@@ -385,6 +408,23 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             fg_color="#c0392b", hover_color="#e74c3c",
             text_color="white", corner_radius=4,
             command=delete_action,
+        ).pack(side="right", padx=(2, 0))
+
+        # 복사 버튼
+        import copy
+        def copy_action(i=watch_idx, a=ai):
+            if i < len(self._watches_data) and "monitor_actions" in self._watches_data[i]:
+                actions = self._watches_data[i]["monitor_actions"]
+                if 0 <= a < len(actions):
+                    self._monitor_action_clipboard = copy.deepcopy(actions[a])
+                    logger.info(f"[모니터링] 액션 복사: {actions[a].get('type', '알수없음')}")
+
+        ctk.CTkButton(
+            card_inner, text="CP", width=26, height=22,
+            font=ctk.CTkFont(size=10),
+            fg_color="#7c3aed", hover_color="#8b5cf6",
+            text_color="white", corner_radius=4,
+            command=copy_action,
         ).pack(side="right", padx=(2, 0))
 
         # 실행/정지 토글 버튼

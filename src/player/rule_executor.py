@@ -1989,14 +1989,8 @@ class RuleExecutor:
             if self._wait_for_resume():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
-            # 1. 최종 이미지 검색 (search_radius가 있으면 해당 범위에서만 검색)
-            final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
-            if final_result:
-                _, _, final_conf = final_result
-                logger.info(f"{_GREEN}{self._step_prefix}✓ 최종 이미지 발견! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
-                return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
-
-            # 2. 감시 이미지들 검색
+            # 1. 감시 이미지들 검색 (감시이미지 우선 처리)
+            watch_found = False
             for watch in valid_watches:
                 if self._stop_event.is_set():
                     return self._make_result(rule, False, "실행 중지됨", start_time)
@@ -2029,6 +2023,7 @@ class RuleExecutor:
                     search_region=search_region
                 )
                 if watch_result:
+                    watch_found = True
                     watch_x, watch_y, found_conf = watch_result
                     conf_pct = int(found_conf * 100)
                     if goto_index >= 0:
@@ -2138,6 +2133,14 @@ class RuleExecutor:
                     wait_count = 0
                     self._update_progress(f"{step_prefix}모니터링 복귀: {final_name} 대기 중")
                     break  # 감시 루프 탈출하고 처음부터 다시 검색
+
+            # 2. 최종 이미지 검색 (감시이미지가 하나도 없을 때만)
+            if not watch_found:
+                final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
+                if final_result:
+                    _, _, final_conf = final_result
+                    logger.info(f"{_GREEN}{self._step_prefix}✓ 최종 이미지 발견! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
+                    return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
 
             # 3. 대기
             wait_count += 1
