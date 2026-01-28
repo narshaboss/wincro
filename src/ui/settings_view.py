@@ -563,59 +563,267 @@ class SettingsView(BaseView):
         # 구분선
         ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=10)
 
-        # 자동 실행 설정 라벨
-        auto_run_label = ctk.CTkLabel(
+        # 플랜 목록 로드
+        self._auto_run_plan_list = self._load_plan_list()
+
+        # 플랜 순서 실행 설정
+        seq_label = ctk.CTkLabel(
             scroll_frame,
-            text="프로그램 시작 시 자동 실행",
+            text="플랜 순서",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
-        auto_run_label.pack(anchor="w", padx=10)
+        seq_label.pack(anchor="w", padx=10)
 
-        auto_run_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-        auto_run_frame.pack(fill="x", padx=10, pady=(5, 10))
+        seq_auto_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        seq_auto_frame.pack(fill="x", padx=10, pady=(5, 5))
 
-        # 자동 실행 활성화 토글
         self._auto_run_enabled_var = ctk.BooleanVar()
         self._create_checkbox_with_help(
-            auto_run_frame,
-            "활성화",
+            seq_auto_frame,
+            "프로그램 시작 시 자동실행",
             self._auto_run_enabled_var,
-            help_text="프로그램 시작 시 지정한 플랜 자동 실행"
+            help_text="앱 시작 시 아래 플랜 순서대로 자동 실행"
         )
 
-        # 플랜 선택 드롭다운
-        plan_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-        plan_frame.pack(fill="x", padx=10, pady=(0, 10))
+        # 플랜 추가 드롭다운 + 추가 버튼
+        seq_add_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        seq_add_frame.pack(fill="x", padx=10, pady=(0, 5))
 
-        plan_label = ctk.CTkLabel(
-            plan_frame,
-            text="플랜:",
-            font=ctk.CTkFont(size=12),
-            text_color=COLORS["text_secondary"],
-            width=50,
-            anchor="w",
-        )
-        plan_label.pack(side="left")
-
-        # 플랜 목록 로드
-        self._auto_run_plan_list = self._load_plan_list()
-        plan_names = [p["name"] for p in self._auto_run_plan_list] if self._auto_run_plan_list else ["(플랜 없음)"]
-
-        self._auto_run_plan_var = ctk.StringVar()
-        self._auto_run_plan_dropdown = ctk.CTkComboBox(
-            plan_frame,
-            variable=self._auto_run_plan_var,
-            values=plan_names,
-            width=250,
+        seq_plan_names = [p["name"] for p in self._auto_run_plan_list] if self._auto_run_plan_list else ["(플랜 없음)"]
+        self._seq_plan_add_var = ctk.StringVar(value=seq_plan_names[0] if seq_plan_names else "")
+        self._seq_plan_add_dropdown = ctk.CTkComboBox(
+            seq_add_frame,
+            variable=self._seq_plan_add_var,
+            values=seq_plan_names,
+            width=200,
             height=28,
             fg_color=COLORS["bg_dark"],
             border_color=COLORS["border"],
             dropdown_fg_color=COLORS["bg_card"],
             dropdown_hover_color=COLORS["bg_dark"],
-            command=self._on_auto_run_plan_changed,
+            font=ctk.CTkFont(size=11),
         )
-        self._auto_run_plan_dropdown.pack(side="left", padx=(5, 0))
+        self._seq_plan_add_dropdown.pack(side="left")
+
+        ctk.CTkButton(
+            seq_add_frame,
+            text="+ 추가",
+            command=self._seq_add_plan,
+            width=60,
+            height=28,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(5, 0))
+
+        # 플랜 순서 리스트
+        seq_list_frame = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
+        seq_list_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        self._seq_listbox = tk.Listbox(
+            seq_list_frame,
+            height=5,
+            font=("Consolas", 11),
+            bg=COLORS["bg_dark"],
+            fg=COLORS["text_primary"],
+            selectbackground=COLORS["accent"],
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="none",
+        )
+        self._seq_listbox.pack(fill="x", padx=5, pady=5)
+
+        # 버튼 프레임 (삭제, 위로, 아래로)
+        seq_btn_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        seq_btn_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        for btn_text, btn_cmd in [
+            ("삭제", self._seq_remove_plan),
+            ("▲ 위로", self._seq_move_up),
+            ("▼ 아래로", self._seq_move_down),
+        ]:
+            ctk.CTkButton(
+                seq_btn_frame,
+                text=btn_text,
+                command=btn_cmd,
+                width=60,
+                height=26,
+                fg_color=COLORS["bg_card"],
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_primary"],
+                font=ctk.CTkFont(size=11),
+            ).pack(side="left", padx=(0, 5))
+
+        # 반복횟수 수정 프레임
+        seq_repeat_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        seq_repeat_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkLabel(
+            seq_repeat_frame,
+            text="반복횟수:",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left")
+
+        self._seq_repeat_var = ctk.StringVar(value="1")
+        self._seq_repeat_entry = ctk.CTkEntry(
+            seq_repeat_frame,
+            textvariable=self._seq_repeat_var,
+            width=60,
+            height=26,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11),
+        )
+        self._seq_repeat_entry.pack(side="left", padx=(5, 5))
+
+        ctk.CTkButton(
+            seq_repeat_frame,
+            text="적용",
+            command=self._seq_apply_repeat,
+            width=50,
+            height=26,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left")
+
+        # 리스트박스 선택 시 반복횟수 표시
+        self._seq_listbox.bind("<<ListboxSelect>>", self._seq_on_select)
+
+    def _seq_add_plan(self) -> None:
+        """플랜 순서 목록에 플랜 추가"""
+        import json as _json
+
+        plan_name = self._seq_plan_add_var.get()
+        if not plan_name or plan_name == "(플랜 없음)":
+            return
+        # 경로 찾기
+        plan_path = ""
+        for p in self._auto_run_plan_list:
+            if p["name"] == plan_name:
+                plan_path = p["path"]
+                break
+        if not plan_path:
+            return
+
+        # 플랜 파일에서 반복횟수 읽기
+        repeat_count = 1
+        try:
+            with open(plan_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+                repeat_count = data.get("total_repeat_count", 1) or 1
+        except Exception:
+            pass
+
+        self._seq_listbox.insert(tk.END, f"{plan_name}  ({repeat_count}회)")
+        # 내부 리스트에도 추가
+        if not hasattr(self, '_seq_plan_paths'):
+            self._seq_plan_paths = []
+        if not hasattr(self, '_seq_plan_repeats'):
+            self._seq_plan_repeats = []
+        self._seq_plan_paths.append(plan_path)
+        self._seq_plan_repeats.append(repeat_count)
+
+    def _seq_remove_plan(self) -> None:
+        """플랜 순서 목록에서 선택 항목 삭제"""
+        sel = self._seq_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        self._seq_listbox.delete(idx)
+        if hasattr(self, '_seq_plan_paths') and idx < len(self._seq_plan_paths):
+            self._seq_plan_paths.pop(idx)
+        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
+            self._seq_plan_repeats.pop(idx)
+
+    def _seq_move_up(self) -> None:
+        """플랜 순서 목록에서 선택 항목을 위로 이동"""
+        sel = self._seq_listbox.curselection()
+        if not sel or sel[0] == 0:
+            return
+        idx = sel[0]
+        # 리스트박스 항목 교환
+        text = self._seq_listbox.get(idx)
+        self._seq_listbox.delete(idx)
+        self._seq_listbox.insert(idx - 1, text)
+        self._seq_listbox.selection_set(idx - 1)
+        # 경로 리스트 교환
+        if hasattr(self, '_seq_plan_paths') and idx < len(self._seq_plan_paths):
+            self._seq_plan_paths[idx], self._seq_plan_paths[idx - 1] = \
+                self._seq_plan_paths[idx - 1], self._seq_plan_paths[idx]
+        # 반복횟수 리스트 교환
+        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
+            self._seq_plan_repeats[idx], self._seq_plan_repeats[idx - 1] = \
+                self._seq_plan_repeats[idx - 1], self._seq_plan_repeats[idx]
+
+    def _seq_move_down(self) -> None:
+        """플랜 순서 목록에서 선택 항목을 아래로 이동"""
+        sel = self._seq_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= self._seq_listbox.size() - 1:
+            return
+        # 리스트박스 항목 교환
+        text = self._seq_listbox.get(idx)
+        self._seq_listbox.delete(idx)
+        self._seq_listbox.insert(idx + 1, text)
+        self._seq_listbox.selection_set(idx + 1)
+        # 경로 리스트 교환
+        if hasattr(self, '_seq_plan_paths') and idx < len(self._seq_plan_paths):
+            self._seq_plan_paths[idx], self._seq_plan_paths[idx + 1] = \
+                self._seq_plan_paths[idx + 1], self._seq_plan_paths[idx]
+        # 반복횟수 리스트 교환
+        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
+            self._seq_plan_repeats[idx], self._seq_plan_repeats[idx + 1] = \
+                self._seq_plan_repeats[idx + 1], self._seq_plan_repeats[idx]
+
+    def _seq_on_select(self, event=None) -> None:
+        """플랜 순서 리스트 선택 시 반복횟수 표시"""
+        sel = self._seq_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
+            self._seq_repeat_var.set(str(self._seq_plan_repeats[idx]))
+
+    def _seq_apply_repeat(self) -> None:
+        """선택된 플랜의 반복횟수 변경"""
+        sel = self._seq_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        try:
+            new_count = int(self._seq_repeat_var.get())
+            if new_count < 1:
+                new_count = 1
+            elif new_count > 9999:
+                new_count = 9999
+        except ValueError:
+            return
+
+        if not hasattr(self, '_seq_plan_repeats') or idx >= len(self._seq_plan_repeats):
+            return
+
+        self._seq_plan_repeats[idx] = new_count
+
+        # 리스트박스 텍스트 갱신
+        plan_path = self._seq_plan_paths[idx]
+        plan_name = Path(plan_path).stem
+        for p in self._auto_run_plan_list:
+            if p["path"] == plan_path:
+                plan_name = p["name"]
+                break
+        self._seq_listbox.delete(idx)
+        self._seq_listbox.insert(idx, f"{plan_name}  ({new_count}회)")
+        self._seq_listbox.selection_set(idx)
 
     def _load_plan_list(self) -> list:
         """플랜 목록 로드"""
@@ -636,10 +844,6 @@ class SettingsView(BaseView):
                 except Exception:
                     pass
         return plans
-
-    def _on_auto_run_plan_changed(self, selected_name: str) -> None:
-        """플랜 선택 변경 시"""
-        self._on_setting_changed()
 
     def _setup_appearance_settings(self, parent) -> None:
         """외관 설정 + 버튼 섹션"""
@@ -1823,17 +2027,23 @@ del "%~f0"
         self._stop_key_var.set(config.player.emergency_stop_key)
         self._auto_start_var.set(config.ui.auto_start)
         self._auto_run_enabled_var.set(config.player.auto_run_enabled)
-        # 저장된 경로를 플랜 이름으로 변환
-        saved_path = config.player.auto_run_plan
-        plan_name = ""
-        for p in self._auto_run_plan_list:
-            if p["path"] == saved_path:
-                plan_name = p["name"]
-                break
-        if plan_name:
-            self._auto_run_plan_var.set(plan_name)
-        elif self._auto_run_plan_list:
-            self._auto_run_plan_var.set(self._auto_run_plan_list[0]["name"])
+
+        # 플랜 순서 설정
+        self._seq_plan_paths = list(config.player.plan_sequence)
+        saved_repeats = list(config.player.plan_sequence_repeats)
+        # 길이 맞추기 (경로보다 짧으면 1로 채움)
+        while len(saved_repeats) < len(self._seq_plan_paths):
+            saved_repeats.append(1)
+        self._seq_plan_repeats = saved_repeats[:len(self._seq_plan_paths)]
+        self._seq_listbox.delete(0, tk.END)
+        for i, seq_path in enumerate(self._seq_plan_paths):
+            seq_name = Path(seq_path).stem
+            for p in self._auto_run_plan_list:
+                if p["path"] == seq_path:
+                    seq_name = p["name"]
+                    break
+            repeat = self._seq_plan_repeats[i]
+            self._seq_listbox.insert(tk.END, f"{seq_name}  ({repeat}회)")
 
         # 외관 설정
         self._app_name_var.set(config.ui.app_name)
@@ -1913,14 +2123,8 @@ del "%~f0"
 
         config.player.emergency_stop_key = self._stop_key_var.get()
         config.player.auto_run_enabled = self._auto_run_enabled_var.get()
-        # 플랜 이름을 경로로 변환하여 저장
-        selected_plan_name = self._auto_run_plan_var.get()
-        plan_path = ""
-        for p in self._auto_run_plan_list:
-            if p["name"] == selected_plan_name:
-                plan_path = p["path"]
-                break
-        config.player.auto_run_plan = plan_path
+        config.player.plan_sequence = list(getattr(self, '_seq_plan_paths', []))
+        config.player.plan_sequence_repeats = list(getattr(self, '_seq_plan_repeats', []))
 
         # 자동 시작 설정
         new_auto_start = self._auto_start_var.get()

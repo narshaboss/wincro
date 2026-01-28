@@ -508,6 +508,12 @@ class MainWindow(ctk.CTk):
         self._mini_current_repeat = 0
         self._mini_total_repeat = 1
 
+        # 플랜 순서 실행 상태
+        self._sequence_mode = False
+        self._sequence_plans = []  # 시퀀스 플랜 경로 리스트
+        self._sequence_repeats = []  # 시퀀스 플랜별 반복횟수
+        self._sequence_index = 0  # 현재 시퀀스 인덱스
+
         # UI 먼저 생성 (빠르게)
         self._create_mini_player_ui()
 
@@ -1075,6 +1081,16 @@ class MainWindow(ctk.CTk):
             with open(plan_file, 'w', encoding='utf-8') as f:
                 json.dump(selected_plan.to_dict(), f, ensure_ascii=False, indent=2)
 
+            # config의 plan_sequence_repeats도 동기화
+            config = get_config()
+            plan_file_str = str(plan_file)
+            for i, seq_path in enumerate(config.player.plan_sequence):
+                if str(Path(seq_path)) == str(plan_file) or seq_path == plan_file_str:
+                    while len(config.player.plan_sequence_repeats) <= i:
+                        config.player.plan_sequence_repeats.append(1)
+                    config.player.plan_sequence_repeats[i] = repeat_count
+            save_config()
+
             self._mini_status.configure(text=f"✓ 재생횟수 {repeat_count}회 저장됨")
             logger.info(f"[미니플레이어] 재생횟수 저장: {repeat_count}회 - {plan_name}")
         except ValueError:
@@ -1093,6 +1109,12 @@ class MainWindow(ctk.CTk):
             self._is_paused = False
             self._mini_status.configure(text="▶ 실행 중...")
             self._mini_pause_btn.configure(text="⏸ 일시중지")
+            return
+
+        # 플랜 순서 모드 확인
+        config = get_config()
+        if config.player.plan_sequence:
+            self._start_sequence_mode(config.player.plan_sequence, config.player.plan_sequence_repeats)
             return
 
         plan_name = self._mini_plan_var.get()
@@ -1169,6 +1191,80 @@ class MainWindow(ctk.CTk):
 
         threading.Thread(target=load_and_start, daemon=True).start()
 
+    def _start_sequence_mode(self, plan_paths: list, repeats: list = None):
+        """플랜 순서 실행 모드 시작"""
+        logger.info(f"[시퀀스] 플랜 순서 실행 시작: {len(plan_paths)}개 플랜")
+        self._sequence_mode = True
+        self._sequence_plans = list(plan_paths)
+        # 반복횟수 리스트 (없거나 짧으면 0으로 채움 → 플랜 파일 값 사용)
+        self._sequence_repeats = list(repeats) if repeats else []
+        while len(self._sequence_repeats) < len(self._sequence_plans):
+            self._sequence_repeats.append(0)
+        self._sequence_index = 0
+
+        # UI 업데이트
+        self._mini_play_btn.configure(state="disabled")
+        self._mini_status.configure(text="⏳ 시퀀스 로드 중...")
+
+        # 첫 번째 플랜 실행
+        self._run_sequence_plan(0)
+
+    def _run_sequence_plan(self, index: int):
+        """시퀀스에서 지정 인덱스의 플랜 로드 및 실행"""
+        import threading
+
+        if index >= len(self._sequence_plans):
+            # 모든 시퀀스 완료
+            self.after(0, lambda: self._mini_on_complete(True, ""))
+            self._sequence_mode = False
+            return
+
+        plan_path = self._sequence_plans[index]
+        self._sequence_index = index
+        total = len(self._sequence_plans)
+        logger.info(f"[시퀀스] 플랜 {index + 1}/{total} 로드: {plan_path}")
+
+        def load_and_start():
+            try:
+                import json
+                plan_file = Path(plan_path)
+                if not plan_file.exists():
+                    logger.error(f"[시퀀스] 플랜 파일 없음: {plan_path}")
+                    self.after(0, lambda: self._mini_on_complete(False, f"플랜 파일 없음: {plan_path}"))
+                    self._sequence_mode = False
+                    return
+
+                with open(plan_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    templates_dir = DATA_DIR / "templates"
+                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+
+                # 설정의 반복횟수 우선, 없으면(0) 플랜 파일 값 사용
+                saved_repeat = self._sequence_repeats[index] if index < len(self._sequence_repeats) else 0
+                repeat_count = saved_repeat if saved_repeat > 0 else (getattr(plan, 'total_repeat_count', 1) or 1)
+                logger.info(f"[시퀀스] 플랜 로드 성공: {plan.name}, 반복: {repeat_count}회 ({index + 1}/{total})")
+
+                def start_on_main():
+                    # 드롭다운 UI 동기화
+                    if hasattr(self, '_mini_plan_var'):
+                        self._mini_plan_var.set(plan.name)
+                    self._mini_repeat_var.set(str(repeat_count))
+                    self._mini_total_repeat = repeat_count
+                    self._mini_current_repeat = 0
+                    self._mini_status.configure(
+                        text=f"▶ 시퀀스 {index + 1}/{total} - {plan.name} (1/{repeat_count}회)"
+                    )
+                    self._mini_start_execution(plan, repeat_count)
+
+                self.after(0, start_on_main)
+
+            except Exception as e:
+                logger.error(f"[시퀀스] 플랜 로드 오류: {e}")
+                self.after(0, lambda: self._mini_on_complete(False, f"시퀀스 로드 오류: {e}"))
+                self._sequence_mode = False
+
+        threading.Thread(target=load_and_start, daemon=True).start()
+
     def _mini_on_load_failed(self, message: str):
         """플랜 로드 실패 시 UI 복원"""
         self._mini_status.configure(text=message)
@@ -1214,73 +1310,31 @@ class MainWindow(ctk.CTk):
             logger.error(f"[미니플레이어] 플랜 실행 오류: {e}")
             self.after(0, lambda: self._mini_on_complete(False, str(e)))
 
-    def auto_run_plan(self, plan_path: str) -> bool:
-        """시작 시 자동 실행 - 지정된 플랜 파일 실행 (플레이 모드 전용)"""
-        import json
-        from pathlib import Path
+    def auto_run_sequence(self, plan_paths: list, repeats: list = None) -> bool:
+        """시작 시 자동 실행 - 플랜 순서 모드 (플레이 모드 전용)"""
+        logger.info(f"[자동실행-시퀀스] 플랜 순서 자동 실행 시작: {len(plan_paths)}개 플랜")
 
-        logger.info(f"[자동실행] 플랜 자동 실행 시작: {plan_path}")
+        if not plan_paths:
+            logger.warning("[자동실행-시퀀스] 플랜 경로 리스트가 비어있음")
+            self._mini_status.configure(text="⚠ 시퀀스 플랜 없음")
+            return False
 
-        try:
-            plan_file = Path(plan_path)
-            if not plan_file.exists():
-                logger.error(f"[자동실행] 플랜 파일 없음: {plan_path}")
-                self._mini_status.configure(text="⚠ 자동실행 플랜 없음")
+        # 파일 존재 확인
+        for path in plan_paths:
+            if not Path(path).exists():
+                logger.error(f"[자동실행-시퀀스] 플랜 파일 없음: {path}")
+                self._mini_status.configure(text=f"⚠ 플랜 파일 없음: {Path(path).name}")
                 return False
 
-            # 플랜 로드
-            with open(plan_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                templates_dir = DATA_DIR / "templates"
-                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+        # UI 버튼 상태 업데이트
+        self._mini_play_btn.configure(state="disabled")
+        self._mini_pause_btn.configure(state="normal")
+        self._mini_stop_btn.configure(state="normal")
+        self._is_running = True
 
-            logger.info(f"[자동실행] 플랜 로드 성공: {plan.name}")
-
-            # 드롭다운에서 해당 플랜 선택 (UI 동기화)
-            if hasattr(self, '_mini_plan_var'):
-                self._mini_plan_var.set(plan.name)
-
-            # 횟수 설정 (미니 플레이어에 설정된 값 사용)
-            try:
-                repeat_count = int(self._mini_repeat_var.get())
-                if repeat_count < 1:
-                    repeat_count = 1
-                elif repeat_count > 9999:
-                    repeat_count = 9999
-            except (ValueError, AttributeError):
-                repeat_count = 1
-            self._mini_total_repeat = repeat_count
-            self._mini_current_repeat = 0
-            logger.info(f"[자동실행] 반복 횟수: {repeat_count}회")
-
-            # RuleExecutor 생성 및 실행
-            self._rule_executor = RuleExecutor()
-            self._rule_executor.set_callbacks(
-                on_progress=self._mini_on_progress,
-                on_complete=self._mini_on_repeat_complete,
-            )
-
-            self._is_running = True
-            self._mini_play_btn.configure(state="disabled")
-            self._mini_pause_btn.configure(state="normal")
-            self._mini_stop_btn.configure(state="normal")
-            self._mini_status.configure(text=f"▶ 자동실행 중... (1/{repeat_count}회)")
-
-            # 비동기 실행
-            import threading
-            thread = threading.Thread(
-                target=self._mini_execute_plan,
-                args=(plan,),
-                daemon=True
-            )
-            thread.start()
-            logger.info(f"[자동실행] 실행 스레드 시작")
-            return True
-
-        except Exception as e:
-            logger.error(f"[자동실행] 실행 오류: {e}")
-            self._mini_status.configure(text=f"✗ 자동실행 오류: {e}")
-            return False
+        # 시퀀스 모드 시작
+        self._start_sequence_mode(plan_paths, repeats)
+        return True
 
     def _mini_on_pause(self):
         """미니 플레이어 - 일시중지/재개"""
@@ -1304,6 +1358,7 @@ class MainWindow(ctk.CTk):
             self._rule_executor.stop()
         self._is_running = False
         self._is_paused = False
+        self._sequence_mode = False
         self._mini_play_btn.configure(state="normal")
         self._mini_pause_btn.configure(state="disabled", text="⏸ 일시중지")
         self._mini_stop_btn.configure(state="disabled")
@@ -1316,11 +1371,15 @@ class MainWindow(ctk.CTk):
             total = progress.initial_total
             message = progress.message or progress.current_rule or ""
             repeat_info = f"({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)" if self._mini_total_repeat > 1 else ""
+            if self._sequence_mode:
+                seq_info = f"[{self._sequence_index + 1}/{len(self._sequence_plans)}] "
+            else:
+                seq_info = ""
 
             def update_status():
                 try:
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
-                        self._mini_status.configure(text=f"▶ {current}/{total} {repeat_info} - {message}")
+                        self._mini_status.configure(text=f"▶ {seq_info}{current}/{total} {repeat_info} - {message}")
                 except (tk.TclError, RuntimeError):
                     pass
 
@@ -1336,18 +1395,35 @@ class MainWindow(ctk.CTk):
 
             if not success:
                 # 실패하면 중지
+                self._sequence_mode = False
                 self.after(0, lambda: self._mini_on_complete(False, message))
                 return
 
             self._mini_current_repeat += 1
 
             if self._mini_current_repeat >= self._mini_total_repeat:
-                # 모든 반복 완료
-                self.after(0, lambda: self._mini_on_complete(True, ""))
-                return
+                # 현재 플랜의 모든 반복 완료
+                if self._sequence_mode:
+                    # 시퀀스 모드: 다음 플랜으로 이동
+                    next_index = self._sequence_index + 1
+                    if next_index < len(self._sequence_plans):
+                        logger.info(f"[시퀀스] 플랜 {self._sequence_index + 1}/{len(self._sequence_plans)} 완료, 다음 플랜으로 이동")
+                        self.after(0, lambda idx=next_index: self._run_sequence_plan(idx))
+                        return
+                    else:
+                        # 마지막 플랜 완료
+                        logger.info(f"[시퀀스] 전체 시퀀스 완료 ({len(self._sequence_plans)}개 플랜)")
+                        self._sequence_mode = False
+                        self.after(0, lambda: self._mini_on_complete(True, ""))
+                        return
+                else:
+                    # 일반 모드: 완료
+                    self.after(0, lambda: self._mini_on_complete(True, ""))
+                    return
 
             if not self._is_running:
                 # 중지됨
+                self._sequence_mode = False
                 self.after(0, lambda: self._mini_on_complete(False, "중지됨"))
                 return
 
@@ -1357,7 +1433,11 @@ class MainWindow(ctk.CTk):
             def update_repeat_status():
                 try:
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
-                        self._mini_status.configure(text=f"▶ 실행 중... ({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)")
+                        if self._sequence_mode:
+                            seq_info = f"시퀀스 {self._sequence_index + 1}/{len(self._sequence_plans)} - "
+                        else:
+                            seq_info = ""
+                        self._mini_status.configure(text=f"▶ {seq_info}실행 중... ({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)")
                 except (tk.TclError, RuntimeError):
                     pass
 
@@ -1365,33 +1445,60 @@ class MainWindow(ctk.CTk):
         except (tk.TclError, RuntimeError):
             logger.debug("UI가 파괴되어 반복 콜백 중단")
 
-        # 현재 선택된 플랜 다시 실행
-        plan_name = self._mini_plan_var.get()
-        selected_plan = None
-        for p in self._mini_plans:
-            if p.name == plan_name:
-                selected_plan = p
-                break
-
-        if selected_plan:
+        # 현재 플랜 다시 실행 (다음 반복)
+        if self._sequence_mode and self._sequence_index < len(self._sequence_plans):
+            # 시퀀스 모드: 파일 경로에서 직접 로드
             import threading
-            thread = threading.Thread(
-                target=self._mini_execute_plan,
-                args=(selected_plan,),
-                daemon=True
-            )
-            thread.start()
+            def reload_and_execute():
+                try:
+                    import json
+                    plan_path = self._sequence_plans[self._sequence_index]
+                    with open(plan_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        templates_dir = DATA_DIR / "templates"
+                        plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                    self._mini_execute_plan(plan)
+                except Exception as e:
+                    logger.error(f"[시퀀스] 반복 재로드 오류: {e}")
+                    self.after(0, lambda: self._mini_on_complete(False, str(e)))
+            threading.Thread(target=reload_and_execute, daemon=True).start()
+        else:
+            # 일반 모드: 캐시에서 찾기
+            plan_name = self._mini_plan_var.get()
+            selected_plan = None
+            for p in self._mini_plans:
+                if p.name == plan_name:
+                    selected_plan = p
+                    break
+
+            if selected_plan:
+                import threading
+                thread = threading.Thread(
+                    target=self._mini_execute_plan,
+                    args=(selected_plan,),
+                    daemon=True
+                )
+                thread.start()
 
     def _mini_on_complete(self, success, message):
         """미니 플레이어 - 완료 콜백"""
+        was_sequence = self._sequence_mode or len(self._sequence_plans) > 0
+        seq_count = len(self._sequence_plans)
         def update():
             self._is_running = False
             self._is_paused = False
+            self._sequence_mode = False
+            self._sequence_plans = []
+            self._sequence_repeats = []
+            self._sequence_index = 0
             self._mini_play_btn.configure(state="normal")
             self._mini_pause_btn.configure(state="disabled", text="⏸ 일시중지")
             self._mini_stop_btn.configure(state="disabled")
             if success:
-                status = f"✓ 완료 ({self._mini_total_repeat}회)"
+                if was_sequence:
+                    status = f"✓ 시퀀스 완료 ({seq_count}개 플랜)"
+                else:
+                    status = f"✓ 완료 ({self._mini_total_repeat}회)"
             else:
                 status = f"✗ 실패: {message}"
             self._mini_status.configure(text=status)

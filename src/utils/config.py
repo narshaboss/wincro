@@ -9,7 +9,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 from dataclasses import dataclass, field, asdict, fields
 
 
@@ -31,7 +31,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # 현재 프로그램 버전 (GitHub Release와 비교용)
-APP_VERSION = "1.0.85"
+APP_VERSION = "1.0.86"
 
 
 @dataclass
@@ -70,7 +70,8 @@ class PlayerConfig:
     emergency_stop_key: str = "escape"  # 긴급 중지 키
     emergency_stop_count: int = 2  # 긴급 중지 키 입력 횟수
     auto_run_enabled: bool = False  # 시작 시 자동 실행 활성화
-    auto_run_plan: str = ""  # 자동 실행할 플랜 파일 경로
+    plan_sequence: List[str] = field(default_factory=list)  # 플랜 순서 실행 리스트 (파일 경로)
+    plan_sequence_repeats: List[int] = field(default_factory=list)  # 플랜별 반복횟수
 
 
 @dataclass
