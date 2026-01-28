@@ -1111,12 +1111,6 @@ class MainWindow(ctk.CTk):
             self._mini_pause_btn.configure(text="⏸ 일시중지")
             return
 
-        # 플랜 순서 모드 확인
-        config = get_config()
-        if config.player.plan_sequence:
-            self._start_sequence_mode(config.player.plan_sequence, config.player.plan_sequence_repeats)
-            return
-
         plan_name = self._mini_plan_var.get()
         logger.info(f"[미니플레이어] 선택된 플랜: {plan_name}")
 
