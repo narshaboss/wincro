@@ -1694,9 +1694,6 @@ if errorlevel 1 (
 )
 
 echo [5/6] 설정 파일 복원 중...
-if exist "{data_backup}\\config.json" (
-    copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
-)
 if exist "{data_backup}\\wincro.db" (
     copy /y "{data_backup}\\wincro.db" "{app_dir}\\_internal\\data\\wincro.db" >nul 2>&1
 )
@@ -1717,6 +1714,9 @@ if exist "{data_backup}\\sequences" (
 )
 if exist "{data_backup}\\templates" (
     xcopy /E /I /Y /Q "{data_backup}\\templates\\*" "{app_dir}\\_internal\\data\\templates\\" >nul 2>&1
+)
+if exist "{data_backup}\\triggers" (
+    xcopy /E /I /Y /Q "{data_backup}\\triggers\\*" "{app_dir}\\_internal\\data\\triggers\\" >nul 2>&1
 )
 rd /s /q "{data_backup}" 2>nul
 

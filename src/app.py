@@ -465,9 +465,6 @@ if not exist "{app_dir}\\_internal" (
 )
 
 echo [6/8] 설정 파일 복원 중...
-if exist "{data_backup}\\config.json" (
-    copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
-)
 if exist "{data_backup}\\wincro.db" (
     copy /y "{data_backup}\\wincro.db" "{app_dir}\\_internal\\data\\wincro.db" >nul 2>&1
 )
@@ -487,6 +484,9 @@ if exist "{data_backup}\\sequences" (
 )
 if exist "{data_backup}\\templates" (
     xcopy /E /I /Y /Q "{data_backup}\\templates\\*" "{app_dir}\\_internal\\data\\templates\\" >nul 2>&1
+)
+if exist "{data_backup}\\triggers" (
+    xcopy /E /I /Y /Q "{data_backup}\\triggers\\*" "{app_dir}\\_internal\\data\\triggers\\" >nul 2>&1
 )
 if exist "{data_backup}\\plans" (
     REM 사용자 플랜을 plans_user_backup으로 복사 (앱 시작 시 병합됨)
