@@ -39,7 +39,7 @@
     "language": "ko",
     "window_width": 1200,
     "window_height": 800,
-    "window_mode": "play",
+    "window_mode": "editor",
     "show_tooltips": true,
     "confirm_before_run": true,
     "minimize_on_run": true,
@@ -67,5 +67,5 @@
   },
   "version": "1.0.0",
   "first_run": false,
-  "last_opened": "2026-01-29T14:52:36.558343"
+  "last_opened": "2026-01-29T15:00:38.750352"
 }

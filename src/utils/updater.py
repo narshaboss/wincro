@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 
 # 업데이트 체크 캐시 (API 제한 방지)
 UPDATE_CACHE_FILE = DATA_DIR / "update_cache.json"
-UPDATE_CACHE_DURATION = 1800  # 30분 (초)
+UPDATE_CACHE_DURATION = 0  # 캐시 비활성화 (항상 새로 확인)
 
 
 def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
