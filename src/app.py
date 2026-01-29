@@ -173,17 +173,17 @@ class WinCroApp:
                 self._main_window.after(ARDUINO_DELAY_MS, self._auto_connect_arduino)
 
             # 자동 업데이트 확인 (설정된 경우)
+            # 업데이트 확인 완료 후에 자동 실행 시작 (업데이트 있으면 실행 안 함)
             logger.info(f"[자동업데이트] auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}, window_mode={self._config.ui.window_mode}")
             if self._config.update.auto_check and self._config.update.github_repo:
-                logger.info("[자동업데이트] 2초 후 업데이트 확인 예약")
+                logger.info("[자동업데이트] 2초 후 업데이트 확인 예약 (완료 후 자동실행 판단)")
                 self._main_window.after(UPDATE_CHECK_DELAY_MS, self._auto_check_update)
             else:
                 logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
-
-            # 시작 시 자동 실행 (플레이 모드 + 설정된 경우) - 5초 후 (업데이트/아두이노 연결 완료 대기)
-            if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.plan_sequence:
-                logger.info(f"[자동실행] 5초 후 플랜 순서 자동 실행 예약: {len(self._config.player.plan_sequence)}개 플랜")
-                self._main_window.after(AUTO_RUN_DELAY_MS, self._auto_run_sequence)
+                # 업데이트 확인 비활성화 시 바로 자동 실행 시작
+                if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.plan_sequence:
+                    logger.info(f"[자동실행] 5초 후 플랜 순서 자동 실행 예약: {len(self._config.player.plan_sequence)}개 플랜")
+                    self._main_window.after(AUTO_RUN_DELAY_MS, self._auto_run_sequence)
 
             logger.info("애플리케이션 실행")
             self._main_window.mainloop()
@@ -280,15 +280,29 @@ class WinCroApp:
                     new_version = result.get("version")
                     release_data = result.get("release_data")
 
-                    # 자동 업데이트 수행 (확인 없이)
-                    logger.info(f"새 버전 발견: v{new_version} - 자동 업데이트 시작")
+                    # 자동 업데이트 수행 (확인 없이) - 자동 실행은 하지 않음
+                    logger.info(f"새 버전 발견: v{new_version} - 자동 업데이트 시작 (자동실행 건너뜀)")
                     self._main_window.after(0, lambda: self._perform_auto_update(new_version, release_data))
+                else:
+                    # 업데이트 없음 → 자동 실행 시작
+                    logger.info("[자동업데이트] 새 버전 없음 - 자동 실행 확인")
+                    self._main_window.after(0, self._start_auto_run_if_needed)
 
             except Exception as e:
                 logger.error(f"자동 업데이트 확인 오류: {e}")
+                # 오류 발생해도 자동 실행은 시작
+                self._main_window.after(0, self._start_auto_run_if_needed)
 
         # 스레드풀에서 실행
         get_thread_pool().submit(check_task)
+
+    def _start_auto_run_if_needed(self) -> None:
+        """조건 충족 시 자동 실행 시작"""
+        if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.plan_sequence:
+            logger.info(f"[자동실행] 3초 후 플랜 순서 자동 실행 예약: {len(self._config.player.plan_sequence)}개 플랜")
+            self._main_window.after(3000, self._auto_run_sequence)
+        else:
+            logger.info("[자동실행] 자동 실행 조건 미충족")
 
     def _perform_auto_update(self, new_version: str, release_data: dict) -> None:
         """자동 업데이트 수행 (확인 없이 바로 진행)"""
