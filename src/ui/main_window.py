@@ -469,9 +469,10 @@ class MainWindow(ctk.CTk):
         if self._window_mode != "play":
             self._setup_global_hotkey()
 
-        # 창 위치 복원 및 자동 저장
+        # 창 위치 복원 및 자동 저장 (모드별로 따로 저장)
         self.update_idletasks()
-        setup_window_position(self, "MainWindow")
+        window_id = "MainWindow_play" if self._window_mode == "play" else "MainWindow_editor"
+        setup_window_position(self, window_id)
 
         logger.info("메인 윈도우 초기화 완료")
 

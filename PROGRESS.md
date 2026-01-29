@@ -858,6 +858,8 @@ self._mini_total_repeat = 1
   - PROGRESS.md
   - data/plans/*.json (사용자 플랜 파일)
   - data/config.json (설정 파일)
+  - data/templates/*.png (템플릿 이미지 파일)
+  - data/triggers/*.png (트리거 이미지 파일)
 
 ---
 이 파일은 Claude가 자동으로 업데이트합니다.
