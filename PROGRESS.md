@@ -861,6 +861,16 @@ self._mini_total_repeat = 1
   - data/templates/*.png (템플릿 이미지 파일)
   - data/triggers/*.png (트리거 이미지 파일)
 
+- **전체 업데이트 절차:**
+  1. PROGRESS.md 업데이트 규칙 확인
+  2. 버전 업데이트 (src/utils/config.py - APP_VERSION)
+  3. PROGRESS.md 마지막 업데이트 날짜 갱신
+  4. 수정된 파일 구문 검사 (python -m py_compile)
+  5. 위 규칙의 모든 파일 git add
+  6. 커밋 (v버전: 설명)
+  7. 태그 생성 (v버전)
+  8. master + 태그 푸시
+
 ---
 이 파일은 Claude가 자동으로 업데이트합니다.
 세션이 중단되어도 이 파일을 읽고 작업을 이어갈 수 있습니다.
