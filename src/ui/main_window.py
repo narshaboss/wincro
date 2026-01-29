@@ -1127,7 +1127,8 @@ class MainWindow(ctk.CTk):
                 repeat_count = 9999
         except ValueError:
             repeat_count = 1
-        self._mini_total_repeat = repeat_count
+        # 반복은 rule_executor에서 처리하므로 여기서는 1회만
+        self._mini_total_repeat = 1
         self._mini_current_repeat = 0
 
         # UI 즉시 업데이트 (로딩 상태 표시)
@@ -1175,6 +1176,9 @@ class MainWindow(ctk.CTk):
                         selected_plan = cached_plan
                 else:
                     selected_plan = cached_plan
+
+                # 플랜 객체에 반복횟수 설정 (rule_executor에서 사용)
+                selected_plan.total_repeat_count = repeat_count
 
                 # 메인 스레드에서 실행 시작
                 self.after(0, lambda: self._mini_start_execution(selected_plan, repeat_count))
@@ -1236,6 +1240,8 @@ class MainWindow(ctk.CTk):
                 # 설정의 반복횟수 우선, 없으면(0) 플랜 파일 값 사용
                 saved_repeat = self._sequence_repeats[index] if index < len(self._sequence_repeats) else 0
                 repeat_count = saved_repeat if saved_repeat > 0 else (getattr(plan, 'total_repeat_count', 1) or 1)
+                # 플랜 객체에 반복횟수 설정 (rule_executor에서 사용)
+                plan.total_repeat_count = repeat_count
                 logger.info(f"[시퀀스] 플랜 로드 성공: {plan.name}, 반복: {repeat_count}회 ({index + 1}/{total})")
 
                 def start_on_main():
@@ -1243,10 +1249,11 @@ class MainWindow(ctk.CTk):
                     if hasattr(self, '_mini_plan_var'):
                         self._mini_plan_var.set(plan.name)
                     self._mini_repeat_var.set(str(repeat_count))
-                    self._mini_total_repeat = repeat_count
+                    # 반복은 rule_executor에서 처리하므로 여기서는 1회만
+                    self._mini_total_repeat = 1
                     self._mini_current_repeat = 0
                     self._mini_status.configure(
-                        text=f"▶ 시퀀스 {index + 1}/{total} - {plan.name} (1/{repeat_count}회)"
+                        text=f"▶ 시퀀스 {index + 1}/{total} - {plan.name} (반복: {repeat_count}회)"
                     )
                     self._mini_start_execution(plan, repeat_count)
 

@@ -24,8 +24,15 @@
     "retry_delay_ms": 1000,
     "emergency_stop_key": "escape",
     "emergency_stop_count": 2,
-    "auto_run_enabled": false,
-    "auto_run_plan": "C:\\Projects\\wincro\\data\\plans\\plan_20260118_174859.json"
+    "auto_run_enabled": true,
+    "plan_sequence": [
+      "C:\\Projects\\wincro\\data\\plans\\plan_20260118_174859.json",
+      "C:\\Projects\\wincro\\data\\plans\\plan_20260126_160305.json"
+    ],
+    "plan_sequence_repeats": [
+      4,
+      1
+    ]
   },
   "ui": {
     "theme": "dark",
@@ -52,7 +59,7 @@
     "github_repo": "narshaboss/wincro",
     "last_update": "",
     "last_version": "",
-    "auto_check": false
+    "auto_check": true
   },
   "performance": {
     "debug_logging": false,
@@ -60,5 +67,5 @@
   },
   "version": "1.0.0",
   "first_run": false,
-  "last_opened": "2026-01-28T16:04:05.484193"
+  "last_opened": "2026-01-29T13:04:05.125098"
 }

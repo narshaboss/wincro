@@ -4,6 +4,7 @@ WinCro 동작 재현 모듈
 pyautogui를 사용하여 녹화된 동작을 재현합니다.
 """
 
+import gc
 import time
 import random
 import threading
@@ -569,6 +570,10 @@ class ActionPlayer:
         confidence: float = 0.9,
     ) -> List[tuple]:
         """화면에서 모든 일치하는 이미지 위치 찾기 (캐시 사용)"""
+        screenshot = None
+        screenshot_np = None
+        screenshot_gray = None
+        result = None
         try:
             if not image_path:
                 logger.warning("이미지 경로가 비어있습니다")
@@ -630,6 +635,10 @@ class ActionPlayer:
         except Exception as e:
             logger.error(f"이미지 검색 오류: {e}")
             return []
+        finally:
+            # 메모리 해제 (저사양 PC 지원)
+            del screenshot, screenshot_np, screenshot_gray, result
+            gc.collect()
 
     def _find_closest_image(
         self,
@@ -721,6 +730,12 @@ class ActionPlayer:
                         # 5초마다 대기 상태 및 최고 매칭 점수 로그
                         if int(elapsed) % 5 == 0 and int(elapsed) > 0:
                             # 현재 최고 매칭 점수 확인
+                            screenshot = None
+                            screenshot_np = None
+                            screenshot_gray = None
+                            template = None
+                            template_gray = None
+                            result = None
                             try:
                                 screenshot = ImageGrab.grab()
                                 screenshot_np = np.array(screenshot)
@@ -743,6 +758,9 @@ class ActionPlayer:
                                     logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name}")
                             except Exception:
                                 logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name}")
+                            finally:
+                                # 메모리 해제 (저사양 PC 지원)
+                                del screenshot, screenshot_np, screenshot_gray, template, template_gray, result
                         time.sleep(0.5)  # 0.5초마다 재검색
 
                 if not locations:
@@ -904,24 +922,29 @@ class ActionPlayer:
                     return False, "중지됨"
 
             # 화면 캡처 및 이미지 매칭
-            screen = self._screen_recorder.capture_screenshot()
-            if screen is not None:
-                result = self._template_matcher.match(
-                    screen,
-                    action.wait_for_image,
-                    threshold=action.confidence
-                )
+            screen = None
+            try:
+                screen = self._screen_recorder.capture_screenshot()
+                if screen is not None:
+                    result = self._template_matcher.match(
+                        screen,
+                        action.wait_for_image,
+                        threshold=action.confidence
+                    )
 
-                if disappear:
-                    # 이미지가 사라질 때까지 대기
-                    if not result.found:
-                        logger.info(f"이미지 사라짐 감지 (대기 시간: {elapsed:.1f}초)")
-                        return True, ""
-                else:
-                    # 이미지가 나타날 때까지 대기
-                    if result.found:
-                        logger.info(f"이미지 나타남 감지: ({result.center_x}, {result.center_y}) (대기 시간: {elapsed:.1f}초)")
-                        return True, ""
+                    if disappear:
+                        # 이미지가 사라질 때까지 대기
+                        if not result.found:
+                            logger.info(f"이미지 사라짐 감지 (대기 시간: {elapsed:.1f}초)")
+                            return True, ""
+                    else:
+                        # 이미지가 나타날 때까지 대기
+                        if result.found:
+                            logger.info(f"이미지 나타남 감지: ({result.center_x}, {result.center_y}) (대기 시간: {elapsed:.1f}초)")
+                            return True, ""
+            finally:
+                # 메모리 해제 (저사양 PC 지원)
+                del screen
 
             time.sleep(check_interval)
 

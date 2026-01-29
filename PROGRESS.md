@@ -694,6 +694,154 @@ location = self._find_image_on_screen(next_target_image, next_confidence, search
 
 ---
 
+### 2026-01-29: 저사양 PC 메모리 해제 개선 (v1.0.89)
+
+**증상:** 플레이 모드에서 저사양 PC에서 WinCro가 아닌 다른 프로그램들이 간헐적으로 종료됨
+
+**원인 분석:**
+이미지 매칭 루프에서 화면 캡처 후 메모리가 즉시 해제되지 않아 메모리 누적 발생
+
+**해결:**
+
+#### 1. 명시적 메모리 해제 추가
+
+| 파일 | 함수 | 변경 내용 |
+|------|------|----------|
+| `action_player.py` | `_find_all_images_on_screen` | `del` + `gc.collect()` 추가 |
+| `action_player.py` | 이미지 대기 루프 | `del` 추가 (5초 로그용 스크린샷) |
+| `action_player.py` | `_wait_for_image` | `del screen` 추가 |
+| `rule_executor.py` | `_find_image_on_screen` | `del` + `gc.collect()` 추가 |
+| `rule_executor.py` | `_wait_for_trigger` | 루프 내 `del` 추가 |
+| `rule_executor.py` | `_find_all_images_on_screen` | `del` + `gc.collect()` 추가 |
+
+```python
+# 예시: _find_all_images_on_screen
+screenshot = None
+screenshot_np = None
+screenshot_gray = None
+result = None
+try:
+    screenshot = ImageGrab.grab()
+    screenshot_np = np.array(screenshot)
+    # ... 이미지 매칭 ...
+finally:
+    # 메모리 해제 (저사양 PC 지원)
+    del screenshot, screenshot_np, screenshot_gray, result
+    gc.collect()
+```
+
+**수정된 파일:**
+- `src/player/action_player.py` - gc import 추가, 메모리 해제 코드 추가
+- `src/player/rule_executor.py` - gc import 추가, 메모리 해제 코드 추가
+
+---
+
+### 2026-01-29: 플레이 모드 반복 횟수 버그 수정 (v1.0.89)
+
+**증상:** 반복 횟수를 설정하고 저장 후 실행해도 1회만 실행되고 멈춤
+
+**원인:** `rule_executor.py`의 `_execution_loop`에서 `plan.total_repeat_count`를 사용하지 않음
+
+**해결:**
+
+#### 1. `_execution_loop`에 전체 반복 루프 추가
+
+```python
+def _execution_loop(self) -> None:
+    # 전체 반복 횟수 (기본값 1)
+    total_repeat_count = getattr(plan, 'total_repeat_count', 1) or 1
+    current_repeat = 0
+
+    # 전체 반복 루프
+    while current_repeat < total_repeat_count:
+        current_repeat += 1
+        if total_repeat_count > 1:
+            logger.info(f"▶ 반복 {current_repeat}/{total_repeat_count} 시작")
+
+        # 매 반복마다 결과 초기화
+        if current_repeat > 1:
+            self._results.clear()
+            self._progress.initial_completed = 0
+
+        # 모든 규칙 실행
+        for i, (rule, step_num) in enumerate(all_rules_with_step):
+            # ... 기존 실행 로직 ...
+```
+
+**수정된 파일:**
+- `src/player/rule_executor.py` - `_execution_loop()` 전체 반복 루프 추가
+
+---
+
+### 2026-01-29: 에디터/플레이 모드 반복 횟수 동기화 (v1.0.89)
+
+**증상:** 플레이 모드에서 반복 횟수 변경 시 에디터 모드 자동실행 설정에 반영 안 됨
+
+**원인:**
+1. 에디터 모드 설정에서 플랜 파일의 최신 `total_repeat_count`를 읽지 않음
+2. 에디터 모드에서 반복 횟수 변경 시 플랜 파일에 저장 안 됨
+3. 미니 플레이어와 rule_executor에서 이중 반복 발생 가능
+
+**해결:**
+
+#### 1. 에디터 모드 설정 로드 시 플랜 파일에서 최신 값 읽기
+
+```python
+# settings_view.py - _load_settings_to_ui
+for i, seq_path in enumerate(self._seq_plan_paths):
+    # 플랜 파일에서 최신 반복횟수 읽기
+    repeat = 1
+    try:
+        if Path(seq_path).exists():
+            with open(seq_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+                repeat = data.get("total_repeat_count", 1) or 1
+    except Exception:
+        pass
+    self._seq_plan_repeats.append(repeat)
+```
+
+#### 2. 에디터 모드에서 반복 횟수 변경 시 플랜 파일에 저장
+
+```python
+# settings_view.py - _seq_apply_repeat
+# 플랜 파일에도 반복횟수 저장 (플레이 모드와 동기화)
+try:
+    if Path(plan_path).exists():
+        with open(plan_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        data["total_repeat_count"] = new_count
+        with open(plan_path, "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, indent=2)
+except Exception as e:
+    logger.error(f"플랜 반복횟수 저장 실패: {e}")
+```
+
+#### 3. 미니 플레이어 이중 반복 방지
+
+```python
+# main_window.py
+# 플랜 객체에 반복횟수 설정 (rule_executor에서 사용)
+plan.total_repeat_count = repeat_count
+# 반복은 rule_executor에서 처리하므로 여기서는 1회만
+self._mini_total_repeat = 1
+```
+
+**동기화 흐름:**
+```
+플레이 모드 반복횟수 저장 → 플랜 JSON 파일
+                              ↓
+에디터 모드 설정 열기 → 플랜 JSON에서 읽기 → 자동실행 목록에 표시
+                              ↓
+에디터 모드 반복횟수 변경 → 플랜 JSON 파일 → 플레이 모드에서 반영
+```
+
+**수정된 파일:**
+- `src/ui/settings_view.py` - 설정 로드/저장 시 플랜 파일 동기화
+- `src/ui/main_window.py` - 미니 플레이어 이중 반복 방지
+
+---
+
 ## 메모
 
 - 개발 완료: 2026-01-16
@@ -701,7 +849,15 @@ location = self._find_image_on_screen(next_target_image, next_confidence, search
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-27
+- 마지막 업데이트: 2026-01-29
+
+## 업데이트 규칙
+
+- **전체 업데이트 시 포함할 파일:**
+  - 소스 코드 (`src/` 폴더)
+  - PROGRESS.md
+  - data/plans/*.json (사용자 플랜 파일)
+  - data/config.json (설정 파일)
 
 ---
 이 파일은 Claude가 자동으로 업데이트합니다.

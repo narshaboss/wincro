@@ -814,8 +814,20 @@ class SettingsView(BaseView):
 
         self._seq_plan_repeats[idx] = new_count
 
-        # 리스트박스 텍스트 갱신
+        # 플랜 파일에도 반복횟수 저장 (플레이 모드와 동기화)
         plan_path = self._seq_plan_paths[idx]
+        try:
+            if Path(plan_path).exists():
+                with open(plan_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                data["total_repeat_count"] = new_count
+                with open(plan_path, "w", encoding="utf-8") as f:
+                    _json.dump(data, f, ensure_ascii=False, indent=2)
+                logger.info(f"플랜 반복횟수 저장: {Path(plan_path).stem} → {new_count}회")
+        except Exception as e:
+            logger.error(f"플랜 반복횟수 저장 실패: {e}")
+
+        # 리스트박스 텍스트 갱신
         plan_name = Path(plan_path).stem
         for p in self._auto_run_plan_list:
             if p["path"] == plan_path:
@@ -2044,13 +2056,9 @@ del "%~f0"
         self._auto_start_var.set(config.ui.auto_start)
         self._auto_run_enabled_var.set(config.player.auto_run_enabled)
 
-        # 플랜 순서 설정
+        # 플랜 순서 설정 - 플랜 파일에서 최신 반복횟수 읽기
         self._seq_plan_paths = list(config.player.plan_sequence)
-        saved_repeats = list(config.player.plan_sequence_repeats)
-        # 길이 맞추기 (경로보다 짧으면 1로 채움)
-        while len(saved_repeats) < len(self._seq_plan_paths):
-            saved_repeats.append(1)
-        self._seq_plan_repeats = saved_repeats[:len(self._seq_plan_paths)]
+        self._seq_plan_repeats = []
         self._seq_listbox.delete(0, tk.END)
         for i, seq_path in enumerate(self._seq_plan_paths):
             seq_name = Path(seq_path).stem
@@ -2058,7 +2066,16 @@ del "%~f0"
                 if p["path"] == seq_path:
                     seq_name = p["name"]
                     break
-            repeat = self._seq_plan_repeats[i]
+            # 플랜 파일에서 최신 반복횟수 읽기
+            repeat = 1
+            try:
+                if Path(seq_path).exists():
+                    with open(seq_path, "r", encoding="utf-8") as f:
+                        data = _json.load(f)
+                        repeat = data.get("total_repeat_count", 1) or 1
+            except Exception:
+                pass
+            self._seq_plan_repeats.append(repeat)
             self._seq_listbox.insert(tk.END, f"{seq_name}  ({repeat}회)")
 
         # 외관 설정

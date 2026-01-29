@@ -5,6 +5,7 @@ WinCro 규칙 기반 실행 엔진
 시간 기반이 아닌 조건(이미지 감지 등) 기반으로 동작합니다.
 """
 
+import gc
 import time
 import random
 import threading
@@ -672,8 +673,12 @@ class RuleExecutor:
             if not plan:
                 return
 
+            # 전체 반복 횟수 (기본값 1)
+            total_repeat_count = getattr(plan, 'total_repeat_count', 1) or 1
+            current_repeat = 0
+
             logger.info(f"{_CYAN}{'═'*50}{_RESET}")
-            logger.info(f"{_CYAN}▶ 실행 시작: {plan.name}{_RESET}")
+            logger.info(f"{_CYAN}▶ 실행 시작: {plan.name} (반복: {total_repeat_count}회){_RESET}")
             self._state = ExecutionState.RUNNING_INITIAL
 
             # 하위 항목(children) 포함해서 평탄화 + 단계 번호 추적
@@ -682,85 +687,107 @@ class RuleExecutor:
             logger.info(f"{_CYAN}  총 {len(all_rules_with_step)}개 액션{_RESET}")
             logger.info(f"{_CYAN}{'═'*50}{_RESET}")
 
-            # 모든 규칙 순차 실행 (룰과 스텝 번호를 함께 순회)
-            for i, (rule, step_num) in enumerate(all_rules_with_step):
+            # 전체 반복 루프
+            while current_repeat < total_repeat_count:
+                current_repeat += 1
+                if total_repeat_count > 1:
+                    logger.info(f"{_CYAN}{'─'*50}{_RESET}")
+                    logger.info(f"{_CYAN}▶ 반복 {current_repeat}/{total_repeat_count} 시작{_RESET}")
+                    logger.info(f"{_CYAN}{'─'*50}{_RESET}")
+
+                # 반복 시작 시 결과 초기화
+                if current_repeat > 1:
+                    self._results.clear()
+                    self._progress.initial_completed = 0
+
+                # 모든 규칙 순차 실행 (룰과 스텝 번호를 함께 순회)
+                execution_failed = False
+                for i, (rule, step_num) in enumerate(all_rules_with_step):
+                    if self._stop_event.is_set():
+                        break
+
+                    # 일시정지 대기 (중지 이벤트 주기적 체크)
+                    if self._wait_for_resume():
+                        break
+
+                    # 단계 번호와 이름 구성 (step_num이 없으면 인덱스 사용)
+                    step_num = step_num if step_num else str(i + 1)
+                    self._current_step_num = step_num  # 현재 액션 번호 저장 (로깅용)
+                    action_name = rule.description if rule.description else rule.action_type
+
+                    # 액션 헤더 (단계 번호 + 이름)
+                    logger.info(f"")
+                    logger.info(f"{_CYAN}[{step_num}] {action_name}{_RESET}")
+
+                    # 핵심 정보만 한 줄씩 (간결하게)
+                    if rule.target_image:
+                        logger.info(f"  📷 {Path(rule.target_image).name}")
+                    if rule.action_keys:
+                        logger.info(f"  ⌨️ {rule.action_keys}")
+                    if rule.action_text:
+                        text_preview = rule.action_text[:30] + "..." if len(rule.action_text) > 30 else rule.action_text
+                        logger.info(f"  📝 {text_preview}")
+
+                    self._progress.current_rule = rule.rule_id
+                    self._update_progress(f"[{step_num}] {action_name}")
+
+                    # 모니터링 모드인 경우 별도 처리
+                    # is_monitoring_mode가 True이거나, monitoring_watches가 있으면 모니터링 모드로 실행
+                    has_monitoring_watches = len(getattr(rule, 'monitoring_watches', []) or []) > 0
+                    is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
+                    logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
+                    if is_monitoring:
+                        result = self._execute_monitoring_mode(rule, all_rules, i, step_num=step_num)
+                        self._results.append(result)
+                    else:
+                        # 다음 규칙의 타겟 이미지 (확인용)
+                        next_target_image = None
+                        next_rule = None
+                        if i + 1 < len(all_rules):
+                            next_rule = all_rules[i + 1]
+                            next_target_image = next_rule.target_image
+
+                        # 규칙 실행 (재시도 포함)
+                        result = self._execute_rule_with_retry(rule, next_target_image, next_rule=next_rule, step_num=step_num)
+                        self._results.append(result)
+
+                    if self._on_rule_executed:
+                        self._on_rule_executed(result)
+
+                    if not result.success:
+                        logger.error(f"{_RED}✗ [{step_num}] 실패: {result.message}{_RESET}")
+                        if self._on_error:
+                            self._on_error(result.message, rule)
+                        # 실패 시 실행 중지
+                        self._state = ExecutionState.FAILED
+                        self._update_progress(f"실패: {result.message}")
+                        if self._on_complete:
+                            self._on_complete(False, f"동작 실패: {result.message}")
+                        return
+
+                    self._progress.initial_completed = i + 1
+
+                    # 대기 시간 적용 (스킵된 경우 제외)
+                    is_skipped = "스킵됨" in result.message if result.message else False
+                    if is_skipped:
+                        logger.info(f"  → 대기시간 생략, 바로 다음으로")
+                    if not self._stop_event.is_set() and not is_skipped:
+                        wait_time = getattr(rule, 'wait_after', self._default_wait)
+                        if getattr(rule, 'wait_random', False):
+                            wait_range = getattr(rule, 'wait_random_range', 0.3)
+                            wait_time = wait_time + random.uniform(-wait_range, wait_range)
+                            wait_time = max(0, wait_time)
+                        if wait_time > 0:
+                            if self._stop_event.wait(timeout=wait_time):
+                                break
+
+                # 중지 이벤트 체크 - while 루프도 종료
                 if self._stop_event.is_set():
                     break
 
-                # 일시정지 대기 (중지 이벤트 주기적 체크)
-                if self._wait_for_resume():
-                    break
-
-                # 단계 번호와 이름 구성 (step_num이 없으면 인덱스 사용)
-                step_num = step_num if step_num else str(i + 1)
-                self._current_step_num = step_num  # 현재 액션 번호 저장 (로깅용)
-                action_name = rule.description if rule.description else rule.action_type
-
-                # 액션 헤더 (단계 번호 + 이름)
-                logger.info(f"")
-                logger.info(f"{_CYAN}[{step_num}] {action_name}{_RESET}")
-
-                # 핵심 정보만 한 줄씩 (간결하게)
-                if rule.target_image:
-                    logger.info(f"  📷 {Path(rule.target_image).name}")
-                if rule.action_keys:
-                    logger.info(f"  ⌨️ {rule.action_keys}")
-                if rule.action_text:
-                    text_preview = rule.action_text[:30] + "..." if len(rule.action_text) > 30 else rule.action_text
-                    logger.info(f"  📝 {text_preview}")
-
-                self._progress.current_rule = rule.rule_id
-                self._update_progress(f"[{step_num}] {action_name}")
-
-                # 모니터링 모드인 경우 별도 처리
-                # is_monitoring_mode가 True이거나, monitoring_watches가 있으면 모니터링 모드로 실행
-                has_monitoring_watches = len(getattr(rule, 'monitoring_watches', []) or []) > 0
-                is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
-                logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
-                if is_monitoring:
-                    result = self._execute_monitoring_mode(rule, all_rules, i, step_num=step_num)
-                    self._results.append(result)
-                else:
-                    # 다음 규칙의 타겟 이미지 (확인용)
-                    next_target_image = None
-                    next_rule = None
-                    if i + 1 < len(all_rules):
-                        next_rule = all_rules[i + 1]
-                        next_target_image = next_rule.target_image
-
-                    # 규칙 실행 (재시도 포함)
-                    result = self._execute_rule_with_retry(rule, next_target_image, next_rule=next_rule, step_num=step_num)
-                    self._results.append(result)
-
-                if self._on_rule_executed:
-                    self._on_rule_executed(result)
-
-                if not result.success:
-                    logger.error(f"{_RED}✗ [{step_num}] 실패: {result.message}{_RESET}")
-                    if self._on_error:
-                        self._on_error(result.message, rule)
-                    # 실패 시 실행 중지
-                    self._state = ExecutionState.FAILED
-                    self._update_progress(f"실패: {result.message}")
-                    if self._on_complete:
-                        self._on_complete(False, f"동작 실패: {result.message}")
-                    return
-
-                self._progress.initial_completed = i + 1
-
-                # 대기 시간 적용 (스킵된 경우 제외)
-                is_skipped = "스킵됨" in result.message if result.message else False
-                if is_skipped:
-                    logger.info(f"  → 대기시간 생략, 바로 다음으로")
-                if not self._stop_event.is_set() and not is_skipped:
-                    wait_time = getattr(rule, 'wait_after', self._default_wait)
-                    if getattr(rule, 'wait_random', False):
-                        wait_range = getattr(rule, 'wait_random_range', 0.3)
-                        wait_time = wait_time + random.uniform(-wait_range, wait_range)
-                        wait_time = max(0, wait_time)
-                    if wait_time > 0:
-                        if self._stop_event.wait(timeout=wait_time):
-                            break
+                # 반복 완료 로그
+                if total_repeat_count > 1:
+                    logger.info(f"{_GREEN}▶ 반복 {current_repeat}/{total_repeat_count} 완료{_RESET}")
 
             # 완료
             if not self._stop_event.is_set():
@@ -769,7 +796,10 @@ class RuleExecutor:
                 total_count = len(self._results)
                 logger.info(f"")
                 logger.info(f"{_GREEN}{'═'*50}{_RESET}")
-                logger.info(f"{_GREEN}★ 완료! ({success_count}/{total_count} 성공){_RESET}")
+                if total_repeat_count > 1:
+                    logger.info(f"{_GREEN}★ 완료! (총 {total_repeat_count}회 반복, 마지막 회차: {success_count}/{total_count} 성공){_RESET}")
+                else:
+                    logger.info(f"{_GREEN}★ 완료! ({success_count}/{total_count} 성공){_RESET}")
                 logger.info(f"{_GREEN}{'═'*50}{_RESET}")
                 self._update_progress(f"완료 ({success_count}/{total_count} 성공)")
                 if self._on_complete:
@@ -1527,6 +1557,9 @@ class RuleExecutor:
         search_region: 검색 영역 제한 [x1, y1, x2, y2] 또는 None (전체 화면)
         """
         func_start = time.time()
+        screenshot = None
+        screenshot_np = None
+        screenshot_bgr = None
 
         # 중지 체크
         if self._stop_event.is_set():
@@ -1645,6 +1678,10 @@ class RuleExecutor:
         except Exception as e:
             logger.error(f"이미지 검색 오류: {e}")
             return None
+        finally:
+            # 메모리 해제 (저사양 PC 지원)
+            del screenshot, screenshot_np, screenshot_bgr
+            gc.collect()
 
     def _wait_for_trigger(
         self,
@@ -1695,29 +1732,37 @@ class RuleExecutor:
                     return None
 
                 # 화면 캡처 및 매칭
-                screenshot = ImageGrab.grab()
-                screenshot_np = np.array(screenshot)
-                screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
-
-                # 크기 체크: 템플릿이 화면보다 크면 스킵
-                scr_h, scr_w = screenshot_gray.shape[:2]
-                if h > scr_h or w > scr_w:
-                    logger.warning(f"[트리거] 템플릿({w}x{h})이 화면({scr_w}x{scr_h})보다 큼 - 스킵")
-                    return None
-
+                screenshot = None
+                screenshot_np = None
+                screenshot_gray = None
+                result = None
                 try:
-                    result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-                except cv2.error as e:
-                    logger.error(f"[트리거] 매칭 오류: {e}")
-                    return None
+                    screenshot = ImageGrab.grab()
+                    screenshot_np = np.array(screenshot)
+                    screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
 
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    # 크기 체크: 템플릿이 화면보다 크면 스킵
+                    scr_h, scr_w = screenshot_gray.shape[:2]
+                    if h > scr_h or w > scr_w:
+                        logger.warning(f"[트리거] 템플릿({w}x{h})이 화면({scr_w}x{scr_h})보다 큼 - 스킵")
+                        return None
 
-                if max_val >= confidence:
-                    center_x = max_loc[0] + w // 2
-                    center_y = max_loc[1] + h // 2
-                    logger.info(f"[트리거] ✓ 발견! 위치=({center_x}, {center_y}), 점수={max_val:.2f}, 대기={waited:.1f}초")
-                    return (center_x, center_y)
+                    try:
+                        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+                    except cv2.error as e:
+                        logger.error(f"[트리거] 매칭 오류: {e}")
+                        return None
+
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+                    if max_val >= confidence:
+                        center_x = max_loc[0] + w // 2
+                        center_y = max_loc[1] + h // 2
+                        logger.info(f"[트리거] ✓ 발견! 위치=({center_x}, {center_y}), 점수={max_val:.2f}, 대기={waited:.1f}초")
+                        return (center_x, center_y)
+                finally:
+                    # 메모리 해제 (저사양 PC 지원)
+                    del screenshot, screenshot_np, screenshot_gray, result
 
                 time.sleep(check_interval)
                 waited += check_interval
@@ -1790,6 +1835,12 @@ class RuleExecutor:
         Returns:
             List[tuple]: 발견된 모든 위치 [(x, y), ...]
         """
+        screenshot = None
+        screenshot_np = None
+        screenshot_bgr = None
+        screenshot_gray = None
+        result = None
+
         if self._stop_event.is_set():
             return []
 
@@ -1880,6 +1931,10 @@ class RuleExecutor:
         except Exception as e:
             logger.error(f"이미지 검색 오류: {e}")
             return []
+        finally:
+            # 메모리 해제 (저사양 PC 지원)
+            del screenshot, screenshot_np, screenshot_bgr, screenshot_gray, result
+            gc.collect()
 
     def _find_closest_image(
         self,
@@ -1970,6 +2025,7 @@ class RuleExecutor:
             from PIL import ImageGrab
             screen = ImageGrab.grab()
             screen_w, screen_h = screen.size
+            del screen  # 메모리 해제
             x1 = max(0, rule.action_x - rule.search_radius)
             y1 = max(0, rule.action_y - rule.search_radius)
             x2 = min(screen_w, rule.action_x + rule.search_radius)
