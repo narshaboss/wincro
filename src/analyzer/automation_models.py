@@ -260,6 +260,66 @@ class AutomationRule:
 
 
 @dataclass
+class GameModeConfig:
+    """
+    게임 특화 모드 설정
+
+    이미지 인식 기반으로 캐릭터를 목표까지 자동 이동시킵니다.
+    """
+    enabled: bool = False
+    name: str = ""                 # 사용자 지정 이름
+    character_image: str = ""      # 캐릭터 이미지 (위치 파악용)
+    target_image: str = ""         # 목표 이미지
+    obstacle_images: List[str] = field(default_factory=list)  # 장애물 이미지들 (Phase 2)
+    move_keys: Dict[str, str] = field(default_factory=lambda: {
+        "up": "up", "down": "down", "left": "left", "right": "right"
+    })
+    analysis_interval: float = 0.1  # 분석 간격 (초)
+    confidence: float = 0.65        # 인식 신뢰도
+    arrival_threshold: int = 30     # 도달 판정 거리 (픽셀)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """딕셔너리로 변환"""
+        return {
+            "enabled": self.enabled,
+            "name": self.name,
+            "character_image": _to_relative_path(self.character_image),
+            "target_image": _to_relative_path(self.target_image),
+            "obstacle_images": [_to_relative_path(p) for p in self.obstacle_images if p],
+            "move_keys": self.move_keys.copy(),
+            "analysis_interval": self.analysis_interval,
+            "confidence": self.confidence,
+            "arrival_threshold": self.arrival_threshold,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], templates_dir: Optional[Path] = None) -> "GameModeConfig":
+        """딕셔너리에서 생성"""
+        if templates_dir is None:
+            try:
+                from ..utils.config import DATA_DIR
+                templates_dir = DATA_DIR / "templates"
+            except ImportError:
+                templates_dir = Path("data/templates")
+
+        obstacle_images = [
+            _to_absolute_path(p, templates_dir) for p in data.get("obstacle_images", []) if p
+        ]
+
+        return cls(
+            enabled=data.get("enabled", False),
+            name=data.get("name", ""),
+            character_image=_to_absolute_path(data.get("character_image"), templates_dir) or "",
+            target_image=_to_absolute_path(data.get("target_image"), templates_dir) or "",
+            obstacle_images=obstacle_images,
+            move_keys=data.get("move_keys", {"up": "Up", "down": "Down", "left": "Left", "right": "Right"}),
+            analysis_interval=data.get("analysis_interval", 0.1),
+            confidence=data.get("confidence", 0.65),
+            arrival_threshold=data.get("arrival_threshold", 30),
+        )
+
+
+@dataclass
 class AutomationPlan:
     """
     자동화 계획
@@ -286,6 +346,9 @@ class AutomationPlan:
     # 재생 설정
     total_repeat_count: int = 1  # 전체 재생 반복 횟수
 
+    # 게임 특화 모드
+    game_mode: Optional[GameModeConfig] = None
+
     def __post_init__(self):
         """초기화 후 처리"""
         if not self.plan_id:
@@ -305,7 +368,7 @@ class AutomationPlan:
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
-        return {
+        result = {
             "plan_id": self.plan_id,
             "name": self.name,
             "description": self.description,
@@ -318,6 +381,9 @@ class AutomationPlan:
             "modified": self.modified,
             "total_repeat_count": self.total_repeat_count,
         }
+        if self.game_mode:
+            result["game_mode"] = self.game_mode.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], templates_dir: Optional[Path] = None) -> "AutomationPlan":
@@ -337,6 +403,11 @@ class AutomationPlan:
             AutomationRule.from_dict(r, templates_dir) for r in data.get("monitoring_rules", [])
         ]
 
+        # 게임 모드 설정 복원
+        game_mode = None
+        if "game_mode" in data and data["game_mode"]:
+            game_mode = GameModeConfig.from_dict(data["game_mode"], templates_dir)
+
         return cls(
             plan_id=data.get("plan_id", ""),
             name=data.get("name", ""),
@@ -349,4 +420,5 @@ class AutomationPlan:
             user_verified=data.get("user_verified", False),
             modified=data.get("modified", False),
             total_repeat_count=data.get("total_repeat_count", 1),
+            game_mode=game_mode,
         )

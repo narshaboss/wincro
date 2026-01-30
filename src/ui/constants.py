@@ -41,6 +41,7 @@ ACTION_NAMES = {
     "drag": "드래그",
     "wait": "대기",
     "wait_for_image": "이미지 대기",
+    "game_mode": "특화모드",
 }
 
 # 액션 타입별 짧은 한국어 이름 (모니터링 모드용)
@@ -53,6 +54,7 @@ ACTION_NAMES_SHORT = {
     "key_press": "키",
     "scroll": "스크롤",
     "drag": "드래그",
+    "game_mode": "특화모드",
 }
 
 # 액션 타입별 색상
@@ -67,6 +69,7 @@ ACTION_COLORS = {
     "drag": COLORS["warning"],
     "wait": COLORS["text_muted"],
     "wait_for_image": COLORS["accent"],
+    "game_mode": COLORS["error"],
 }
 
 

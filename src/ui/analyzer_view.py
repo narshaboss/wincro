@@ -2545,25 +2545,13 @@ class AnalyzerView(BaseView):
             )
             return
 
-        # 연관된 재생이 있는지 확인
-        has_plan = bool(recording.automation_plan_id)
+        # 삭제 확인
         msg = f"'{recording.name}'을(를) 삭제하시겠습니까?\n\n"
-        if has_plan:
-            msg += "연관된 분석 재생도 함께 삭제됩니다.\n"
-        msg += "원본 녹화 파일도 함께 삭제됩니다."
+        msg += "원본 녹화 파일이 삭제됩니다.\n"
+        msg += "(분석된 재생 목록은 유지됩니다)"
 
         if not messagebox.askyesno("삭제", msg):
             return
-
-        # 연관된 재생 파일 삭제
-        if has_plan:
-            plan_file = PLANS_DIR / f"{recording.automation_plan_id}.json"
-            if plan_file.exists():
-                try:
-                    plan_file.unlink()
-                    logger.info(f"연관된 재생 삭제: {recording.automation_plan_id}")
-                except Exception as e:
-                    logger.error(f"재생 파일 삭제 실패: {e}")
 
         # 선택된 녹화가 삭제되는 경우 선택 해제
         if self._selected_video == recording.video_path:

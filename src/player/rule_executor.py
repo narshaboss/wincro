@@ -2556,6 +2556,171 @@ class RuleExecutor:
         except Exception as e:
             logger.debug(f"진행 상태 업데이트 실패: {e}")
 
+    def execute_game_mode(self, config) -> bool:
+        """
+        게임 특화모드 실행 - 목표까지 자동 이동
+
+        Args:
+            config: GameModeConfig 객체
+
+        Returns:
+            bool: 목표 도달 여부
+        """
+        from ..analyzer.automation_models import GameModeConfig
+
+        logger.info(f"{_GREEN}[특화모드] ========== 실행 시작 =========={_RESET}")
+
+        # 설정 검증
+        if not config.character_image or not Path(config.character_image).exists():
+            logger.error(f"[특화모드] 캐릭터 이미지 없음: {config.character_image}")
+            return False
+        if not config.target_image or not Path(config.target_image).exists():
+            logger.error(f"[특화모드] 목표 이미지 없음: {config.target_image}")
+            return False
+
+        # 설정 출력
+        logger.info(f"[특화모드] 캐릭터 이미지: {Path(config.character_image).name}")
+        logger.info(f"[특화모드] 목표 이미지: {Path(config.target_image).name}")
+        logger.info(f"[특화모드] 신뢰도: {config.confidence}, 도달거리: {config.arrival_threshold}px")
+        logger.info(f"[특화모드] 이동키: ↑={config.move_keys.get('up')} ↓={config.move_keys.get('down')} ←={config.move_keys.get('left')} →={config.move_keys.get('right')}")
+        logger.info(f"[특화모드] 분석간격: {config.analysis_interval}초")
+
+        # 중지 이벤트 초기화
+        self._stop_event.clear()
+
+        # ESC 키로 중지할 수 있도록 키보드 훅 설정
+        import keyboard
+        keyboard.add_hotkey('escape', self._stop_event.set)
+        logger.info(f"[특화모드] ESC 키로 중지 가능")
+
+        current_key = None  # 현재 누르고 있는 키 (finally에서 접근 필요)
+
+        try:
+            iteration = 0
+            max_iterations = 3000  # 최대 반복 횟수 (5분 정도)
+            char_not_found_count = 0
+            target_not_found_count = 0
+
+            while not self._stop_event.is_set() and iteration < max_iterations:
+                iteration += 1
+
+                # 1. 캐릭터 위치 찾기
+                char_result = self._find_image_on_screen(config.character_image, config.confidence)
+                if not char_result:
+                    char_not_found_count += 1
+                    if char_not_found_count <= 3 or char_not_found_count % 20 == 0:
+                        logger.warning(f"[특화모드] 캐릭터 찾기 실패 (#{char_not_found_count})")
+                    # 캐릭터 못 찾으면 키 해제
+                    if current_key:
+                        pyautogui.keyUp(current_key)
+                        current_key = None
+                        logger.info(f"[특화모드] 키 해제 (캐릭터 미발견)")
+                    time.sleep(config.analysis_interval)
+                    continue
+                else:
+                    char_not_found_count = 0
+
+                char_x, char_y, char_conf = char_result
+
+                # 2. 목표 위치 찾기
+                target_result = self._find_image_on_screen(config.target_image, config.confidence)
+                if not target_result:
+                    target_not_found_count += 1
+                    if target_not_found_count <= 3 or target_not_found_count % 20 == 0:
+                        logger.warning(f"[특화모드] 목표 찾기 실패 (#{target_not_found_count})")
+                    # 목표 못 찾으면 키 해제
+                    if current_key:
+                        pyautogui.keyUp(current_key)
+                        current_key = None
+                        logger.info(f"[특화모드] 키 해제 (목표 미발견)")
+                    time.sleep(config.analysis_interval)
+                    continue
+                else:
+                    target_not_found_count = 0
+
+                target_x, target_y, target_conf = target_result
+
+                # 3. 방향 및 거리 계산
+                dx = target_x - char_x
+                dy = target_y - char_y
+                distance = (dx**2 + dy**2) ** 0.5
+
+                # 상세 로그 (5회마다)
+                if iteration % 5 == 1:
+                    logger.info(f"[특화모드] #{iteration} 캐릭터({char_x},{char_y}) → 목표({target_x},{target_y}) 거리={distance:.0f}px")
+
+                # 4. 도달 판정
+                if distance < config.arrival_threshold:
+                    # 도달하면 키 해제
+                    if current_key:
+                        pyautogui.keyUp(current_key)
+                        current_key = None
+                    logger.info(f"{_GREEN}[특화모드] ★★★ 목표 도달! (거리: {distance:.1f}px) ★★★{_RESET}")
+                    return True
+
+                # 5. 이동 방향 결정
+                if abs(dx) > abs(dy):
+                    # 좌우 이동 우선
+                    if dx > 0:
+                        new_key = config.move_keys.get("right", "right")
+                        direction = "→ 오른쪽"
+                    else:
+                        new_key = config.move_keys.get("left", "left")
+                        direction = "← 왼쪽"
+                else:
+                    # 상하 이동 우선
+                    if dy > 0:
+                        new_key = config.move_keys.get("down", "down")
+                        direction = "↓ 아래"
+                    else:
+                        new_key = config.move_keys.get("up", "up")
+                        direction = "↑ 위"
+
+                # 6. 키 입력 (방향이 바뀔 때만 키 변경)
+                if new_key != current_key:
+                    # 이전 키 해제
+                    if current_key:
+                        pyautogui.keyUp(current_key)
+                        logger.info(f"[특화모드] keyUp: {current_key}")
+                    # 새 키 누르기
+                    logger.info(f"{_YELLOW}[특화모드] 방향전환: {direction} (키: {new_key}, 거리: {distance:.0f}px, dx={dx:.0f}, dy={dy:.0f}){_RESET}")
+                    pyautogui.keyDown(new_key)
+                    logger.info(f"[특화모드] keyDown: {new_key}")
+                    current_key = new_key
+
+                # 7. 대기 (키는 계속 누른 상태)
+                time.sleep(config.analysis_interval)
+
+            if iteration >= max_iterations:
+                logger.warning(f"{_YELLOW}[특화모드] 최대 반복 횟수 초과 ({max_iterations}){_RESET}")
+
+            # 루프 종료 시 키 해제
+            if current_key:
+                pyautogui.keyUp(current_key)
+                logger.info(f"[특화모드] 루프 종료 - 키 해제: {current_key}")
+
+            return False  # 중지됨 또는 타임아웃
+
+        except Exception as e:
+            logger.error(f"[특화모드] 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+        finally:
+            # 키 해제 (ESC나 오류로 종료 시에도 확실히 해제)
+            if current_key:
+                try:
+                    pyautogui.keyUp(current_key)
+                    logger.info(f"[특화모드] finally - 키 해제: {current_key}")
+                except Exception as e:
+                    logger.warning(f"[특화모드] 키 해제 실패: {e}")
+            # ESC 핫키 제거
+            try:
+                keyboard.remove_hotkey('escape')
+            except Exception:
+                pass
+            logger.info(f"{_GREEN}[특화모드] ========== 실행 종료 =========={_RESET}")
+
 
 # 전역 실행 엔진 인스턴스
 rule_executor = RuleExecutor()

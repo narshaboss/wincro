@@ -17,7 +17,7 @@ from ..i18n import PLAYER, BUTTONS, SEQUENCE
 from ..player import get_action_player, PlayerState, PlaybackProgress
 from ..player.rule_executor import RuleExecutor
 from ..database import get_db, Sequence, Action
-from ..analyzer.automation_models import AutomationPlan, AutomationRule
+from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig
 from .main_window import BaseView
 from .theme import COLORS
 from .constants import (
@@ -330,6 +330,22 @@ class PlanDetailDialog(ctk.CTkToplevel):
             height=28,
             fg_color="#88c0d0",
             hover_color="#6a9fb0",
+            font=ctk.CTkFont(size=12),
+            corner_radius=6,
+        ).pack(side="left")
+
+        # 다섯번째 줄: 게임 특화모드
+        btn_row5 = ctk.CTkFrame(btn_container, fg_color="transparent")
+        btn_row5.pack(fill="x", pady=(3, 0))
+
+        ctk.CTkButton(
+            btn_row5,
+            text="🎮 특화모드",
+            command=self._open_game_mode_dialog,
+            width=110,
+            height=28,
+            fg_color="#a3be8c",
+            hover_color="#8fa87a",
             font=ctk.CTkFont(size=12),
             corner_radius=6,
         ).pack(side="left")
@@ -761,6 +777,21 @@ class PlanDetailDialog(ctk.CTkToplevel):
             command=lambda r=rule: self._test_run_rule(r),
         ).pack(side="right", padx=(4, 0))
 
+        # 게임모드 수정 버튼
+        if rule.action_type == "game_mode":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=ctk.CTkFont(size=14),
+                fg_color="#a3be8c",
+                hover_color="#8fa87a",
+                text_color="white",
+                width=30,
+                height=26,
+                corner_radius=4,
+                command=self._open_game_mode_dialog,
+            ).pack(side="right", padx=(4, 0))
+
         # 대기시간 버튼 (랜덤 여부 표시)
         wait_random = getattr(rule, 'wait_random', False)
         typing_random = getattr(rule, 'typing_random', False) if rule.action_type == "type" else False
@@ -1015,7 +1046,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except (IOError, OSError, ValueError):
                 pass
 
-        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "scroll": "📜", "drag": "↔"}
+        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "scroll": "📜", "drag": "↔", "game_mode": "🎮"}
         ctk.CTkLabel(
             parent,
             text=icons.get(rule.action_type, "📋"),
@@ -1496,6 +1527,56 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self.configure(fg_color=COLORS["bg_dark"])
         self.update()
 
+    def _run_game_mode(self):
+        """특화모드 실행"""
+        from ..player.rule_executor import get_rule_executor
+        import threading
+
+        config = self._plan.game_mode
+        if not config:
+            return
+
+        # 실행 중 상태 표시 (다른 액션과 동일하게 초록색 배경)
+        self._is_running = True
+        self.title("▶ 특화모드 실행 중... (ESC로 중지)")
+        self.configure(fg_color="#1a3a1a")  # 녹색 배경
+        self.update_idletasks()
+
+        # grab 해제 (다른 윈도우 조작 가능하게)
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+
+        # 전역 executor 사용
+        executor = get_rule_executor()
+        self._running_executor = executor
+
+        def run():
+            try:
+                logger.info(f"[특화모드] 실행 시작!")
+                result = executor.execute_game_mode(config)
+                self.after(0, lambda: self._on_game_mode_complete(result))
+            except Exception as e:
+                logger.error(f"[특화모드] 실행 오류: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.after(0, lambda: self._on_game_mode_complete(False))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_game_mode_complete(self, success: bool):
+        """특화모드 완료"""
+        self._is_running = False
+        self.title(f"계획 수정 - {self._plan.name}")
+        self.configure(fg_color=COLORS["bg_dark"])  # 배경색 복원
+        self.update()
+        from tkinter import messagebox
+        if success:
+            messagebox.showinfo("완료", "목표에 도달했습니다!")
+        else:
+            messagebox.showinfo("종료", "특화모드가 종료되었습니다.")
+
     def _test_run_rule(self, rule: AutomationRule):
         """해당 규칙부터 끝까지 실행 (토글 방식: 실행 중이면 중지)"""
         logger.info(f"[부분실행] 클릭됨: {rule.description or rule.action_type}, rule_id={rule.rule_id}")
@@ -1507,6 +1588,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 이미 실행 중이면 중지
         if self._is_running:
             self._stop_execution()
+            return
+
+        # 게임모드 액션인 경우 특별 처리
+        if rule.action_type == "game_mode" and self._plan.game_mode:
+            if messagebox.askyesno("특화모드 실행", "특화모드를 실행합니다.\nESC로 중지 가능\n\n시작할까요?"):
+                self._run_game_mode()
             return
 
         # 모든 규칙을 평탄화 (자식 포함)
@@ -2758,6 +2845,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 return parent
         return None
 
+    def _open_game_mode_dialog(self):
+        """게임 특화모드 설정 다이얼로그 열기"""
+        dialog = GameModeDialog(self, self._plan, self._save_plan, self._refresh_action_list)
+        dialog.grab_set()
+
     def _on_close(self):
         """닫기"""
         # 실행 중이면 먼저 중지
@@ -2768,6 +2860,540 @@ class PlanDetailDialog(ctk.CTkToplevel):
             from tkinter import messagebox
             if messagebox.askyesno("저장 확인", "수정된 내용이 있습니다. 저장하시겠습니까?"):
                 self._save_plan()
+        self.destroy()
+
+
+class GameModeDialog(ctk.CTkToplevel):
+    """게임 특화모드 설정 다이얼로그"""
+
+    def __init__(self, parent, plan: AutomationPlan, save_callback, refresh_callback=None):
+        super().__init__(parent)
+
+        self._plan = plan
+        self._save_callback = save_callback
+        self._refresh_callback = refresh_callback
+        self._thumbnail_refs = []
+        self._is_running = False
+        self._stop_event = threading.Event()
+
+        if not plan.game_mode:
+            from ..analyzer.automation_models import GameModeConfig
+            plan.game_mode = GameModeConfig()
+        self._config = plan.game_mode
+
+        self.title("🎮 특화모드")
+        self.geometry("1400x900")
+        self.resizable(True, True)
+        self.minsize(1200, 800)
+
+        # 화면 중앙 배치
+        self.update_idletasks()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        self.geometry(f"1400x900+{(screen_w-1400)//2}+{(screen_h-900)//2}")
+
+        self.lift()
+        self.focus_force()
+        self.attributes('-topmost', True)
+        self.after(100, lambda: self.attributes('-topmost', False))
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._build_ui()
+        self._update_previews()
+
+    def _build_ui(self):
+        """UI 구성"""
+        main = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=15, pady=10)
+
+        # === 이름 섹션 ===
+        name_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        name_frame.pack(fill="x", pady=(0, 8))
+        name_inner = ctk.CTkFrame(name_frame, fg_color="transparent")
+        name_inner.pack(fill="x", padx=12, pady=8)
+        ctk.CTkLabel(name_inner, text="이름:", width=40).pack(side="left")
+        self._name_var = ctk.StringVar(value=self._config.name)
+        ctk.CTkEntry(name_inner, textvariable=self._name_var, width=250, height=28,
+                     placeholder_text="특화모드 이름 입력").pack(side="left", padx=(5, 0))
+
+        # === 캐릭터/목표 이미지 (나란히) ===
+        img_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        img_frame.pack(fill="x", pady=(0, 8))
+        img_inner = ctk.CTkFrame(img_frame, fg_color="transparent")
+        img_inner.pack(fill="x", padx=12, pady=10)
+
+        # 캐릭터
+        char_frame = ctk.CTkFrame(img_inner, fg_color="transparent")
+        char_frame.pack(side="left", expand=True)
+        ctk.CTkLabel(char_frame, text="캐릭터", font=ctk.CTkFont(size=11, weight="bold")).pack()
+        self._char_preview = ctk.CTkLabel(char_frame, text="없음", width=80, height=80,
+                                          fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        self._char_preview.pack(pady=5)
+        char_btns = ctk.CTkFrame(char_frame, fg_color="transparent")
+        char_btns.pack()
+        ctk.CTkButton(char_btns, text="파일", width=50, height=24,
+                      command=lambda: self._select_image("character")).pack(side="left", padx=2)
+        ctk.CTkButton(char_btns, text="테스트", width=50, height=24, fg_color="#5e81ac",
+                      command=lambda: self._test_find("character")).pack(side="left", padx=2)
+        self._char_result = ctk.CTkLabel(char_frame, text="", font=ctk.CTkFont(size=9))
+        self._char_result.pack()
+
+        # 목표
+        target_frame = ctk.CTkFrame(img_inner, fg_color="transparent")
+        target_frame.pack(side="right", expand=True)
+        ctk.CTkLabel(target_frame, text="목표", font=ctk.CTkFont(size=11, weight="bold")).pack()
+        self._target_preview = ctk.CTkLabel(target_frame, text="없음", width=80, height=80,
+                                            fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        self._target_preview.pack(pady=5)
+        target_btns = ctk.CTkFrame(target_frame, fg_color="transparent")
+        target_btns.pack()
+        ctk.CTkButton(target_btns, text="파일", width=50, height=24,
+                      command=lambda: self._select_image("target")).pack(side="left", padx=2)
+        ctk.CTkButton(target_btns, text="테스트", width=50, height=24, fg_color="#5e81ac",
+                      command=lambda: self._test_find("target")).pack(side="left", padx=2)
+        self._target_result = ctk.CTkLabel(target_frame, text="", font=ctk.CTkFont(size=9))
+        self._target_result.pack()
+
+        # === 장애물 이미지 섹션 ===
+        obs_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        obs_frame.pack(fill="x", pady=(0, 8))
+
+        obs_header = ctk.CTkFrame(obs_frame, fg_color="transparent")
+        obs_header.pack(fill="x", padx=12, pady=(8, 0))
+        ctk.CTkLabel(obs_header, text="장애물 이미지", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left")
+        ctk.CTkButton(obs_header, text="+ 추가", width=60, height=24, fg_color="#a3be8c",
+                      command=self._add_obstacle).pack(side="right")
+
+        # 장애물 목록 (스크롤)
+        self._obs_list_frame = ctk.CTkFrame(obs_frame, fg_color="transparent")
+        self._obs_list_frame.pack(fill="x", padx=12, pady=8)
+        self._refresh_obstacle_list()
+
+        # === 설정 섹션 ===
+        settings_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        settings_frame.pack(fill="x", pady=(0, 8))
+        settings_inner = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        settings_inner.pack(fill="x", padx=12, pady=8)
+
+        # 이동키
+        keys_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
+        keys_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(keys_row, text="이동키:", width=50).pack(side="left")
+        self._key_vars = {}
+        for key, symbol in [("up", "↑"), ("down", "↓"), ("left", "←"), ("right", "→")]:
+            ctk.CTkLabel(keys_row, text=symbol, width=15).pack(side="left")
+            var = ctk.StringVar(value=self._config.move_keys.get(key, ""))
+            self._key_vars[key] = var
+            ctk.CTkEntry(keys_row, textvariable=var, width=45, height=24).pack(side="left", padx=(0, 6))
+
+        # 설정값
+        vals_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
+        vals_row.pack(fill="x")
+        ctk.CTkLabel(vals_row, text="분석간격:").pack(side="left")
+        self._interval_var = ctk.StringVar(value=str(self._config.analysis_interval))
+        ctk.CTkEntry(vals_row, textvariable=self._interval_var, width=40, height=24).pack(side="left", padx=(2, 0))
+        ctk.CTkLabel(vals_row, text="초").pack(side="left", padx=(2, 10))
+        ctk.CTkLabel(vals_row, text="신뢰도:").pack(side="left")
+        self._confidence_var = ctk.StringVar(value=str(self._config.confidence))
+        ctk.CTkEntry(vals_row, textvariable=self._confidence_var, width=40, height=24).pack(side="left", padx=(2, 10))
+        ctk.CTkLabel(vals_row, text="도달거리:").pack(side="left")
+        self._threshold_var = ctk.StringVar(value=str(self._config.arrival_threshold))
+        ctk.CTkEntry(vals_row, textvariable=self._threshold_var, width=40, height=24).pack(side="left", padx=(2, 0))
+        ctk.CTkLabel(vals_row, text="px").pack(side="left")
+
+        # === 버튼 ===
+        btn_frame = ctk.CTkFrame(main, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(5, 0))
+        ctk.CTkButton(btn_frame, text="저장", width=80, height=32, fg_color="#5e81ac",
+                      command=self._save_config).pack(side="left")
+        ctk.CTkButton(btn_frame, text="닫기", width=80, height=32, fg_color=COLORS["bg_card_hover"],
+                      command=self._on_close).pack(side="right")
+
+    def _refresh_obstacle_list(self):
+        """장애물 목록 갱신"""
+        for w in self._obs_list_frame.winfo_children():
+            w.destroy()
+
+        if not self._config.obstacle_images:
+            ctk.CTkLabel(self._obs_list_frame, text="장애물 이미지 없음",
+                         font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(pady=5)
+            return
+
+        for i, img_path in enumerate(self._config.obstacle_images):
+            row = ctk.CTkFrame(self._obs_list_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+
+            # 썸네일
+            thumb = ctk.CTkLabel(row, text="", width=40, height=40,
+                                 fg_color=COLORS["bg_card_hover"], corner_radius=4)
+            thumb.pack(side="left", padx=(0, 8))
+            if Path(img_path).exists():
+                self._load_thumb(img_path, thumb, size=40)
+
+            # 파일명
+            name = Path(img_path).name if img_path else "?"
+            if len(name) > 20:
+                name = name[:17] + "..."
+            ctk.CTkLabel(row, text=name, font=ctk.CTkFont(size=10), anchor="w", width=150).pack(side="left")
+
+            # 삭제 버튼
+            ctk.CTkButton(row, text="✕", width=28, height=24, fg_color="#bf616a",
+                          command=lambda idx=i: self._remove_obstacle(idx)).pack(side="right")
+
+    def _add_obstacle(self):
+        """장애물 이미지 추가"""
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(filetypes=[("이미지", "*.png *.jpg *.bmp")])
+        if paths:
+            from ..utils.config import DATA_DIR
+            import shutil
+            for path in paths:
+                dest = DATA_DIR / "templates" / f"obstacle_{Path(path).name}"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if not dest.exists():
+                    shutil.copy(path, dest)
+                if str(dest) not in self._config.obstacle_images:
+                    self._config.obstacle_images.append(str(dest))
+            self._refresh_obstacle_list()
+
+    def _remove_obstacle(self, index: int):
+        """장애물 이미지 제거"""
+        if 0 <= index < len(self._config.obstacle_images):
+            self._config.obstacle_images.pop(index)
+            self._refresh_obstacle_list()
+
+    def _update_previews(self):
+        if self._config.character_image and Path(self._config.character_image).exists():
+            self._load_thumb(self._config.character_image, self._char_preview)
+        else:
+            self._char_preview.configure(image=None, text="없음")
+
+        if self._config.target_image and Path(self._config.target_image).exists():
+            self._load_thumb(self._config.target_image, self._target_preview)
+        else:
+            self._target_preview.configure(image=None, text="없음")
+
+    def _load_thumb(self, path: str, label: ctk.CTkLabel, size: int = 80):
+        try:
+            from PIL import Image
+            img = Image.open(path)
+            img.thumbnail((size, size))
+            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+            self._thumbnail_refs.append(ctk_img)
+            label.configure(image=ctk_img, text="")
+        except:
+            label.configure(image=None, text="오류")
+
+    def _select_image(self, img_type: str):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("이미지", "*.png *.jpg *.bmp")])
+        if path:
+            from ..utils.config import DATA_DIR
+            import shutil
+            dest = DATA_DIR / "templates" / f"game_{img_type}_{Path(path).name}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(path, dest)
+            if img_type == "character":
+                self._config.character_image = str(dest)
+            else:
+                self._config.target_image = str(dest)
+            self._update_previews()
+
+    def _capture_image(self, img_type: str):
+        self.withdraw()
+        self.after(300, lambda: self._do_capture(img_type))
+
+    def _do_capture(self, img_type: str):
+        try:
+            from ..utils.config import DATA_DIR
+            from ..recorder.region_selector import RegionSelector
+            import pyautogui
+            from datetime import datetime
+
+            shot = pyautogui.screenshot()
+            region = RegionSelector(shot).select()
+            if region:
+                x1, y1, x2, y2 = region
+                cropped = shot.crop((x1, y1, x2, y2))
+                dest = DATA_DIR / "templates" / f"game_{img_type}_{datetime.now().strftime('%H%M%S')}.png"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                cropped.save(dest)
+                if img_type == "character":
+                    self._config.character_image = str(dest)
+                else:
+                    self._config.target_image = str(dest)
+        except Exception as e:
+            logger.error(f"캡처 실패: {e}")
+        finally:
+            self.deiconify()
+            self.lift()
+            self._update_previews()
+
+    def _test_find(self, img_type: str):
+        path = self._config.character_image if img_type == "character" else self._config.target_image
+        label = self._char_result if img_type == "character" else self._target_result
+
+        if not path or not Path(path).exists():
+            label.configure(text="이미지 없음", text_color="#bf616a")
+            return
+
+        label.configure(text="검색중...", text_color=COLORS["text_secondary"])
+        self.update()
+
+        def search():
+            try:
+                from ..player.rule_executor import RuleExecutor
+                result = RuleExecutor()._find_image_on_screen(path, float(self._confidence_var.get()))
+                if result:
+                    x, y, conf = result
+                    # 인식률 표시
+                    conf_text = f"발견! 인식률: {conf:.1%}"
+                    color = "#a3be8c" if conf >= 0.8 else "#ebcb8b" if conf >= 0.6 else "#bf616a"
+                    self.after(0, lambda: label.configure(text=conf_text, text_color=color))
+                    # 애니메이션 원 표시
+                    self.after(0, lambda: self._show_pulse_animation(x, y, img_type))
+                else:
+                    self.after(0, lambda: label.configure(text="못찾음", text_color="#bf616a"))
+            except Exception as e:
+                self.after(0, lambda: label.configure(text=f"오류", text_color="#bf616a"))
+
+        threading.Thread(target=search, daemon=True).start()
+
+    def _show_pulse_animation(self, x: int, y: int, img_type: str):
+        """발견된 위치에 펄스 애니메이션 표시"""
+        # 색상: 캐릭터=파랑, 목표=초록
+        color = "#5e81ac" if img_type == "character" else "#a3be8c"
+
+        # 투명 오버레이 창 생성
+        overlay = tk.Toplevel(self)
+        overlay.overrideredirect(True)
+        overlay.attributes('-topmost', True)
+        overlay.attributes('-transparentcolor', 'black')
+        overlay.configure(bg='black')
+
+        # 캔버스 크기
+        canvas_size = 150
+        overlay.geometry(f"{canvas_size}x{canvas_size}+{x - canvas_size//2}+{y - canvas_size//2}")
+
+        canvas = tk.Canvas(overlay, width=canvas_size, height=canvas_size,
+                          bg='black', highlightthickness=0)
+        canvas.pack()
+
+        center = canvas_size // 2
+        circles = []
+
+        # 애니메이션 프레임
+        def animate(frame=0):
+            if frame >= 30:  # 30프레임 후 종료
+                try:
+                    overlay.destroy()
+                except:
+                    pass
+                return
+
+            # 기존 원 삭제
+            for c in circles:
+                canvas.delete(c)
+            circles.clear()
+
+            # 펄스 효과: 원이 커졌다 작아졌다
+            import math
+            pulse = math.sin(frame * 0.4) * 0.5 + 0.5  # 0~1 사이 값
+
+            # 바깥 원 (펄스)
+            outer_r = 20 + int(pulse * 35)
+            outer_alpha = int((1 - pulse) * 3)  # 두께 변화
+            c1 = canvas.create_oval(
+                center - outer_r, center - outer_r,
+                center + outer_r, center + outer_r,
+                outline=color, width=max(2, outer_alpha + 2), fill=''
+            )
+            circles.append(c1)
+
+            # 중간 원 (역펄스)
+            mid_r = 15 + int((1 - pulse) * 20)
+            c2 = canvas.create_oval(
+                center - mid_r, center - mid_r,
+                center + mid_r, center + mid_r,
+                outline=color, width=2, fill=''
+            )
+            circles.append(c2)
+
+            # 중심점
+            c3 = canvas.create_oval(
+                center - 5, center - 5,
+                center + 5, center + 5,
+                outline=color, fill=color, width=0
+            )
+            circles.append(c3)
+
+            overlay.after(33, lambda: animate(frame + 1))  # ~30fps
+
+        animate()
+
+    def _toggle_execution(self):
+        if self._is_running:
+            self._stop_execution()
+        else:
+            self._start_execution()
+
+    def _start_execution(self):
+        if not self._config.character_image or not Path(self._config.character_image).exists():
+            from tkinter import messagebox
+            messagebox.showerror("오류", "캐릭터 이미지를 설정하세요")
+            return
+        if not self._config.target_image or not Path(self._config.target_image).exists():
+            from tkinter import messagebox
+            messagebox.showerror("오류", "목표 이미지를 설정하세요")
+            return
+
+        self._apply_settings()
+        self._is_running = True
+        self._stop_event.clear()
+        self._run_btn.configure(text="■ 중지", fg_color="#bf616a")
+        self._status_label.configure(text="상태: 실행중", text_color="#a3be8c")
+        threading.Thread(target=self._run_loop, daemon=True).start()
+
+    def _stop_execution(self):
+        self._stop_event.set()
+        self._is_running = False
+        self._run_btn.configure(text="▶ 시작", fg_color="#a3be8c")
+        self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
+
+    def _run_loop(self):
+        from ..player.rule_executor import RuleExecutor
+        import pyautogui
+        import keyboard
+
+        executor = RuleExecutor()
+        keyboard.add_hotkey('escape', self._stop_event.set)
+
+        try:
+            while not self._stop_event.is_set():
+                char = executor._find_image_on_screen(self._config.character_image, self._config.confidence)
+                if not char:
+                    self.after(0, lambda: self._update_status("캐릭터 검색중", "-", "-", "-", "-"))
+                    time.sleep(self._config.analysis_interval)
+                    continue
+
+                cx, cy, _ = char
+                target = executor._find_image_on_screen(self._config.target_image, self._config.confidence)
+                if not target:
+                    self.after(0, lambda x=cx, y=cy: self._update_status("목표 검색중", f"({x},{y})", "-", "-", "-"))
+                    time.sleep(self._config.analysis_interval)
+                    continue
+
+                tx, ty, _ = target
+                dx, dy = tx - cx, ty - cy
+                dist = (dx**2 + dy**2) ** 0.5
+
+                if dist < self._config.arrival_threshold:
+                    self.after(0, self._on_arrival)
+                    return
+
+                # 방향 결정 (dx>0이면 오른쪽, dy>0이면 아래)
+                if abs(dx) > abs(dy):
+                    if dx > 0:
+                        key = self._config.move_keys.get("right", "Right")
+                        dir_str = "→"
+                    else:
+                        key = self._config.move_keys.get("left", "Left")
+                        dir_str = "←"
+                else:
+                    if dy > 0:
+                        key = self._config.move_keys.get("down", "Down")
+                        dir_str = "↓"
+                    else:
+                        key = self._config.move_keys.get("up", "Up")
+                        dir_str = "↑"
+
+                logger.info(f"[게임모드] 캐릭터({cx},{cy}) 목표({tx},{ty}) dx={dx} dy={dy} → {dir_str} key={key}")
+
+                self.after(0, lambda x=cx, y=cy, tx=tx, ty=ty, d=dist, ds=dir_str:
+                    self._update_status("이동중", f"({x},{y})", f"({tx},{ty})", f"{d:.0f}px", ds))
+
+                # 키 입력 (누르고 있기)
+                pyautogui.keyDown(key)
+                time.sleep(0.05)
+                pyautogui.keyUp(key)
+                time.sleep(self._config.analysis_interval)
+
+        except Exception as e:
+            logger.error(f"게임모드 오류: {e}")
+        finally:
+            try:
+                keyboard.remove_hotkey('escape')
+            except:
+                pass
+            self.after(0, self._stop_execution)
+
+    def _update_status(self, status, char, target, dist, direction):
+        self._status_label.configure(text=f"상태: {status}")
+        self._char_pos_label.configure(text=f"캐릭터: {char}")
+        self._target_pos_label.configure(text=f"목표: {target}")
+        self._distance_label.configure(text=f"거리: {dist}")
+        self._direction_label.configure(text=f"방향: {direction}")
+
+    def _on_arrival(self):
+        self._stop_execution()
+        self._status_label.configure(text="상태: 도달!", text_color="#a3be8c")
+        from tkinter import messagebox
+        messagebox.showinfo("완료", "목표 도달!")
+
+    def _apply_settings(self):
+        try:
+            self._config.name = self._name_var.get().strip()
+            self._config.analysis_interval = float(self._interval_var.get())
+            self._config.confidence = float(self._confidence_var.get())
+            self._config.arrival_threshold = int(self._threshold_var.get())
+            for k, v in self._key_vars.items():
+                self._config.move_keys[k] = v.get()
+        except:
+            pass
+
+    def _save_config(self):
+        self._config.enabled = True
+        self._apply_settings()
+        self._plan.game_mode = self._config
+
+        # 액션 목록에 게임모드 규칙 추가/업데이트
+        game_rule = None
+        for rule in self._plan.initial_rules:
+            if rule.action_type == "game_mode":
+                game_rule = rule
+                break
+
+        # 이름 결정 (입력된 이름 또는 기본값)
+        display_name = self._config.name if self._config.name else "특화모드"
+
+        if not game_rule:
+            # 새로 생성
+            game_rule = AutomationRule(
+                rule_type="fixed_sequence",
+                action_type="game_mode",
+                description=display_name,
+                target_image=self._config.character_image,
+                confidence=self._config.confidence,
+            )
+            self._plan.initial_rules.append(game_rule)
+        else:
+            # 기존 업데이트
+            game_rule.target_image = self._config.character_image
+            game_rule.confidence = self._config.confidence
+            game_rule.description = display_name
+
+        self._save_callback()
+
+        # UI 갱신
+        if self._refresh_callback:
+            self._refresh_callback()
+
+        from tkinter import messagebox
+        messagebox.showinfo("저장", "저장 완료")
+
+    def _on_close(self):
+        if self._is_running:
+            self._stop_execution()
         self.destroy()
 
 
@@ -3476,7 +4102,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             except (IOError, OSError, ValueError):
                 pass
 
-        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "scroll": "📜", "drag": "↔", "wait": "⏳", "wait_for_image": "🔍"}
+        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "scroll": "📜", "drag": "↔", "wait": "⏳", "wait_for_image": "🔍", "game_mode": "🎮"}
         ctk.CTkLabel(
             parent,
             text=icons.get(action.action_type, "📋"),
