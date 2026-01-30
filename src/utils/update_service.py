@@ -247,8 +247,13 @@ def classify_error(error: Exception) -> str:
             return "연결 시간 초과 - 네트워크 확인"
         return f"연결 오류: {reason[:30]}"
 
-    if isinstance(error, ssl.SSLError):
-        return "SSL 보안 연결 실패 - VPN/방화벽 확인"
+    # SSL 오류 체크 (ssl 모듈 지연 import)
+    try:
+        import ssl
+        if isinstance(error, ssl.SSLError):
+            return "SSL 보안 연결 실패 - VPN/방화벽 확인"
+    except ImportError:
+        pass
 
     if isinstance(error, ConnectionError):
         if "SSL" in error_str or "CERTIFICATE" in error_str.upper():
@@ -274,8 +279,12 @@ def classify_error(error: Exception) -> str:
 
 
 def _create_unverified_ssl_context():
-    """SSL 검증을 완화한 컨텍스트 생성"""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+    """SSL 검증을 완화한 컨텍스트 생성 (레거시 호환용 - _get_ssl_context 사용 권장)"""
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    except ImportError:
+        return None

@@ -1784,7 +1784,7 @@ del "%~f0"
         try:
             subprocess.Popen(
                 ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except Exception as e:
             logger.error(f"배치 파일 실행 실패: {e}")
