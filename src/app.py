@@ -498,6 +498,9 @@ if exist "{data_backup}\\window_positions.json" (
 if exist "{data_backup}\\.keyfile" (
     copy /y "{data_backup}\\.keyfile" "{app_dir}\\_internal\\data\\.keyfile" >nul 2>&1
 )
+if exist "{data_backup}\\config.json" (
+    copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
+)
 
 echo [7/8] 사용자 데이터 병합 중...
 if exist "{data_backup}\\recordings" (
