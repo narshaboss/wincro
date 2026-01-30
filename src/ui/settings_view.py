@@ -1213,134 +1213,140 @@ class SettingsView(BaseView):
         import json
         import socket
 
-        # 캐싱된 업데이트 체크 사용 (API 제한 방지)
-        result = check_for_update(repo, APP_VERSION)
-        if result:
-            if result.get("cached"):
-                logger.info("캐시된 업데이트 정보 사용")
-            if result.get("update_available"):
-                ver = result["version"]
-                rel_data = result.get("release_data")
-                self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
-            else:
-                ver = APP_VERSION
-                self.after(0, lambda v=ver: self._show_up_to_date(v))
-            return
-
-        # updater 실패 시 기존 방법으로 폴백
-        api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-        logger.info(f"버전 확인 시작 (폴백): {api_url}")
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/vnd.github.v3+json'
-        }
-
-        data = None
-        last_error = None
-
-        # 방법 1: 기본 SSL 컨텍스트
         try:
-            logger.debug("방법 1: 기본 SSL 컨텍스트 시도")
-            ssl_context = ssl.create_default_context()
-            req = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
-                data = json.loads(response.read().decode())
-            logger.info("방법 1 성공")
-        except Exception as e1:
-            last_error = e1
-            logger.warning(f"방법 1 실패: {e1}")
+            # 캐싱된 업데이트 체크 사용 (API 제한 방지)
+            result = check_for_update(repo, APP_VERSION)
+            if result:
+                if result.get("cached"):
+                    logger.info("캐시된 업데이트 정보 사용")
+                if result.get("update_available"):
+                    ver = result["version"]
+                    rel_data = result.get("release_data")
+                    self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
+                else:
+                    ver = APP_VERSION
+                    self.after(0, lambda v=ver: self._show_up_to_date(v))
+                return
 
-            # 방법 2: SSL 검증 완화
+            # updater 실패 시 기존 방법으로 폴백
+            api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+            logger.info(f"버전 확인 시작 (폴백): {api_url}")
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/vnd.github.v3+json'
+            }
+
+            data = None
+            last_error = None
+
+            # 방법 1: 기본 SSL 컨텍스트
             try:
-                logger.debug("방법 2: SSL 검증 완화 시도")
+                logger.debug("방법 1: 기본 SSL 컨텍스트 시도")
                 ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
                 req = urllib.request.Request(api_url, headers=headers)
                 with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
                     data = json.loads(response.read().decode())
-                logger.info("방법 2 성공")
-            except Exception as e2:
-                last_error = e2
-                logger.warning(f"방법 2 실패: {e2}")
+                logger.info("방법 1 성공")
+            except Exception as e1:
+                last_error = e1
+                logger.warning(f"방법 1 실패: {e1}")
 
-                # 방법 3: SSL 컨텍스트 없이 시도
+                # 방법 2: SSL 검증 완화
                 try:
-                    logger.debug("방법 3: SSL 컨텍스트 없이 시도")
+                    logger.debug("방법 2: SSL 검증 완화 시도")
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
                     req = urllib.request.Request(api_url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=20) as response:
+                    with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
                         data = json.loads(response.read().decode())
-                    logger.info("방법 3 성공")
-                except Exception as e3:
-                    last_error = e3
-                    logger.warning(f"방법 3 실패: {e3}")
+                    logger.info("방법 2 성공")
+                except Exception as e2:
+                    last_error = e2
+                    logger.warning(f"방법 2 실패: {e2}")
 
-                    # 방법 4: 프록시 환경변수 확인 후 시도
+                    # 방법 3: SSL 컨텍스트 없이 시도
                     try:
-                        import os
-                        logger.debug("방법 4: 프록시 설정 확인")
-                        proxy_handler = urllib.request.ProxyHandler()
-                        opener = urllib.request.build_opener(proxy_handler)
+                        logger.debug("방법 3: SSL 컨텍스트 없이 시도")
                         req = urllib.request.Request(api_url, headers=headers)
-                        with opener.open(req, timeout=20) as response:
+                        with urllib.request.urlopen(req, timeout=20) as response:
                             data = json.loads(response.read().decode())
-                        logger.info("방법 4 성공")
-                    except Exception as e4:
-                        last_error = e4
-                        logger.error(f"방법 4 실패: {e4}")
+                        logger.info("방법 3 성공")
+                    except Exception as e3:
+                        last_error = e3
+                        logger.warning(f"방법 3 실패: {e3}")
 
-        # 결과 처리
-        if data:
-            try:
-                latest_version = data.get("tag_name", "").lstrip("v")
-                current_version = APP_VERSION
-                logger.info(f"버전 비교: 최신={latest_version}, 현재={current_version}")
+                        # 방법 4: 프록시 환경변수 확인 후 시도
+                        try:
+                            import os
+                            logger.debug("방법 4: 프록시 설정 확인")
+                            proxy_handler = urllib.request.ProxyHandler()
+                            opener = urllib.request.build_opener(proxy_handler)
+                            req = urllib.request.Request(api_url, headers=headers)
+                            with opener.open(req, timeout=20) as response:
+                                data = json.loads(response.read().decode())
+                            logger.info("방법 4 성공")
+                        except Exception as e4:
+                            last_error = e4
+                            logger.error(f"방법 4 실패: {e4}")
 
-                if self._compare_versions(latest_version, current_version) > 0:
-                    ver = latest_version
-                    rel_data = data
-                    self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
-                else:
-                    ver = current_version
-                    self.after(0, lambda v=ver: self._show_up_to_date(v))
-            except Exception as e:
-                logger.error(f"버전 비교 오류: {e}")
-                self.after(0, lambda: self._update_check_failed("버전 정보 파싱 실패"))
-        else:
-            # 모든 방법 실패 - 사용자 친화적 메시지
-            error_detail = "연결 실패"
-            if last_error:
-                error_str = str(last_error)
-                reason_str = str(getattr(last_error, 'reason', ''))
+            # 결과 처리
+            if data:
+                try:
+                    latest_version = data.get("tag_name", "").lstrip("v")
+                    current_version = APP_VERSION
+                    logger.info(f"버전 비교: 최신={latest_version}, 현재={current_version}")
 
-                if isinstance(last_error, urllib.error.HTTPError):
-                    if last_error.code == 404:
-                        error_detail = "저장소를 찾을 수 없음"
-                    elif last_error.code == 403:
-                        error_detail = "API 제한 - 잠시 후 재시도"
+                    if self._compare_versions(latest_version, current_version) > 0:
+                        ver = latest_version
+                        rel_data = data
+                        self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
                     else:
-                        error_detail = f"HTTP {last_error.code}"
-                elif isinstance(last_error, urllib.error.URLError):
-                    if "SSL" in reason_str or "CERTIFICATE" in reason_str.upper():
-                        error_detail = "SSL 오류 - VPN/방화벽 확인"
-                    elif "Connection refused" in reason_str:
-                        error_detail = "연결 거부됨"
-                    elif "Name or service not known" in reason_str:
-                        error_detail = "인터넷 연결 확인"
-                    elif "timed out" in reason_str.lower():
+                        ver = current_version
+                        self.after(0, lambda v=ver: self._show_up_to_date(v))
+                except Exception as e:
+                    logger.error(f"버전 비교 오류: {e}")
+                    self.after(0, lambda: self._update_check_failed("버전 정보 파싱 실패"))
+            else:
+                # 모든 방법 실패 - 사용자 친화적 메시지
+                error_detail = "연결 실패"
+                if last_error:
+                    error_str = str(last_error)
+                    reason_str = str(getattr(last_error, 'reason', ''))
+
+                    if isinstance(last_error, urllib.error.HTTPError):
+                        if last_error.code == 404:
+                            error_detail = "저장소를 찾을 수 없음"
+                        elif last_error.code == 403:
+                            error_detail = "API 제한 - 잠시 후 재시도"
+                        else:
+                            error_detail = f"HTTP {last_error.code}"
+                    elif isinstance(last_error, urllib.error.URLError):
+                        if "SSL" in reason_str or "CERTIFICATE" in reason_str.upper():
+                            error_detail = "SSL 오류 - VPN/방화벽 확인"
+                        elif "Connection refused" in reason_str:
+                            error_detail = "연결 거부됨"
+                        elif "Name or service not known" in reason_str:
+                            error_detail = "인터넷 연결 확인"
+                        elif "timed out" in reason_str.lower():
+                            error_detail = "시간 초과"
+                        else:
+                            error_detail = reason_str[:20] if reason_str else "연결 오류"
+                    elif isinstance(last_error, socket.timeout):
                         error_detail = "시간 초과"
+                    elif "SSL" in error_str or "CERTIFICATE" in error_str.upper():
+                        error_detail = "SSL 오류"
                     else:
-                        error_detail = reason_str[:20] if reason_str else "연결 오류"
-                elif isinstance(last_error, socket.timeout):
-                    error_detail = "시간 초과"
-                elif "SSL" in error_str or "CERTIFICATE" in error_str.upper():
-                    error_detail = "SSL 오류"
-                else:
-                    error_detail = error_str[:20]
+                        error_detail = error_str[:20]
 
-            logger.error(f"모든 연결 방법 실패: {last_error}")
-            self.after(0, lambda e=error_detail: self._update_check_failed(e))
+                logger.error(f"모든 연결 방법 실패: {last_error}")
+                self.after(0, lambda e=error_detail: self._update_check_failed(e))
+
+        except Exception as e:
+            # 전체 스레드 예외 발생 시 UI 복구
+            logger.error(f"버전 확인 스레드 예외: {e}", exc_info=True)
+            self.after(0, lambda: self._update_check_failed("예기치 않은 오류"))
 
     def _compare_versions(self, v1: str, v2: str) -> int:
         """버전 비교 (v1 > v2: 1, v1 == v2: 0, v1 < v2: -1)"""
@@ -1432,34 +1438,38 @@ class SettingsView(BaseView):
         import ssl
         import json
 
-        api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/vnd.github.v3+json'
-        }
+        try:
+            api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/vnd.github.v3+json'
+            }
 
-        methods = [
-            ("기본 SSL", lambda: ssl.create_default_context()),
-            ("SSL 검증 완화", lambda: self._create_unverified_ssl_context()),
-            ("SSL 없음", lambda: None),
-        ]
+            methods = [
+                ("기본 SSL", lambda: ssl.create_default_context()),
+                ("SSL 검증 완화", lambda: self._create_unverified_ssl_context()),
+                ("SSL 없음", lambda: None),
+            ]
 
-        for method_name, get_context in methods:
-            try:
-                logger.debug(f"릴리즈 가져오기 시도: {method_name}")
-                req = urllib.request.Request(api_url, headers=headers)
-                ctx = get_context()
-                if ctx:
-                    with urllib.request.urlopen(req, timeout=30, context=ctx) as response:
-                        return json.loads(response.read().decode())
-                else:
-                    with urllib.request.urlopen(req, timeout=30) as response:
-                        return json.loads(response.read().decode())
-            except Exception as e:
-                logger.warning(f"{method_name} 실패: {e}")
-                continue
+            for method_name, get_context in methods:
+                try:
+                    logger.debug(f"릴리즈 가져오기 시도: {method_name}")
+                    req = urllib.request.Request(api_url, headers=headers)
+                    ctx = get_context()
+                    if ctx:
+                        with urllib.request.urlopen(req, timeout=30, context=ctx) as response:
+                            return json.loads(response.read().decode())
+                    else:
+                        with urllib.request.urlopen(req, timeout=30) as response:
+                            return json.loads(response.read().decode())
+                except Exception as e:
+                    logger.warning(f"{method_name} 실패: {e}")
+                    continue
 
-        return None
+            return None
+        except Exception as e:
+            logger.error(f"릴리즈 정보 가져오기 전체 오류: {e}")
+            return None
 
     def _create_unverified_ssl_context(self):
         """SSL 검증을 완화한 컨텍스트 생성"""

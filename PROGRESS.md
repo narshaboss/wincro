@@ -99,6 +99,64 @@
 
 ## 버그 수정 이력
 
+### 2026-01-31: 업데이트 관련 버그 수정 (v1.0.103)
+
+**증상:**
+- 버전 확인 버튼 클릭 시 "버전확인중"만 표시되고 무한 대기
+- 업데이트 버튼 클릭 시 "릴리즈확인중"만 표시되고 무한 대기
+- 업데이트 완료 후 프로그램이 자동 재시작되지 않음
+- 수동으로 재시작해도 창이 나타나지 않음
+
+**원인 분석:**
+
+| 문제 | 원인 |
+|------|------|
+| 버전 확인 무한 대기 | `_check_version_thread` 내부 예외 발생 시 UI 복구 코드 미실행 |
+| 릴리즈 확인 무한 대기 | `_fetch_latest_release_direct` 예외 발생 시 안전하게 처리 안 됨 |
+| 재시작 실패 | 배치 파일의 `start` 명령어가 공백 포함 경로에서 실패 |
+
+**해결:**
+
+#### 1. 버전 확인 스레드 예외 처리 (settings_view.py)
+
+```python
+def _check_version_thread(self, repo: str) -> None:
+    try:
+        # 기존 로직 전체
+        ...
+    except Exception as e:
+        # 전체 스레드 예외 발생 시 UI 복구
+        logger.error(f"버전 확인 스레드 예외: {e}", exc_info=True)
+        self.after(0, lambda: self._update_check_failed("예기치 않은 오류"))
+```
+
+#### 2. 릴리즈 정보 가져오기 예외 처리 (settings_view.py)
+
+```python
+def _fetch_latest_release_direct(self, repo: str) -> dict:
+    try:
+        # 기존 로직 전체
+        ...
+        return None
+    except Exception as e:
+        logger.error(f"릴리즈 정보 가져오기 전체 오류: {e}")
+        return None
+```
+
+#### 3. 배치 파일 재시작 명령어 수정 (app.py)
+
+| 변경 전 | 변경 후 |
+|---------|---------|
+| `start "" "{app_dir}\\{exe_name}"` | `cd /d "{app_dir}"` 후 `start "" "{exe_name}"` |
+
+공백이 포함된 경로(예: `C:\Program Files\WinCro\WinCro.exe`)에서 `start` 명령어가 실패하는 문제 해결.
+
+**수정된 파일:**
+- `src/ui/settings_view.py` - `_check_version_thread`, `_fetch_latest_release_direct`
+- `src/app.py` - 배치 파일 재시작 명령어 4곳 수정
+
+---
+
 ### 2026-01-31: 모니터링 모드 점프 조건 기능 추가 (v1.0.102)
 
 **기능:** 모니터링 모드에서 점프 실행 전 조건 이미지를 확인하여 조건부 점프 지원
@@ -939,7 +997,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-31
+- 마지막 업데이트: 2026-01-31 (v1.0.103)
 
 ## 업데이트 규칙
 

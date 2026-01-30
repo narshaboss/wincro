@@ -450,7 +450,8 @@ if errorlevel 1 (
     echo [복구 완료] 이전 버전으로 복원되었습니다.
     echo 프로그램을 다시 시작합니다...
     timeout /t 3 /nobreak >nul
-    start "" "{app_dir}\\{exe_name}"
+    cd /d "{app_dir}"
+    start "" "{exe_name}"
     exit /b 1
 )
 
@@ -468,7 +469,8 @@ if not exist "{app_dir}\\{exe_name}" (
     )
     echo [복구 완료] 이전 버전으로 복원되었습니다.
     timeout /t 3 /nobreak >nul
-    start "" "{app_dir}\\{exe_name}"
+    cd /d "{app_dir}"
+    start "" "{exe_name}"
     exit /b 1
 )
 if not exist "{app_dir}\\_internal" (
@@ -484,7 +486,8 @@ if not exist "{app_dir}\\_internal" (
     )
     echo [복구 완료] 이전 버전으로 복원되었습니다.
     timeout /t 3 /nobreak >nul
-    start "" "{app_dir}\\{exe_name}"
+    cd /d "{app_dir}"
+    start "" "{exe_name}"
     exit /b 1
 )
 
@@ -531,7 +534,14 @@ echo   업데이트 완료! 재시작 중...
 echo ========================================
 timeout /t 2 /nobreak >nul
 
-start "" "{app_dir}\\{exe_name}"
+REM 프로그램 재시작 (작업 디렉토리 변경 후 실행)
+cd /d "{app_dir}"
+if exist "{exe_name}" (
+    start "" "{exe_name}"
+) else (
+    echo [오류] exe 파일을 찾을 수 없습니다: {exe_name}
+    pause
+)
 
 rd /s /q "{extract_dir}" 2>nul
 del /q "{temp_path}" 2>nul
@@ -592,7 +602,8 @@ echo.
 echo 프로그램을 시작하시겠습니까? (Y/N)
 set /p choice=
 if /i "%choice%"=="Y" (
-    start "" "%APP_DIR%\\%EXE_NAME%"
+    cd /d "%APP_DIR%"
+    start "" "%EXE_NAME%"
 )
 '''
 
