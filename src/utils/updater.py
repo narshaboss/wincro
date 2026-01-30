@@ -6,13 +6,25 @@ GitHub Release를 통한 자동 업데이트와 녹화 파일 공유 기능을 �
 
 import json
 import os
-import ssl
 import socket
 import time
 import urllib.request
 import urllib.error
 from typing import Optional, Dict, List, Any
 from pathlib import Path
+
+# SSL은 지연 import (DLL 로드 실패 시에도 프로그램 실행 가능하도록)
+def _get_ssl_context(verify: bool = True):
+    """SSL 컨텍스트 생성 (SSL 모듈 로드 실패 시 None 반환)"""
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        if not verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    except Exception:
+        return None
 
 from .logger import get_logger
 from .config import PROJECT_ROOT, DATA_DIR
@@ -31,19 +43,19 @@ def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
 
     # 방법 1: 기본 SSL
     try:
-        ctx = ssl.create_default_context()
-        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        ctx = _get_ssl_context(verify=True)
+        if ctx:
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
     except Exception as e1:
         last_error = e1
         logger.debug(f"SSL 방법 1 실패: {e1}")
 
     # 방법 2: SSL 검증 완화
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers=headers)
-        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        ctx = _get_ssl_context(verify=False)
+        if ctx:
+            req = urllib.request.Request(url, headers=headers)
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
     except Exception as e2:
         last_error = e2
         logger.debug(f"SSL 방법 2 실패: {e2}")

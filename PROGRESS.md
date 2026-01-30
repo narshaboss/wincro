@@ -99,6 +99,40 @@
 
 ## 버그 수정 이력
 
+### 2026-01-31: SSL DLL 로드 오류 수정 (v1.0.104)
+
+**증상:** "자동 업데이트 확인 오류: DLL load failed while importing _ssl: %1은(는) 올바른 Win32 응용 프로그램이 아닙니다"
+
+**원인:** `updater.py`, `update_service.py` 모듈 최상단에 `import ssl`이 있어서, SSL DLL 로드 실패 시 모듈 전체 import가 실패함
+
+**해결:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `updater.py` | `import ssl` 제거, `_get_ssl_context()` 함수로 지연 import |
+| `update_service.py` | `import ssl` 제거, `_get_ssl_context()` 함수로 지연 import |
+
+```python
+def _get_ssl_context(verify: bool = True):
+    """SSL 컨텍스트 생성 (SSL 모듈 로드 실패 시 None 반환)"""
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        if not verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    except Exception:
+        return None
+```
+
+**효과:**
+- SSL DLL 로드 실패해도 프로그램 정상 실행
+- "SSL 없음" 방법으로 업데이트 확인 시도 가능
+- 일부 환경에서 HTTPS 연결이 안 될 수 있지만 프로그램은 크래시하지 않음
+
+---
+
 ### 2026-01-31: 업데이트 관련 버그 수정 (v1.0.103)
 
 **증상:**
@@ -997,7 +1031,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-31 (v1.0.103)
+- 마지막 업데이트: 2026-01-31 (v1.0.104)
 
 ## 업데이트 규칙
 

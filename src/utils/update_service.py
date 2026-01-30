@@ -7,7 +7,6 @@ app.py와 settings_view.py 모두 이 서비스를 사용합니다.
 
 import os
 import sys
-import ssl
 import shutil
 import zipfile
 import tempfile
@@ -23,6 +22,20 @@ logger = get_logger(__name__)
 
 # 요청 헤더
 _HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'}
+
+
+def _get_ssl_context(verify: bool = True):
+    """SSL 컨텍스트 생성 (SSL 모듈 로드 실패 시 None 반환)"""
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        if not verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    except Exception as e:
+        logger.warning(f"SSL 컨텍스트 생성 실패: {e}")
+        return None
 
 
 def ssl_fallback_connect(
@@ -50,8 +63,8 @@ def ssl_fallback_connect(
     last_error = None
 
     methods = [
-        ("기본 SSL", lambda: ssl.create_default_context()),
-        ("SSL 검증 완화", lambda: _create_unverified_ssl_context()),
+        ("기본 SSL", lambda: _get_ssl_context(verify=True)),
+        ("SSL 검증 완화", lambda: _get_ssl_context(verify=False)),
         ("SSL 없음", lambda: None),
     ]
 

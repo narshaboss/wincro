@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.103
+**현재 버전:** 1.0.104
 
 ---
 
@@ -457,6 +457,14 @@ wincro/
 ---
 
 ## 작업 히스토리
+
+### 2026-01-31: SSL DLL 로드 오류 수정 (v1.0.103 → v1.0.104)
+- **문제:** "DLL load failed while importing _ssl: %1은(는) 올바른 Win32 응용 프로그램이 아닙니다" 오류
+- **원인:** `updater.py`, `update_service.py`에서 모듈 최상단에 `import ssl` → SSL DLL 로드 실패 시 모듈 전체 import 실패
+- **수정:**
+  - `updater.py`: `import ssl` 제거, `_get_ssl_context()` 함수로 지연 import
+  - `update_service.py`: `import ssl` 제거, `_get_ssl_context()` 함수로 지연 import
+  - SSL 로드 실패해도 "SSL 없음" 방법으로 연결 시도 가능
 
 ### 2026-01-31: 업데이트 관련 버그 수정 (v1.0.102 → v1.0.103)
 - **버전 확인 무한 대기 버그 수정:**
