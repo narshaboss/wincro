@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.81
+**현재 버전:** 1.0.102
 
 ---
 
@@ -210,6 +210,19 @@ drag_to_x, drag_to_y: int # 드래그 종료 좌표
 drag_duration: float      # 드래그 소요 시간
 ```
 
+**모니터링 감시 항목 (monitoring_watches):**
+```python
+{
+    "image": str                    # 감시 이미지 경로
+    "goto_index": int               # 점프할 액션 인덱스
+    "search_region": List[int]      # 검색 범위 [x1, y1, x2, y2]
+    "monitor_actions": List[dict]   # 모니터링 액션 목록
+    "condition_image": str          # 점프 조건 이미지 (없으면 항상 점프)
+    "condition_search_region": List[int]  # 조건 이미지 검색 범위
+    "condition_confidence": float   # 조건 이미지 인식률 (기본 0.65)
+}
+```
+
 **AutomationPlan:**
 ```python
 name: str                       # 플랜 이름
@@ -217,6 +230,23 @@ initial_rules: List[Rule]       # 실행할 규칙 목록
 monitoring_rules: List[Rule]    # 모니터링 규칙
 video_path: str                 # 원본 영상 경로
 input_log_path: str             # 입력 로그 경로
+game_mode: GameModeConfig       # 게임 특화 모드 설정
+```
+
+**GameModeConfig:**
+```python
+enabled: bool                   # 게임 모드 활성화
+character_image: str            # 캐릭터 이미지 경로
+target_image: str               # 목표 이미지 경로
+character_confidence: float     # 캐릭터 인식률
+target_confidence: float        # 목표 인식률
+arrival_threshold: int          # 도달 판정 거리 (픽셀)
+search_region: List[int]        # 검색 영역 [x1, y1, x2, y2]
+smooth_move: bool               # 스무스 이동 (키 홀드 방식)
+move_skill_key: str             # 이동 스킬 키
+move_skill_distance: int        # 이동 스킬 사용 거리 (픽셀)
+auto_skill_key: str             # 상시 스킬 키
+auto_skill_cooldown_image: str  # 스킬 쿨타임 이미지
 ```
 
 ---
@@ -427,6 +457,37 @@ wincro/
 ---
 
 ## 작업 히스토리
+
+### 2026-01-31: 모니터링 모드 점프 조건 기능 추가 (v1.0.101 → v1.0.102)
+- **기능:** 모니터링 모드에서 점프 실행 전 조건 이미지 확인
+- **동작 흐름:** 감시 이미지 발견 → 모니터링 액션 실행 → **조건 이미지 확인** → 조건 충족 시 점프, 미충족 시 모니터링 복귀
+- **UI 변경:**
+  - `monitoring_editor.py`: 감시 항목에 "조건" 버튼 추가 (점프 드롭다운 왼쪽)
+  - 조건 설정 다이얼로그: 이미지 선택, 검색 범위 지정, 인식률 슬라이더 (30~100%)
+- **데이터 필드:**
+  - `condition_image`: 점프 조건 이미지 경로
+  - `condition_search_region`: 조건 이미지 검색 범위 [x1, y1, x2, y2]
+  - `condition_confidence`: 조건 이미지 인식률 (기본 0.65)
+- **실행 로직:** `rule_executor.py`에서 조건 이미지 존재 시 `_find_image_on_screen()` 호출, 발견되면 점프, 없으면 모니터링 루프 계속
+- **경로 변환:** `automation_models.py`의 `to_dict`/`from_dict`에 condition_image 경로 변환 추가
+
+### 2026-01-30: 게임 모드 스무스 이동 및 스킬 기능 추가 (v1.0.86 → v1.0.101)
+- **스무스 이동 (smooth_move):**
+  - 키 반복 방식 → 키 홀드 방식으로 변경 옵션
+  - 울트라 탭 방식: 15ms 누름 + 5ms 간격으로 자연스러운 이동
+- **이동 스킬 (move_skill):**
+  - `move_skill_key`: 이동 스킬 키 (예: "4")
+  - `move_skill_distance`: 이동 스킬 사용 거리 (기본 150픽셀 이상이면 스킬 사용)
+- **상시 스킬 (auto_skill):**
+  - `auto_skill_key`: 상시 사용 스킬 키
+  - `auto_skill_cooldown_image`: 쿨타임 이미지 (이 이미지가 없으면 스킬 사용)
+- **캐릭터/목표 인식률 분리:**
+  - `character_confidence`: 캐릭터 이미지 인식률
+  - `target_confidence`: 목표 이미지 인식률
+- **수정된 파일:**
+  - `automation_models.py`: GameModeConfig에 새 필드 추가
+  - `player_view.py`: 게임 모드 설정 UI 확장
+  - `rule_executor.py`: 스킬 실행 및 스무스 이동 로직
 
 ### 2026-01-28: 최종타겟이미지 감시이미지 재확인 로직 추가 (v1.0.84 → v1.0.85)
 - **문제:** 최종타겟이미지가 감시이미지보다 약간 먼저 나타나면 감시이미지를 놓치고 모니터링 종료

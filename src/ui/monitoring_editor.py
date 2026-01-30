@@ -6,6 +6,7 @@ player_view.py의 _edit_monitoring_mode 메서드를 별도 클래스로 추출�
 
 import time
 import threading
+import shutil
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -95,6 +96,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 "goto_index": w.get("goto_index", 0),
                 "search_region": w.get("search_region"),
                 "monitor_actions": monitor_actions,
+                "condition_image": w.get("condition_image"),  # 점프 조건 이미지
+                "condition_search_region": w.get("condition_search_region"),  # 조건 이미지 검색 범위
+                "condition_confidence": w.get("condition_confidence", 0.65),  # 조건 이미지 인식률
             })
 
         # 부모 액션 목록 (드롭다운용)
@@ -1168,7 +1172,23 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             font=ctk.CTkFont(size=11),
             fg_color=COLORS["accent_blue"], hover_color="#2563eb",
             command=select_watch_image,
-        ).pack(side="left", padx=(0, 15))
+        ).pack(side="left", padx=(0, 10))
+
+        # 점프 조건 버튼
+        condition_image = watch.get("condition_image")
+        condition_text = "조건" if not condition_image else "조건✓"
+        condition_color = COLORS["bg_card_hover"] if not condition_image else "#f59e0b"
+
+        condition_btn = ctk.CTkButton(
+            row1, text=condition_text, width=50, height=24,
+            font=ctk.CTkFont(size=11),
+            fg_color=condition_color,
+            hover_color="#d97706" if condition_image else COLORS["bg_card"],
+            command=lambda i=idx: self._edit_condition(i),
+        )
+        condition_btn.pack(side="left", padx=(0, 10))
+        # 버튼 참조 저장 (나중에 업데이트용)
+        watch["_condition_btn"] = condition_btn
 
         # 점프할 액션 선택 (드롭다운)
         ctk.CTkLabel(
@@ -1337,9 +1357,251 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _add_watch(self):
         """감시 항목 추가"""
         new_idx = len(self._watches_data)
-        self._watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": []})
+        self._watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": [], "condition_image": None, "condition_search_region": None, "condition_confidence": 0.65})
         self._watch_collapsed[new_idx] = False
         self._refresh_watch_list()
+
+    def _edit_condition(self, watch_idx: int):
+        """점프 조건 이미지 편집"""
+        if watch_idx >= len(self._watches_data):
+            return
+
+        watch = self._watches_data[watch_idx]
+        current_condition = watch.get("condition_image")
+        current_region = watch.get("condition_search_region")
+        current_confidence = watch.get("condition_confidence", 0.65)
+
+        # 조건 설정 다이얼로그
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("점프 조건 설정")
+        dialog.geometry("400x420")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # 화면 중앙
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 400) // 2
+        y = (dialog.winfo_screenheight() - 420) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        main = ctk.CTkFrame(dialog, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=20, pady=15)
+
+        ctk.CTkLabel(
+            main, text="점프 조건 이미지",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            main, text="이 이미지가 화면에 있어야 점프 액션이 실행됩니다.\n조건 없음 선택 시 항상 점프합니다.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+            justify="left",
+        ).pack(anchor="w", pady=(5, 15))
+
+        # 현재 조건 이미지 표시
+        preview_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=8)
+        preview_frame.pack(fill="x", pady=(0, 15))
+
+        preview_inner = ctk.CTkFrame(preview_frame, fg_color="transparent")
+        preview_inner.pack(fill="x", padx=15, pady=10)
+
+        # 이미지 미리보기
+        preview_label = ctk.CTkLabel(
+            preview_inner, text="없음", width=60, height=60,
+            fg_color=COLORS["bg_card_hover"], corner_radius=6,
+        )
+        preview_label.pack(side="left")
+
+        # 이미지 이름
+        img_name = Path(current_condition).name if current_condition else "조건 없음"
+        name_label = ctk.CTkLabel(
+            preview_inner, text=img_name,
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_primary"] if current_condition else COLORS["text_muted"],
+        )
+        name_label.pack(side="left", padx=(15, 0))
+
+        # 썸네일 로드
+        if current_condition and Path(current_condition).exists():
+            thumb = self._load_thumbnail(current_condition, size=(60, 60))
+            if thumb:
+                preview_label.configure(image=thumb, text="")
+                preview_label._thumb_ref = thumb
+
+        # 선택된 이미지 경로 저장
+        selected_path = [current_condition]
+
+        def select_image():
+            path = filedialog.askopenfilename(filetypes=[("이미지", "*.png *.jpg *.bmp")])
+            if path:
+                dest = DATA_DIR / "templates" / f"condition_{Path(path).name}"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if not dest.exists():
+                    shutil.copy(path, dest)
+                selected_path[0] = str(dest)
+                name_label.configure(text=Path(dest).name, text_color=COLORS["text_primary"])
+                thumb = self._load_thumbnail(str(dest), size=(60, 60))
+                if thumb:
+                    preview_label.configure(image=thumb, text="")
+                    preview_label._thumb_ref = thumb
+
+        def clear_condition():
+            selected_path[0] = None
+            name_label.configure(text="조건 없음", text_color=COLORS["text_muted"])
+            preview_label.configure(image=None, text="없음")
+
+        # 버튼들
+        btn_frame = ctk.CTkFrame(main, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkButton(
+            btn_frame, text="이미지 선택", width=100, height=30,
+            fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+            command=select_image,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_frame, text="조건 없음", width=100, height=30,
+            fg_color=COLORS["bg_card_hover"], hover_color=COLORS["bg_card"],
+            text_color=COLORS["text_secondary"],
+            command=clear_condition,
+        ).pack(side="left")
+
+        # 검색 범위 설정
+        region_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=8)
+        region_frame.pack(fill="x", pady=(10, 0))
+
+        region_inner = ctk.CTkFrame(region_frame, fg_color="transparent")
+        region_inner.pack(fill="x", padx=15, pady=10)
+
+        ctk.CTkLabel(
+            region_inner, text="검색 범위:",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+        # 검색 범위 상태 저장
+        selected_region = [current_region]
+
+        region_text = f"({current_region[0]}, {current_region[1]}) ~ ({current_region[2]}, {current_region[3]})" if current_region else "전체 화면"
+        region_label = ctk.CTkLabel(
+            region_inner, text=region_text,
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["accent"] if current_region else COLORS["text_secondary"],
+            width=150, anchor="w",
+        )
+        region_label.pack(side="left", padx=(10, 10))
+
+        def select_region():
+            dialog.withdraw()
+            self.withdraw()
+            self.after(100, lambda: _open_condition_region_selector())
+
+        def _open_condition_region_selector():
+            from .analyzer_view import ScreenRegionSelector
+
+            def on_region_select(x1, y1, x2, y2):
+                selected_region[0] = [x1, y1, x2, y2]
+                region_label.configure(
+                    text=f"({x1}, {y1}) ~ ({x2}, {y2})",
+                    text_color=COLORS["accent"]
+                )
+                self.deiconify()
+                dialog.deiconify()
+                dialog.grab_set()
+                dialog.focus_force()
+
+            def on_cancel():
+                self.deiconify()
+                dialog.deiconify()
+                dialog.grab_set()
+                dialog.focus_force()
+
+            ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=selected_region[0])
+
+        def clear_region():
+            selected_region[0] = None
+            region_label.configure(text="전체 화면", text_color=COLORS["text_secondary"])
+
+        ctk.CTkButton(
+            region_inner, text="범위 지정", width=70, height=24,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+            command=select_region,
+        ).pack(side="left", padx=(0, 5))
+
+        ctk.CTkButton(
+            region_inner, text="초기화", width=50, height=24,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLORS["bg_card_hover"], hover_color=COLORS["bg_card"],
+            text_color=COLORS["text_secondary"],
+            command=clear_region,
+        ).pack(side="left")
+
+        # 인식률 설정
+        conf_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=8)
+        conf_frame.pack(fill="x", pady=(10, 0))
+
+        conf_inner = ctk.CTkFrame(conf_frame, fg_color="transparent")
+        conf_inner.pack(fill="x", padx=15, pady=10)
+
+        ctk.CTkLabel(
+            conf_inner, text="인식률:",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+        conf_var = ctk.DoubleVar(value=current_confidence * 100)
+        conf_slider = ctk.CTkSlider(
+            conf_inner, from_=30, to=100, number_of_steps=70,
+            variable=conf_var, width=150,
+        )
+        conf_slider.pack(side="left", padx=(10, 10))
+
+        conf_label = ctk.CTkLabel(
+            conf_inner, text=f"{int(current_confidence * 100)}%",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["accent"],
+            width=45,
+        )
+        conf_label.pack(side="left")
+
+        def update_conf_label(*args):
+            conf_label.configure(text=f"{int(conf_var.get())}%")
+        conf_var.trace_add("write", update_conf_label)
+
+        # 저장/취소 버튼
+        bottom_frame = ctk.CTkFrame(main, fg_color="transparent")
+        bottom_frame.pack(fill="x", pady=(15, 0))
+
+        def save_condition():
+            self._watches_data[watch_idx]["condition_image"] = selected_path[0]
+            self._watches_data[watch_idx]["condition_search_region"] = selected_region[0]
+            self._watches_data[watch_idx]["condition_confidence"] = conf_var.get() / 100.0
+            # 버튼 텍스트 업데이트
+            btn = watch.get("_condition_btn")
+            if btn:
+                if selected_path[0]:
+                    btn.configure(text="조건✓", fg_color="#f59e0b", hover_color="#d97706")
+                else:
+                    btn.configure(text="조건", fg_color=COLORS["bg_card_hover"], hover_color=COLORS["bg_card"])
+            logger.info(f"[모니터링] 점프 조건 설정: {selected_path[0]}, 범위: {selected_region[0]}, 인식률: {conf_var.get():.0f}%")
+            dialog.destroy()
+
+        ctk.CTkButton(
+            bottom_frame, text="저장", width=80, height=32,
+            fg_color=COLORS["success"], hover_color="#2ea44f",
+            command=save_condition,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            bottom_frame, text="취소", width=80, height=32,
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            command=dialog.destroy,
+        ).pack(side="left")
 
     def _save(self):
         """저장"""
@@ -1356,6 +1618,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     "goto_index": w.get("goto_index", 0),
                     "search_region": w.get("search_region"),
                     "monitor_actions": monitor_actions,
+                    "condition_image": w.get("condition_image"),  # 점프 조건 이미지
+                    "condition_search_region": w.get("condition_search_region"),  # 조건 이미지 검색 범위
+                    "condition_confidence": w.get("condition_confidence", 0.65),  # 조건 이미지 인식률
                 })
 
         has_checkbox = self._is_monitoring_var.get()

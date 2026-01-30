@@ -99,6 +99,96 @@
 
 ## 버그 수정 이력
 
+### 2026-01-31: 모니터링 모드 점프 조건 기능 추가 (v1.0.102)
+
+**기능:** 모니터링 모드에서 점프 실행 전 조건 이미지를 확인하여 조건부 점프 지원
+
+**동작 흐름:**
+```
+감시 이미지 발견 → 모니터링 액션 실행 → 조건 이미지 확인
+                                          ├─ 조건 충족 → 점프 액션 실행 → 모니터링 복귀
+                                          └─ 조건 미충족 → 점프 건너뜀 → 모니터링 복귀
+```
+
+**UI 변경:**
+| 파일 | 변경 내용 |
+|------|----------|
+| `monitoring_editor.py` | 감시 항목에 "조건" 버튼 추가 (점프 드롭다운 왼쪽) |
+| `monitoring_editor.py` | `_edit_condition()` 메서드 추가 - 조건 설정 다이얼로그 |
+
+**조건 설정 다이얼로그:**
+- 이미지 선택/미리보기
+- 검색 범위 지정 (ScreenRegionSelector)
+- 인식률 슬라이더 (30~100%, 기본 65%)
+
+**데이터 필드 (monitoring_watches 항목):**
+```python
+{
+    "condition_image": str,           # 점프 조건 이미지 경로
+    "condition_search_region": list,  # 검색 범위 [x1, y1, x2, y2]
+    "condition_confidence": float,    # 인식률 (기본 0.65)
+}
+```
+
+**실행 로직 (rule_executor.py):**
+```python
+# 조건 이미지 존재 시 확인
+condition_image = watch.get('condition_image')
+condition_met = True  # 조건 없으면 항상 충족
+if condition_image and Path(condition_image).exists():
+    result = self._find_image_on_screen(condition_image, condition_confidence,
+                                        search_region=condition_search_region)
+    condition_met = result is not None
+
+# 조건 충족 시에만 점프
+if goto_index >= 0 and condition_met:
+    # 점프 액션 실행
+```
+
+**경로 변환 (automation_models.py):**
+- `to_dict()`: condition_image → 파일명만 저장
+- `from_dict()`: 파일명 → 절대 경로 복원
+
+**수정된 파일:**
+- `src/ui/monitoring_editor.py` - UI 및 _edit_condition 메서드
+- `src/player/rule_executor.py` - 조건 체크 로직
+- `src/analyzer/automation_models.py` - 경로 변환
+
+---
+
+### 2026-01-30: 게임 모드 스무스 이동 및 스킬 기능 추가 (v1.0.86 ~ v1.0.101)
+
+**기능:** 게임 특화 모드에 스무스 이동, 이동 스킬, 상시 스킬 기능 추가
+
+**스무스 이동 (smooth_move):**
+| 모드 | 방식 | 특징 |
+|------|------|------|
+| OFF (기본) | 키 반복 | 호환성 좋음, 약간 로봇같음 |
+| ON | 울트라 탭 | 15ms 누름 + 5ms 간격, 자연스러움 |
+
+**이동 스킬 (move_skill):**
+| 설정 | 설명 |
+|------|------|
+| `move_skill_key` | 이동 스킬 키 (예: "4") |
+| `move_skill_distance` | 스킬 사용 거리 (기본 150픽셀 이상) |
+
+**상시 스킬 (auto_skill):**
+| 설정 | 설명 |
+|------|------|
+| `auto_skill_key` | 상시 사용 스킬 키 |
+| `auto_skill_cooldown_image` | 쿨타임 이미지 (없으면 스킬 사용) |
+
+**인식률 분리:**
+- `character_confidence`: 캐릭터 이미지 인식률
+- `target_confidence`: 목표 이미지 인식률
+
+**수정된 파일:**
+- `src/analyzer/automation_models.py` - GameModeConfig 필드 추가
+- `src/ui/player_view.py` - 게임 모드 설정 UI
+- `src/player/rule_executor.py` - 스킬/이동 로직
+
+---
+
 ### 2026-01-21: 녹화 시작/중지 버튼 UI 먹통 현상 수정
 
 **증상:** 녹화 시작 또는 중지 버튼 클릭 시 프로그램이 먹통(UI 응답 없음)
@@ -849,7 +939,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-29
+- 마지막 업데이트: 2026-01-31
 
 ## 업데이트 규칙
 

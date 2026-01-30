@@ -1645,6 +1645,7 @@ class RuleExecutor:
 
             # ROI 기반 적응형 매칭 (이전 위치 근처 먼저 검색)
             result = matcher.match_with_roi(screenshot_bgr, image_path, confidence)
+            logger.debug(f"[이미지 검색] ROI매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
 
             if result.found and result.confidence >= confidence:
                 # 사용자 설정 confidence 이상일 때만 인정 (오탐 방지)
@@ -1663,6 +1664,7 @@ class RuleExecutor:
                 screenshot_bgr, image_path,
                 min_threshold=min_threshold
             )
+            logger.debug(f"[이미지 검색] best_effort: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
 
             if result.found and result.confidence >= confidence:
                 # 사용자 설정 confidence 이상일 때만 인정
@@ -1672,7 +1674,7 @@ class RuleExecutor:
 
             # 실패 - 이유 로깅
             if result.found:
-                logger.info(f"[이미지 검색] 인식률 부족: {result.confidence:.2f} < 설정 인식률 {confidence:.2f}")
+                logger.warning(f"[이미지 검색] 인식률 부족: {result.confidence:.1%} < 설정 {confidence:.1%} - {Path(image_path).name}")
             return None
 
         except Exception as e:
@@ -2151,8 +2153,22 @@ class RuleExecutor:
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                    # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때만)
-                    if goto_index >= 0:
+                    # 점프 조건 이미지 체크
+                    condition_image = watch.get('condition_image')
+                    condition_search_region = watch.get('condition_search_region')  # 조건 이미지 검색 범위
+                    condition_confidence = watch.get('condition_confidence', 0.65)  # 조건 이미지 인식률
+                    condition_met = True  # 조건 없으면 항상 충족
+                    if condition_image and Path(condition_image).exists():
+                        condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
+                        if condition_result:
+                            logger.info(f"{_GREEN}  ✓ 점프 조건 충족: {Path(condition_image).name} 발견 (인식률:{condition_confidence:.0%}){_RESET}")
+                            condition_met = True
+                        else:
+                            logger.info(f"{_YELLOW}  ✗ 점프 조건 미충족: {Path(condition_image).name} 없음 → 모니터링 복귀{_RESET}")
+                            condition_met = False
+
+                    # 해당 부모 액션 + 자식들 실행 (goto_index가 유효하고 조건 충족 시)
+                    if goto_index >= 0 and condition_met:
                         plan = self._current_plan
                         # 부분 실행 시 원본 rules 사용 (goto_index는 원본 기준)
                         goto_rules = getattr(plan, '_original_initial_rules', None) or plan.initial_rules
@@ -2578,12 +2594,23 @@ class RuleExecutor:
             logger.error(f"[특화모드] 목표 이미지 없음: {config.target_image}")
             return False
 
+        # 개별 인식률 (하위호환)
+        char_conf = getattr(config, 'character_confidence', None) or config.confidence
+        target_conf = getattr(config, 'target_confidence', None) or config.confidence
+
         # 설정 출력
-        logger.info(f"[특화모드] 캐릭터 이미지: {Path(config.character_image).name}")
-        logger.info(f"[특화모드] 목표 이미지: {Path(config.target_image).name}")
-        logger.info(f"[특화모드] 신뢰도: {config.confidence}, 도달거리: {config.arrival_threshold}px")
+        logger.info(f"[특화모드] 캐릭터 이미지: {Path(config.character_image).name} (인식률: {char_conf:.0%})")
+        logger.info(f"[특화모드] 목표 이미지: {Path(config.target_image).name} (인식률: {target_conf:.0%})")
+        logger.info(f"[특화모드] 도달거리: {config.arrival_threshold}px")
         logger.info(f"[특화모드] 이동키: ↑={config.move_keys.get('up')} ↓={config.move_keys.get('down')} ←={config.move_keys.get('left')} →={config.move_keys.get('right')}")
         logger.info(f"[특화모드] 분석간격: {config.analysis_interval}초")
+
+        # 검색 영역
+        search_region = config.search_region if hasattr(config, 'search_region') else None
+        if search_region:
+            logger.info(f"[특화모드] 검색영역: ({search_region[0]},{search_region[1]}) ~ ({search_region[2]},{search_region[3]})")
+        else:
+            logger.info(f"[특화모드] 검색영역: 전체 화면")
 
         # 중지 이벤트 초기화
         self._stop_event.clear()
@@ -2605,7 +2632,7 @@ class RuleExecutor:
                 iteration += 1
 
                 # 1. 캐릭터 위치 찾기
-                char_result = self._find_image_on_screen(config.character_image, config.confidence)
+                char_result = self._find_image_on_screen(config.character_image, char_conf, search_region)
                 if not char_result:
                     char_not_found_count += 1
                     if char_not_found_count <= 3 or char_not_found_count % 20 == 0:
@@ -2623,7 +2650,7 @@ class RuleExecutor:
                 char_x, char_y, char_conf = char_result
 
                 # 2. 목표 위치 찾기
-                target_result = self._find_image_on_screen(config.target_image, config.confidence)
+                target_result = self._find_image_on_screen(config.target_image, target_conf, search_region)
                 if not target_result:
                     target_not_found_count += 1
                     if target_not_found_count <= 3 or target_not_found_count % 20 == 0:
@@ -2645,9 +2672,8 @@ class RuleExecutor:
                 dy = target_y - char_y
                 distance = (dx**2 + dy**2) ** 0.5
 
-                # 상세 로그 (5회마다)
-                if iteration % 5 == 1:
-                    logger.info(f"[특화모드] #{iteration} 캐릭터({char_x},{char_y}) → 목표({target_x},{target_y}) 거리={distance:.0f}px")
+                # 상세 로그 (매 프레임)
+                logger.info(f"[특화모드] #{iteration} 캐릭터({char_x},{char_y}) 목표({target_x},{target_y}) dx={dx:+.0f} dy={dy:+.0f} 거리={distance:.0f}px")
 
                 # 4. 도달 판정
                 if distance < config.arrival_threshold:
@@ -2675,6 +2701,8 @@ class RuleExecutor:
                     else:
                         new_key = config.move_keys.get("up", "up")
                         direction = "↑ 위"
+
+                logger.info(f"[특화모드] 방향결정: |dx|={abs(dx):.0f} |dy|={abs(dy):.0f} → {direction} (key={new_key})")
 
                 # 6. 키 입력 (방향이 바뀔 때만 키 변경)
                 if new_key != current_key:

@@ -2926,9 +2926,14 @@ class GameModeDialog(ctk.CTkToplevel):
         char_frame = ctk.CTkFrame(img_inner, fg_color="transparent")
         char_frame.pack(side="left", expand=True)
         ctk.CTkLabel(char_frame, text="캐릭터", font=ctk.CTkFont(size=11, weight="bold")).pack()
-        self._char_preview = ctk.CTkLabel(char_frame, text="없음", width=80, height=80,
-                                          fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        self._char_preview = ctk.CTkLabel(char_frame, text="클릭하여\n설정", width=80, height=80,
+                                          fg_color=COLORS["bg_card_hover"], corner_radius=6, cursor="hand2")
         self._char_preview.pack(pady=5)
+        self._char_preview.bind("<Button-1>", lambda e: self._open_image_settings("character"))
+        char_conf = getattr(self._config, 'character_confidence', 0.65) or 0.65
+        self._char_conf_label = ctk.CTkLabel(char_frame, text=f"인식률: {int(char_conf*100)}%",
+                                              font=ctk.CTkFont(size=10), text_color=COLORS["accent"])
+        self._char_conf_label.pack()
         char_btns = ctk.CTkFrame(char_frame, fg_color="transparent")
         char_btns.pack()
         ctk.CTkButton(char_btns, text="파일", width=50, height=24,
@@ -2942,9 +2947,14 @@ class GameModeDialog(ctk.CTkToplevel):
         target_frame = ctk.CTkFrame(img_inner, fg_color="transparent")
         target_frame.pack(side="right", expand=True)
         ctk.CTkLabel(target_frame, text="목표", font=ctk.CTkFont(size=11, weight="bold")).pack()
-        self._target_preview = ctk.CTkLabel(target_frame, text="없음", width=80, height=80,
-                                            fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        self._target_preview = ctk.CTkLabel(target_frame, text="클릭하여\n설정", width=80, height=80,
+                                            fg_color=COLORS["bg_card_hover"], corner_radius=6, cursor="hand2")
         self._target_preview.pack(pady=5)
+        self._target_preview.bind("<Button-1>", lambda e: self._open_image_settings("target"))
+        target_conf = getattr(self._config, 'target_confidence', 0.65) or 0.65
+        self._target_conf_label = ctk.CTkLabel(target_frame, text=f"인식률: {int(target_conf*100)}%",
+                                                font=ctk.CTkFont(size=10), text_color=COLORS["accent"])
+        self._target_conf_label.pack()
         target_btns = ctk.CTkFrame(target_frame, fg_color="transparent")
         target_btns.pack()
         ctk.CTkButton(target_btns, text="파일", width=50, height=24,
@@ -2986,20 +2996,138 @@ class GameModeDialog(ctk.CTkToplevel):
             self._key_vars[key] = var
             ctk.CTkEntry(keys_row, textvariable=var, width=45, height=24).pack(side="left", padx=(0, 6))
 
-        # 설정값
+        # 설정값 (분석간격, 도달거리)
         vals_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
         vals_row.pack(fill="x")
         ctk.CTkLabel(vals_row, text="분석간격:").pack(side="left")
         self._interval_var = ctk.StringVar(value=str(self._config.analysis_interval))
-        ctk.CTkEntry(vals_row, textvariable=self._interval_var, width=40, height=24).pack(side="left", padx=(2, 0))
-        ctk.CTkLabel(vals_row, text="초").pack(side="left", padx=(2, 10))
-        ctk.CTkLabel(vals_row, text="신뢰도:").pack(side="left")
-        self._confidence_var = ctk.StringVar(value=str(self._config.confidence))
-        ctk.CTkEntry(vals_row, textvariable=self._confidence_var, width=40, height=24).pack(side="left", padx=(2, 10))
+        ctk.CTkEntry(vals_row, textvariable=self._interval_var, width=50, height=24).pack(side="left", padx=(2, 0))
+        ctk.CTkLabel(vals_row, text="초").pack(side="left", padx=(2, 15))
         ctk.CTkLabel(vals_row, text="도달거리:").pack(side="left")
         self._threshold_var = ctk.StringVar(value=str(self._config.arrival_threshold))
-        ctk.CTkEntry(vals_row, textvariable=self._threshold_var, width=40, height=24).pack(side="left", padx=(2, 0))
-        ctk.CTkLabel(vals_row, text="px").pack(side="left")
+        ctk.CTkEntry(vals_row, textvariable=self._threshold_var, width=50, height=24).pack(side="left", padx=(2, 0))
+        ctk.CTkLabel(vals_row, text="px").pack(side="left", padx=(2, 0))
+
+        # 이동 모드 설정
+        move_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
+        move_row.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(move_row, text="이동방식:").pack(side="left")
+        self._smooth_var = ctk.BooleanVar(value=getattr(self._config, 'smooth_move', False))
+        ctk.CTkSwitch(move_row, text="부드러운 이동 (키 홀드)", variable=self._smooth_var,
+                      onvalue=True, offvalue=False).pack(side="left", padx=(5, 0))
+        ctk.CTkLabel(move_row, text="⚠️ 일부 게임은 OFF가 호환성 좋음",
+                     font=ctk.CTkFont(size=10), text_color="#ebcb8b").pack(side="left", padx=(10, 0))
+
+        # 이동 스킬 설정
+        skill_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
+        skill_row.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(skill_row, text="이동스킬:").pack(side="left")
+        self._skill_key_var = ctk.StringVar(value=getattr(self._config, 'move_skill_key', ""))
+        ctk.CTkEntry(skill_row, textvariable=self._skill_key_var, width=40, height=24,
+                     placeholder_text="키").pack(side="left", padx=(5, 0))
+        ctk.CTkLabel(skill_row, text="사용거리:").pack(side="left", padx=(10, 0))
+        self._skill_dist_var = ctk.StringVar(value=str(getattr(self._config, 'move_skill_distance', 150)))
+        ctk.CTkEntry(skill_row, textvariable=self._skill_dist_var, width=50, height=24).pack(side="left", padx=(5, 0))
+        ctk.CTkLabel(skill_row, text="px 이상이면 스킬 사용 (비워두면 사용 안함)",
+                     font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(side="left", padx=(5, 0))
+
+        # 상시 스킬 설정
+        auto_skill_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
+        auto_skill_row.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(auto_skill_row, text="상시스킬:").pack(side="left")
+        self._auto_skill_key_var = ctk.StringVar(value=getattr(self._config, 'auto_skill_key', ""))
+        ctk.CTkEntry(auto_skill_row, textvariable=self._auto_skill_key_var, width=40, height=24,
+                     placeholder_text="키").pack(side="left", padx=(5, 0))
+
+        ctk.CTkLabel(auto_skill_row, text="쿨타임 이미지:").pack(side="left", padx=(15, 0))
+        self._auto_skill_cd_preview = ctk.CTkLabel(auto_skill_row, text="없음", width=50, height=50,
+                                                    fg_color=COLORS["bg_card_hover"], corner_radius=4, cursor="hand2")
+        self._auto_skill_cd_preview.pack(side="left", padx=(5, 0))
+        self._auto_skill_cd_preview.bind("<Button-1>", lambda e: self._select_auto_skill_cd_image())
+        ctk.CTkLabel(auto_skill_row, text="← 이 이미지가 사라지면 스킬 사용",
+                     font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(side="left", padx=(5, 0))
+
+        # === 검색 영역 섹션 ===
+        region_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        region_frame.pack(fill="x", pady=(0, 8))
+        region_inner = ctk.CTkFrame(region_frame, fg_color="transparent")
+        region_inner.pack(fill="x", padx=12, pady=8)
+
+        ctk.CTkLabel(region_inner, text="검색 영역:", width=60).pack(side="left")
+        self._region_label = ctk.CTkLabel(region_inner, text=self._get_region_text(), width=200)
+        self._region_label.pack(side="left", padx=(5, 10))
+        ctk.CTkButton(region_inner, text="영역 선택", width=80, height=26, fg_color="#5e81ac",
+                      command=self._select_search_region).pack(side="left", padx=2)
+        ctk.CTkButton(region_inner, text="초기화", width=60, height=26, fg_color=COLORS["bg_card_hover"],
+                      command=self._clear_search_region).pack(side="left", padx=2)
+
+        # === 실행 컨트롤 섹션 ===
+        control_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        control_frame.pack(fill="x", pady=(0, 8))
+        control_inner = ctk.CTkFrame(control_frame, fg_color="transparent")
+        control_inner.pack(fill="x", padx=12, pady=8)
+
+        self._run_btn = ctk.CTkButton(control_inner, text="▶ 테스트 실행", width=100, height=30,
+                                       fg_color="#a3be8c", command=self._toggle_execution)
+        self._run_btn.pack(side="left")
+        self._status_label = ctk.CTkLabel(control_inner, text="상태: 대기", font=ctk.CTkFont(size=11))
+        self._status_label.pack(side="left", padx=15)
+
+        # === 실시간 정보 섹션 ===
+        info_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        info_frame.pack(fill="x", pady=(0, 8))
+
+        info_header = ctk.CTkFrame(info_frame, fg_color="transparent")
+        info_header.pack(fill="x", padx=12, pady=(8, 4))
+        ctk.CTkLabel(info_header, text="📊 실시간 정보", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left")
+        ctk.CTkButton(info_header, text="로그 지우기", width=70, height=22, fg_color=COLORS["bg_card_hover"],
+                      command=self._clear_log).pack(side="right")
+
+        # 상태 표시 영역
+        status_row = ctk.CTkFrame(info_frame, fg_color="transparent")
+        status_row.pack(fill="x", padx=12, pady=(0, 4))
+
+        # 캐릭터 위치
+        char_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        char_info.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkLabel(char_info, text="캐릭터", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
+        self._char_pos_label = ctk.CTkLabel(char_info, text="-", font=ctk.CTkFont(size=12, weight="bold"))
+        self._char_pos_label.pack()
+
+        # 목표 위치
+        target_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        target_info.pack(side="left", expand=True, fill="x", padx=4)
+        ctk.CTkLabel(target_info, text="목표", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
+        self._target_pos_label = ctk.CTkLabel(target_info, text="-", font=ctk.CTkFont(size=12, weight="bold"))
+        self._target_pos_label.pack()
+
+        # 거리
+        dist_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        dist_info.pack(side="left", expand=True, fill="x", padx=4)
+        ctk.CTkLabel(dist_info, text="거리", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
+        self._distance_label = ctk.CTkLabel(dist_info, text="-", font=ctk.CTkFont(size=12, weight="bold"))
+        self._distance_label.pack()
+
+        # 이동방향
+        dir_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        dir_info.pack(side="left", expand=True, fill="x", padx=4)
+        ctk.CTkLabel(dir_info, text="방향", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
+        self._direction_label = ctk.CTkLabel(dir_info, text="-", font=ctk.CTkFont(size=14, weight="bold"))
+        self._direction_label.pack()
+
+        # 키입력 횟수
+        key_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        key_info.pack(side="left", expand=True, fill="x", padx=(4, 0))
+        ctk.CTkLabel(key_info, text="키입력", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
+        self._key_count_label = ctk.CTkLabel(key_info, text="0회", font=ctk.CTkFont(size=12, weight="bold"))
+        self._key_count_label.pack()
+
+        # 로그 텍스트 영역 (더 크고 선명한 색상)
+        self._log_text = ctk.CTkTextbox(info_frame, height=180, font=ctk.CTkFont(family="Consolas", size=13),
+                                         fg_color="#1a1a2e", text_color="#00ff88", corner_radius=6)
+        self._log_text.pack(fill="x", padx=12, pady=(4, 8))
+        self._log_text.configure(state="disabled")
+        self._key_press_count = 0  # 키 입력 횟수 카운터
 
         # === 버튼 ===
         btn_frame = ctk.CTkFrame(main, fg_color="transparent")
@@ -3073,6 +3201,13 @@ class GameModeDialog(ctk.CTkToplevel):
         else:
             self._target_preview.configure(image=None, text="없음")
 
+        # 상시 스킬 쿨타임 이미지 미리보기
+        auto_cd_img = getattr(self._config, 'auto_skill_cooldown_image', "")
+        if auto_cd_img and Path(auto_cd_img).exists():
+            self._load_thumb(auto_cd_img, self._auto_skill_cd_preview, size=50)
+        else:
+            self._auto_skill_cd_preview.configure(image=None, text="없음")
+
     def _load_thumb(self, path: str, label: ctk.CTkLabel, size: int = 80):
         try:
             from PIL import Image
@@ -3097,6 +3232,19 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._config.character_image = str(dest)
             else:
                 self._config.target_image = str(dest)
+            self._update_previews()
+
+    def _select_auto_skill_cd_image(self):
+        """상시 스킬 쿨타임 이미지 선택"""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("이미지", "*.png *.jpg *.bmp")])
+        if path:
+            from ..utils.config import DATA_DIR
+            import shutil
+            dest = DATA_DIR / "templates" / f"game_auto_skill_cd_{Path(path).name}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(path, dest)
+            self._config.auto_skill_cooldown_image = str(dest)
             self._update_previews()
 
     def _capture_image(self, img_type: str):
@@ -3140,14 +3288,23 @@ class GameModeDialog(ctk.CTkToplevel):
         label.configure(text="검색중...", text_color=COLORS["text_secondary"])
         self.update()
 
+        # 검색 영역 가져오기
+        search_region = getattr(self._config, 'search_region', None)
+
+        # 개별 인식률 사용
+        if img_type == "character":
+            confidence = getattr(self._config, 'character_confidence', 0.65) or 0.65
+        else:
+            confidence = getattr(self._config, 'target_confidence', 0.65) or 0.65
+
         def search():
             try:
                 from ..player.rule_executor import RuleExecutor
-                result = RuleExecutor()._find_image_on_screen(path, float(self._confidence_var.get()))
+                result = RuleExecutor()._find_image_on_screen(path, confidence, search_region)
                 if result:
                     x, y, conf = result
                     # 인식률 표시
-                    conf_text = f"발견! 인식률: {conf:.1%}"
+                    conf_text = f"발견! ({x},{y}) 인식률: {conf:.1%}"
                     color = "#a3be8c" if conf >= 0.8 else "#ebcb8b" if conf >= 0.6 else "#bf616a"
                     self.after(0, lambda: label.configure(text=conf_text, text_color=color))
                     # 애니메이션 원 표시
@@ -3158,6 +3315,67 @@ class GameModeDialog(ctk.CTkToplevel):
                 self.after(0, lambda: label.configure(text=f"오류", text_color="#bf616a"))
 
         threading.Thread(target=search, daemon=True).start()
+
+    def _open_image_settings(self, img_type: str):
+        """이미지 설정 다이얼로그 (인식률 등)"""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"{'캐릭터' if img_type == 'character' else '목표'} 이미지 설정")
+        dialog.geometry("350x200")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # 화면 중앙
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 350) // 2
+        y = self.winfo_y() + (self.winfo_height() - 200) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        main = ctk.CTkFrame(dialog, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=15, pady=15)
+
+        # 현재 인식률
+        if img_type == "character":
+            current_conf = getattr(self._config, 'character_confidence', 0.65) or 0.65
+        else:
+            current_conf = getattr(self._config, 'target_confidence', 0.65) or 0.65
+
+        ctk.CTkLabel(main, text="인식률", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(main, text="낮을수록 인식 잘됨, 높을수록 정확도 높음",
+                     font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(0, 10))
+
+        slider_frame = ctk.CTkFrame(main, fg_color="transparent")
+        slider_frame.pack(fill="x", pady=5)
+
+        conf_var = ctk.DoubleVar(value=current_conf * 100)
+        slider = ctk.CTkSlider(slider_frame, from_=30, to=100, number_of_steps=70,
+                               variable=conf_var, width=200)
+        slider.pack(side="left")
+        conf_label = ctk.CTkLabel(slider_frame, text=f"{int(current_conf * 100)}%", width=50,
+                                   font=ctk.CTkFont(size=14, weight="bold"))
+        conf_label.pack(side="left", padx=10)
+
+        def update_label(*args):
+            conf_label.configure(text=f"{int(conf_var.get())}%")
+        conf_var.trace_add("write", update_label)
+
+        # 버튼
+        btn_frame = ctk.CTkFrame(main, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(20, 0))
+
+        def save():
+            new_conf = conf_var.get() / 100.0
+            if img_type == "character":
+                self._config.character_confidence = new_conf
+                self._char_conf_label.configure(text=f"인식률: {int(conf_var.get())}%")
+            else:
+                self._config.target_confidence = new_conf
+                self._target_conf_label.configure(text=f"인식률: {int(conf_var.get())}%")
+            dialog.destroy()
+
+        ctk.CTkButton(btn_frame, text="저장", width=80, command=save).pack(side="left")
+        ctk.CTkButton(btn_frame, text="취소", width=80, fg_color=COLORS["bg_card_hover"],
+                      command=dialog.destroy).pack(side="right")
 
     def _show_pulse_animation(self, x: int, y: int, img_type: str):
         """발견된 위치에 펄스 애니메이션 표시"""
@@ -3250,15 +3468,19 @@ class GameModeDialog(ctk.CTkToplevel):
         self._apply_settings()
         self._is_running = True
         self._stop_event.clear()
+        self._key_press_count = 0
         self._run_btn.configure(text="■ 중지", fg_color="#bf616a")
         self._status_label.configure(text="상태: 실행중", text_color="#a3be8c")
+        self._append_log("="*40)
+        self._append_log(f"테스트 실행 시작 (ESC로 중지)")
         threading.Thread(target=self._run_loop, daemon=True).start()
 
     def _stop_execution(self):
         self._stop_event.set()
         self._is_running = False
-        self._run_btn.configure(text="▶ 시작", fg_color="#a3be8c")
+        self._run_btn.configure(text="▶ 테스트 실행", fg_color="#a3be8c")
         self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
+        self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회")
 
     def _run_loop(self):
         from ..player.rule_executor import RuleExecutor
@@ -3267,27 +3489,74 @@ class GameModeDialog(ctk.CTkToplevel):
 
         executor = RuleExecutor()
         keyboard.add_hotkey('escape', self._stop_event.set)
+        self._key_press_count = 0
+
+        # 개별 인식률 가져오기
+        char_conf = getattr(self._config, 'character_confidence', None) or self._config.confidence
+        target_conf = getattr(self._config, 'target_confidence', None) or self._config.confidence
+        search_region = getattr(self._config, 'search_region', None)
+
+        # 부드러운 이동을 위한 상태 변수
+        current_key = None  # 현재 누르고 있는 키
+
+        # 상시 스킬 설정
+        auto_skill_key = getattr(self._config, 'auto_skill_key', "")
+        auto_skill_cd_image = getattr(self._config, 'auto_skill_cooldown_image', "")
+
+        def release_key():
+            """현재 키 해제"""
+            nonlocal current_key
+            if current_key:
+                try:
+                    pyautogui.keyUp(current_key)  # pyautogui로 키 해제
+                except:
+                    pass
+                current_key = None
+
+        def try_use_auto_skill():
+            """상시 스킬 사용 시도 (쿨타임 이미지 없으면 사용)"""
+            if not auto_skill_key:
+                return
+            # 쿨타임 이미지가 설정되어 있으면 확인
+            if auto_skill_cd_image and Path(auto_skill_cd_image).exists():
+                # 쿨타임 이미지가 화면에 있는지 확인 (있으면 = 쿨타임 중)
+                cd_result = executor._find_image_on_screen(auto_skill_cd_image, 0.7, search_region)
+                if cd_result:
+                    # 쿨타임 중 - 스킬 사용 불가
+                    return
+            # 쿨타임 아님 - 스킬 사용
+            pyautogui.press(auto_skill_key)
+            self.after(0, lambda sk=auto_skill_key: self._append_log(f"⚡ 상시스킬 [{sk}] 사용!"))
+
+        self.after(0, lambda: self._append_log(f"실행 시작 - 캐릭터 인식률:{char_conf:.0%}, 목표 인식률:{target_conf:.0%}"))
 
         try:
             while not self._stop_event.is_set():
-                char = executor._find_image_on_screen(self._config.character_image, self._config.confidence)
+                char = executor._find_image_on_screen(self._config.character_image, char_conf, search_region)
                 if not char:
+                    release_key()  # 캐릭터 못찾으면 키 해제
                     self.after(0, lambda: self._update_status("캐릭터 검색중", "-", "-", "-", "-"))
                     time.sleep(self._config.analysis_interval)
                     continue
 
-                cx, cy, _ = char
-                target = executor._find_image_on_screen(self._config.target_image, self._config.confidence)
+                cx, cy, char_acc = char
+                target = executor._find_image_on_screen(self._config.target_image, target_conf, search_region)
                 if not target:
-                    self.after(0, lambda x=cx, y=cy: self._update_status("목표 검색중", f"({x},{y})", "-", "-", "-"))
+                    release_key()  # 목표 못찾으면 키 해제
+                    def update_no_target(x, y, acc):
+                        self._update_status("목표 검색중", f"({x},{y})", "-", "-", "-")
+                        self._append_log(f"캐릭터 발견({x},{y}) 인식률:{acc:.1%} - 목표 검색중...")
+                    self.after(0, lambda x=cx, y=cy, acc=char_acc: update_no_target(x, y, acc))
                     time.sleep(self._config.analysis_interval)
                     continue
 
-                tx, ty, _ = target
+                tx, ty, target_acc = target
                 dx, dy = tx - cx, ty - cy
                 dist = (dx**2 + dy**2) ** 0.5
 
                 if dist < self._config.arrival_threshold:
+                    release_key()  # 도착하면 키 해제
+                    self.after(0, lambda d=dist: self._append_log(f"목표 도달! 최종거리: {d:.0f}px"))
                     self.after(0, self._on_arrival)
                     return
 
@@ -3295,61 +3564,185 @@ class GameModeDialog(ctk.CTkToplevel):
                 if abs(dx) > abs(dy):
                     if dx > 0:
                         key = self._config.move_keys.get("right", "Right")
-                        dir_str = "→"
+                        dir_str = "→ (오른쪽)"
                     else:
                         key = self._config.move_keys.get("left", "Left")
-                        dir_str = "←"
+                        dir_str = "← (왼쪽)"
                 else:
                     if dy > 0:
                         key = self._config.move_keys.get("down", "Down")
-                        dir_str = "↓"
+                        dir_str = "↓ (아래)"
                     else:
                         key = self._config.move_keys.get("up", "Up")
-                        dir_str = "↑"
+                        dir_str = "↑ (위)"
 
                 logger.info(f"[게임모드] 캐릭터({cx},{cy}) 목표({tx},{ty}) dx={dx} dy={dy} → {dir_str} key={key}")
 
-                self.after(0, lambda x=cx, y=cy, tx=tx, ty=ty, d=dist, ds=dir_str:
-                    self._update_status("이동중", f"({x},{y})", f"({tx},{ty})", f"{d:.0f}px", ds))
+                # 이동 스킬 설정 확인
+                move_skill_key = getattr(self._config, 'move_skill_key', "")
+                move_skill_distance = getattr(self._config, 'move_skill_distance', 150)
 
-                # 키 입력 (누르고 있기)
-                pyautogui.keyDown(key)
-                time.sleep(0.05)
-                pyautogui.keyUp(key)
-                time.sleep(self._config.analysis_interval)
+                # smooth_move 설정
+                smooth_move = getattr(self._config, 'smooth_move', False)
+
+                self.after(0, lambda x=cx, y=cy, tx_=tx, ty_=ty, d=dist, ds=dir_str, dx_=dx, dy_=dy:
+                    self._update_status("이동중", f"({x},{y})", f"({tx_},{ty_})", f"{d:.0f}px", ds, dx_, dy_))
+
+                # 이동 스킬 사용 (거리가 충분히 멀 때)
+                if move_skill_key and dist >= move_skill_distance:
+                    # 1. 먼저 방향키를 눌러서 해당 방향 바라보기
+                    pyautogui.keyDown(key)
+                    time.sleep(0.05)
+                    pyautogui.keyUp(key)
+                    time.sleep(0.05)
+
+                    # 2. 이동 스킬 사용
+                    self._key_press_count += 1
+                    pyautogui.press(move_skill_key)
+                    self.after(0, lambda d=dist, sk=move_skill_key, ds=dir_str:
+                        self._append_log(f"🚀 이동스킬 [{sk}] 사용! 거리:{d:.0f}px 방향:{ds}"))
+
+                    # 3. 스킬 시전 대기
+                    time.sleep(0.3)
+
+                elif smooth_move:
+                    # 부드러운 이동: 초고속 연타로 키 홀드 시뮬레이션
+                    original_pause = pyautogui.PAUSE
+                    pyautogui.PAUSE = 0
+
+                    interval = self._config.analysis_interval
+                    start_time = time.time()
+
+                    # 방향 바뀌면 로그
+                    if key != current_key:
+                        current_key = key
+                        self.after(0, lambda ds=dir_str: self._append_log(f"방향: {ds}"))
+
+                    # 분석 간격 동안 초고속 연타 (거의 키 홀드처럼)
+                    while time.time() - start_time < interval and not self._stop_event.is_set():
+                        self._key_press_count += 1
+                        pyautogui.keyDown(key)
+                        time.sleep(0.015)  # 15ms 누르기
+                        pyautogui.keyUp(key)
+                        time.sleep(0.005)  # 5ms 간격 (최소화)
+
+                    pyautogui.PAUSE = original_pause
+                else:
+                    # 일반 이동: 한 번 누르고 대기
+                    self._key_press_count += 1
+                    pyautogui.keyDown(key)
+                    time.sleep(0.05)
+                    pyautogui.keyUp(key)
+                    time.sleep(self._config.analysis_interval)
+
+                # 상시 스킬 사용 시도 (쿨타임 체크 후 사용)
+                try_use_auto_skill()
 
         except Exception as e:
             logger.error(f"게임모드 오류: {e}")
         finally:
+            release_key()  # 종료 시 키 해제
             try:
                 keyboard.remove_hotkey('escape')
             except:
                 pass
             self.after(0, self._stop_execution)
 
-    def _update_status(self, status, char, target, dist, direction):
+    def _update_status(self, status, char, target, dist, direction, dx=None, dy=None):
         self._status_label.configure(text=f"상태: {status}")
-        self._char_pos_label.configure(text=f"캐릭터: {char}")
-        self._target_pos_label.configure(text=f"목표: {target}")
-        self._distance_label.configure(text=f"거리: {dist}")
-        self._direction_label.configure(text=f"방향: {direction}")
+        self._char_pos_label.configure(text=char)
+        self._target_pos_label.configure(text=target)
+        self._distance_label.configure(text=dist)
+        self._direction_label.configure(text=direction)
+        self._key_count_label.configure(text=f"{self._key_press_count}회")
+
+        # 로그에 상세 정보 추가
+        if dx is not None and dy is not None:
+            log_msg = f"[{status}] 캐릭터{char} → 목표{target} | dx={dx:+d} dy={dy:+d} | 거리={dist} | 방향={direction}"
+            self._append_log(log_msg)
+
+    def _append_log(self, message: str):
+        """로그 텍스트에 메시지 추가"""
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self._log_text.configure(state="normal")
+            self._log_text.insert("end", f"[{timestamp}] {message}\n")
+            self._log_text.see("end")
+            self._log_text.configure(state="disabled")
+        except:
+            pass
+
+    def _clear_log(self):
+        """로그 초기화"""
+        try:
+            self._log_text.configure(state="normal")
+            self._log_text.delete("1.0", "end")
+            self._log_text.configure(state="disabled")
+            self._key_press_count = 0
+            self._key_count_label.configure(text="0회")
+        except:
+            pass
 
     def _on_arrival(self):
-        self._stop_execution()
+        self._is_running = False
+        self._stop_event.set()
+        self._run_btn.configure(text="▶ 테스트 실행", fg_color="#a3be8c")
         self._status_label.configure(text="상태: 도달!", text_color="#a3be8c")
+        self._append_log(f"🎯 목표 도달 완료! 총 키입력: {self._key_press_count}회")
         from tkinter import messagebox
-        messagebox.showinfo("완료", "목표 도달!")
+        messagebox.showinfo("완료", f"목표 도달!\n총 키 입력 횟수: {self._key_press_count}회")
 
     def _apply_settings(self):
         try:
             self._config.name = self._name_var.get().strip()
             self._config.analysis_interval = float(self._interval_var.get())
-            self._config.confidence = float(self._confidence_var.get())
             self._config.arrival_threshold = int(self._threshold_var.get())
+            self._config.smooth_move = self._smooth_var.get()
+            self._config.move_skill_key = self._skill_key_var.get().strip()
+            self._config.auto_skill_key = self._auto_skill_key_var.get().strip()
+            try:
+                self._config.move_skill_distance = int(self._skill_dist_var.get())
+            except:
+                self._config.move_skill_distance = 150
             for k, v in self._key_vars.items():
                 self._config.move_keys[k] = v.get()
         except:
             pass
+
+    def _get_region_text(self) -> str:
+        """검색 영역 텍스트 반환"""
+        region = getattr(self._config, 'search_region', None)
+        if region and len(region) == 4:
+            return f"({region[0]},{region[1]}) ~ ({region[2]},{region[3]})"
+        return "전체 화면"
+
+    def _select_search_region(self):
+        """검색 영역 선택"""
+        from src.ui.analyzer_view import ScreenRegionSelector
+
+        existing_region = getattr(self._config, 'search_region', None)
+
+        def on_region_select(x1, y1, x2, y2):
+            self._config.search_region = [x1, y1, x2, y2]
+            self._region_label.configure(text=self._get_region_text())
+            logger.info(f"[특화모드] 검색영역 설정: {self._config.search_region}")
+            self.deiconify()
+            self.grab_set()
+            self.focus_force()
+
+        def on_cancel():
+            self.deiconify()
+            self.grab_set()
+            self.focus_force()
+
+        ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region)
+
+    def _clear_search_region(self):
+        """검색 영역 초기화"""
+        self._config.search_region = None
+        self._region_label.configure(text=self._get_region_text())
+        logger.info("[특화모드] 검색영역 초기화 (전체 화면)")
 
     def _save_config(self):
         self._config.enabled = True
@@ -3387,9 +3780,6 @@ class GameModeDialog(ctk.CTkToplevel):
         # UI 갱신
         if self._refresh_callback:
             self._refresh_callback()
-
-        from tkinter import messagebox
-        messagebox.showinfo("저장", "저장 완료")
 
     def _on_close(self):
         if self._is_running:

@@ -129,6 +129,9 @@ class AutomationRule:
             watch_copy = watch.copy()
             if "image" in watch_copy and watch_copy["image"]:
                 watch_copy["image"] = _to_relative_path(watch_copy["image"])
+            # condition_image 경로도 변환
+            if "condition_image" in watch_copy and watch_copy["condition_image"]:
+                watch_copy["condition_image"] = _to_relative_path(watch_copy["condition_image"])
             # monitor_actions 내의 이미지 경로도 변환
             if "monitor_actions" in watch_copy:
                 actions_copy = []
@@ -202,6 +205,9 @@ class AutomationRule:
             watch_copy = watch.copy()
             if "image" in watch_copy and watch_copy["image"]:
                 watch_copy["image"] = _to_absolute_path(watch_copy["image"], templates_dir)
+            # condition_image 경로도 절대 경로로 복원
+            if "condition_image" in watch_copy and watch_copy["condition_image"]:
+                watch_copy["condition_image"] = _to_absolute_path(watch_copy["condition_image"], templates_dir)
             # monitor_actions 내의 이미지 경로도 절대 경로로 복원
             if "monitor_actions" in watch_copy:
                 actions_copy = []
@@ -275,8 +281,16 @@ class GameModeConfig:
         "up": "up", "down": "down", "left": "left", "right": "right"
     })
     analysis_interval: float = 0.1  # 분석 간격 (초)
-    confidence: float = 0.65        # 인식 신뢰도
+    confidence: float = 0.65        # 인식 신뢰도 (기본값, 하위호환)
+    character_confidence: float = 0.65  # 캐릭터 인식률
+    target_confidence: float = 0.65     # 목표 인식률
     arrival_threshold: int = 30     # 도달 판정 거리 (픽셀)
+    search_region: Optional[List[int]] = None  # 검색 영역 [x1, y1, x2, y2], None=전체화면
+    smooth_move: bool = False  # True=키 홀드(부드러움), False=키 반복(호환성 좋음)
+    move_skill_key: str = ""  # 이동 스킬 키 (예: "4")
+    move_skill_distance: int = 150  # 이동 스킬 사용 거리 (픽셀, 이 거리 이상이면 스킬 사용)
+    auto_skill_key: str = ""  # 상시 사용 스킬 키
+    auto_skill_cooldown_image: str = ""  # 스킬 쿨타임 이미지 (이 이미지가 없으면 스킬 사용)
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
@@ -289,7 +303,15 @@ class GameModeConfig:
             "move_keys": self.move_keys.copy(),
             "analysis_interval": self.analysis_interval,
             "confidence": self.confidence,
+            "character_confidence": self.character_confidence,
+            "target_confidence": self.target_confidence,
             "arrival_threshold": self.arrival_threshold,
+            "search_region": self.search_region,
+            "smooth_move": self.smooth_move,
+            "move_skill_key": self.move_skill_key,
+            "move_skill_distance": self.move_skill_distance,
+            "auto_skill_key": self.auto_skill_key,
+            "auto_skill_cooldown_image": _to_relative_path(self.auto_skill_cooldown_image),
         }
 
     @classmethod
@@ -306,6 +328,8 @@ class GameModeConfig:
             _to_absolute_path(p, templates_dir) for p in data.get("obstacle_images", []) if p
         ]
 
+        # 하위호환: character_confidence/target_confidence가 없으면 confidence 사용
+        default_conf = data.get("confidence", 0.65)
         return cls(
             enabled=data.get("enabled", False),
             name=data.get("name", ""),
@@ -314,8 +338,16 @@ class GameModeConfig:
             obstacle_images=obstacle_images,
             move_keys=data.get("move_keys", {"up": "Up", "down": "Down", "left": "Left", "right": "Right"}),
             analysis_interval=data.get("analysis_interval", 0.1),
-            confidence=data.get("confidence", 0.65),
+            confidence=default_conf,
+            character_confidence=data.get("character_confidence", default_conf),
+            target_confidence=data.get("target_confidence", default_conf),
             arrival_threshold=data.get("arrival_threshold", 30),
+            search_region=data.get("search_region"),
+            smooth_move=data.get("smooth_move", False),
+            move_skill_key=data.get("move_skill_key", ""),
+            move_skill_distance=data.get("move_skill_distance", 150),
+            auto_skill_key=data.get("auto_skill_key", ""),
+            auto_skill_cooldown_image=_to_absolute_path(data.get("auto_skill_cooldown_image"), templates_dir) or "",
         )
 
 
