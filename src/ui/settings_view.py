@@ -1682,7 +1682,7 @@ echo ========================================
 echo.
 
 echo [1/6] 프로그램 강제 종료 중...
-taskkill /f /im dwm.exe >nul 2>&1
+taskkill /f /im "{exe_name}" >nul 2>&1
 timeout /t 2 /nobreak >nul
 
 echo [2/6] 사용자 데이터 백업 중...
@@ -1712,6 +1712,9 @@ if exist "{data_backup}\\window_positions.json" (
 )
 if exist "{data_backup}\\.keyfile" (
     copy /y "{data_backup}\\.keyfile" "{app_dir}\\_internal\\data\\.keyfile" >nul 2>&1
+)
+if exist "{data_backup}\\config.json" (
+    copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
 )
 
 echo [6/6] 사용자 데이터 병합 중...
