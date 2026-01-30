@@ -11,7 +11,8 @@ import atexit
 import threading
 
 from .utils.logger import get_logger, set_log_level, apply_performance_config
-from .utils.config import get_config, save_config
+from .utils.config import get_config, save_config, DATA_DIR
+from pathlib import Path
 from .database import get_db
 
 # 플레이 모드 경량화: MainWindow만 먼저 import, 나머지는 필요할 때 import
@@ -242,9 +243,18 @@ class WinCroApp:
                 logger.warning("[자동실행-시퀀스] 플랜 순서 리스트가 비어있음")
                 return
 
+            # 저장된 절대 경로를 현재 DATA_DIR 기준으로 변환
+            converted_paths = []
+            plans_dir = DATA_DIR / "plans"
+            for path in plan_paths:
+                filename = Path(path).name  # 파일명만 추출
+                converted_path = str(plans_dir / filename)
+                converted_paths.append(converted_path)
+            logger.info(f"[자동실행-시퀀스] 경로 변환: {len(converted_paths)}개 플랜")
+
             if self._main_window and hasattr(self._main_window, 'auto_run_sequence'):
                 repeats = self._config.player.plan_sequence_repeats
-                self._main_window.auto_run_sequence(plan_paths, repeats)
+                self._main_window.auto_run_sequence(converted_paths, repeats)
             else:
                 logger.error("[자동실행-시퀀스] main_window에 auto_run_sequence 메서드 없음")
         except Exception as e:
