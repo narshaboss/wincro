@@ -530,6 +530,8 @@ class MainWindow(ctk.CTk):
                         with open(plan_file, "r", encoding="utf-8") as f:
                             data = json.load(f)
                             plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                            # 원래 파일 경로 저장 (나중에 저장할 때 사용)
+                            plan._source_file = str(plan_file)
                             plans.append(plan)
                             logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
                     except Exception as e:
@@ -770,6 +772,8 @@ class MainWindow(ctk.CTk):
                     with open(plan_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                        # 원래 파일 경로 저장
+                        plan._source_file = str(plan_file)
                         plans.append(plan)
                 except Exception as e:
                     logger.error(f"[미니플레이어] 플랜 새로고침 실패: {plan_file} - {e}")
@@ -1075,10 +1079,13 @@ class MainWindow(ctk.CTk):
 
             selected_plan.total_repeat_count = repeat_count
 
-            # 플랜 파일에 저장
+            # 플랜 파일에 저장 (원래 파일 경로가 있으면 그 경로에, 없으면 plan_id.json)
             from .player_view import PLANS_DIR
             PLANS_DIR.mkdir(parents=True, exist_ok=True)
-            plan_file = PLANS_DIR / f"{selected_plan.plan_id}.json"
+            if hasattr(selected_plan, '_source_file') and selected_plan._source_file:
+                plan_file = Path(selected_plan._source_file)
+            else:
+                plan_file = PLANS_DIR / f"{selected_plan.plan_id}.json"
             with open(plan_file, 'w', encoding='utf-8') as f:
                 json.dump(selected_plan.to_dict(), f, ensure_ascii=False, indent=2)
 
@@ -1154,10 +1161,13 @@ class MainWindow(ctk.CTk):
                     self.after(0, lambda: self._mini_on_load_failed("⚠ 플랜을 찾을 수 없음"))
                     return
 
-                # JSON에서 최신 플랜 로드
+                # JSON에서 최신 플랜 로드 (원래 파일 경로 사용)
                 import json
                 from .player_view import PLANS_DIR
-                plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
+                if hasattr(cached_plan, '_source_file') and cached_plan._source_file:
+                    plan_file = Path(cached_plan._source_file)
+                else:
+                    plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
                 selected_plan = None
                 if plan_file.exists():
                     try:
@@ -1165,6 +1175,8 @@ class MainWindow(ctk.CTk):
                             data = json.load(f)
                             templates_dir = DATA_DIR / "templates"
                             selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                            # 원래 파일 경로 유지
+                            selected_plan._source_file = str(plan_file)
                         for idx, rule in enumerate(selected_plan.initial_rules):
                             rule_conf = getattr(rule, 'confidence', 0)
                             logger.info(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
