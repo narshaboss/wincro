@@ -23,6 +23,7 @@ from .constants import (
     ACTION_NAMES_SHORT,
     get_action_clipboard, collect_all_actions,
 )
+from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail
 
 logger = get_logger(__name__)
 
@@ -220,8 +221,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
     @staticmethod
     def _load_thumbnail(path, size=(40, 40)):
-        """이미지 썸네일 로드 (한글 경로 지원)"""
+        """이미지 썸네일 로드 (한글 경로 지원, 글로벌 캐시 사용)"""
         if path and Path(path).exists():
+            # 글로벌 캐시 확인
+            cached = get_cached_thumbnail(path, size)
+            if cached is not None:
+                return cached
             try:
                 img_arr = np.fromfile(path, np.uint8)
                 img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
@@ -232,7 +237,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     new_w, new_h = int(w * scale), int(h * scale)
                     resized = cv2.resize(img_rgb, (new_w, new_h))
                     pil_img = Image.fromarray(resized)
-                    return ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(new_w, new_h))
+                    ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(new_w, new_h))
+                    # 글로벌 캐시에 저장
+                    set_cached_thumbnail(path, size, ctk_img)
+                    return ctk_img
             except Exception:
                 pass
         return None
@@ -544,7 +552,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     stop_flag_ref[0] = False
                     try:
                         if play_btn_ref[0]:
-                            play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400")
+                            self.after(0, lambda: play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400"))
                     except (tk.TclError, RuntimeError, AttributeError) as e:
                         logger.debug(f"[모니터링 테스트] 버튼 복원 실패: {e}")
 
@@ -1117,7 +1125,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     watch_stop_flag_ref[0] = False
                     try:
                         if watch_play_btn_ref[0]:
-                            watch_play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400")
+                            self.after(0, lambda: watch_play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400"))
                     except (tk.TclError, RuntimeError, AttributeError) as e:
                         logger.debug(f"[감시 테스트] 버튼 복원 실패: {e}")
 

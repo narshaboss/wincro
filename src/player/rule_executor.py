@@ -184,12 +184,12 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
     """
     x, y = int(x), int(y)
 
-    # 마우스 캡처/클리핑 해제
-    try:
-        ctypes.windll.user32.ReleaseCapture()
-        ctypes.windll.user32.ClipCursor(None)
-    except (OSError, AttributeError):
-        pass
+    # 마우스 캡처/클리핑 해제 - 게임 충돌 방지를 위해 비활성화
+    # try:
+    #     ctypes.windll.user32.ReleaseCapture()
+    #     ctypes.windll.user32.ClipCursor(None)
+    # except (OSError, AttributeError):
+    #     pass
 
     # 1. pynput 시도 (가장 안정적)
     if _has_pynput:
@@ -244,9 +244,9 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
         abs_x = int((x - screen_left) * 65535 / screen_width)
         abs_y = int((y - screen_top) * 65535 / screen_height)
 
-        # 마우스 캡처 해제 재시도
-        ctypes.windll.user32.ReleaseCapture()
-        ctypes.windll.user32.ClipCursor(None)
+        # 마우스 캡처 해제 재시도 - 게임 충돌 방지를 위해 비활성화
+        # ctypes.windll.user32.ReleaseCapture()
+        # ctypes.windll.user32.ClipCursor(None)
 
         # SendInput으로 마우스 이동
         move_input = INPUT()
@@ -311,9 +311,9 @@ def _win32_force_click_at(x: int, y: int, click_type: str = "click") -> bool:
     try:
         user32 = ctypes.windll.user32
 
-        # 마우스 캡처 해제
-        user32.ReleaseCapture()
-        user32.ClipCursor(None)
+        # 마우스 캡처 해제 - 게임 충돌 방지를 위해 비활성화
+        # user32.ReleaseCapture()
+        # user32.ClipCursor(None)
 
         # 마우스 이동
         user32.SetCursorPos(x, y)
@@ -632,17 +632,17 @@ class RuleExecutor:
         logger.info(f"[개입감지] 대기 완료, 재개합니다. 새 기준점: {self._last_mouse_pos}")
         self._update_progress("재개 중...")
 
-        # 마우스 캡처 해제 시도 (다른 앱이 마우스를 잡고 있을 수 있음)
-        try:
-            ctypes.windll.user32.ReleaseCapture()
-            ctypes.windll.user32.ClipCursor(None)
-            # 데스크톱을 포커스하여 활성 창 해제
-            desktop_hwnd = ctypes.windll.user32.GetDesktopWindow()
-            ctypes.windll.user32.SetForegroundWindow(desktop_hwnd)
-            time.sleep(0.1)
-            logger.info("[개입감지] 마우스 캡처 해제 시도 완료")
-        except Exception as e:
-            logger.warning(f"[개입감지] 마우스 캡처 해제 실패: {e}")
+        # 마우스 캡처 해제 시도 - 게임 충돌 방지를 위해 비활성화
+        # try:
+        #     ctypes.windll.user32.ReleaseCapture()
+        #     ctypes.windll.user32.ClipCursor(None)
+        #     # 데스크톱을 포커스하여 활성 창 해제
+        #     desktop_hwnd = ctypes.windll.user32.GetDesktopWindow()
+        #     ctypes.windll.user32.SetForegroundWindow(desktop_hwnd)
+        #     time.sleep(0.1)
+        #     logger.info("[개입감지] 마우스 캡처 해제 시도 완료")
+        # except Exception as e:
+        #     logger.warning(f"[개입감지] 마우스 캡처 해제 실패: {e}")
 
     def _flatten_rules(self, rules: List[AutomationRule]) -> List[AutomationRule]:
         """계층 구조를 평탄화하여 모든 규칙 반환 (자식 포함)"""
@@ -1293,12 +1293,12 @@ class RuleExecutor:
                         if self._stop_event.is_set():
                             return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                        # 마우스 캡처/클리핑 해제
-                        try:
-                            ctypes.windll.user32.ReleaseCapture()
-                            ctypes.windll.user32.ClipCursor(None)
-                        except (OSError, AttributeError):
-                            pass
+                        # 마우스 캡처/클리핑 해제 - 게임 충돌 방지를 위해 비활성화
+                        # try:
+                        #     ctypes.windll.user32.ReleaseCapture()
+                        #     ctypes.windll.user32.ClipCursor(None)
+                        # except (OSError, AttributeError):
+                        #     pass
 
                         # PyAutoGUI로 시도
                         self._is_moving_mouse = True
@@ -1430,6 +1430,16 @@ class RuleExecutor:
                 input_ctrl.scroll(scroll_amount, rule.action_x, rule.action_y)
                 logger.info(f"{_GREEN}{self._step_prefix}✓ 스크롤 완료{_RESET}")
                 return self._make_result(rule, True, f"스크롤 완료", start_time)
+
+            elif action_type == "game_mode":
+                # game_mode는 plan.game_mode 설정을 사용하여 실행
+                if hasattr(self, '_current_plan') and self._current_plan and self._current_plan.game_mode:
+                    config = self._current_plan.game_mode
+                    logger.info(f"{_GREEN}{self._step_prefix}🎮 특화모드 실행: {config.name or '특화모드'}{_RESET}")
+                    success = self.execute_game_mode(config)
+                    return self._make_result(rule, success, "특화모드 완료" if success else "특화모드 실패", start_time)
+                else:
+                    return self._make_result(rule, False, "특화모드 설정 없음", start_time)
 
             else:
                 return self._make_result(rule, False, f"알 수 없는 액션: {action_type}", start_time)
@@ -1791,9 +1801,9 @@ class RuleExecutor:
         logger.info("[트리거→클릭] 화면 안정화 대기 (0.3초)")
         time.sleep(0.3)
 
-        # 2. 마우스 캡처 해제
-        user32.ReleaseCapture()
-        user32.ClipCursor(None)
+        # 2. 마우스 캡처 해제 - 게임 충돌 방지를 위해 비활성화
+        # user32.ReleaseCapture()
+        # user32.ClipCursor(None)
 
         # 3. 현재 마우스 위치의 윈도우 포커스 (Alt 키 트릭)
         pt = ctypes.wintypes.POINT()
@@ -2037,8 +2047,16 @@ class RuleExecutor:
         logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작 (감시 {len(valid_watches)}개){_RESET}")
 
         wait_count = 0
+        # 안전 타임아웃: 최대 모니터링 시간 (기본 2시간, 무한 행 방지)
+        max_monitoring_seconds = getattr(rule, 'monitoring_timeout', 7200) or 7200
+        monitoring_start = time.time()
 
         while True:
+            # 안전 타임아웃 체크
+            monitoring_elapsed = time.time() - monitoring_start
+            if monitoring_elapsed > max_monitoring_seconds:
+                logger.warning(f"{_YELLOW}{step_prefix}모니터링 안전 타임아웃 ({max_monitoring_seconds}초) - 자동 종료{_RESET}")
+                return self._make_result(rule, False, f"모니터링 타임아웃 ({max_monitoring_seconds}초)", start_time)
             # 중지 체크
             if self._stop_event.is_set():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
@@ -2584,14 +2602,26 @@ class RuleExecutor:
         """
         from ..analyzer.automation_models import GameModeConfig
 
+        # 탐색 모드 분기: 좌표 기반 모드 사용 (이미지 모드 제거됨)
+        nav_mode = getattr(config, 'navigation_mode', 'coordinate')
+
+        # 이미지 설정이 없거나 좌표 설정이 있으면 좌표 모드로 강제 전환
+        has_image_settings = (config.character_image and Path(config.character_image).exists() and
+                              config.target_image and Path(config.target_image).exists())
+        has_coord_settings = config.coord_x_region and config.coord_y_region
+
+        if nav_mode == 'coordinate' or (not has_image_settings and has_coord_settings):
+            return self.execute_game_mode_coordinate(config)
+
+        # === 이미지 기반 모드 (레거시 호환용) ===
         logger.info(f"{_GREEN}[특화모드] ========== 실행 시작 =========={_RESET}")
 
         # 설정 검증
         if not config.character_image or not Path(config.character_image).exists():
-            logger.error(f"[특화모드] 캐릭터 이미지 없음: {config.character_image}")
+            logger.error(f"[특화모드] 캐릭터 이미지 없음 - 좌표 모드로 전환하세요")
             return False
         if not config.target_image or not Path(config.target_image).exists():
-            logger.error(f"[특화모드] 목표 이미지 없음: {config.target_image}")
+            logger.error(f"[특화모드] 목표 이미지 없음 - 좌표 모드로 전환하세요")
             return False
 
         # 개별 인식률 (하위호환)
@@ -2647,7 +2677,7 @@ class RuleExecutor:
                 else:
                     char_not_found_count = 0
 
-                char_x, char_y, char_conf = char_result
+                char_x, char_y, _ = char_result
 
                 # 2. 목표 위치 찾기
                 target_result = self._find_image_on_screen(config.target_image, target_conf, search_region)
@@ -2665,7 +2695,7 @@ class RuleExecutor:
                 else:
                     target_not_found_count = 0
 
-                target_x, target_y, target_conf = target_result
+                target_x, target_y, _ = target_result
 
                 # 3. 방향 및 거리 계산
                 dx = target_x - char_x
@@ -2748,6 +2778,557 @@ class RuleExecutor:
             except Exception:
                 pass
             logger.info(f"{_GREEN}[특화모드] ========== 실행 종료 =========={_RESET}")
+
+    def execute_game_mode_coordinate(self, config) -> bool:
+        """
+        좌표 기반 게임 특화모드 실행 (A* 경로탐색 + GameMap 활용)
+
+        템플릿 매칭으로 화면에서 현재 X, Y 좌표를 읽고 경유지 순서대로 자동 이동합니다.
+        A* 알고리즘으로 최적 경로를 탐색하고, 각 경유지별 독립 맵 데이터를 활용합니다.
+
+        Args:
+            config: GameModeConfig 객체 (navigation_mode='coordinate')
+
+        Returns:
+            bool: 목표 도달 여부
+        """
+        from ..utils.digit_templates import get_digit_matcher
+        from .game_map import GameMap, DIRECTIONS_4
+        from .simple_pathfinder import SimplePathfinder
+
+        logger.info(f"{_GREEN}[좌표모드] ========== 실행 시작 (A* 경로탐색) =========={_RESET}")
+
+        # 맵핑 시스템 초기화
+        import os
+        map_name = config.name or "autosave"
+        map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
+        mapping_enabled = getattr(config, 'mapping_enabled', True)
+        current_segment_idx = 0
+
+        # 구간별 맵 파일명 헬퍼 (경유지 이름 기반)
+        def get_segment_map_path(seg_idx):
+            """경유지 인덱스에 해당하는 맵 파일 경로 (경유지와 1:1 대응)"""
+            waypoints = getattr(config, 'waypoints', []) or []
+            if seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                seg_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{seg_idx+1}"
+            else:
+                seg_name = f"경유지{seg_idx+1}"
+            return os.path.join(map_dir, f"{map_name}_{seg_name}_map.json")
+
+        # 첫 번째 경유지 맵 로드
+        game_map = GameMap(name=map_name)
+        seg0_path = get_segment_map_path(0)
+        if os.path.exists(seg0_path):
+            game_map.load_and_merge(seg0_path)
+            stats = game_map.get_statistics()
+            logger.info(f"[좌표모드] 첫 경유지 맵 로드: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
+        else:
+            # 하위호환: 기존 '시작' 맵 또는 단일 맵 파일
+            loaded = False
+            for fallback in [f"{map_name}_시작_map.json", f"{map_name}_map.json"]:
+                old_map_path = os.path.join(map_dir, fallback)
+                if os.path.exists(old_map_path):
+                    game_map.load_and_merge(old_map_path)
+                    stats = game_map.get_statistics()
+                    logger.info(f"[좌표모드] 호환 맵 로드: {old_map_path} ({stats['total_tiles']}개 타일)")
+                    loaded = True
+                    break
+            if not loaded:
+                logger.info(f"[좌표모드] 기존 맵 없음, 새 맵 생성")
+
+        def get_seg_name(seg_idx):
+            """경유지 이름 반환"""
+            waypoints = getattr(config, 'waypoints', []) or []
+            if seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                return wp[2] if len(wp) >= 3 and wp[2] else f"경유지{seg_idx+1}"
+            return f"경유지{seg_idx+1}"
+
+        def switch_segment_map(new_seg_idx):
+            """구간 맵 전환: 현재 맵 저장 → 새 구간 맵 로드"""
+            nonlocal game_map, pathfinder, current_segment_idx
+            old_name = get_seg_name(current_segment_idx)
+            new_name = get_seg_name(new_seg_idx)
+            # 현재 맵 저장
+            try:
+                save_path = get_segment_map_path(current_segment_idx)
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                game_map.save(save_path)
+                logger.info(f"[좌표모드] '{old_name}' 맵 저장: {save_path}")
+            except Exception as e:
+                logger.error(f"[좌표모드] 맵 저장 실패: {e}")
+            # 새 구간 맵 로드
+            current_segment_idx = new_seg_idx
+            game_map = GameMap(name=f"{map_name}_{new_name}")
+            pathfinder = SimplePathfinder(game_map)
+            new_path = get_segment_map_path(new_seg_idx)
+            if os.path.exists(new_path):
+                game_map.load_and_merge(new_path)
+                stats = game_map.get_statistics()
+                logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
+            else:
+                logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 새 맵 생성")
+
+        if mapping_enabled:
+            logger.info(f"[좌표모드] 맵핑 시스템 활성화")
+
+        # A* 경로탐색기 초기화 (GameMap 활용)
+        pathfinder = SimplePathfinder(game_map)
+
+        # 템플릿 매처 확인
+        matcher = get_digit_matcher()
+        if not matcher.has_all_templates():
+            missing = matcher.get_missing_digits()
+            logger.error(f"[좌표모드] 숫자 템플릿 미완성: {missing}")
+            return False
+
+        # 설정 검증
+        if not config.coord_x_region or len(config.coord_x_region) != 4:
+            logger.error("[좌표모드] X 좌표 영역이 설정되지 않음")
+            return False
+        if not config.coord_y_region or len(config.coord_y_region) != 4:
+            logger.error("[좌표모드] Y 좌표 영역이 설정되지 않음")
+            return False
+
+        # 설정값
+        smooth_move = getattr(config, 'smooth_move', False)
+        interval = config.analysis_interval
+
+        # 경유지 기반 목표 리스트 (target_x/y 제거, 경유지만 사용)
+        waypoints_raw = getattr(config, 'waypoints', []) or []
+        final_wp_idx = getattr(config, 'final_waypoint_idx', -1)
+        if final_wp_idx < 0 or final_wp_idx >= len(waypoints_raw):
+            final_wp_idx = len(waypoints_raw) - 1
+
+        all_targets = []  # [(x, y, name), ...]
+        for i, wp in enumerate(waypoints_raw):
+            if i > final_wp_idx:
+                break
+            if isinstance(wp, (list, tuple)) and len(wp) >= 2:
+                wp_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{i+1}"
+                all_targets.append((int(wp[0]), int(wp[1]), wp_name))
+
+        if not all_targets:
+            logger.error("[좌표모드] 경유지가 없습니다. 경유지를 추가하세요.")
+            return False
+
+        current_target_idx = 0
+        target_x, target_y = all_targets[0][0], all_targets[0][1]
+
+        # 탈출 스킬 설정
+        escape_skill_enabled = getattr(config, 'escape_skill_enabled', False)
+        escape_skill_key = getattr(config, 'escape_skill_key', 'z') or 'z'
+        escape_skill_stuck_threshold = getattr(config, 'escape_skill_stuck_threshold', 10)
+        escape_skill_direction_count = getattr(config, 'escape_skill_direction_count', 5)
+        escape_skill_wait_after = getattr(config, 'escape_skill_wait_after', 0.5)
+        escape_skill_cooldown = getattr(config, 'escape_skill_cooldown', 10.0)
+        last_escape_time = 0
+
+        wp_info = [(t[0], t[1], t[2]) for t in all_targets]
+        logger.info(f"[좌표모드] 경유지 {len(all_targets)}개: {wp_info}")
+        logger.info(f"[좌표모드] 최종 목표: {all_targets[-1][2]} ({all_targets[-1][0]},{all_targets[-1][1]})")
+        logger.info(f"[좌표모드] 현재 목표: ({target_x}, {target_y}) [{all_targets[0][2]}] [{current_target_idx+1}/{len(all_targets)}]")
+        logger.info(f"[좌표모드] X 영역: {config.coord_x_region}")
+        logger.info(f"[좌표모드] Y 영역: {config.coord_y_region}")
+        if escape_skill_enabled:
+            logger.info(f"[좌표모드] 탈출스킬: 키={escape_skill_key}, 발동조건={escape_skill_stuck_threshold}회")
+        logger.info(f"[좌표모드] 이동키: ↑={config.move_keys.get('up')} ↓={config.move_keys.get('down')} ←={config.move_keys.get('left')} →={config.move_keys.get('right')}")
+        logger.info(f"[좌표모드] 알고리즘: A* 경로탐색 + GameMap")
+
+        # 중지 이벤트 초기화
+        self._stop_event.clear()
+        import keyboard
+        _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
+        logger.info("[좌표모드] ESC 키로 중지 가능")
+
+        # 상태 변수
+        prev_x, prev_y = None, None
+        last_dir = None
+        stuck_count = 0
+        total_stuck_count = 0  # 탈출 스킬용 연속 정체 카운트
+        current_path = []
+        path_index = 0
+        tick_counter = 0  # soft_blocked tick용 카운터
+        explored_from = {}  # {(x,y): set(방향)} — 자동 탐색용
+        unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
+
+        def press_key(direction):
+            """방향키 누르기"""
+            if self._stop_event.is_set():
+                return
+            key = config.move_keys.get(direction, direction)
+            if smooth_move:
+                self._smooth_key_input([key], interval)
+            else:
+                pyautogui.press(key)
+                # 중단 가능한 sleep
+                sleep_until = time.time() + interval
+                while time.time() < sleep_until:
+                    if self._stop_event.is_set():
+                        return
+                    time.sleep(0.02)
+
+        # 경로 위치 → 인덱스 역매핑 (O(1) 조회용)
+        path_pos_index = {}  # {(x,y): index}
+
+        def _rebuild_path_index():
+            """경로 변경 시 역매핑 재구축"""
+            nonlocal path_pos_index
+            path_pos_index = {pos: i for i, pos in enumerate(current_path)}
+
+        def find_path_direction(cx, cy, tx, ty):
+            """
+            A* 경로탐색 + 자동 탐색으로 다음 방향 결정
+            1. 알려진 경로로 탐색
+            2. 미탐색 영역 포함해서 탐색
+            3. 스마트 탐색 (미시도 방향 우선)
+            4. 비벽 방향 재시도 (백트래킹)
+            5. 최후 직진
+            """
+            nonlocal current_path, path_index, explored_from, unknown_path_fails
+
+            current_pos = (cx, cy)
+            target_pos = (tx, ty)
+
+            # 경로가 있고 현재 위치가 경로 상에 있으면 따라가기
+            if current_path and path_index < len(current_path):
+                idx = path_pos_index.get(current_pos)
+                if idx is not None:
+                    path_index = idx
+                    if path_index + 1 < len(current_path):
+                        next_pos = current_path[path_index + 1]
+                        if not game_map.is_blocked(next_pos[0], next_pos[1]):
+                            dx = next_pos[0] - cx
+                            dy = next_pos[1] - cy
+                            for d, (ddx, ddy) in DIRECTIONS_4.items():
+                                if ddx == dx and ddy == dy:
+                                    return d
+
+            # 1차: 알려진 이동가능 경로만
+            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False)
+            if result.found and len(result.directions) > 0:
+                current_path = result.path
+                path_index = 0
+                _rebuild_path_index()
+                unknown_path_fails = 0
+                logger.info(f"[좌표모드] A* 경로 발견: {len(result.path)}칸")
+                return result.directions[0]
+
+            # 2차: 미탐색 영역 포함 (연속 실패 3회 이상이면 건너뜀)
+            if unknown_path_fails < 3:
+                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=True)
+                if result.found and len(result.directions) > 0:
+                    current_path = result.path
+                    path_index = 0
+                    _rebuild_path_index()
+                    logger.info(f"[좌표모드] A* 탐색 경로: {len(result.path)}칸 (미지 영역 포함)")
+                    return result.directions[0]
+
+            # 3차: 스마트 탐색 — 현재 위치에서 아직 안 가본 방향 시도
+            tried = explored_from.get(current_pos, set())
+            candidates = []
+            for d, (ddx, ddy) in DIRECTIONS_4.items():
+                nx, ny = cx + ddx, cy + ddy
+                if d not in tried and not game_map.is_blocked(nx, ny):
+                    dist = abs(nx - tx) + abs(ny - ty)
+                    candidates.append((dist, d))
+
+            if candidates:
+                candidates.sort()
+                chosen = candidates[0][1]
+                tried.add(chosen)
+                explored_from[current_pos] = tried
+                # explored_from 메모리 제한
+                if len(explored_from) > 500:
+                    keys_to_remove = list(explored_from.keys())[:250]
+                    for k in keys_to_remove:
+                        del explored_from[k]
+                logger.info(f"[좌표모드] 스마트 탐색: {chosen}")
+                return chosen
+
+            # 4차: 이미 시도했지만 벽이 아닌 방향 재시도 (백트래킹)
+            for d, (ddx, ddy) in DIRECTIONS_4.items():
+                nx, ny = cx + ddx, cy + ddy
+                if not game_map.is_blocked(nx, ny):
+                    logger.info("[좌표모드] 백트래킹 시도")
+                    return d
+
+            # 5차: 사방이 벽 (진짜 막다른 길) → 목표 방향으로 직진
+            logger.warning("[좌표모드] 막다른 길, 직진 시도")
+            dx = tx - cx
+            dy = ty - cy
+            if dx == 0 and dy == 0:
+                return None
+            if abs(dy) >= abs(dx):
+                return "up" if dy < 0 else "down"
+            else:
+                return "left" if dx < 0 else "right"
+
+        try:
+            iteration = 0
+            max_iterations = 5000
+            coord_fail_count = 0
+            max_coord_fails = 50  # 연속 50회 실패 시 중단
+
+            while not self._stop_event.is_set() and iteration < max_iterations:
+                iteration += 1
+
+                # 1. 템플릿 매칭으로 현재 좌표 읽기
+                current_x, current_y = matcher.read_both_coordinates(
+                    config.coord_x_region,
+                    config.coord_y_region,
+                    "X", "Y"
+                )
+
+                if current_x is None or current_y is None:
+                    coord_fail_count += 1
+                    if coord_fail_count >= max_coord_fails:
+                        logger.error(f"[좌표모드] 좌표 읽기 연속 {max_coord_fails}회 실패 → 중단")
+                        return False
+                    if coord_fail_count % 10 == 1:
+                        logger.warning(f"[좌표모드] #{iteration} 좌표 읽기 실패 ({coord_fail_count}회 연속)")
+                    time.sleep(interval)
+                    continue
+
+                coord_fail_count = 0  # 성공 시 리셋
+                current_x = int(current_x)
+                current_y = int(current_y)
+
+                # 1.5. 첫 반복: 시작 위치를 이동가능으로 등록
+                if prev_x is None and mapping_enabled:
+                    game_map.mark_passable(current_x, current_y)
+
+                # 2. 도착 체크 (좌표 모드: threshold 최대 2로 제한)
+                arrival_dist = abs(current_x - target_x) + abs(current_y - target_y)
+                coord_threshold = min(getattr(config, 'arrival_threshold', 0), 2)
+                if arrival_dist <= coord_threshold:
+                    current_target_idx += 1
+                    if current_target_idx >= len(all_targets):
+                        logger.info(f"{_GREEN}[좌표모드] ★★★ 최종 목표 도달! ({current_x}, {current_y}) ★★★{_RESET}")
+                        return True
+                    else:
+                        # 구간 맵 전환
+                        switch_segment_map(current_target_idx)
+                        target_x, target_y = all_targets[current_target_idx][0], all_targets[current_target_idx][1]
+                        seg_name = all_targets[current_target_idx][2]
+                        logger.info(f"{_GREEN}[좌표모드] ▶ 경유지 도달! 다음: ({target_x},{target_y}) [{seg_name}] [{current_target_idx+1}/{len(all_targets)}]{_RESET}")
+                        stuck_count = 0
+                        total_stuck_count = 0
+                        current_path = []
+                        path_index = 0
+                        path_pos_index = {}
+                        explored_from = {}
+                        unknown_path_fails = 0
+                        last_dir = None
+                        prev_x, prev_y = current_x, current_y
+                        time.sleep(0.3)
+                        continue
+
+                # 2.5. 포탈 감지: 감속 구간(목표 3칸 이내)에서 좌표 점프 시 다음 경유지로 전환
+                if prev_x is not None:
+                    jump_dist = abs(current_x - prev_x) + abs(current_y - prev_y)
+                    near_target = abs(prev_x - target_x) + abs(prev_y - target_y) <= 3
+                    if jump_dist >= 5 and near_target and current_target_idx < len(all_targets) - 1:
+                        # 구간 맵 전환 (현재 맵 저장 → 다음 구간 맵 로드)
+                        next_segment = current_target_idx + 1
+                        switch_segment_map(next_segment)
+                        current_target_idx += 1
+                        target_x, target_y = all_targets[current_target_idx][0], all_targets[current_target_idx][1]
+                        seg_name = all_targets[current_target_idx][2]
+                        logger.info(f"{_GREEN}[좌표모드] 🌀 포탈 감지! (점프 {jump_dist}칸) → {seg_name} 목표: ({target_x},{target_y}) [{current_target_idx+1}/{len(all_targets)}]{_RESET}")
+                        stuck_count = 0
+                        total_stuck_count = 0
+                        current_path = []
+                        path_index = 0
+                        path_pos_index = {}
+                        explored_from = {}
+                        unknown_path_fails = 0
+                        last_dir = None
+                        prev_x, prev_y = current_x, current_y
+                        time.sleep(0.5)  # 던전 로딩 대기
+                        continue
+
+                # 3. 이동 성공/실패 판정
+                if prev_x is not None:
+                    moved = (prev_x != current_x or prev_y != current_y)
+
+                    if moved:
+                        # 이동 성공 → 이동가능으로 기록
+                        if mapping_enabled:
+                            game_map.mark_passable(current_x, current_y)
+                            game_map.clear_soft_blocked(current_x, current_y)
+                            # 왔던 방향의 반대를 explored_from에 기록
+                            if last_dir:
+                                new_pos = (current_x, current_y)
+                                opposite = {"up": "down", "down": "up", "left": "right", "right": "left"}
+                                tried = explored_from.get(new_pos, set())
+                                tried.add(opposite[last_dir])
+                                explored_from[new_pos] = tried
+                                # explored_from 메모리 제한 (500개 초과 시 오래된 250개 삭제)
+                                if len(explored_from) > 500:
+                                    keys_to_remove = list(explored_from.keys())[:250]
+                                    for k in keys_to_remove:
+                                        del explored_from[k]
+                        stuck_count = 0
+                        total_stuck_count = 0
+                        unknown_path_fails = 0
+                    else:
+                        # 이동 실패
+                        stuck_count += 1
+                        total_stuck_count += 1
+                        unknown_path_fails += 1
+                        # 실패한 방향을 explored_from에 기록
+                        if last_dir and prev_x is not None:
+                            fail_pos = (prev_x, prev_y)
+                            tried = explored_from.get(fail_pos, set())
+                            tried.add(last_dir)
+                            explored_from[fail_pos] = tried
+
+                        if stuck_count >= 2 and last_dir:
+                            # 2번 연속 실패 → 임시 장애물 등록 (누적 시 영구벽 승격)
+                            if mapping_enabled:
+                                ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
+                                wall_x = prev_x + ddx
+                                wall_y = prev_y + ddy
+                                game_map.mark_soft_blocked(wall_x, wall_y)
+                                logger.info(f"[좌표모드] 임시벽 발견: ({wall_x},{wall_y})")
+                            # 장애물 발견 → 경로 재계산
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                            stuck_count = 0
+
+                # 3.3. soft_blocked 자동 감소 (10회마다)
+                if mapping_enabled:
+                    tick_counter += 1
+                    if tick_counter >= 10:
+                        game_map.tick()
+                        tick_counter = 0
+
+                # 3.5. 탈출 스킬 체크
+                if (escape_skill_enabled and
+                    total_stuck_count >= escape_skill_stuck_threshold and
+                    time.time() - last_escape_time >= escape_skill_cooldown):
+
+                    logger.warning(f"{_YELLOW}[좌표모드] 탈출 스킬 발동! (연속 정체 {total_stuck_count}회){_RESET}")
+
+                    try:
+                        pyautogui.press(escape_skill_key)
+                    except Exception as e:
+                        logger.error(f"[좌표모드] 탈출 스킬 키 입력 실패: {e}")
+                        total_stuck_count = 0
+                        last_escape_time = time.time()
+                        continue
+                    time.sleep(0.3)
+
+                    dx = target_x - current_x
+                    dy = target_y - current_y
+                    if abs(dx) >= abs(dy):
+                        dir_name = "right" if dx > 0 else "left"
+                    else:
+                        dir_name = "down" if dy > 0 else "up"
+                    direction_key = config.move_keys.get(dir_name, dir_name)
+
+                    for _ in range(escape_skill_direction_count):
+                        pyautogui.press(direction_key)
+                        time.sleep(0.05)
+
+                    pyautogui.press('enter')
+                    time.sleep(escape_skill_wait_after)
+
+                    last_escape_time = time.time()
+                    prev_x, prev_y = None, None
+                    stuck_count = 0
+                    total_stuck_count = 0
+                    current_path = []
+                    path_index = 0
+                    path_pos_index = {}
+                    explored_from = {}
+                    unknown_path_fails = 0
+                    continue
+
+                # 4. A* 경로탐색으로 방향 결정
+                direction = find_path_direction(current_x, current_y, target_x, target_y)
+
+                if direction is None:
+                    time.sleep(0.1)
+                    prev_x, prev_y = current_x, current_y
+                    continue
+
+                # 거리 로그
+                distance = abs(target_x - current_x) + abs(target_y - current_y)
+                is_final = (current_target_idx == len(all_targets) - 1)
+                slow_approach_dist = 3  # 모든 경유지 N칸 전부터 감속 (포탈 감지용)
+                is_slow = distance <= slow_approach_dist
+
+                dir_symbols = {"up": "↑", "down": "↓", "left": "←", "right": "→"}
+                seg_name = all_targets[current_target_idx][2]
+                mode = "🐢감속" if is_slow else ""
+                logger.info(f"[좌표모드] #{iteration} ({current_x},{current_y})→({target_x},{target_y}) [{seg_name}] [{current_target_idx+1}/{len(all_targets)}] 거리={distance}칸 {dir_symbols.get(direction, direction)} {mode}")
+
+                # 경유지 근접 시 감속 (포탈 등 좌표 변경 대비)
+                if is_slow:
+                    time.sleep(0.5)
+
+                # 5. 이동
+                press_key(direction)
+                last_dir = direction
+                prev_x, prev_y = current_x, current_y
+
+                # 감속 중이면 이동 후에도 추가 대기
+                if is_slow:
+                    time.sleep(0.3)
+
+            if iteration >= max_iterations:
+                logger.warning(f"{_YELLOW}[좌표모드] 최대 반복 횟수 초과 ({max_iterations}){_RESET}")
+
+            return False
+
+        except Exception as e:
+            logger.error(f"[좌표모드] 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+        finally:
+            try:
+                keyboard.remove_hotkey(_escape_hotkey_id)
+            except Exception:
+                pass
+
+            # 맵핑 결과 출력 및 저장 (현재 구간 맵)
+            if mapping_enabled:
+                stats = game_map.get_statistics()
+                logger.info(f"[맵핑] '{get_seg_name(current_segment_idx)}' 탐색 결과: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
+
+                save_path = get_segment_map_path(current_segment_idx)
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                game_map.save(save_path)
+                seg_n = get_seg_name(current_segment_idx)
+                logger.info(f"[맵핑] '{seg_n}' 맵 저장: {save_path}")
+
+            logger.info(f"{_GREEN}[좌표모드] ========== 실행 종료 =========={_RESET}")
+
+    # pyautogui.PAUSE 전역 상태 보호용 락
+    _pyautogui_lock = threading.Lock()
+
+    def _smooth_key_input(self, keys, interval):
+        """부드러운 키 입력 (분석 간격 동안 연타)"""
+        with self._pyautogui_lock:
+            original_pause = pyautogui.PAUSE
+            pyautogui.PAUSE = 0
+        try:
+            start_time = time.time()
+            while time.time() - start_time < interval and not self._stop_event.is_set():
+                for key in keys:
+                    pyautogui.keyDown(key)
+                time.sleep(0.015)  # 15ms 누르기
+                for key in keys:
+                    pyautogui.keyUp(key)
+                time.sleep(0.005)  # 5ms 간격
+        finally:
+            with self._pyautogui_lock:
+                pyautogui.PAUSE = original_pause
 
 
 # 전역 실행 엔진 인스턴스

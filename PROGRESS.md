@@ -99,6 +99,109 @@
 
 ## 버그 수정 이력
 
+### 2026-02-07: UI 로딩 성능 최적화 (v1.0.108)
+
+**문제:** 에디터 모드 진입 시 5개 뷰 동기 생성(2~5초 블로킹), 탭 전환 시 refresh() 자동 호출(DB+JSON 재로드+위젯 재생성)
+
+**수정된 파일:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/app.py` | 뷰 지연 생성 — 팩토리 등록 방식, 탭 첫 클릭 시에만 생성 |
+| `src/ui/main_window.py` | `_switch_view()` 팩토리 지연 생성 + `refresh()` 자동 호출 제거 |
+| `src/ui/analyzer_view.py` | `__init__` 데이터 로드 → `after(0)` + 백그라운드 스레드, JSON I/O + DB 쿼리 → 캐시 |
+| `src/ui/player_view.py` | `__init__` 데이터 로드 → `after(0)` + 백그라운드 스레드, DB 쿼리 → 캐시, 썸네일 비동기화 |
+| `src/ui/recorder_view.py` | DB 로드 `after(0)` 지연 |
+| `src/ui/settings_view.py` | 설정 로드 `after(0)` 지연 |
+| `src/ui/monitoring_editor.py` | 글로벌 썸네일 캐시 적용 |
+| `src/utils/config.py` | APP_VERSION 1.0.107 → 1.0.108 |
+
+**핵심 패턴:**
+- 뷰 팩토리 (`register_view_factory`) — 탭 첫 접근 시에만 생성
+- `after(0)` 콜백 — UI 렌더 후 데이터 로드
+- 백그라운드 스레드 + `self.after(0, callback)` — JSON 파싱 메인 스레드 분리
+- 데이터 캐시 (`_plan_modified_cache`, `_plan_lock_cache`) — 루프 내 I/O 제거
+- 썸네일 비동기 로딩 — 플레이스홀더 → 백그라운드 로드 → UI 갱신
+
+---
+
+### 2026-02-03: 템플릿 전용 좌표 인식 시스템으로 전환
+
+**목표:** OCR(EasyOCR, Tesseract) 폴백을 모두 제거하고 템플릿 매칭만 사용
+
+**삭제된 파일:**
+- `src/utils/ocr_utils.py` (353줄) - OCR 유틸리티 전체 삭제
+
+**수정된 파일:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/utils/digit_templates.py` | 슬라이딩 윈도우 방식으로 전환, `read_both_coordinates()` 추가 |
+| `src/ui/player_view.py` | OCR import/UI 제거, 템플릿 전용으로 변경 |
+| `src/player/rule_executor.py` | OCR 폴백 제거, 템플릿만 사용 |
+
+**digit_templates.py 주요 개선:**
+
+#### 1. 슬라이딩 윈도우 방식 (컨투어 기반 → 템플릿 슬라이딩)
+```python
+# 기존: 컨투어로 숫자 영역 분리 후 개별 매칭 (불안정)
+contours = cv2.findContours(binary, ...)
+for cnt in contours:
+    digit = match_digit(crop)
+
+# 변경: 템플릿을 이미지 위에서 슬라이드하며 매칭 (안정적)
+result = cv2.matchTemplate(binary, scaled_template, cv2.TM_CCOEFF_NORMED)
+locations = np.where(result >= threshold)
+```
+
+#### 2. 다중 스케일 매칭
+```python
+for scale in [0.9, 1.0, 1.1]:  # 3가지 크기로 시도
+    scaled_template = cv2.resize(template, (new_w, new_h))
+    result = cv2.matchTemplate(binary, scaled_template, ...)
+```
+
+#### 3. 최대 자릿수 제한 (중복 인식 방지)
+```python
+avg_tmpl_w, _ = self._get_template_size()
+max_digits = max(1, int(img_w / (avg_tmpl_w * 0.7)))  # 영역 너비 기준
+```
+
+#### 4. 범위 기반 NMS (Non-Maximum Suppression)
+```python
+# 기존: 중심점 거리만 비교 (17 → 172 오인식 발생)
+if abs(center_x - used_x) < width * 0.6:
+
+# 변경: 실제 x 범위(start~end)의 겹침 비율 계산
+overlap_start = max(new_start, start_x)
+overlap_end = min(new_end, end_x)
+overlap_width = max(0, overlap_end - overlap_start)
+if overlap_width > width * 0.5:  # 50% 이상 겹치면 제외
+```
+
+#### 5. 인접 숫자 간격 검증
+```python
+# 최종 결과에서 숫자 간 간격이 적절한지 추가 검증
+gap = curr_x - (prev_x + prev_width)
+if gap >= -prev_width * 0.3:  # 간격이 너비의 -30% 이상이면 유효
+    validated_matches.append(final_matches[i])
+```
+
+**UI 변경:**
+- "좌표 기반 (OCR)" → "좌표 기반 (템플릿)"
+- "📍 좌표 읽기 영역 (OCR)" → "📍 좌표 읽기 영역"
+- "📡 실시간 좌표 (OCR 테스트)" → "📡 실시간 좌표"
+- "OCR 원본" → "인식 상태"
+- Tesseract 설치 확인 버튼/상태 라벨 제거
+
+**효과:**
+- Tesseract/EasyOCR 설치 불필요
+- 인식 속도 향상 (OCR 대비 빠름)
+- 게임 폰트에 최적화된 정확한 인식
+- 17 → 172 같은 중복 인식 문제 해결
+
+---
+
 ### 2026-01-31: SSL DLL 로드 오류 수정 (v1.0.104)
 
 **증상:** "자동 업데이트 확인 오류: DLL load failed while importing _ssl: %1은(는) 올바른 Win32 응용 프로그램이 아닙니다"
@@ -1031,7 +1134,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-01-31 (v1.0.107)
+- 마지막 업데이트: 2026-02-07 (UI 로딩 성능 최적화)
 
 ## 업데이트 규칙
 

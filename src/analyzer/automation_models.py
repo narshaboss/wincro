@@ -266,6 +266,83 @@ class AutomationRule:
 
 
 @dataclass
+class MinimapConfig:
+    """미니맵 자동 이동 설정"""
+    enabled: bool = False
+
+    # 1. 미니맵 이미지 (전체 맵 이미지)
+    minimap_image_path: Optional[str] = None
+
+    # 2. 목적지 이미지 (미니맵에서 크롭한 이미지)
+    destination_image_path: Optional[str] = None
+
+    # 3. 게임 화면에서 미니맵 영역 [x1, y1, x2, y2]
+    minimap_region: Optional[List[int]] = None
+
+    # 4. 장애물 색상 (HSV) - 파란색 (강/물)
+    obstacle_hsv_lower: List[int] = field(default_factory=lambda: [100, 50, 50])
+    obstacle_hsv_upper: List[int] = field(default_factory=lambda: [130, 255, 255])
+
+    # 5. 노란점 색상 (HSV) - 현재 위치
+    yellow_hsv_lower: List[int] = field(default_factory=lambda: [20, 150, 150])
+    yellow_hsv_upper: List[int] = field(default_factory=lambda: [35, 255, 255])
+
+    # 캐시된 목적지 좌표 (템플릿 매칭 결과)
+    cached_destination_pixel: Optional[List[int]] = None
+
+    # 캐시된 경로 (A* 결과)
+    cached_path: Optional[List[List[int]]] = None
+
+    # 도착 판정 거리 (픽셀)
+    arrival_threshold: int = 10
+
+    # 분석 간격 (초)
+    analysis_interval: float = 0.1
+
+    def to_dict(self) -> Dict[str, Any]:
+        """딕셔너리로 변환"""
+        return {
+            "enabled": self.enabled,
+            "minimap_image_path": _to_relative_path(self.minimap_image_path),
+            "destination_image_path": _to_relative_path(self.destination_image_path),
+            "minimap_region": self.minimap_region,
+            "obstacle_hsv_lower": self.obstacle_hsv_lower,
+            "obstacle_hsv_upper": self.obstacle_hsv_upper,
+            "yellow_hsv_lower": self.yellow_hsv_lower,
+            "yellow_hsv_upper": self.yellow_hsv_upper,
+            "cached_destination_pixel": self.cached_destination_pixel,
+            "cached_path": self.cached_path,
+            "arrival_threshold": self.arrival_threshold,
+            "analysis_interval": self.analysis_interval,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], templates_dir: Optional[Path] = None) -> "MinimapConfig":
+        """딕셔너리에서 생성"""
+        if templates_dir is None:
+            try:
+                from ..utils.config import DATA_DIR
+                templates_dir = DATA_DIR / "templates"
+            except ImportError:
+                templates_dir = Path("data/templates")
+
+        return cls(
+            enabled=data.get("enabled", False),
+            minimap_image_path=_to_absolute_path(data.get("minimap_image_path"), templates_dir),
+            destination_image_path=_to_absolute_path(data.get("destination_image_path"), templates_dir),
+            minimap_region=data.get("minimap_region"),
+            obstacle_hsv_lower=data.get("obstacle_hsv_lower", [100, 50, 50]),
+            obstacle_hsv_upper=data.get("obstacle_hsv_upper", [130, 255, 255]),
+            yellow_hsv_lower=data.get("yellow_hsv_lower", [20, 150, 150]),
+            yellow_hsv_upper=data.get("yellow_hsv_upper", [35, 255, 255]),
+            cached_destination_pixel=data.get("cached_destination_pixel"),
+            cached_path=data.get("cached_path"),
+            arrival_threshold=data.get("arrival_threshold", 10),
+            analysis_interval=data.get("analysis_interval", 0.1),
+        )
+
+
+@dataclass
 class GameModeConfig:
     """
     게임 특화 모드 설정
@@ -292,6 +369,41 @@ class GameModeConfig:
     auto_skill_key: str = ""  # 상시 사용 스킬 키
     auto_skill_cooldown_image: str = ""  # 스킬 쿨타임 이미지 (이 이미지가 없으면 스킬 사용)
 
+    # === 좌표 기반 탐색 모드 ===
+    navigation_mode: str = "coordinate"  # "coordinate" (좌표 기반)
+    coord_x_region: Optional[List[int]] = None  # X 좌표 OCR 영역 [x1, y1, x2, y2]
+    coord_y_region: Optional[List[int]] = None  # Y 좌표 OCR 영역 [x1, y1, x2, y2]
+    target_x: int = 0  # 목표 X 좌표
+    target_y: int = 0  # 목표 Y 좌표
+    waypoints: List = field(default_factory=list)  # 경유지 리스트 [[x,y,name] 또는 [x,y,name,image_path]]
+    final_waypoint_idx: int = -1  # 최종 목표 경유지 인덱스 (-1: 마지막 경유지)
+    obstacle_detection_enabled: bool = True  # 장애물 감지 활성화
+    stuck_threshold: int = 3  # 정체 판정 프레임 수 (이 횟수 동안 좌표 변화 없으면 장애물로 판정)
+    detour_distance: int = 2  # 우회 이동 거리 (타일 수)
+
+    # === 8방향 지능형 회피 설정 ===
+    diagonal_movement_enabled: bool = False  # 대각선 이동 허용 (게임이 지원하는 경우만)
+    oscillation_threshold: int = 3  # 진동 판정 반복 횟수
+    detour_distance_max: int = 8  # 우회 거리 최대값
+
+    # === 탈출 스킬 설정 ===
+    escape_skill_enabled: bool = False       # 탈출 스킬 활성화
+    escape_skill_key: str = "z"              # 스킬 키
+    escape_skill_cooldown: float = 10.0      # 쿨타임 (초)
+    escape_skill_stuck_threshold: int = 10   # 연속 정체 횟수 (발동 조건)
+    escape_skill_direction_count: int = 5    # 방향키 입력 횟수 (범위 내 최대 이동)
+    escape_skill_wait_after: float = 0.5     # 스킬 후 대기 (텔레포트 애니메이션)
+
+    # === 미니맵 경로 탐색 설정 ===
+    minimap_config: Optional[MinimapConfig] = None
+
+    # === 맵핑 시스템 설정 ===
+    mapping_enabled: bool = True  # 이동 시 맵 데이터 기록 여부
+
+    # === 스킬 활성화 플래그 ===
+    move_skill_enabled: bool = False   # 이동 스킬 사용 여부
+    auto_skill_enabled: bool = False   # 상시 스킬 사용 여부
+
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
         return {
@@ -312,6 +424,35 @@ class GameModeConfig:
             "move_skill_distance": self.move_skill_distance,
             "auto_skill_key": self.auto_skill_key,
             "auto_skill_cooldown_image": _to_relative_path(self.auto_skill_cooldown_image),
+            # 좌표 기반 탐색 모드
+            "navigation_mode": self.navigation_mode,
+            "coord_x_region": self.coord_x_region,
+            "coord_y_region": self.coord_y_region,
+            "target_x": self.target_x,
+            "target_y": self.target_y,
+            "waypoints": self.waypoints,
+            "final_waypoint_idx": self.final_waypoint_idx,
+            "obstacle_detection_enabled": self.obstacle_detection_enabled,
+            "stuck_threshold": self.stuck_threshold,
+            "detour_distance": self.detour_distance,
+            # 8방향 지능형 회피 설정
+            "diagonal_movement_enabled": self.diagonal_movement_enabled,
+            "oscillation_threshold": self.oscillation_threshold,
+            "detour_distance_max": self.detour_distance_max,
+            # 탈출 스킬 설정
+            "escape_skill_enabled": self.escape_skill_enabled,
+            "escape_skill_key": self.escape_skill_key,
+            "escape_skill_cooldown": self.escape_skill_cooldown,
+            "escape_skill_stuck_threshold": self.escape_skill_stuck_threshold,
+            "escape_skill_direction_count": self.escape_skill_direction_count,
+            "escape_skill_wait_after": self.escape_skill_wait_after,
+            # 미니맵 설정
+            "minimap_config": self.minimap_config.to_dict() if self.minimap_config else None,
+            # 맵핑 시스템 설정
+            "mapping_enabled": self.mapping_enabled,
+            # 스킬 활성화 플래그
+            "move_skill_enabled": self.move_skill_enabled,
+            "auto_skill_enabled": self.auto_skill_enabled,
         }
 
     @classmethod
@@ -336,7 +477,7 @@ class GameModeConfig:
             character_image=_to_absolute_path(data.get("character_image"), templates_dir) or "",
             target_image=_to_absolute_path(data.get("target_image"), templates_dir) or "",
             obstacle_images=obstacle_images,
-            move_keys=data.get("move_keys", {"up": "Up", "down": "Down", "left": "Left", "right": "Right"}),
+            move_keys=data.get("move_keys", {"up": "up", "down": "down", "left": "left", "right": "right"}),
             analysis_interval=data.get("analysis_interval", 0.1),
             confidence=default_conf,
             character_confidence=data.get("character_confidence", default_conf),
@@ -348,6 +489,35 @@ class GameModeConfig:
             move_skill_distance=data.get("move_skill_distance", 150),
             auto_skill_key=data.get("auto_skill_key", ""),
             auto_skill_cooldown_image=_to_absolute_path(data.get("auto_skill_cooldown_image"), templates_dir) or "",
+            # 좌표 기반 탐색 모드
+            navigation_mode=data.get("navigation_mode", "coordinate"),
+            coord_x_region=data.get("coord_x_region"),
+            coord_y_region=data.get("coord_y_region"),
+            target_x=data.get("target_x", 0),
+            target_y=data.get("target_y", 0),
+            waypoints=data.get("waypoints") or [],
+            final_waypoint_idx=data.get("final_waypoint_idx", -1),
+            obstacle_detection_enabled=data.get("obstacle_detection_enabled", True),
+            stuck_threshold=data.get("stuck_threshold", 3),
+            detour_distance=data.get("detour_distance", 2),
+            # 8방향 지능형 회피 설정
+            diagonal_movement_enabled=data.get("diagonal_movement_enabled", False),
+            oscillation_threshold=data.get("oscillation_threshold", 3),
+            detour_distance_max=data.get("detour_distance_max", 8),
+            # 탈출 스킬 설정
+            escape_skill_enabled=data.get("escape_skill_enabled", False),
+            escape_skill_key=data.get("escape_skill_key", "z"),
+            escape_skill_cooldown=data.get("escape_skill_cooldown", 10.0),
+            escape_skill_stuck_threshold=data.get("escape_skill_stuck_threshold", 10),
+            escape_skill_direction_count=data.get("escape_skill_direction_count", 5),
+            escape_skill_wait_after=data.get("escape_skill_wait_after", 0.5),
+            # 미니맵 설정
+            minimap_config=MinimapConfig.from_dict(data["minimap_config"], templates_dir) if data.get("minimap_config") else None,
+            # 맵핑 시스템 설정
+            mapping_enabled=data.get("mapping_enabled", True),
+            # 스킬 활성화 플래그
+            move_skill_enabled=data.get("move_skill_enabled", False),
+            auto_skill_enabled=data.get("auto_skill_enabled", False),
         )
 
 

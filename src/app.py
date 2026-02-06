@@ -119,38 +119,44 @@ class WinCroApp:
             return False
 
     def _create_views(self) -> None:
-        """뷰 생성 및 메인 윈도우에 연결 (에디터 모드 전용)"""
-        # 지연 import - 플레이 모드에서는 이 함수가 호출되지 않으므로 메모리 절약
-        from .ui.recorder_view import RecorderView
-        from .ui.analyzer_view import AnalyzerView
-        from .ui.player_view import PlayerView
-        from .ui.settings_view import SettingsView
-        from .ui.guide_view import GuideView
-
-        # 뷰 컨테이너 가져오기
+        """뷰 팩토리 등록 (실제 생성은 탭 클릭 시 지연 생성)"""
         container = self._main_window.get_view_container()
 
-        # 녹화 뷰
-        self._recorder_view = RecorderView(container)
-        self._main_window.set_recorder_view(self._recorder_view)
+        def create_recorder():
+            from .ui.recorder_view import RecorderView
+            self._recorder_view = RecorderView(container)
+            return self._recorder_view
 
-        # 분석 뷰
-        self._analyzer_view = AnalyzerView(container)
-        self._main_window.set_analyzer_view(self._analyzer_view)
+        def create_analyzer():
+            from .ui.analyzer_view import AnalyzerView
+            self._analyzer_view = AnalyzerView(container)
+            return self._analyzer_view
 
-        # 실행 뷰
-        self._player_view = PlayerView(container)
-        self._main_window.set_player_view(self._player_view)
+        def create_player():
+            from .ui.player_view import PlayerView
+            self._player_view = PlayerView(container)
+            return self._player_view
 
-        # 설정 뷰
-        self._settings_view = SettingsView(container)
-        self._main_window.set_settings_view(self._settings_view)
+        def create_settings():
+            from .ui.settings_view import SettingsView
+            self._settings_view = SettingsView(container)
+            return self._settings_view
 
-        # 가이드 뷰
-        self._guide_view = GuideView(container)
-        self._main_window.set_guide_view(self._guide_view)
+        def create_guide():
+            from .ui.guide_view import GuideView
+            self._guide_view = GuideView(container)
+            return self._guide_view
 
-        logger.debug("모든 뷰 생성 완료")
+        self._main_window.register_view_factory("recorder", create_recorder)
+        self._main_window.register_view_factory("analyzer", create_analyzer)
+        self._main_window.register_view_factory("player", create_player)
+        self._main_window.register_view_factory("settings", create_settings)
+        self._main_window.register_view_factory("guide", create_guide)
+
+        # 첫 번째 탭(녹화)만 즉시 생성
+        self._main_window.switch_to_first_view()
+
+        logger.debug("뷰 팩토리 등록 완료 (지연 생성 방식)")
 
     def run(self) -> int:
         """
@@ -205,13 +211,13 @@ class WinCroApp:
     def _cleanup(self) -> None:
         """리소스 정리"""
         try:
-            # 뷰 정리
-            if self._recorder_view:
-                self._recorder_view.cleanup()
-            if self._analyzer_view:
-                self._analyzer_view.cleanup()
-            if self._player_view:
-                self._player_view.cleanup()
+            # 생성된 뷰만 정리 (지연 생성으로 None일 수 있음)
+            for view in (self._recorder_view, self._analyzer_view, self._player_view):
+                if view and hasattr(view, 'cleanup'):
+                    try:
+                        view.cleanup()
+                    except Exception as e:
+                        logger.debug(f"뷰 정리 오류: {e}")
 
             # 설정 저장
             save_config()
@@ -261,16 +267,20 @@ class WinCroApp:
             logger.error(f"[자동실행-시퀀스] 오류: {e}")
 
     def _auto_connect_arduino(self) -> None:
-        """아두이노 자동 연결"""
-        try:
-            from .utils.arduino_hid import get_arduino_hid
-            arduino = get_arduino_hid()
-            if arduino.connect():
-                logger.info("아두이노 자동 연결 성공")
-            else:
-                logger.warning("아두이노 자동 연결 실패 - 수동으로 연결하세요")
-        except Exception as e:
-            logger.error(f"아두이노 자동 연결 오류: {e}")
+        """아두이노 자동 연결 (백그라운드 스레드에서 실행)"""
+        def _connect_task():
+            try:
+                from .utils.arduino_hid import get_arduino_hid
+                arduino = get_arduino_hid()
+                if arduino.connect():
+                    logger.info("아두이노 자동 연결 성공")
+                else:
+                    logger.warning("아두이노 자동 연결 실패 - 수동으로 연결하세요")
+            except Exception as e:
+                logger.error(f"아두이노 자동 연결 오류: {e}")
+
+        import threading
+        threading.Thread(target=_connect_task, daemon=True).start()
 
     def _auto_check_update(self) -> None:
         """시작 시 자동 업데이트 확인 및 자동 적용"""

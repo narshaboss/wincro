@@ -309,7 +309,7 @@ class RecorderView(BaseView):
         )
         self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        self._refresh_recordings_list()
+        self.after(0, self._refresh_recordings_list)  # UI 렌더 후 로드
 
     def _refresh_recordings_list(self):
         """녹화 목록 새로고침"""
@@ -539,7 +539,7 @@ class RecorderView(BaseView):
                 self._async_error = str(e)
                 self._async_done = "error"
 
-    def _poll_async_result(self):
+    def _poll_async_result(self, _poll_count: int = 0):
         """비동기 녹화 시작 결과를 폴링 (메인 스레드에서 실행)"""
         try:
             # 결과 확인 (락 사용)
@@ -549,8 +549,17 @@ class RecorderView(BaseView):
                 async_result_name = self._async_result_name
 
             if async_done is None:
+                # 최대 300회 (30초) 폴링 후 타임아웃
+                if _poll_count >= 300:
+                    logger.error("[녹화] 비동기 결과 폴링 타임아웃 (30초)")
+                    self._on_recording_start_failed_with_message("녹화 시작 타임아웃 (30초)")
+                    with self._async_lock:
+                        self._async_done = None
+                        self._async_error = None
+                        self._async_result_name = None
+                    return
                 # 아직 완료되지 않음 - 100ms 후 다시 확인
-                self.after(100, self._poll_async_result)
+                self.after(100, lambda: self._poll_async_result(_poll_count + 1))
                 return
 
             if async_done == "success":

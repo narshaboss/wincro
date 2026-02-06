@@ -33,7 +33,7 @@ class SettingsView(BaseView):
         self._active_threads: list = []
 
         self._setup_ui()
-        self._load_settings()
+        self.after(0, self._load_settings)  # UI 렌더 후 설정 로드
 
     def cleanup(self) -> None:
         """리소스 정리 - 백그라운드 스레드 중지 (논블로킹)"""

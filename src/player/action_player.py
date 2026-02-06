@@ -719,11 +719,14 @@ class ActionPlayer:
                     if self._state == PlayerState.STOPPED:
                         return False, "중지됨"
 
-                    # 일시 정지 대기
+                    # 일시 정지 대기 (일시정지 시간도 타임아웃에 포함)
                     while self._state == PlayerState.PAUSED:
                         time.sleep(0.1)
                         if self._state == PlayerState.STOPPED:
                             return False, "중지됨"
+                        elapsed = time.time() - start_wait_time
+                        if elapsed > timeout:
+                            break
 
                     locations = self._find_all_images_on_screen(action.target_image, confidence)
                     if not locations:

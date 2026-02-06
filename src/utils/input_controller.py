@@ -16,12 +16,12 @@ logger = get_logger(__name__)
 
 
 def _release_mouse_capture():
-    """마우스 캡처/클리핑 해제 (다른 프로그램이 마우스를 잡고 있을 때 필요)"""
-    try:
-        ctypes.windll.user32.ReleaseCapture()
-        ctypes.windll.user32.ClipCursor(None)
-    except (OSError, AttributeError):
-        pass
+    """마우스 캡처/클리핑 해제 - 게임 충돌 방지를 위해 비활성화
+
+    Note: ReleaseCapture()가 게임의 마우스 캡처를 강제로 해제하여
+    게임 충돌을 유발할 수 있어 비활성화함.
+    """
+    pass
 
 # 전역 Arduino HID 인스턴스 (지연 로딩)
 _arduino_hid = None

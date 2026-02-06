@@ -8,11 +8,14 @@ cryptography 라이브러리를 사용하여 Fernet 대칭키 암호화를 구�
 import os
 import base64
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+logger = logging.getLogger(__name__)
 
 
 # 키 파일 경로
@@ -88,11 +91,17 @@ class SecurityManager:
 
     def _ensure_key(self) -> None:
         """암호화 키가 존재하는지 확인하고, 없으면 생성합니다."""
+        salt = None
         if KEY_FILE.exists():
             # 기존 솔트 로드
             with open(KEY_FILE, 'rb') as f:
                 salt = f.read()
-        else:
+            # 솔트 길이 검증 (16 바이트여야 함)
+            if len(salt) != 16:
+                logger.warning(f"손상된 솔트 파일 감지 ({len(salt)} bytes), 새로 생성")
+                salt = None
+
+        if salt is None:
             # 새 솔트 생성
             salt = os.urandom(16)
             KEY_FILE.parent.mkdir(parents=True, exist_ok=True)

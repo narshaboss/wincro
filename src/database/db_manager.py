@@ -31,7 +31,7 @@ class DatabaseManager:
     """
 
     _instance: Optional['DatabaseManager'] = None
-    _lock: threading.Lock = threading.Lock()
+    _lock: threading.RLock = threading.RLock()
 
     def __new__(cls) -> 'DatabaseManager':
         """싱글톤 인스턴스 생성 (스레드 안전)"""

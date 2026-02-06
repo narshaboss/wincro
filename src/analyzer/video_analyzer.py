@@ -458,7 +458,7 @@ class VideoAnalyzer:
                 futures = [executor.submit(save_screenshot, c) for c in clicks]
                 for future in as_completed(futures):
                     try:
-                        success, idx = future.result()
+                        success, idx = future.result(timeout=60)
                         if success:
                             saved += 1
                         else:

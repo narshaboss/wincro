@@ -229,6 +229,8 @@ class VirtualScrollFrame(ctk.CTkFrame):
         """특정 항목으로 스크롤"""
         if not self._items:
             return
+        # 인덱스 범위 검증
+        index = max(0, min(index, len(self._items) - 1))
         total_height = len(self._items) * self._item_height
         y_pos = index * self._item_height
         self._canvas.yview_moveto(y_pos / total_height)

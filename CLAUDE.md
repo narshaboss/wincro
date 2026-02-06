@@ -42,7 +42,10 @@ C:\Projects\wincro\
 │   │
 │   ├── player/
 │   │   ├── rule_executor.py       # 규칙 기반 실행 엔진
-│   │   └── action_player.py       # 액션 실행 (레거시)
+│   │   ├── action_player.py       # 액션 실행 (레거시)
+│   │   ├── simple_pathfinder.py   # A* 경로탐색 알고리즘
+│   │   ├── game_map.py            # 맵 데이터 (이동가능/장애물)
+│   │   └── obstacle_avoidance.py  # 8방향 장애물 회피 (레거시)
 │   │
 │   ├── database/
 │   │   ├── models.py              # Action, Sequence, ExecutionLog
@@ -62,6 +65,7 @@ C:\Projects\wincro\
 │   │   ├── config.py              # 설정 관리 (AppConfig)
 │   │   ├── logger.py              # 로깅 설정
 │   │   ├── input_controller.py    # 입력 추상화 (pyautogui/Arduino)
+│   │   ├── digit_templates.py     # 숫자 템플릿 매칭 (좌표 OCR)
 │   │   ├── arduino_hid.py         # Arduino HID 통신
 │   │   ├── arduino_uploader.py    # Arduino 펌웨어 업로드
 │   │   ├── admin.py               # 관리자 권한
@@ -83,7 +87,9 @@ C:\Projects\wincro\
 │   ├── templates/                 # 클릭 스크린샷 이미지
 │   ├── plans/                     # 자동화 플랜 (.json)
 │   ├── sequences/                 # 시퀀스 파일
-│   └── triggers/                  # 트리거 이미지
+│   ├── triggers/                  # 트리거 이미지
+│   ├── maps/                      # 특화모드 맵 데이터 ({name}_map.json)
+│   └── digit_templates/           # 숫자 템플릿 (좌표 읽기용)
 │
 └── logs/                          # 로그 파일
 ```
@@ -247,7 +253,69 @@ move_skill_key: str             # 이동 스킬 키
 move_skill_distance: int        # 이동 스킬 사용 거리 (픽셀)
 auto_skill_key: str             # 상시 스킬 키
 auto_skill_cooldown_image: str  # 스킬 쿨타임 이미지
+mapping_enabled: bool           # 이동 시 맵 데이터 기록 여부
+move_skill_enabled: bool        # 이동 스킬 사용 여부
+auto_skill_enabled: bool        # 상시 스킬 사용 여부
 ```
+
+#### 특화모드 AI 알고리즘 (좌표 기반 이동)
+
+**핵심 파일:**
+| 파일 | 역할 |
+|------|------|
+| `src/player/simple_pathfinder.py` | A* 경로탐색 알고리즘 |
+| `src/player/game_map.py` | 맵 데이터 (이동가능/장애물 좌표) |
+| `src/player/obstacle_avoidance.py` | 8방향 장애물 회피 (레거시, 현재 미사용) |
+| `src/utils/digit_templates.py` | 숫자 템플릿 매칭 (화면 좌표 읽기) |
+| `data/maps/{name}_map.json` | 맵 저장 파일 |
+
+**알고리즘 흐름:**
+```
+[화면 좌표 읽기] → [GameMap 조회] → [A* 경로탐색] → [방향키 입력] → [이동 결과 기록]
+     │                  │                │                              │
+DigitTemplateMatcher  game_map      SimplePathfinder              mark_passable()
+ (템플릿 매칭)     (벽/이동가능)    (최단경로 계산)              mark_blocked()
+```
+
+**A* 경로탐색 (SimplePathfinder):**
+- `find_path(start, goal, allow_unknown)` - A* 알고리즘으로 최단 경로 계산
+- 맨해튼 거리 휴리스틱 사용
+- 이동 비용: passable/unknown = 1, soft_blocked = 5, blocked = 통과 불가
+- 1차: 알려진 이동가능 타일만으로 탐색 (`allow_unknown=False`)
+- 2차: 미탐색 영역 포함 탐색 (`allow_unknown=True`)
+- 3차: 경로 없으면 목표 방향으로 직진 (폴백)
+- 장애물 발견 시 경로 자동 재계산
+
+**GameMap 데이터 구조:**
+```python
+passable: Set[Tuple[int, int]]       # 이동 가능한 좌표들
+blocked: Set[Tuple[int, int]]        # 장애물 좌표들 (영구벽)
+soft_blocked: Dict[Tuple[int,int], int]  # 임시 장애물 {(x,y): fail_count}
+```
+- 이동 성공 → `mark_passable(x, y)` + `clear_soft_blocked(x, y)`
+- 2회 연속 이동 실패 → `mark_soft_blocked(wall_x, wall_y)` 임시벽 등록
+- 같은 좌표에서 5회 이상 실패 → `mark_blocked()` 영구벽 승격
+- 10회 루프마다 `tick()` 호출 → soft_blocked fail_count 자동 감소
+- 맵 데이터는 `data/maps/` 에 JSON으로 저장/로드
+- 다음 실행 시 기존 맵 데이터를 `load_and_merge()` 로 누적 활용
+
+**맵 저장 시점:**
+1. "저장" 버튼 클릭 시
+2. 다이얼로그 닫을 때
+3. 실행 중지 시
+4. 맵핑 중 10칸마다 자동 저장
+5. 벽 발견 시 즉시 저장
+6. 액션 실행 종료 시 (rule_executor)
+
+**탈출 스킬 (escape_skill):**
+- 연속 정체 횟수가 `escape_skill_stuck_threshold` 초과 시 발동
+- 스킬 키 → 목표 방향키 연타 → Enter 키 순서 실행
+- 쿨타임 적용 (`escape_skill_cooldown`)
+
+**실행 경로 (테스트/액션 통일):**
+- UI 테스트 실행: `player_view.py` → `_run_coordinate_loop()` → SimplePathfinder + A*
+- 액션 실행: `rule_executor.py` → `execute_game_mode_coordinate()` → SimplePathfinder + A*
+- 두 경로 모두 동일한 A* 알고리즘 + GameMap 활용
 
 ---
 
@@ -474,6 +542,96 @@ wincro/
 ---
 
 ## 작업 히스토리
+
+### 2026-02-07: UI 로딩 성능 최적화 (페이지 렉 해소)
+- **문제:** 에디터 모드 진입 시 5개 뷰가 모두 동기 생성 → 2~5초 블로킹, 탭 전환 시 `refresh()` 자동 호출 → DB 재쿼리 + JSON 재파싱 + 위젯 전부 삭제/재생성 → 체감 렉
+- **최적화 내역 (7개 파일):**
+  1. `app.py`: 뷰 지연 생성 — 팩토리 등록 방식으로 변경, 탭 처음 클릭 시에만 뷰 생성
+  2. `main_window.py`: `_switch_view()`에서 팩토리 지연 생성 지원, `refresh()` 자동 호출 제거
+  3. `analyzer_view.py`: `__init__`에서 `_load_recordings()` + `_load_plans()` 제거 → `after(0)` 콜백 + 백그라운드 스레드 로딩, `_create_recording_item`의 루프 내 JSON I/O → 캐시로 대체, `_create_plan_item`의 루프 내 DB 쿼리 → 캐시로 대체
+  4. `player_view.py`: `__init__`에서 `_load_sequences()` + `_load_automation_plans()` 제거 → `after(0)` + 백그라운드 스레드, `_create_plan_item`의 루프 내 DB 쿼리 → 캐시로 대체, SequenceDetailDialog 썸네일 동기 로딩 → 비동기 로딩 (PlanDetailDialog 패턴 적용)
+  5. `recorder_view.py`: `_refresh_recordings_list()` → `after(0)` 지연
+  6. `settings_view.py`: `_load_settings()` → `after(0)` 지연
+  7. `monitoring_editor.py`: `_load_thumbnail()`에 글로벌 썸네일 캐시 적용
+- **핵심 패턴:**
+  - 뷰 팩토리 (`register_view_factory`) — 탭 첫 접근 시에만 뷰 생성 (첫 탭만 즉시 생성)
+  - `after(0)` 콜백 — UI 프레임 렌더 후 데이터 로드 (블로킹 방지)
+  - 백그라운드 스레드 + `self.after(0, callback)` — JSON 파싱을 메인 스레드에서 분리
+  - 데이터 캐시 (`_plan_modified_cache`, `_plan_lock_cache`) — 루프 내 파일 I/O/DB 쿼리 방지
+  - 썸네일 비동기 로딩 — 플레이스홀더 → 백그라운드 로드 → UI 갱신
+
+### 2026-02-05: 특화모드(좌표모드) 버그 4건 수정
+- **BUG 1 (CRASH):** `rule_executor.py:3145` - 탈출스킬 방향키에 `move_keys.get()` 기본값 없음 → `pyautogui.press(None)` crash
+  - **수정:** `config.move_keys.get(dir_name, dir_name)` 기본값 추가
+- **BUG 2 (무한 루프):** `rule_executor.py:3041` + `player_view.py:3393` - 좌표 읽기 연속 실패 시 제한 없음 → 수천 회 무의미 반복
+  - **수정:** `coord_fail_count` 카운터 추가, 연속 50회 실패 시 자동 중단
+- **BUG 3 (데이터 누락):** `rule_executor.py:3057` + `player_view.py:3410` - 첫 반복에서 시작 위치가 passable로 등록 안 됨
+  - **수정:** `prev_x is None`일 때 `mark_passable(current_x, current_y)` 추가
+- **BUG 4 (CRASH):** `rule_executor.py:2921` - `escape_skill_key`가 빈 문자열이면 `pyautogui.press("")` crash
+  - **수정:** `or 'z'` 폴백 추가
+
+### 2026-02-05: 동작분석 액션 많을 때 렉 개선
+- **문제:** 동작분석 후 액션 수가 많아지면 UI가 심하게 렉걸림
+- **원인 3가지:**
+  1. `_get_flat_rules_with_depth()`가 O(n²) — 매 규칙마다 전체 결과 리스트를 순회해서 형제 번호 계산
+  2. 썸네일을 메인 스레드에서 동기 로딩 — 캐시 미스 시 `np.fromfile()` → `cv2.imdecode()` → `cv2.resize()` 블로킹
+  3. `_refresh_action_list()`에서 매번 전체 규칙에 대해 디버그 루프 실행
+- **수정:**
+  1. `player_view.py:_get_flat_rules_with_depth()` — O(n²) → O(n) 카운터 방식으로 변경. `child_counters` dict로 부모별 자식 번호 즉시 계산
+  2. `player_view.py:_display_thumbnail()` — 캐시 히트 시 즉시 표시, 캐시 미스 시 `📷` 플레이스홀더 표시 후 백그라운드 스레드에서 이미지 로딩 → `self.after(0, _apply)`로 UI 갱신
+  3. `player_view.py:_refresh_action_list()` — 불필요한 디버그 순회 루프 제거
+
+### 2026-02-05: 프로그램 멈춤(Freeze/Hang) 방지 수정
+- **문제:** 간헐적으로 프로그램이 응답 없음 상태로 전환
+- **수정 내역 (총 13건):**
+  1. `rule_executor.py:2051` - 모니터링 while True 루프에 안전 타임아웃 2시간 추가
+  2. `action_player.py:723` - 일시정지 루프가 타임아웃을 우회하는 문제 수정 (pause 시간도 timeout에 포함)
+  3. `recorder_view.py:542` - 비동기 폴링에 최대 300회(30초) 재시도 제한 추가
+  4. `video_analyzer.py:461` - `future.result()` 호출에 `timeout=60` 추가
+  5. `db_manager.py:34` - `threading.Lock()` → `threading.RLock()` 변경 (싱글톤 재진입 교착 방지)
+  6. `digit_templates.py` - 3곳의 `ImageGrab.grab()` → `_safe_grab()` (5초 타임아웃 보호)
+  7. `app.py:263` - `_auto_connect_arduino()` 시리얼 I/O를 백그라운드 스레드로 이동
+  8. `main_window.py:522` - 백그라운드 플랜 로드 실패 시 예외 처리 추가 (UI 복원 보장)
+  9. `monitoring_editor.py:546,1119` - 백그라운드 스레드에서 `.configure()` → `self.after(0, ...)` 래핑
+  10. `player_view.py:4534,4723,4862` - 3곳의 `ImageGrab.grab()` → `_safe_grab()` (5초 타임아웃 보호)
+  11. `player_view.py:2621,6550` - 2곳의 `pyautogui.screenshot()` → `_safe_grab()` (5초 타임아웃 보호)
+- **핵심 패턴:** `_safe_grab()` 함수 - `ImageGrab.grab()`을 별도 스레드에서 실행, 5초 타임아웃으로 DWM 행 방지
+
+### 2026-02-05: Soft Blocked 시스템 도입 (몬스터 임시벽 구분)
+- **문제:** 던전 몬스터를 만나면 2회 이동 실패 → 영구벽(`blocked`)으로 등록 → 맵 데이터 오염
+- **해결:** `soft_blocked`(임시벽) 시스템 도입. 이동 실패 시 즉시 영구벽이 아닌 임시벽으로 등록
+- **핵심 동작:**
+  - 이동 실패 2회 → `mark_soft_blocked()` (임시벽, fail_count 누적)
+  - fail_count >= 5 → `mark_blocked()` 영구벽 승격
+  - 이동 성공 시 → `clear_soft_blocked()` 즉시 해제
+  - 10회 루프마다 `tick()` → fail_count 자동 감소, 0이면 만료
+  - A* 비용: soft_blocked = 5 (우회 선호), blocked = 통과 불가
+- **수정 파일:**
+  - `src/player/game_map.py`: `soft_blocked: Dict` 추가, 6개 메서드 추가 (`mark_soft_blocked`, `clear_soft_blocked`, `is_soft_blocked`, `get_soft_blocked_cost`, `tick`), save/load/merge/stats 등 수정
+  - `src/player/simple_pathfinder.py`: A* 비용 `g_cost + 1` → `g_cost + get_soft_blocked_cost()` 변경
+  - `src/player/rule_executor.py`: `mark_blocked` → `mark_soft_blocked`, `clear_soft_blocked` 추가, `tick()` 호출
+  - `src/ui/player_view.py`: rule_executor.py와 동일 변경, 통계 표시에 임시벽 카운트 추가
+  - `src/player/map_canvas.py`: 주황색(`#e8a040`) 임시벽 렌더링, 범례/클릭팝업 업데이트
+  - `src/player/map_visualizer.py`: `▒` 기호 추가, 범례 업데이트
+- **하위 호환:** 기존 맵 JSON에 `soft_blocked` 키 없어도 정상 로드
+- **복원:** `docs/pathfinding_algorithm.md`에 v1.0.107 전체 코드 백업 보관
+
+### 2026-02-03: 게임 충돌 원인 분석 및 ReleaseCapture 제거
+- **문제:** 플레이 모드에서 게임 2개 + WinCro 실행 중 다른 프로그램들이 간헐적으로 충돌 (WinCro는 안 튕김)
+- **원인 분석:** `ReleaseCapture()` 과다 호출 - 클릭 1회당 6~10회 호출
+  - 게임이 마우스 캡처 중일 때 (드래그, 카메라 회전, 스킬 시전) ReleaseCapture() 호출되면 충돌
+  - 간헐적인 이유: 게임이 캡처 안 쓰는 순간이면 괜찮고, 쓰는 순간이면 충돌
+- **수정 파일:**
+  - `src/utils/input_controller.py`: `_release_mouse_capture()` 함수 내용을 `pass`로 변경
+  - `src/player/rule_executor.py`: 6개 위치의 ReleaseCapture()/ClipCursor() 호출 주석 처리
+    - 라인 189-190: `_win32_move_click()` 함수 시작부
+    - 라인 248-249: SendInput 시도 전
+    - 라인 315-316: `_win32_force_click_at()` 함수
+    - 라인 637-638: 사용자 개입 후 재개 시
+    - 라인 1298-1299: 마우스 이동 루프
+    - 라인 1795-1796: 트리거 후 준비
+- **검증:** 두 파일 모두 구문 검사 통과 (py_compile)
+- **추가 조사 필요 시:** 화면 캡처 간격 조정 (0.2초→0.5초), dxcam→mss 전환
 
 ### 2026-01-31: 업데이트 시 환경설정 초기화 버그 수정 (v1.0.106 → v1.0.107)
 - **문제:** 업데이트할 때마다 환경설정(config.json)이 초기화됨

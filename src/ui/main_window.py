@@ -454,6 +454,7 @@ class MainWindow(ctk.CTk):
 
         # 뷰 저장소
         self._views: Dict[str, ctk.CTkFrame] = {}
+        self._view_factories: Dict[str, Callable] = {}  # 지연 생성용 팩토리
         self._current_view: Optional[str] = None
         self._nav_buttons: Dict[str, SidebarButton] = {}
 
@@ -520,41 +521,49 @@ class MainWindow(ctk.CTk):
 
         # 플랜 파일 로드는 백그라운드에서 수행
         def _load_plans_bg():
-            import json
-            plans = []
-            logger.info(f"[미니플레이어] 플랜 폴더: {PLANS_DIR}")
-            if PLANS_DIR.exists():
-                templates_dir = DATA_DIR / "templates"
-                for plan_file in PLANS_DIR.glob("*.json"):
-                    try:
-                        with open(plan_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                            # 원래 파일 경로 저장 (나중에 저장할 때 사용)
-                            plan._source_file = str(plan_file)
-                            plans.append(plan)
-                            logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
-                    except Exception as e:
-                        logger.error(f"플랜 로드 실패: {plan_file} - {e}")
-            logger.info(f"[미니플레이어] 총 {len(plans)}개 플랜 로드됨")
-
-            def _apply_plans():
-                self._mini_plans = plans
-                self._update_mini_plan_dropdown()
-                # 선택된 플랜의 저장된 재생횟수 로드
-                if self._mini_plans:
-                    selected_name = self._mini_plan_var.get()
-                    for plan in self._mini_plans:
-                        if plan.name == selected_name:
-                            saved_repeat = getattr(plan, 'total_repeat_count', 1) or 1
-                            self._mini_repeat_var.set(str(saved_repeat))
-                            logger.info(f"[미니플레이어] 초기 재생횟수 로드: {saved_repeat}회")
-                            break
-
             try:
-                self.after(0, _apply_plans)
-            except (tk.TclError, RuntimeError):
-                pass
+                import json
+                plans = []
+                logger.info(f"[미니플레이어] 플랜 폴더: {PLANS_DIR}")
+                if PLANS_DIR.exists():
+                    templates_dir = DATA_DIR / "templates"
+                    for plan_file in PLANS_DIR.glob("*.json"):
+                        try:
+                            with open(plan_file, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                                # 원래 파일 경로 저장 (나중에 저장할 때 사용)
+                                plan._source_file = str(plan_file)
+                                plans.append(plan)
+                                logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
+                        except Exception as e:
+                            logger.error(f"플랜 로드 실패: {plan_file} - {e}")
+                logger.info(f"[미니플레이어] 총 {len(plans)}개 플랜 로드됨")
+
+                def _apply_plans():
+                    self._mini_plans = plans
+                    self._update_mini_plan_dropdown()
+                    # 선택된 플랜의 저장된 재생횟수 로드
+                    if self._mini_plans:
+                        selected_name = self._mini_plan_var.get()
+                        for plan in self._mini_plans:
+                            if plan.name == selected_name:
+                                saved_repeat = getattr(plan, 'total_repeat_count', 1) or 1
+                                self._mini_repeat_var.set(str(saved_repeat))
+                                logger.info(f"[미니플레이어] 초기 재생횟수 로드: {saved_repeat}회")
+                                break
+
+                try:
+                    self.after(0, _apply_plans)
+                except (tk.TclError, RuntimeError):
+                    pass
+            except Exception as e:
+                logger.error(f"[미니플레이어] 백그라운드 플랜 로드 실패: {e}")
+                # UI에 빈 플랜 리스트 적용하여 UI가 멈추지 않도록 함
+                try:
+                    self.after(0, lambda: self._update_mini_plan_dropdown())
+                except (tk.TclError, RuntimeError):
+                    pass
 
         threading.Thread(target=_load_plans_bg, daemon=True).start()
 
@@ -1713,13 +1722,10 @@ class MainWindow(ctk.CTk):
             logger.info(f"캡쳐 취소됨 (이미지 삭제)")
 
         def on_dialog_close():
-            # 크롭하지 않고 취소한 경우 파일 삭제
+            # 크롭 안 해도 전체 이미지 그대로 저장
             if not crop_saved["value"]:
-                try:
-                    Path(filepath).unlink()
-                    logger.info(f"크롭 취소 - 전체화면 이미지 삭제: {filepath}")
-                except Exception as e:
-                    logger.warning(f"이미지 삭제 실패: {e}")
+                logger.info(f"크롭 없이 전체 이미지 저장: {filepath}")
+                self._show_capture_notification(filepath)
 
         try:
             dialog = ImageCropDialog(
@@ -1728,7 +1734,7 @@ class MainWindow(ctk.CTk):
                 on_crop=on_crop_complete,
                 on_delete=on_delete,
             )
-            dialog.title("F8 캡쳐 - 영역을 선택하여 크롭하세요")
+            dialog.title("F8 캡쳐 - 크롭하거나 그냥 닫으면 전체 저장")
             # 다이얼로그 닫힐 때 처리
             dialog.bind("<Destroy>", lambda e: on_dialog_close() if e.widget == dialog else None)
         except Exception as e:
@@ -1767,7 +1773,7 @@ class MainWindow(ctk.CTk):
         self.after(2000, remove_notification)
 
     def _switch_view(self, view_id: str):
-        """뷰 전환"""
+        """뷰 전환 (지연 생성 포함)"""
         # 현재 뷰 숨기기
         if self._current_view and self._current_view in self._views:
             self._views[self._current_view].pack_forget()
@@ -1779,26 +1785,37 @@ class MainWindow(ctk.CTk):
             else:
                 btn.configure(fg_color="transparent", text_color=COLORS["text_secondary"])
 
+        # 뷰가 아직 생성 안 됐으면 팩토리로 지연 생성
+        if view_id not in self._views and view_id in self._view_factories:
+            try:
+                view = self._view_factories[view_id]()
+                self._views[view_id] = view
+            except Exception as e:
+                logger.error(f"뷰 생성 실패 ({view_id}): {e}")
+                return
+
         # 새 뷰 표시
         if view_id in self._views:
             self._views[view_id].pack(fill="both", expand=True)
             self._current_view = view_id
 
-            # 뷰 자동 새로고침
-            if hasattr(self._views[view_id], 'refresh'):
-                try:
-                    self._views[view_id].refresh()
-                except Exception as e:
-                    logger.debug(f"뷰 새로고침 실패: {e}")
-
     def register_view(self, view_id: str, view: ctk.CTkFrame):
-        """뷰 등록"""
+        """뷰 등록 (즉시 생성된 뷰)"""
         self._views[view_id] = view
         view.pack_forget()
 
         # 첫 번째 뷰면 표시
         if self._current_view is None:
             self._switch_view(view_id)
+
+    def register_view_factory(self, view_id: str, factory: Callable):
+        """뷰 팩토리 등록 (지연 생성용)"""
+        self._view_factories[view_id] = factory
+
+    def switch_to_first_view(self):
+        """첫 번째 뷰로 전환 (팩토리 등록 후 호출)"""
+        if self._current_view is None:
+            self._switch_view("recorder")
 
     def set_recorder_view(self, view):
         """녹화 뷰 설정"""

@@ -11,6 +11,9 @@ from .template_matcher import (
     template_matcher,
     get_template_matcher,
     MatchResult,
+    generate_text_mask,
+    save_image_with_mask,
+    generate_mask_for_existing_image,
 )
 
 from .action_extractor import (
@@ -33,6 +36,9 @@ __all__ = [
     "template_matcher",
     "get_template_matcher",
     "MatchResult",
+    "generate_text_mask",
+    "save_image_with_mask",
+    "generate_mask_for_existing_image",
     # Action Extractor
     "ActionExtractor",
     "action_extractor",
