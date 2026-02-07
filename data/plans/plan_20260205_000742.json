@@ -432,7 +432,15 @@
         0,
         0,
         "흑해골굴9굴",
-        "C:\\Projects\\wincro\\data\\templates\\trigger_20260206_161735_282.png"
+        {
+          "target_image": "wp_img_0ad2e066.png",
+          "target_images": [],
+          "confidence": 0.65,
+          "search_radius": 0,
+          "action_x": null,
+          "action_y": null,
+          "move_mouse_before_search": false
+        }
       ]
     ],
     "final_waypoint_idx": -1,

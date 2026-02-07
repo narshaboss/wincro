@@ -99,6 +99,24 @@
 
 ## 버그 수정 이력
 
+### 2026-02-07: 특화모드 저장 버그 수정 + 이미지 삭제 기능 (v1.0.110)
+
+**버그:** 저장 버튼 클릭 시 messagebox가 GameModeDialog 뒤에 숨어 프로그램이 멈춘 것처럼 보임
+
+**원인:** `_save_config()` → `_save_callback()` → `PlanDetailDialog._save_plan()` → `messagebox.showinfo()` 순서로 호출되는데, messagebox가 PlanDetailDialog에 parenting되어 GameModeDialog 뒤에 표시됨. 이미지 추가/삭제/편집 시에도 동일한 messagebox 반복 표시.
+
+**수정:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/ui/player_view.py` | `_save_config()` → JSON 직접 저장 (messagebox 없이 silent save) |
+| `src/ui/player_view.py` | `_save_config_with_msg()` 추가 — 저장 버튼 전용, messagebox를 GameModeDialog에 parenting |
+| `src/ui/player_view.py` | `_delete_waypoint_image()` 추가 — 경유지 카드에서 이미지 삭제 |
+| `src/ui/player_view.py` | 경유지 카드에 이미지 삭제 버튼("X") 추가, `_update_card_image_status`에서 표시/숨김 |
+| `src/utils/config.py` | APP_VERSION 1.0.109 → 1.0.110 |
+
+---
+
 ### 2026-02-07: 경유지 이미지 시스템 리팩토링 + 안정성 개선 (v1.0.109)
 
 **주요 변경:**
@@ -1151,7 +1169,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-07 (경유지 이미지 시스템 리팩토링 + 안정성 개선)
+- 마지막 업데이트: 2026-02-07 (특화모드 저장 버그 수정 + 이미지 삭제 기능)
 
 ## 업데이트 규칙
 

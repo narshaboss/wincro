@@ -3133,7 +3133,7 @@ class GameModeDialog(ctk.CTkToplevel):
         btn_frame = ctk.CTkFrame(main, fg_color="transparent")
         btn_frame.pack(fill="x", pady=(5, 0))
         ctk.CTkButton(btn_frame, text="저장", width=80, height=32, fg_color="#5e81ac",
-                      command=self._save_config).pack(side="left")
+                      command=self._save_config_with_msg).pack(side="left")
         ctk.CTkButton(btn_frame, text="닫기", width=80, height=32, fg_color=COLORS["bg_card_hover"],
                       command=self._on_close).pack(side="right")
 
@@ -5190,8 +5190,7 @@ class GameModeDialog(ctk.CTkToplevel):
         wp_img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
         img_name = ""
         if wp_img_cfg and wp_img_cfg.get("target_image"):
-            from pathlib import Path as _P
-            img_name = _P(wp_img_cfg["target_image"]).stem[:10]
+            img_name = Path(wp_img_cfg["target_image"]).stem[:10]
         img_status = ctk.CTkLabel(row4,
                      text=f" {img_name}" if img_name else "",
                      font=ctk.CTkFont(size=10), text_color="#90e8a0",
@@ -5199,6 +5198,15 @@ class GameModeDialog(ctk.CTkToplevel):
         img_status.pack(side="left", padx=(2, 0))
         if img_name:
             img_status.bind("<Button-1>", lambda e, idx=i: self._edit_waypoint_image(idx))
+
+        # 이미지 삭제 버튼 (이미지가 설정된 경우에만 표시)
+        del_img_btn = ctk.CTkButton(row4, text="X", width=24, height=24,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="transparent", hover_color="#5a2020",
+                      text_color="#e06060", border_width=0,
+                      command=lambda idx=i: self._delete_waypoint_image(idx))
+        if img_name:
+            del_img_btn.pack(side="left", padx=(1, 0))
 
         # 위젯 참조 저장 (모든 버튼 포함)
         self._wp_cards.append({
@@ -5217,6 +5225,7 @@ class GameModeDialog(ctk.CTkToplevel):
             'load_map_btn': load_map_btn,
             'add_img_btn': add_img_btn,
             'img_status': img_status,
+            'del_img_btn': del_img_btn,
         })
 
     # ── 개별 위젯 업데이트 (새로고침 없음) ──
@@ -5367,8 +5376,22 @@ class GameModeDialog(ctk.CTkToplevel):
         cfg["move_mouse_before_search"] = rule.move_mouse_before_search
         self._save_config()
 
+    def _delete_waypoint_image(self, idx: int):
+        """경유지 이미지 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) >= 4 and isinstance(wp[3], dict):
+            wp[3] = None
+            while len(wp) > 3 and wp[-1] is None:
+                wp.pop()
+            self._save_config()
+            self._update_card_image_status(idx)
+            logger.info(f"[좌표모드] 경유지{idx+1} 이미지 삭제")
+
     def _update_card_image_status(self, idx: int):
-        """카드 이미지 상태 라벨 갱신"""
+        """카드 이미지 상태 라벨 + 삭제 버튼 갱신"""
         cards = getattr(self, '_wp_cards', [])
         if not (0 <= idx < len(cards)):
             return
@@ -5382,14 +5405,16 @@ class GameModeDialog(ctk.CTkToplevel):
             img_name = Path(img_cfg["target_image"]).stem[:10]
 
         label = cards[idx]['img_status']
+        del_btn = cards[idx]['del_img_btn']
         if img_name:
             label.configure(text=f" {img_name}", cursor="hand2")
-            # 기존 바인딩 제거 후 재등록
             label.unbind("<Button-1>")
             label.bind("<Button-1>", lambda e, i=idx: self._edit_waypoint_image(i))
+            del_btn.pack(side="left", padx=(1, 0))
         else:
             label.configure(text="", cursor="")
             label.unbind("<Button-1>")
+            del_btn.pack_forget()
 
     def _refresh_badges_async(self):
         """배지 갱신 (파일 I/O는 현재 스레드, UI 업데이트만 메인스레드로)
@@ -5460,6 +5485,7 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[i]['save_map_btn'].configure(command=lambda idx=i: self._save_map_for(idx))
             cards[i]['load_map_btn'].configure(command=lambda idx=i: self._load_map_for(idx))
             cards[i]['add_img_btn'].configure(command=lambda idx=i: self._add_waypoint_image(idx))
+            cards[i]['del_img_btn'].configure(command=lambda idx=i: self._delete_waypoint_image(idx))
 
     def _start_path_mapping_for(self, idx: int):
         """특정 경유지 경로맵핑 시작/중지 (출발→목표 직선 경로)"""
@@ -6184,6 +6210,7 @@ class GameModeDialog(ctk.CTkToplevel):
         # (target_x/y는 하위호환용으로 유지하되 경유지 기반으로 설정)
 
     def _save_config(self):
+        """설정 저장 (JSON 파일만, messagebox 없음)"""
         self._config.enabled = True
         self._apply_settings()
         self._plan.game_mode = self._config
@@ -6207,7 +6234,6 @@ class GameModeDialog(ctk.CTkToplevel):
                 break
 
         if not game_rule:
-            # 새로 생성 (game_mode 액션이 없을 때만)
             game_rule = AutomationRule(
                 rule_type="fixed_sequence",
                 action_type="game_mode",
@@ -6217,30 +6243,31 @@ class GameModeDialog(ctk.CTkToplevel):
             )
             self._plan.initial_rules.append(game_rule)
         else:
-            # 기존 업데이트
             game_rule.target_image = self._config.character_image
             game_rule.confidence = self._config.confidence
             if display_name:
                 game_rule.description = display_name
 
-        # grab 임시 해제 (messagebox 충돌 방지)
+        # JSON 파일에 직접 저장 (messagebox 없이)
         try:
-            self.grab_release()
-        except Exception:
-            pass
-
-        try:
-            self._save_callback()
+            self._plan.modified = True
+            PLANS_DIR.mkdir(parents=True, exist_ok=True)
+            plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
+            with open(plan_file, 'w', encoding='utf-8') as f:
+                json.dump(self._plan.to_dict(), f, ensure_ascii=False, indent=2)
+            logger.info(f"[특화모드] 설정 저장: {plan_file}")
         except Exception as e:
-            logger.error(f"[특화모드] 저장 콜백 실패: {e}")
+            logger.error(f"[특화모드] 설정 저장 실패: {e}")
 
-        # grab 복원
-        try:
-            self.grab_set()
-        except Exception:
-            pass
+    def _save_config_with_msg(self):
+        """저장 버튼 클릭 시: 설정 저장 + messagebox 표시"""
+        self._save_config()
 
-        # UI 갱신 (저장 성공 여부와 무관하게 항상 실행)
+        # messagebox를 GameModeDialog에 parenting (뒤에 숨기지 않음)
+        from tkinter import messagebox
+        messagebox.showinfo("저장 완료", "설정이 저장되었습니다.", parent=self)
+
+        # UI 갱신
         if self._refresh_callback:
             try:
                 self._refresh_callback()
