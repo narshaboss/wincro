@@ -1467,6 +1467,7 @@ class MainWindow(ctk.CTk):
             self.after(0, update_repeat_status)
         except (tk.TclError, RuntimeError):
             logger.debug("UI가 파괴되어 반복 콜백 중단")
+            return
 
         # 현재 플랜 다시 실행 (다음 반복)
         if self._sequence_mode and self._sequence_index < len(self._sequence_plans):
@@ -1774,16 +1775,7 @@ class MainWindow(ctk.CTk):
 
     def _switch_view(self, view_id: str):
         """뷰 전환 (지연 생성 포함)"""
-        # 현재 뷰 숨기기
-        if self._current_view and self._current_view in self._views:
-            self._views[self._current_view].pack_forget()
-
-        # 네비게이션 버튼 상태 업데이트
-        for btn_id, btn in self._nav_buttons.items():
-            if btn_id == view_id:
-                btn.configure(fg_color=COLORS["accent"], text_color="white")
-            else:
-                btn.configure(fg_color="transparent", text_color=COLORS["text_secondary"])
+        previous_view = self._current_view
 
         # 뷰가 아직 생성 안 됐으면 팩토리로 지연 생성
         if view_id not in self._views and view_id in self._view_factories:
@@ -1794,10 +1786,23 @@ class MainWindow(ctk.CTk):
                 logger.error(f"뷰 생성 실패 ({view_id}): {e}")
                 return
 
+        if view_id not in self._views:
+            return
+
+        # 현재 뷰 숨기기 (새 뷰가 준비된 후에만)
+        if previous_view and previous_view in self._views:
+            self._views[previous_view].pack_forget()
+
+        # 네비게이션 버튼 상태 업데이트
+        for btn_id, btn in self._nav_buttons.items():
+            if btn_id == view_id:
+                btn.configure(fg_color=COLORS["accent"], text_color="white")
+            else:
+                btn.configure(fg_color="transparent", text_color=COLORS["text_secondary"])
+
         # 새 뷰 표시
-        if view_id in self._views:
-            self._views[view_id].pack(fill="both", expand=True)
-            self._current_view = view_id
+        self._views[view_id].pack(fill="both", expand=True)
+        self._current_view = view_id
 
     def register_view(self, view_id: str, view: ctk.CTkFrame):
         """뷰 등록 (즉시 생성된 뷰)"""

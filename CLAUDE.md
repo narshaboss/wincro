@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.107
+**현재 버전:** 1.0.109
 
 ---
 
@@ -542,6 +542,23 @@ wincro/
 ---
 
 ## 작업 히스토리
+
+### 2026-02-07: 경유지 이미지 시스템 리팩토링 + 안정성 개선 (v1.0.109)
+- **경유지 이미지 시스템 변경:** 보스 이미지 pipe-delimited 문자열(`|`구분) → dict 구조로 변경
+  - `wp[3]`이 `{"target_image", "target_images", "confidence", "search_radius", ...}` dict
+  - `automation_models.py`: `_serialize_waypoints()` / `_deserialize_waypoints()` 추가 (이미지 경로 ↔ 상대경로 변환)
+  - `player_view.py`: 보스 이미지 대화상자 제거 → `ImageCropDialog` 기반으로 전환
+  - `_edit_waypoint_image()`, `_sync_rule_to_wp_image()`, `_update_card_image_status()` 신규 메서드
+- **보스 스킬 설정 제거:** `boss_skill_enabled`, `boss_skill_key`, `boss_skill_cooldown` UI/로직 전부 제거
+- **비동기 로드 경쟁 방지:** `analyzer_view.py`, `player_view.py`에 `_load_generation` 카운터 추가 — sync 로드가 async 로드보다 먼저 완료되면 오래된 async 결과 무시
+- **뷰 전환 안정화:** `main_window.py` `_switch_view()` — 새 뷰 준비된 후에만 이전 뷰 숨기기 (깜빡임 방지)
+- **리소스 정리 확장:** `app.py` `_cleanup()`에 `settings_view`, `guide_view` 추가
+- **map_canvas 타일 배치 개선:** 순찰 타일은 오버레이로 동작 (passable 유지), 벽 배치 시 순찰에서도 제거
+- **analyzer_view 분석 취소:** `_on_cancel()`에서 `_is_analyzing = False` 상태 정리 추가
+- **이미지 정리 강화:** 미사용 이미지 삭제 시 `target_images` 목록도 고려
+- **부분실행 에러 콜백:** `PlanDetailDialog` 에러 시 `_on_execution_complete()` 호출 추가
+- **settings_view import 정리:** `import json` 지역 import → 모듈 레벨 import
+- **수정 파일:** `app.py`, `main_window.py`, `player_view.py`, `analyzer_view.py`, `settings_view.py`, `automation_models.py`, `map_canvas.py`, `config.py`
 
 ### 2026-02-07: UI 로딩 성능 최적화 (페이지 렉 해소)
 - **문제:** 에디터 모드 진입 시 5개 뷰가 모두 동기 생성 → 2~5초 블로킹, 탭 전환 시 `refresh()` 자동 호출 → DB 재쿼리 + JSON 재파싱 + 위젯 전부 삭제/재생성 → 체감 렉

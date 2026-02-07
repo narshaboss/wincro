@@ -1825,14 +1825,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         def on_error(msg, failed_rule):
             logger.error(f"[부분실행] 오류: {msg}")
-            # 창 복원
-            if config.ui.minimize_on_run and main_window:
-                try:
-                    if not self.winfo_exists():
-                        return
+            try:
+                if not self.winfo_exists():
+                    return
+                self.after(0, self._on_execution_complete)
+                # 창 복원
+                if config.ui.minimize_on_run and main_window:
                     self.after(100, lambda: main_window.deiconify())
-                except (tk.TclError, RuntimeError):
-                    pass
+            except (tk.TclError, RuntimeError):
+                pass
 
         executor.set_callbacks(on_complete=on_complete, on_error=on_error)
 
@@ -3062,20 +3063,6 @@ class GameModeDialog(ctk.CTkToplevel):
         ctk.CTkLabel(escape_skill_row, text="초",
                      font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(side="left", padx=(5, 0))
 
-        # 보스 스킬 설정
-        boss_skill_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
-        boss_skill_row.pack(fill="x", pady=(6, 0))
-        self._boss_skill_enabled_var = ctk.BooleanVar(value=getattr(self._config, 'boss_skill_enabled', False))
-        ctk.CTkSwitch(boss_skill_row, text="보스스킬", variable=self._boss_skill_enabled_var,
-                      width=40).pack(side="left")
-        self._boss_skill_key_var = ctk.StringVar(value=getattr(self._config, 'boss_skill_key', ""))
-        ctk.CTkEntry(boss_skill_row, textvariable=self._boss_skill_key_var, width=40, height=24,
-                     placeholder_text="키").pack(side="left", padx=(10, 0))
-        ctk.CTkLabel(boss_skill_row, text="쿨타임:").pack(side="left", padx=(10, 0))
-        self._boss_skill_cd_var = ctk.StringVar(value=str(getattr(self._config, 'boss_skill_cooldown', 3)))
-        ctk.CTkEntry(boss_skill_row, textvariable=self._boss_skill_cd_var, width=40, height=24).pack(side="left", padx=(5, 0))
-        ctk.CTkLabel(boss_skill_row, text="초",
-                     font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(side="left", padx=(5, 0))
 
         # === 실행 컨트롤 섹션 ===
         control_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
@@ -3311,7 +3298,7 @@ class GameModeDialog(ctk.CTkToplevel):
             final_wp_idx = single_idx
 
         # 최종 목표까지의 경유지만 포함
-        all_targets = []  # [(x, y, name, image_path, is_boss_dungeon), ...]
+        all_targets = []  # [(x, y, name, is_boss_dungeon), ...]
         start_idx = single_idx if single_mode else 0
         for i, wp in enumerate(waypoints_raw):
             if i < start_idx:
@@ -3320,9 +3307,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 break
             if isinstance(wp, (list, tuple)) and len(wp) >= 2:
                 wp_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{i+1}"
-                wp_image = wp[3] if len(wp) >= 4 and wp[3] else ""
                 is_boss = (int(wp[0]) == 0 and int(wp[1]) == 0)
-                all_targets.append((int(wp[0]), int(wp[1]), wp_name, wp_image, is_boss))
+                all_targets.append((int(wp[0]), int(wp[1]), wp_name, is_boss))
 
         if not all_targets:
             self.after(0, lambda: self._append_log("⚠️ 경유지가 없습니다. 경유지를 추가하세요."))
@@ -3377,11 +3363,8 @@ class GameModeDialog(ctk.CTkToplevel):
         unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
 
         # 보스 던전 상태 변수
-        boss_mode = "exploring"       # "exploring" | "patrolling" | "approaching"
+        boss_mode = "exploring"       # "exploring" | "patrolling"
         boss_patrol = None             # MapPatroller 인스턴스 (순찰 좌표 기반)
-        boss_scan_counter = 0          # 보스 스캔 주기 카운터
-        boss_approach_miss = 0         # 보스 시야 이탈 연속 횟수
-        boss_last_dir = None           # 보스 접근 시 마지막 방향
         explore_target = None          # (x,y) — 탐색 목표 (도달 전까지 고정)
         explore_target_tries = 0       # 현재 explore_target 시도 횟수
         explore_unreachable = set()    # 도달 불가 프런티어 좌표들
@@ -3396,12 +3379,6 @@ class GameModeDialog(ctk.CTkToplevel):
         escape_skill_wait_after = getattr(self._config, 'escape_skill_wait_after', 0.5)
         escape_skill_cooldown = getattr(self._config, 'escape_skill_cooldown', 10.0)
         last_escape_time = 0
-
-        # 보스 스킬 설정
-        boss_skill_enabled = getattr(self._config, 'boss_skill_enabled', False)
-        boss_skill_key = getattr(self._config, 'boss_skill_key', '') or ''
-        boss_skill_cooldown = getattr(self._config, 'boss_skill_cooldown', 3.0)
-        last_boss_skill_time = 0
 
         # A* 경로탐색 사용
         from ..player.simple_pathfinder import SimplePathfinder
@@ -3602,7 +3579,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     # 출발지 저장
                     self._game_map.start_pos = (current_x, current_y)
                     # 보스 던전이면 출발지=포탈이므로 벽 등록 (되돌아가기 방지)
-                    if all_targets[target_idx][4]:
+                    if all_targets[target_idx][3]:
                         self._game_map.mark_blocked(current_x, current_y)
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"🚪 출발지(포탈) 벽 등록: ({cx},{cy})"))
@@ -3612,7 +3589,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._append_log(f"📍 시작 위치: ({cx},{cy})"))
 
                 # 보스 던전 경유지는 좌표 기반 도착 체크 건너뜀 (좌표가 0,0)
-                is_boss_dungeon = all_targets[target_idx][4]
+                is_boss_dungeon = all_targets[target_idx][3]
 
                 # 도착 체크 (정확한 좌표 일치 — 포탈은 정확 좌표에서만 작동)
                 arrival_dist = abs(current_x - target_x) + abs(current_y - target_y)
@@ -3671,15 +3648,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 보스 던전 상태 리셋
                         boss_mode = "exploring"
                         boss_patrol = None
-                        boss_scan_counter = 0
-                        boss_approach_miss = 0
                         explore_target = None
                         explore_target_tries = 0
                         explore_unreachable = set()
                         boss_no_frontier_count = 0
                         # 보스 던전 전환: 텔레포트 전까지 맵 기록 중지
                         # (이전 맵 좌표가 보스 던전 맵에 오염되는 것 방지)
-                        if all_targets[target_idx][4]:
+                        if all_targets[target_idx][3]:
                             boss_pre_teleport = True
                             mapping_on = False
                             mark_portal_entry = False
@@ -3729,8 +3704,6 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 보스 던전 상태 리셋
                         boss_mode = "exploring"
                         boss_patrol = None
-                        boss_scan_counter = 0
-                        boss_approach_miss = 0
                         explore_target = None
                         explore_target_tries = 0
                         explore_unreachable = set()
@@ -3901,17 +3874,15 @@ class GameModeDialog(ctk.CTkToplevel):
                     unknown_path_fails = 0
                     continue
 
-                # ── 보스 던전 3-phase 핸들러 ──
+                # ── 보스 던전 핸들러 ──
                 if is_boss_dungeon:
-                    boss_image_path = all_targets[target_idx][3]
                     current_pos_tuple = (current_x, current_y)
 
                     # 모드 상태 주기적 로그 (30회마다)
                     if iteration % 30 == 1:
-                        has_img = "이미지O" if boss_image_path else "이미지X"
                         pc = len(self._game_map.passable) if use_map else 0
-                        self.after(0, lambda m=boss_mode, h=has_img, p=pc, cx=current_x, cy=current_y:
-                            self._append_log(f"📊 보스던전 [{m}] ({cx},{cy}) {h} 맵:{p}칸"))
+                        self.after(0, lambda m=boss_mode, p=pc, cx=current_x, cy=current_y:
+                            self._append_log(f"📊 보스던전 [{m}] ({cx},{cy}) 맵:{p}칸"))
 
                     # 텔레포트 대기: 구간 전환 후 아직 이전 맵에 있음 → 맵 기록 중지 상태
                     if boss_pre_teleport:
@@ -3962,8 +3933,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             and not self._game_map.is_blocked(current_x, current_y):
                         self._game_map.mark_passable(current_x, current_y)
 
-                    # 순찰 좌표 등록됨 + 보스 이미지 있음 → 바로 순찰 모드
-                    if boss_mode == "exploring" and boss_image_path and boss_patrol is None:
+                    # 순찰 좌표 등록됨 → 바로 순찰 모드
+                    if boss_mode == "exploring" and boss_patrol is None:
                         if self._game_map.patrol_points:
                             from ..player.map_patroller import MapPatroller
                             boss_patrol = MapPatroller(self._game_map)
@@ -4073,12 +4044,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                         self._game_map.is_fully_explored()
                                         or _find_nearest_frontier(current_x, current_y) is None):
                                     # 순찰 좌표가 있으면 순찰 모드 전환
-                                    if self._game_map.patrol_points and boss_image_path:
+                                    if self._game_map.patrol_points:
                                         from ..player.map_patroller import MapPatroller
                                         boss_patrol = MapPatroller(self._game_map)
                                         boss_patrol.start(current_pos_tuple)
                                         boss_mode = "patrolling"
-                                        boss_scan_counter = 0
                                         current_path = []
                                         path_index = 0
                                         path_pos_index = {}
@@ -4086,8 +4056,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                         self.after(0, lambda: self._append_log(f"{'='*30}"))
                                         self.after(0, lambda pc=pc: self._append_log(f"🔍 탐색 완료 → 순찰모드! {pc}개 좌표 순회"))
                                         self.after(0, lambda: self._append_log(f"{'='*30}"))
-                                    # 순찰 좌표 없거나 보스 이미지 없으면 다음 경유지
-                                    if not boss_image_path or not self._game_map.patrol_points:
+                                    # 순찰 좌표 없으면 다음 경유지
+                                    if not self._game_map.patrol_points:
                                         # 맵핑 모드: 탐색 완료 시 즉시 종료
                                         if getattr(self, '_is_mapping', False):
                                             # 전체맵핑: 도착지 저장
@@ -4128,33 +4098,6 @@ class GameModeDialog(ctk.CTkToplevel):
 
                     elif boss_mode == "patrolling":
                         # ── 순찰: 등록된 순찰좌표를 가까운 순서로 A* 이동 ──
-                        boss_scan_counter += 1
-
-                        # 5회마다 보스 이미지 스캔
-                        if boss_scan_counter % 5 == 0 and boss_image_path:
-                            boss_pos = self._detect_boss_image(boss_image_path, self._stop_event)
-                            if self._stop_event.is_set():
-                                break
-                            if boss_pos:
-                                boss_mode = "approaching"
-                                boss_approach_miss = 0
-                                screen_w, screen_h = 1920, 1080
-                                try:
-                                    from PIL import ImageGrab as _igb
-                                    _ti = _igb.grab()
-                                    if _ti: screen_w, screen_h = _ti.size
-                                except: pass
-                                dx_px = boss_pos[0] - screen_w // 2
-                                dy_px = boss_pos[1] - screen_h // 2
-                                boss_target_x = current_x + (3 if dx_px > 20 else (-3 if dx_px < -20 else 0))
-                                boss_target_y = current_y + (3 if dy_px > 20 else (-3 if dy_px < -20 else 0))
-                                self.after(0, lambda bx=boss_pos[0], by=boss_pos[1], tx=boss_target_x, ty=boss_target_y:
-                                    self._append_log(f"👹 보스 발견! 화면({bx},{by}) → 목표({tx},{ty})"))
-                                current_path = []
-                                path_index = 0
-                                path_pos_index = {}
-                                prev_x, prev_y = current_x, current_y
-                                continue
 
                         # 순찰 목표 좌표 결정 (MapPatroller가 가까운 미방문 좌표 반환)
                         patrol_target_pos = boss_patrol.get_next_target(current_pos_tuple)
@@ -4188,81 +4131,6 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._update_status("순찰중", f"({cx},{cy})",
                                     f"→({tx},{ty})",
                                     f"{p['visited']}/{p['total']} → {d}", "🔍"))
-
-                    elif boss_mode == "approaching":
-                        # ── 접근: 보스 방향 좌표 목표 → A* 이동 ──
-                        # 보스 스킬 주기적 사용
-                        if boss_skill_enabled and boss_skill_key:
-                            if time.time() - last_boss_skill_time >= boss_skill_cooldown:
-                                try:
-                                    pyautogui.press(boss_skill_key)
-                                    last_boss_skill_time = time.time()
-                                    self.after(0, lambda k=boss_skill_key:
-                                        self._append_log(f"⚔️ 보스 스킬 사용 ({k})"))
-                                except Exception as e:
-                                    logger.error(f"[보스스킬] 키 입력 실패: {e}")
-
-                        boss_pos = self._detect_boss_image(boss_image_path, self._stop_event)
-                        if self._stop_event.is_set():
-                            break
-                        if boss_pos:
-                            boss_approach_miss = 0
-                            # 보스 화면 위치 → 맵 좌표 목표 (방향 + 3칸)
-                            screen_w, screen_h = 1920, 1080
-                            try:
-                                from PIL import ImageGrab as _igb2
-                                _ti2 = _igb2.grab()
-                                if _ti2: screen_w, screen_h = _ti2.size
-                            except: pass
-                            dx_px = boss_pos[0] - screen_w // 2
-                            dy_px = boss_pos[1] - screen_h // 2
-                            if abs(dx_px) < 20 and abs(dy_px) < 20:
-                                # 이미 근접 → 대기
-                                self.after(0, lambda: self._append_log("👹 보스 근접! 대기중"))
-                                time.sleep(0.3)
-                                prev_x, prev_y = current_x, current_y
-                                continue
-                            boss_target_x = current_x + (3 if dx_px > 20 else (-3 if dx_px < -20 else 0))
-                            boss_target_y = current_y + (3 if dy_px > 20 else (-3 if dy_px < -20 else 0))
-                            # A* 경로탐색으로 보스 방향 이동 (벽 우회!)
-                            direction = find_path_direction(
-                                current_x, current_y, boss_target_x, boss_target_y)
-                            self.after(0, lambda bx=boss_pos[0], by=boss_pos[1], d=direction, tx=boss_target_x, ty=boss_target_y:
-                                self._append_log(f"👹 [접근] 보스({bx},{by}) → 목표({tx},{ty}) {d}"))
-                        else:
-                            boss_approach_miss += 1
-                            self.after(0, lambda m=boss_approach_miss:
-                                self._append_log(f"👹 보스 미감지 ({m}/10)"))
-                            if boss_approach_miss >= 10:
-                                # 보스 처치 완료 → 다음 경유지
-                                self.after(0, lambda: self._append_log("✅ 보스 사라짐 (처치 완료) → 다음 경유지"))
-                                target_idx += 1
-                                if target_idx >= len(all_targets):
-                                    self.after(0, self._on_arrival)
-                                    return
-                                if self._stop_event.is_set():
-                                    break
-                                self._switch_segment_map(target_idx)
-                                pathfinder = SimplePathfinder(self._game_map)
-                                target_x, target_y = all_targets[target_idx][0], all_targets[target_idx][1]
-                                boss_mode = "exploring"
-                                boss_patrol = None
-                                explore_target = None
-                                stuck_count = 0
-                                total_stuck_count = 0
-                                current_path = []
-                                path_index = 0
-                                path_pos_index = {}
-                                explored_from = {}
-                                unknown_path_fails = 0
-                                last_dir = None
-                                mark_portal_entry = True
-                                prev_x, prev_y = current_x, current_y
-                                continue
-                            # 미발견 → 순찰로 복귀
-                            boss_mode = "patrolling"
-                            self.after(0, lambda: self._append_log("🔍 보스 미감지 → 순찰 복귀"))
-                            direction = None
 
                     if direction is None:
                         if not self._stop_event.is_set():
@@ -4437,76 +4305,6 @@ class GameModeDialog(ctk.CTkToplevel):
             self._key_count_label.configure(text="0회")
         except:
             pass
-
-    def _detect_boss_image(self, boss_image_paths: str, stop_event=None):
-        """화면에서 보스 이미지 검색 → (screen_x, screen_y) 또는 None
-
-        Args:
-            boss_image_paths: 이미지 경로 (파이프로 구분된 복수 경로 지원)
-        """
-        if not boss_image_paths:
-            return None
-
-        # 파이프로 구분된 복수 경로 파싱
-        paths = [p.strip() for p in boss_image_paths.split("|") if p.strip()]
-        if not paths:
-            return None
-
-        try:
-            if stop_event and stop_event.is_set():
-                return None
-            from ..utils.digit_templates import _safe_grab
-            screenshot = _safe_grab(timeout=2.0, stop_event=stop_event)
-            if screenshot is None:
-                return None
-            screen_np = np.array(screenshot)
-            screen_bgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
-            from ..analyzer.template_matcher import get_template_matcher
-            matcher = get_template_matcher()
-
-            # 모든 이미지에 대해 검색 (하나라도 발견되면 반환)
-            for img_path in paths:
-                if not Path(img_path).exists():
-                    continue
-                if stop_event and stop_event.is_set():
-                    return None
-                result = matcher.match(screen_bgr, img_path, threshold=0.7)
-                if result.found:
-                    return (result.center_x, result.center_y)
-            return None
-        except Exception as e:
-            logger.error(f"[보스감지] 오류: {e}")
-            return None
-
-    def _get_boss_approach_direction(self, boss_screen_pos):
-        """보스 화면 위치 → 이동 방향 (캐릭터 = 화면 중앙)"""
-        try:
-            from ..utils.digit_templates import _safe_grab
-            # 화면 크기 추정 (일반적으로 1920x1080)
-            screen_w = 1920
-            screen_h = 1080
-            try:
-                from PIL import ImageGrab
-                # 실제 화면 크기 사용
-                test_img = ImageGrab.grab()
-                if test_img:
-                    screen_w, screen_h = test_img.size
-            except Exception:
-                pass
-
-            center_x = screen_w // 2
-            center_y = screen_h // 2
-            dx = boss_screen_pos[0] - center_x
-            dy = boss_screen_pos[1] - center_y
-            # 최대한 가깝게 접근 (20픽셀 이내면 근접 판정)
-            if abs(dx) < 20 and abs(dy) < 20:
-                return None  # 이미 최대 근접
-            if abs(dx) >= abs(dy):
-                return "right" if dx > 0 else "left"
-            return "down" if dy > 0 else "up"
-        except Exception as e:
-            logger.error(f"[보스접근] 방향 계산 오류: {e}")
-            return None
 
     def _show_notification(self, title: str, message: str, duration: int = 3000):
         """비블로킹 알림 (duration ms 후 자동 닫힘, 메인스레드 블로킹 없음)"""
@@ -5362,28 +5160,9 @@ class GameModeDialog(ctk.CTkToplevel):
                       command=lambda idx=i: self._clear_map_for(idx))
         clear_btn.pack(side="left")
 
-        # 4행: 보스 이미지 + 맵 저장/불러오기
+        # 4행: 맵 저장/불러오기
         row4 = ctk.CTkFrame(card, fg_color="transparent")
         row4.pack(fill="x", padx=10, pady=(0, 6))
-
-        # 보스 이미지 개수 표시 (파이프로 구분된 복수 경로)
-        wp_image = wp[3] if len(wp) >= 4 and wp[3] else ""
-        boss_images = [p.strip() for p in wp_image.split("|") if p.strip()] if wp_image else []
-        image_count = len(boss_images)
-        image_display = f"보스 {image_count}개" if image_count > 0 else ""
-
-        image_label = ctk.CTkLabel(row4, text=image_display,
-                     font=ctk.CTkFont(size=10),
-                     text_color=COLORS["accent_orange"])
-        if image_display:
-            image_label.pack(side="left", padx=(0, 4))
-
-        img_select_btn = ctk.CTkButton(row4, text="보스이미지", width=60, height=28,
-                      font=ctk.CTkFont(size=11),
-                      fg_color="#2d1a2d", hover_color="#4a2a4a",
-                      text_color="#e8a8e8", border_width=1, border_color="#4a2a4a",
-                      command=lambda idx=i: self._open_boss_image_dialog(idx))
-        img_select_btn.pack(side="left", padx=(0, 2))
 
         save_map_btn = ctk.CTkButton(row4, text="맵 저장", width=60, height=28,
                       font=ctk.CTkFont(size=11),
@@ -5398,6 +5177,28 @@ class GameModeDialog(ctk.CTkToplevel):
                       text_color="#c8a8e8", border_width=1, border_color="#3d2a55",
                       command=lambda idx=i: self._load_map_for(idx))
         load_map_btn.pack(side="left")
+
+        # 이미지 추가 버튼
+        add_img_btn = ctk.CTkButton(row4, text="이미지", width=50, height=28,
+                      font=ctk.CTkFont(size=11),
+                      fg_color="#1a3525", hover_color="#2a5540",
+                      text_color="#90e8a0", border_width=1, border_color="#2a5540",
+                      command=lambda idx=i: self._add_waypoint_image(idx))
+        add_img_btn.pack(side="left", padx=(2, 0))
+
+        # 이미지 상태 라벨 (설정되면 파일명 표시, 클릭으로 편집)
+        wp_img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+        img_name = ""
+        if wp_img_cfg and wp_img_cfg.get("target_image"):
+            from pathlib import Path as _P
+            img_name = _P(wp_img_cfg["target_image"]).stem[:10]
+        img_status = ctk.CTkLabel(row4,
+                     text=f" {img_name}" if img_name else "",
+                     font=ctk.CTkFont(size=10), text_color="#90e8a0",
+                     cursor="hand2" if img_name else "")
+        img_status.pack(side="left", padx=(2, 0))
+        if img_name:
+            img_status.bind("<Button-1>", lambda e, idx=i: self._edit_waypoint_image(idx))
 
         # 위젯 참조 저장 (모든 버튼 포함)
         self._wp_cards.append({
@@ -5414,8 +5215,8 @@ class GameModeDialog(ctk.CTkToplevel):
             'clear_btn': clear_btn,
             'save_map_btn': save_map_btn,
             'load_map_btn': load_map_btn,
-            'image_label': image_label,
-            'img_select_btn': img_select_btn,
+            'add_img_btn': add_img_btn,
+            'img_status': img_status,
         })
 
     # ── 개별 위젯 업데이트 (새로고침 없음) ──
@@ -5432,469 +5233,163 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[idx]['map_badge'].configure(fg_color=badge_color)
             cards[idx]['map_badge_label'].configure(text=f" {map_tag} ", text_color=badge_text_color)
 
-    def _open_boss_image_dialog(self, idx: int):
-        """보스 이미지 관리 다이얼로그 열기"""
+    def _add_waypoint_image(self, idx: int):
+        """경유지에 이미지 추가 (파일 선택 → templates 복사 → wp[3] 저장)"""
+        from tkinter import filedialog
+        import shutil
+        import uuid
+
         waypoints = getattr(self._config, 'waypoints', []) or []
-        if not (0 <= idx < len(waypoints)):
+        if idx >= len(waypoints):
             return
-        wp = waypoints[idx]
-        while len(wp) < 4:
-            wp.append("")
 
-        # 다이얼로그 생성
-        dialog = ctk.CTkToplevel(self)
-        dialog.title(f"보스 이미지 관리 - 경유지 {idx+1}")
-        dialog.geometry("480x420")
-        dialog.transient(self)
-        dialog.grab_set()
+        image_path = filedialog.askopenfilename(
+            title="경유지 이미지 선택",
+            filetypes=[
+                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                ("모든 파일", "*.*"),
+            ],
+            initialdir=str(DATA_DIR / "templates"),
+        )
+        if not image_path:
+            return
 
-        # 썸네일 참조 유지용
-        thumbnail_refs = []
-
-        # 이미지 목록 프레임
-        list_frame = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"])
-        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        ctk.CTkLabel(list_frame, text="보스 이미지 목록 (최대 3개)",
-                     font=ctk.CTkFont(size=12, weight="bold")).pack(pady=(10, 5))
-
-        # 이미지 목록 표시용 내부 프레임
-        items_frame = ctk.CTkFrame(list_frame, fg_color="transparent")
-        items_frame.pack(fill="both", expand=True, padx=10, pady=5)
-
-        def update_card_label():
-            """카드 라벨 업데이트"""
-            cards = getattr(self, '_wp_cards', [])
-            if idx < len(cards):
-                current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-                count = len(current)
-                if count > 0:
-                    cards[idx]['image_label'].configure(text=f"보스 {count}개", text_color=COLORS["accent_orange"])
-                    cards[idx]['image_label'].pack(side="left", padx=(0, 4))
-                else:
-                    cards[idx]['image_label'].configure(text="")
-                    cards[idx]['image_label'].pack_forget()
-
-        def refresh_list():
-            """이미지 목록 새로고침"""
-            thumbnail_refs.clear()
-            for widget in items_frame.winfo_children():
-                widget.destroy()
-
-            current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-            if not current:
-                ctk.CTkLabel(items_frame, text="등록된 이미지 없음",
-                             text_color=COLORS["text_muted"]).pack(pady=20)
-            else:
-                for i, img_path in enumerate(current):
-                    row = ctk.CTkFrame(items_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
-                    row.pack(fill="x", pady=4)
-
-                    # 썸네일 프레임 (클릭하면 크롭 에디터 열기)
-                    thumb_frame = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=50, height=50, corner_radius=4)
-                    thumb_frame.pack(side="left", padx=10, pady=8)
-                    thumb_frame.pack_propagate(False)
-
-                    if Path(img_path).exists():
-                        try:
-                            img_arr = np.fromfile(img_path, np.uint8)
-                            img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                            if img is not None:
-                                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                                h, w = img_rgb.shape[:2]
-                                scale = min(50 / w, 50 / h)
-                                new_w, new_h = int(w * scale), int(h * scale)
-                                resized = cv2.resize(img_rgb, (new_w, new_h))
-                                pil_image = Image.fromarray(resized)
-                                ctk_image = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_w, new_h))
-                                thumb_label = ctk.CTkLabel(thumb_frame, image=ctk_image, text="", cursor="hand2")
-                                thumb_label.pack(expand=True)
-                                thumb_label.bind("<Button-1>", lambda e, p=img_path: open_crop_editor(p))
-                                thumbnail_refs.append(ctk_image)
-                        except Exception:
-                            pass
-
-                    # 파일명 (클릭하면 크롭 에디터 열기)
-                    name_label = ctk.CTkLabel(row, text=f"{i+1}. {Path(img_path).name}",
-                                 font=ctk.CTkFont(size=11), cursor="hand2")
-                    name_label.pack(side="left", padx=5, pady=8)
-                    name_label.bind("<Button-1>", lambda e, p=img_path: open_crop_editor(p))
-
-                    # 마스크 유무 표시
-                    mask_path = Path(img_path).parent / f"{Path(img_path).stem}_mask{Path(img_path).suffix}"
-                    if mask_path.exists():
-                        mask_badge = ctk.CTkLabel(row, text="마스크✓", font=ctk.CTkFont(size=10),
-                                     text_color="#a3be8c", cursor="hand2")
-                        mask_badge.pack(side="left", padx=2)
-                        mask_badge.bind("<Button-1>", lambda e, p=str(mask_path): show_mask_preview(p))
-                    else:
-                        ctk.CTkLabel(row, text="마스크✗", font=ctk.CTkFont(size=10),
-                                     text_color=COLORS["text_muted"]).pack(side="left", padx=2)
-
-                    # 삭제 버튼
-                    ctk.CTkButton(row, text="삭제", width=60, height=28,
-                                  fg_color=COLORS["error"], hover_color="#dc2626",
-                                  text_color="white", font=ctk.CTkFont(size=11),
-                                  command=lambda p=img_path: remove_image(p)).pack(side="right", padx=10, pady=8)
-
-            update_card_label()
-
-        def show_mask_preview(mask_path):
-            """마스크 적용 결과 미리보기 (원본 + 마스크 + 적용결과)"""
-            if not Path(mask_path).exists():
-                return
-
-            # 원본 이미지 경로 추정 (마스크 파일명에서 _mask 제거)
-            mask_p = Path(mask_path)
-            orig_path = mask_p.parent / mask_p.name.replace("_mask", "")
-
-            preview = ctk.CTkToplevel(dialog)
-            preview.title("마스크 미리보기")
-            preview.transient(dialog)
-            preview.grab_set()
-
-            try:
-                # 마스크 로드
-                mask_arr = np.fromfile(mask_path, np.uint8)
-                mask_img = cv2.imdecode(mask_arr, cv2.IMREAD_GRAYSCALE)
-
-                # 원본 로드
-                orig_img = None
-                if orig_path.exists():
-                    orig_arr = np.fromfile(str(orig_path), np.uint8)
-                    orig_img = cv2.imdecode(orig_arr, cv2.IMREAD_COLOR)
-                    if orig_img is not None:
-                        orig_img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
-
-                if mask_img is None:
-                    preview.destroy()
-                    return
-
-                # 크기 조정 (최대 200x200 per image)
-                h, w = mask_img.shape[:2]
-                scale = min(200 / w, 200 / h, 2.0)  # 작으면 2배까지 확대
-                new_w, new_h = int(w * scale), int(h * scale)
-
-                mask_resized = cv2.resize(mask_img, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-
-                images_refs = []
-
-                # 프레임
-                preview.geometry(f"{new_w * 3 + 80}x{new_h + 160}")
-
-                ctk.CTkLabel(preview, text="마스크 적용 결과",
-                             font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
-
-                img_frame = ctk.CTkFrame(preview, fg_color="transparent")
-                img_frame.pack(pady=10)
-
-                # 1. 원본 이미지
-                col1 = ctk.CTkFrame(img_frame, fg_color="transparent")
-                col1.pack(side="left", padx=10)
-                ctk.CTkLabel(col1, text="원본", font=ctk.CTkFont(size=11)).pack()
-                if orig_img is not None:
-                    orig_resized = cv2.resize(orig_img, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-                    pil_orig = Image.fromarray(orig_resized)
-                    ctk_orig = ctk.CTkImage(light_image=pil_orig, dark_image=pil_orig, size=(new_w, new_h))
-                    ctk.CTkLabel(col1, image=ctk_orig, text="").pack()
-                    images_refs.append(ctk_orig)
-                else:
-                    ctk.CTkLabel(col1, text="(없음)", text_color=COLORS["text_muted"]).pack()
-
-                # 2. 마스크
-                col2 = ctk.CTkFrame(img_frame, fg_color="transparent")
-                col2.pack(side="left", padx=10)
-                ctk.CTkLabel(col2, text="마스크", font=ctk.CTkFont(size=11)).pack()
-                pil_mask = Image.fromarray(mask_resized)
-                ctk_mask = ctk.CTkImage(light_image=pil_mask, dark_image=pil_mask, size=(new_w, new_h))
-                ctk.CTkLabel(col2, image=ctk_mask, text="").pack()
-                images_refs.append(ctk_mask)
-
-                # 3. 적용 결과 (마스크된 영역만 보이게)
-                col3 = ctk.CTkFrame(img_frame, fg_color="transparent")
-                col3.pack(side="left", padx=10)
-                ctk.CTkLabel(col3, text="매칭 영역", font=ctk.CTkFont(size=11)).pack()
-                if orig_img is not None:
-                    orig_resized = cv2.resize(orig_img, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-                    # 마스크 적용 (배경을 빨간색으로 표시)
-                    result = orig_resized.copy()
-                    mask_3ch = cv2.cvtColor(mask_resized, cv2.COLOR_GRAY2RGB)
-                    # 마스크 외 영역을 빨간색으로
-                    result[mask_resized < 128] = [255, 100, 100]  # 빨간색 = 무시 영역
-                    pil_result = Image.fromarray(result)
-                    ctk_result = ctk.CTkImage(light_image=pil_result, dark_image=pil_result, size=(new_w, new_h))
-                    ctk.CTkLabel(col3, image=ctk_result, text="").pack()
-                    images_refs.append(ctk_result)
-                else:
-                    ctk.CTkLabel(col3, text="(없음)", text_color=COLORS["text_muted"]).pack()
-
-                preview._img_refs = images_refs
-
-                ctk.CTkLabel(preview, text="빨간색 = 무시 영역 (배경)  |  원본색 = 매칭 영역 (글씨)",
-                             font=ctk.CTkFont(size=10), text_color=COLORS["text_muted"]).pack(pady=5)
-
-                ctk.CTkButton(preview, text="닫기", width=80,
-                              command=preview.destroy).pack(pady=10)
-
-            except Exception as e:
-                logger.error(f"마스크 미리보기 실패: {e}")
-                preview.destroy()
-
-        def open_crop_editor(img_path):
-            """이미지 크롭 에디터 열기"""
-            def on_crop_complete(new_path: str):
-                # 이미지 경로 업데이트
-                current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-                for i, p in enumerate(current):
-                    if p == img_path:
-                        current[i] = new_path
-                        break
-                wp[3] = "|".join(current)
-                refresh_list()
-                logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 크롭 완료: {Path(new_path).name}")
-
-            def on_delete():
-                remove_image(img_path)
-
-            def on_change(new_path: str):
-                current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-                for i, p in enumerate(current):
-                    if p == img_path:
-                        current[i] = new_path
-                        break
-                wp[3] = "|".join(current)
-                refresh_list()
-                logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 변경: {Path(new_path).name}")
-
-            crop_dialog = ImageCropDialog(
-                dialog, img_path,
-                on_crop=on_crop_complete,
-                on_delete=on_delete,
-                on_change=on_change,
-            )
-            dialog.wait_window(crop_dialog)
-            refresh_list()
-
-        def add_image():
-            """파일에서 이미지 추가 후 크롭 에디터 열기"""
-            current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-            if len(current) >= 3:
-                from tkinter import messagebox
-                messagebox.showwarning("최대 개수", "보스 이미지는 최대 3개까지 설정 가능합니다.", parent=dialog)
-                return
-
-            from tkinter import filedialog
+        try:
             templates_dir = DATA_DIR / "templates"
             templates_dir.mkdir(parents=True, exist_ok=True)
+            new_ext = Path(image_path).suffix
+            new_filename = f"wp_img_{uuid.uuid4().hex[:8]}{new_ext}"
+            dest_path = templates_dir / new_filename
+            shutil.copy2(image_path, dest_path)
 
-            filepath = filedialog.askopenfilename(
-                title=f"보스 이미지 선택 ({len(current)+1}/3)",
-                initialdir=str(templates_dir),
-                filetypes=[("이미지", "*.png *.jpg *.jpeg *.bmp"), ("모든 파일", "*.*")],
-                parent=dialog
-            )
-            if not filepath:
-                return
-
-            import shutil
-            selected_path = Path(filepath)
-            if selected_path.parent.resolve() == templates_dir.resolve():
-                dest = selected_path
+            # wp[3]에 이미지 설정 저장
+            img_cfg = {
+                "target_image": str(dest_path),
+                "target_images": [],
+                "confidence": 0.65,
+                "search_radius": 0,
+                "action_x": None,
+                "action_y": None,
+                "move_mouse_before_search": False,
+            }
+            wp = waypoints[idx]
+            if len(wp) < 4:
+                wp.append(img_cfg)
             else:
-                dest = templates_dir / selected_path.name
-                try:
-                    shutil.copy2(filepath, dest)
-                except shutil.SameFileError:
-                    pass
+                wp[3] = img_cfg
 
-            # 이미지 추가
-            current.append(str(dest))
-            wp[3] = "|".join(current)
-            refresh_list()
-            logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 추가: {dest.name}")
+            self._save_config()
+            self._update_card_image_status(idx)
+            logger.info(f"[좌표모드] 경유지{idx+1} 이미지 추가: {dest_path}")
 
-            # 크롭 에디터 열기
-            open_crop_editor(str(dest))
+            # ImageCropDialog 열기 (편집 가능)
+            self._edit_waypoint_image(idx)
+        except Exception as e:
+            logger.error(f"[좌표모드] 이미지 추가 실패: {e}")
 
-        def remove_image(img_path):
-            """이미지 삭제"""
-            current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-            if img_path in current:
-                current.remove(img_path)
-            wp[3] = "|".join(current)
-            refresh_list()
-            logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 삭제: {Path(img_path).name}")
+    def _edit_waypoint_image(self, idx: int):
+        """경유지 이미지 편집 — ImageCropDialog 열기"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return
+        img_cfg = wp[3]
+        img_path = img_cfg.get("target_image", "")
+        if not img_path or not Path(img_path).exists():
+            return
 
-        def clear_all():
-            """전체 삭제"""
-            wp[3] = ""
-            refresh_list()
-            logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 전체 삭제")
+        # 임시 AutomationRule 생성 (ImageCropDialog가 rule 파라미터로 사용)
+        temp_rule = AutomationRule(
+            rule_id=f"wp_{idx}",
+            action_type="click",
+            target_image=img_path,
+            target_images=list(img_cfg.get("target_images", [])),
+            confidence=img_cfg.get("confidence", 0.65),
+            search_radius=img_cfg.get("search_radius", 0),
+            action_x=img_cfg.get("action_x"),
+            action_y=img_cfg.get("action_y"),
+            move_mouse_before_search=img_cfg.get("move_mouse_before_search", False),
+        )
 
-        def regenerate_masks():
-            """기존 이미지들의 마스크 재생성"""
-            from tkinter import messagebox
-            current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-            if not current:
-                messagebox.showinfo("알림", "등록된 이미지가 없습니다.", parent=dialog)
-                return
+        def on_crop(new_path):
+            img_cfg["target_image"] = new_path
+            self._sync_rule_to_wp_image(temp_rule, idx)
+            self._update_card_image_status(idx)
 
-            success_count = 0
-            try:
-                from ..analyzer.template_matcher import generate_mask_for_existing_image
-                for img_path in current:
-                    if Path(img_path).exists():
-                        mask_path = generate_mask_for_existing_image(img_path)
-                        if mask_path:
-                            success_count += 1
-                            logger.info(f"[좌표모드] 마스크 생성: {Path(mask_path).name}")
+        def on_delete():
+            if len(wp) >= 4:
+                wp[3] = None
+                # 리스트 끝의 None 정리
+                while len(wp) > 3 and wp[-1] is None:
+                    wp.pop()
+            self._save_config()
+            self._update_card_image_status(idx)
 
-                messagebox.showinfo("마스크 생성",
-                    f"{success_count}개 이미지의 마스크가 생성되었습니다.\n"
-                    f"(배경 변화에 강건한 매칭 가능)", parent=dialog)
-                refresh_list()  # 마스크 상태 갱신
-            except Exception as e:
-                logger.error(f"마스크 생성 실패: {e}")
-                messagebox.showerror("오류", f"마스크 생성 실패: {e}", parent=dialog)
+        def on_change(new_path):
+            img_cfg["target_image"] = new_path
+            temp_rule.target_image = new_path
+            self._save_config()
+            self._update_card_image_status(idx)
 
-        def test_matching():
-            """현재 화면에서 보스 이미지 매칭 테스트"""
-            from tkinter import messagebox
-            import traceback
+        def on_search_radius_change():
+            self._sync_rule_to_wp_image(temp_rule, idx)
 
-            current = [p.strip() for p in (wp[3] or "").split("|") if p.strip()]
-            if not current:
-                messagebox.showinfo("알림", "등록된 이미지가 없습니다.", parent=dialog)
-                return
+        dialog = ImageCropDialog(
+            self,
+            img_path,
+            on_crop=on_crop,
+            on_delete=on_delete,
+            on_change=on_change,
+            rule=temp_rule,
+            on_search_radius_change=on_search_radius_change,
+        )
+        # 다이얼로그 닫힌 후 최종 동기화
+        dialog.wait_window()
+        self._sync_rule_to_wp_image(temp_rule, idx)
 
-            try:
-                # 스크린샷 캡처 (다이얼로그 숨기고)
-                dialog.withdraw()
-                dialog.update()
-                import time
-                time.sleep(0.2)
+    def _sync_rule_to_wp_image(self, rule, idx: int):
+        """AutomationRule 설정 → wp[3] dict로 동기화"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return
+        cfg = wp[3]
+        cfg["target_image"] = rule.target_image
+        cfg["target_images"] = list(rule.target_images) if rule.target_images else []
+        cfg["confidence"] = rule.confidence
+        cfg["search_radius"] = rule.search_radius
+        cfg["action_x"] = rule.action_x
+        cfg["action_y"] = rule.action_y
+        cfg["move_mouse_before_search"] = rule.move_mouse_before_search
+        self._save_config()
 
-                from PIL import ImageGrab
-                screenshot = ImageGrab.grab()
+    def _update_card_image_status(self, idx: int):
+        """카드 이미지 상태 라벨 갱신"""
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= idx < len(cards)):
+            return
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+        img_name = ""
+        if img_cfg and img_cfg.get("target_image"):
+            img_name = Path(img_cfg["target_image"]).stem[:10]
 
-                dialog.deiconify()
-                dialog.update()
-
-                if screenshot is None:
-                    messagebox.showerror("오류", "스크린샷 캡처 실패", parent=dialog)
-                    return
-
-                screen_np = np.array(screenshot)
-                screen_bgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
-
-                # 템플릿 매칭 테스트
-                from ..analyzer.template_matcher import get_template_matcher
-                matcher = get_template_matcher()
-
-                results = []
-                for img_path in current:
-                    if not Path(img_path).exists():
-                        results.append((img_path, False, 0.0, None, None))
-                        continue
-
-                    result = matcher.match(screen_bgr, img_path, threshold=0.5, use_mask=True)
-                    results.append((
-                        img_path,
-                        result.found,
-                        float(result.confidence),
-                        (result.center_x, result.center_y) if result.found else None,
-                        (result.x, result.y, result.width, result.height) if result.found else None
-                    ))
-
-                # 결과 다이얼로그
-                result_dialog = ctk.CTkToplevel(dialog)
-                result_dialog.title("매칭 테스트 결과")
-                result_dialog.transient(dialog)
-
-                ctk.CTkLabel(result_dialog, text="보스 이미지 매칭 테스트",
-                             font=ctk.CTkFont(size=14, weight="bold")).pack(pady=10)
-
-                # 스크린샷에 결과 표시
-                screen_rgb = screen_np.copy()
-                for _, found, conf, _, rect in results:
-                    if found and rect:
-                        x, y, rw, rh = rect
-                        cv2.rectangle(screen_rgb, (x, y), (x+rw, y+rh), (0, 255, 0), 3)
-                        cv2.putText(screen_rgb, f"{conf:.2f}", (x, y-5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                # 축소
-                sh, sw = screen_rgb.shape[:2]
-                scale = min(500 / sw, 280 / sh)
-                new_w, new_h = int(sw * scale), int(sh * scale)
-                screen_small = cv2.resize(screen_rgb, (new_w, new_h))
-
-                pil_screen = Image.fromarray(screen_small)
-                ctk_screen = ctk.CTkImage(light_image=pil_screen, dark_image=pil_screen, size=(new_w, new_h))
-                ctk.CTkLabel(result_dialog, image=ctk_screen, text="").pack(pady=5)
-                result_dialog._img_ref = ctk_screen
-
-                result_dialog.geometry(f"{new_w + 40}x{new_h + 200}")
-
-                # 결과 목록
-                for img_path, found, conf, center, _ in results:
-                    name = Path(img_path).name
-                    mask_p = Path(img_path).parent / f"{Path(img_path).stem}_mask{Path(img_path).suffix}"
-                    mask_tag = "[마스크O]" if mask_p.exists() else "[마스크X]"
-
-                    if found:
-                        txt = f"✓ {name} {mask_tag} - 발견! {conf*100:.1f}% 위치:{center}"
-                        clr = "#a3be8c"
-                    else:
-                        txt = f"✗ {name} {mask_tag} - 미발견 (최고:{conf*100:.1f}%)"
-                        clr = "#bf616a"
-
-                    ctk.CTkLabel(result_dialog, text=txt, font=ctk.CTkFont(size=11),
-                                 text_color=clr).pack(anchor="w", padx=15, pady=2)
-
-                ctk.CTkButton(result_dialog, text="닫기", width=80,
-                              command=result_dialog.destroy).pack(pady=10)
-
-                result_dialog.grab_set()
-
-            except Exception as e:
-                try:
-                    dialog.deiconify()
-                except:
-                    pass
-                logger.error(f"매칭 테스트 실패: {e}\n{traceback.format_exc()}")
-                messagebox.showerror("오류", f"테스트 실패:\n{e}", parent=dialog)
-
-        # 버튼 프레임 (2줄로)
-        btn_frame1 = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame1.pack(fill="x", padx=10, pady=(0, 5))
-
-        ctk.CTkButton(btn_frame1, text="이미지 추가", width=100, height=32,
-                      fg_color=COLORS["success"], hover_color="#45a049",
-                      font=ctk.CTkFont(size=11, weight="bold"),
-                      command=add_image).pack(side="left", padx=3)
-        ctk.CTkButton(btn_frame1, text="마스크 생성", width=85, height=32,
-                      fg_color="#5e81ac", hover_color="#4c6c94",
-                      font=ctk.CTkFont(size=11),
-                      command=regenerate_masks).pack(side="left", padx=3)
-        ctk.CTkButton(btn_frame1, text="🔍 테스트", width=80, height=32,
-                      fg_color="#d08770", hover_color="#c97860",
-                      font=ctk.CTkFont(size=11, weight="bold"),
-                      command=test_matching).pack(side="left", padx=3)
-
-        btn_frame2 = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame2.pack(fill="x", padx=10, pady=(0, 10))
-
-        ctk.CTkButton(btn_frame2, text="전체 삭제", width=70, height=32,
-                      fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
-                      text_color=COLORS["text_secondary"],
-                      command=clear_all).pack(side="left", padx=3)
-        ctk.CTkButton(btn_frame2, text="닫기", width=60, height=32,
-                      fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
-                      text_color=COLORS["text_secondary"],
-                      command=dialog.destroy).pack(side="right", padx=3)
-
-        refresh_list()
+        label = cards[idx]['img_status']
+        if img_name:
+            label.configure(text=f" {img_name}", cursor="hand2")
+            # 기존 바인딩 제거 후 재등록
+            label.unbind("<Button-1>")
+            label.bind("<Button-1>", lambda e, i=idx: self._edit_waypoint_image(i))
+        else:
+            label.configure(text="", cursor="")
+            label.unbind("<Button-1>")
 
     def _refresh_badges_async(self):
         """배지 갱신 (파일 I/O는 현재 스레드, UI 업데이트만 메인스레드로)
@@ -5964,10 +5459,7 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[i]['clear_btn'].configure(command=lambda idx=i: self._clear_map_for(idx))
             cards[i]['save_map_btn'].configure(command=lambda idx=i: self._save_map_for(idx))
             cards[i]['load_map_btn'].configure(command=lambda idx=i: self._load_map_for(idx))
-            cards[i]['img_select_btn'].configure(command=lambda idx=i: self._open_boss_image_dialog(idx))
-        wp = self._config.waypoints[index]
-        name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{index+1}"
-        logger.info(f"[좌표모드] 최종 목표 변경: {name} (인덱스 {index})")
+            cards[i]['add_img_btn'].configure(command=lambda idx=i: self._add_waypoint_image(idx))
 
     def _start_path_mapping_for(self, idx: int):
         """특정 경유지 경로맵핑 시작/중지 (출발→목표 직선 경로)"""
@@ -6685,13 +6177,6 @@ class GameModeDialog(ctk.CTkToplevel):
             self._config.escape_skill_cooldown = float(self._escape_skill_cd_var.get())
         except (ValueError, TypeError):
             self._config.escape_skill_cooldown = 10.0
-        # 보스 스킬
-        self._config.boss_skill_enabled = self._boss_skill_enabled_var.get()
-        self._config.boss_skill_key = self._boss_skill_key_var.get().strip()
-        try:
-            self._config.boss_skill_cooldown = float(self._boss_skill_cd_var.get())
-        except (ValueError, TypeError):
-            self._config.boss_skill_cooldown = 3.0
         for k, v in self._key_vars.items():
             self._config.move_keys[k] = v.get()
 
@@ -8822,6 +8307,7 @@ class PlayerView(BaseView):
         self._automation_plans: List[AutomationPlan] = []
         self._selected_item_widget = None  # 선택된 항목 위젯
         self._plan_lock_cache: dict = {}  # plan_id → locked 캐시
+        self._load_generation: int = 0  # async/sync 로드 경쟁 방지 카운터
 
         self._setup_ui()
         self._setup_callbacks()
@@ -8833,6 +8319,9 @@ class PlayerView(BaseView):
 
     def _load_sequences_async(self):
         """시퀀스 + 플랜을 백그라운드에서 로드"""
+        self._load_generation += 1
+        current_gen = self._load_generation
+
         def _load():
             sequences = self._db.get_all_sequences()
             plans = []
@@ -8848,12 +8337,15 @@ class PlayerView(BaseView):
                     except Exception as e:
                         logger.error(f"자동화 계획 로드 실패 ({plan_file}): {e}")
             plans.sort(key=lambda p: p.created_at, reverse=True)
-            self.after(0, lambda: self._apply_loaded_data(sequences, plans))
+            self.after(0, lambda: self._apply_loaded_data(sequences, plans, current_gen))
 
         threading.Thread(target=_load, daemon=True).start()
 
-    def _apply_loaded_data(self, sequences, plans):
+    def _apply_loaded_data(self, sequences, plans, generation=None):
         """로드 완료 후 UI 갱신"""
+        # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
+        if generation is not None and generation < self._load_generation:
+            return
         self._sequences = sequences
         self._automation_plans = plans
         # plan_id → locked 캐시 구축 (DB 쿼리 배치)
@@ -9282,6 +8774,7 @@ class PlayerView(BaseView):
 
     def _load_sequences(self) -> None:
         """재생 목록 로드 (동기 — 삭제/수정 후 새로고침용)"""
+        self._load_generation += 1  # 진행 중인 async 로드 무효화
         for widget in self._sequence_frame.winfo_children():
             widget.destroy()
 
@@ -9475,6 +8968,8 @@ class PlayerView(BaseView):
         """자동화 계획 상세보기"""
         dialog = PlanDetailDialog(self, plan)
         self.wait_window(dialog)
+        # 다이얼로그 닫힌 후 목록 새로고침 (이름/규칙 변경 반영)
+        self._load_sequences()
 
     def _show_sequence_detail(self, sequence: Sequence) -> None:
         """재생 상세보기"""

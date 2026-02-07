@@ -375,7 +375,7 @@ class GameModeConfig:
     coord_y_region: Optional[List[int]] = None  # Y 좌표 OCR 영역 [x1, y1, x2, y2]
     target_x: int = 0  # 목표 X 좌표
     target_y: int = 0  # 목표 Y 좌표
-    waypoints: List = field(default_factory=list)  # 경유지 리스트 [[x,y,name] 또는 [x,y,name,image_path]]
+    waypoints: List = field(default_factory=list)  # [[x,y,name] 또는 [x,y,name,{image_config}]]
     final_waypoint_idx: int = -1  # 최종 목표 경유지 인덱스 (-1: 마지막 경유지)
     obstacle_detection_enabled: bool = True  # 장애물 감지 활성화
     stuck_threshold: int = 3  # 정체 판정 프레임 수 (이 횟수 동안 좌표 변화 없으면 장애물로 판정)
@@ -404,6 +404,37 @@ class GameModeConfig:
     move_skill_enabled: bool = False   # 이동 스킬 사용 여부
     auto_skill_enabled: bool = False   # 상시 스킬 사용 여부
 
+    def _serialize_waypoints(self):
+        """waypoints 직렬화 (이미지 경로 → 상대경로)"""
+        result = []
+        for wp in self.waypoints:
+            wp_copy = list(wp)
+            if len(wp_copy) >= 4 and isinstance(wp_copy[3], dict):
+                cfg = dict(wp_copy[3])
+                if cfg.get("target_image"):
+                    cfg["target_image"] = _to_relative_path(cfg["target_image"])
+                if cfg.get("target_images"):
+                    cfg["target_images"] = [_to_relative_path(p) for p in cfg["target_images"] if p]
+                wp_copy[3] = cfg
+            result.append(wp_copy)
+        return result
+
+    @staticmethod
+    def _deserialize_waypoints(raw, templates_dir):
+        """waypoints 역직렬화 (파일명 → 절대경로)"""
+        result = []
+        for wp in raw:
+            wp_copy = list(wp)
+            if len(wp_copy) >= 4 and isinstance(wp_copy[3], dict):
+                cfg = dict(wp_copy[3])
+                if cfg.get("target_image"):
+                    cfg["target_image"] = _to_absolute_path(cfg["target_image"], templates_dir)
+                if cfg.get("target_images"):
+                    cfg["target_images"] = [_to_absolute_path(p, templates_dir) for p in cfg["target_images"] if p]
+                wp_copy[3] = cfg
+            result.append(wp_copy)
+        return result
+
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
         return {
@@ -430,7 +461,7 @@ class GameModeConfig:
             "coord_y_region": self.coord_y_region,
             "target_x": self.target_x,
             "target_y": self.target_y,
-            "waypoints": self.waypoints,
+            "waypoints": self._serialize_waypoints(),
             "final_waypoint_idx": self.final_waypoint_idx,
             "obstacle_detection_enabled": self.obstacle_detection_enabled,
             "stuck_threshold": self.stuck_threshold,
@@ -495,7 +526,7 @@ class GameModeConfig:
             coord_y_region=data.get("coord_y_region"),
             target_x=data.get("target_x", 0),
             target_y=data.get("target_y", 0),
-            waypoints=data.get("waypoints") or [],
+            waypoints=cls._deserialize_waypoints(data.get("waypoints") or [], templates_dir),
             final_waypoint_idx=data.get("final_waypoint_idx", -1),
             obstacle_detection_enabled=data.get("obstacle_detection_enabled", True),
             stuck_threshold=data.get("stuck_threshold", 3),

@@ -440,27 +440,37 @@ class MapCanvas(tk.Canvas):
         self._show_coord_popup(event.x, event.y, tile_x, tile_y, tile_type)
 
     def _place_tile(self, pos, tile_type: str):
-        """타일 배치 (기존 타일 제거 후 새 타입으로)"""
-        # 기존 데이터에서 제거
+        """타일 배치"""
+        if tile_type == "patrol":
+            # 순찰은 오버레이 — passable 유지, 토글만
+            if pos in self.game_map.patrol_points:
+                self.game_map.patrol_points.remove(pos)
+            else:
+                self.game_map.patrol_points.append(pos)
+            return
+
+        if tile_type == "start":
+            self.game_map.start_pos = pos
+            return
+
+        if tile_type == "end":
+            self.game_map.end_pos = pos
+            return
+
+        # 일반 타일: 기존 제거 후 새 타입
         self.game_map.passable.discard(pos)
         self.game_map.blocked.discard(pos)
         self.game_map.soft_blocked.pop(pos, None)
-        if pos in self.game_map.patrol_points:
-            self.game_map.patrol_points.remove(pos)
 
-        # 새 타입으로 배치
         if tile_type == "passable":
             self.game_map.passable.add(pos)
         elif tile_type == "blocked":
             self.game_map.blocked.add(pos)
+            # 벽으로 바꾸면 순찰에서도 제거
+            if pos in self.game_map.patrol_points:
+                self.game_map.patrol_points.remove(pos)
         elif tile_type == "soft_blocked":
             self.game_map.soft_blocked[pos] = 1
-        elif tile_type == "patrol":
-            self.game_map.patrol_points.append(pos)
-        elif tile_type == "start":
-            self.game_map.start_pos = pos
-        elif tile_type == "end":
-            self.game_map.end_pos = pos
 
     def _on_right_click(self, event):
         """우클릭 - 타일 삭제"""

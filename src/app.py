@@ -212,7 +212,8 @@ class WinCroApp:
         """리소스 정리"""
         try:
             # 생성된 뷰만 정리 (지연 생성으로 None일 수 있음)
-            for view in (self._recorder_view, self._analyzer_view, self._player_view):
+            for view in (self._recorder_view, self._analyzer_view, self._player_view,
+                         self._settings_view, self._guide_view):
                 if view and hasattr(view, 'cleanup'):
                     try:
                         view.cleanup()

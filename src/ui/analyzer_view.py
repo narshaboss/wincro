@@ -1995,14 +1995,14 @@ class AnalyzerView(BaseView):
 
         self._plan_modified_cache = {}  # plan_id → modified 캐시
         self._plan_lock_cache = {}  # plan_id → locked 캐시
+        self._plans_load_generation: int = 0  # async/sync 플랜 로드 경쟁 방지
 
         self._setup_ui()
         self.after(0, self._deferred_load)  # UI 렌더 후 데이터 로드
 
     def _deferred_load(self):
         """UI 표시 후 데이터 로드 (after(0) 콜백)"""
-        self._build_plan_modified_cache()
-        self._load_recordings()
+        self._load_recordings()  # 내부에서 _build_plan_modified_cache() 호출
         self._load_plans_async()
 
     def _build_plan_modified_cache(self):
@@ -2020,6 +2020,9 @@ class AnalyzerView(BaseView):
 
     def _load_plans_async(self):
         """플랜 목록을 백그라운드 스레드에서 로드"""
+        self._plans_load_generation += 1
+        current_gen = self._plans_load_generation
+
         def _load():
             plans = []
             templates_dir = DATA_DIR / "templates"
@@ -2040,12 +2043,15 @@ class AnalyzerView(BaseView):
                         logger.error(f"계획 데이터 형식 오류: {plan_file} - {e}")
                     except Exception as e:
                         logger.error(f"계획 로드 실패: {plan_file} - {e}")
-            self.after(0, lambda: self._apply_plans(plans))
+            self.after(0, lambda: self._apply_plans(plans, current_gen))
 
         threading.Thread(target=_load, daemon=True).start()
 
-    def _apply_plans(self, plans):
+    def _apply_plans(self, plans, generation=None):
         """백그라운드에서 로드된 플랜을 UI에 적용"""
+        # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
+        if generation is not None and generation < self._plans_load_generation:
+            return
         for widget in self._plans_scroll.winfo_children():
             widget.destroy()
 
@@ -2229,6 +2235,7 @@ class AnalyzerView(BaseView):
 
     def _load_plans(self):
         """분석된 재생 목록 로드"""
+        self._plans_load_generation += 1  # 진행 중인 async 로드 무효화
         for widget in self._plans_scroll.winfo_children():
             widget.destroy()
 
@@ -2412,6 +2419,8 @@ class AnalyzerView(BaseView):
 
     def _load_recordings(self):
         """녹화 목록 로드"""
+        self._build_plan_modified_cache()  # 캐시 갱신
+
         for widget in self._recordings_scroll.winfo_children():
             widget.destroy()
 
@@ -2721,6 +2730,8 @@ class AnalyzerView(BaseView):
     def _on_cancel(self):
         try:
             self._video_analyzer.cancel()
+            with self._analyze_lock:
+                self._is_analyzing = False
             self._analyze_btn.configure(state="normal")
             self._cancel_btn.configure(state="disabled")
             self._progress_label.configure(text="취소됨", text_color=COLORS["warning"])
@@ -2862,6 +2873,10 @@ class AnalyzerView(BaseView):
                         used_images.add(Path(rule.target_image).resolve())
                     if rule.trigger_image:
                         used_images.add(Path(rule.trigger_image).resolve())
+                    if hasattr(rule, 'target_images') and rule.target_images:
+                        for img_path in rule.target_images:
+                            if img_path:
+                                used_images.add(Path(img_path).resolve())
                     if rule.children:
                         collect_images_from_rules(rule.children)
 
@@ -2933,8 +2948,7 @@ class AnalyzerView(BaseView):
 
     def refresh(self):
         """뷰 새로고침"""
-        self._build_plan_modified_cache()
-        self._load_recordings()
+        self._load_recordings()  # 내부에서 _build_plan_modified_cache() 호출
         self._load_plans_async()
 
     def cleanup(self):

@@ -382,7 +382,16 @@
       [
         13,
         22,
-        "흑해골굴1굴"
+        "흑해골굴1굴",
+        {
+          "target_image": "wp_img_2c417939.png",
+          "target_images": [],
+          "confidence": 0.65,
+          "search_radius": 0,
+          "action_x": null,
+          "action_y": null,
+          "move_mouse_before_search": false
+        }
       ],
       [
         16,

@@ -99,6 +99,23 @@
 
 ## 버그 수정 이력
 
+### 2026-02-07: 경유지 이미지 시스템 리팩토링 + 안정성 개선 (v1.0.109)
+
+**주요 변경:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/analyzer/automation_models.py` | waypoints 직렬화/역직렬화 메서드 추가 (이미지 경로 ↔ 상대경로 변환) |
+| `src/ui/player_view.py` | 보스 이미지 대화상자 제거 → ImageCropDialog 기반으로 전환, 보스 스킬 UI 제거, 비동기 로드 경쟁 방지 |
+| `src/ui/analyzer_view.py` | 비동기 플랜 로드 경쟁 방지, 분석 취소 상태 정리, 이미지 정리 시 target_images 고려 |
+| `src/ui/main_window.py` | `_switch_view()` 안정화 — 새 뷰 준비 후에만 이전 뷰 숨기기 |
+| `src/ui/settings_view.py` | `import json` 모듈 레벨로 이동 |
+| `src/app.py` | `_cleanup()`에 settings_view, guide_view 리소스 정리 추가 |
+| `src/player/map_canvas.py` | 순찰 타일 오버레이 동작, 벽 배치 시 순찰 제거 |
+| `src/utils/config.py` | APP_VERSION 1.0.108 → 1.0.109 |
+
+---
+
 ### 2026-02-07: UI 로딩 성능 최적화 (v1.0.108)
 
 **문제:** 에디터 모드 진입 시 5개 뷰 동기 생성(2~5초 블로킹), 탭 전환 시 refresh() 자동 호출(DB+JSON 재로드+위젯 재생성)
@@ -1134,7 +1151,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-07 (UI 로딩 성능 최적화)
+- 마지막 업데이트: 2026-02-07 (경유지 이미지 시스템 리팩토링 + 안정성 개선)
 
 ## 업데이트 규칙
 

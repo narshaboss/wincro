@@ -4,6 +4,7 @@ WinCro 설정 화면 모듈
 애플리케이션 설정을 위한 UI를 제공합니다.
 """
 
+import json
 import tkinter as tk
 import threading
 import customtkinter as ctk
@@ -699,7 +700,7 @@ class SettingsView(BaseView):
 
     def _seq_add_plan(self) -> None:
         """플랜 순서 목록에 플랜 추가"""
-        import json as _json
+        # json은 top-level에서 import됨
 
         plan_name = self._seq_plan_add_var.get()
         if not plan_name or plan_name == "(플랜 없음)":
@@ -717,7 +718,7 @@ class SettingsView(BaseView):
         repeat_count = 1
         try:
             with open(plan_path, "r", encoding="utf-8") as f:
-                data = _json.load(f)
+                data = json.load(f)
                 repeat_count = data.get("total_repeat_count", 1) or 1
         except Exception:
             pass
@@ -819,10 +820,10 @@ class SettingsView(BaseView):
         try:
             if Path(plan_path).exists():
                 with open(plan_path, "r", encoding="utf-8") as f:
-                    data = _json.load(f)
+                    data = json.load(f)
                 data["total_repeat_count"] = new_count
                 with open(plan_path, "w", encoding="utf-8") as f:
-                    _json.dump(data, f, ensure_ascii=False, indent=2)
+                    json.dump(data, f, ensure_ascii=False, indent=2)
                 logger.info(f"플랜 반복횟수 저장: {Path(plan_path).stem} → {new_count}회")
         except Exception as e:
             logger.error(f"플랜 반복횟수 저장 실패: {e}")
@@ -2084,7 +2085,7 @@ del "%~f0"
             try:
                 if Path(seq_path).exists():
                     with open(seq_path, "r", encoding="utf-8") as f:
-                        data = _json.load(f)
+                        data = json.load(f)
                         repeat = data.get("total_repeat_count", 1) or 1
             except Exception:
                 pass
