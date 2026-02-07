@@ -400,6 +400,11 @@ class GameModeConfig:
     # === 맵핑 시스템 설정 ===
     mapping_enabled: bool = True  # 이동 시 맵 데이터 기록 여부
 
+    # === 보스 스킬 설정 ===
+    boss_skill_enabled: bool = False        # 보스 스킬 활성화
+    boss_skill_key: str = ""                # 스킬 키
+    boss_skill_cooldown: float = 3.0        # 쿨타임 (초)
+
     # === 스킬 활성화 플래그 ===
     move_skill_enabled: bool = False   # 이동 스킬 사용 여부
     auto_skill_enabled: bool = False   # 상시 스킬 사용 여부
@@ -481,6 +486,10 @@ class GameModeConfig:
             "minimap_config": self.minimap_config.to_dict() if self.minimap_config else None,
             # 맵핑 시스템 설정
             "mapping_enabled": self.mapping_enabled,
+            # 보스 스킬 설정
+            "boss_skill_enabled": self.boss_skill_enabled,
+            "boss_skill_key": self.boss_skill_key,
+            "boss_skill_cooldown": self.boss_skill_cooldown,
             # 스킬 활성화 플래그
             "move_skill_enabled": self.move_skill_enabled,
             "auto_skill_enabled": self.auto_skill_enabled,
@@ -546,6 +555,10 @@ class GameModeConfig:
             minimap_config=MinimapConfig.from_dict(data["minimap_config"], templates_dir) if data.get("minimap_config") else None,
             # 맵핑 시스템 설정
             mapping_enabled=data.get("mapping_enabled", True),
+            # 보스 스킬 설정
+            boss_skill_enabled=data.get("boss_skill_enabled", False),
+            boss_skill_key=data.get("boss_skill_key", ""),
+            boss_skill_cooldown=data.get("boss_skill_cooldown", 3.0),
             # 스킬 활성화 플래그
             move_skill_enabled=data.get("move_skill_enabled", False),
             auto_skill_enabled=data.get("auto_skill_enabled", False),

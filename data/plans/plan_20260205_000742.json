@@ -382,16 +382,7 @@
       [
         13,
         22,
-        "흑해골굴1굴",
-        {
-          "target_image": "wp_img_2c417939.png",
-          "target_images": [],
-          "confidence": 0.65,
-          "search_radius": 0,
-          "action_x": null,
-          "action_y": null,
-          "move_mouse_before_search": false
-        }
+        "흑해골굴1굴"
       ],
       [
         16,
@@ -433,7 +424,7 @@
         0,
         "흑해골굴9굴",
         {
-          "target_image": "wp_img_0ad2e066.png",
+          "target_image": "wp_img_7ad66b7b.png",
           "target_images": [],
           "confidence": 0.65,
           "search_radius": 0,
@@ -458,6 +449,9 @@
     "escape_skill_wait_after": 0.5,
     "minimap_config": null,
     "mapping_enabled": true,
+    "boss_skill_enabled": false,
+    "boss_skill_key": "",
+    "boss_skill_cooldown": 3.0,
     "move_skill_enabled": false,
     "auto_skill_enabled": false
   }

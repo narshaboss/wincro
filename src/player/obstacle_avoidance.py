@@ -144,16 +144,23 @@ class BFSPathfinder:
         if start == goal:
             return [start]
 
-        queue = deque([(start, [start])])
+        queue = deque([(start, 0)])
         visited = {start}
+        came_from = {start: None}
 
         while queue:
-            (x, y), path = queue.popleft()
+            (x, y), depth = queue.popleft()
 
             if (x, y) == goal:
-                return path
+                # came_from 역추적으로 경로 복원
+                path = []
+                cur = (x, y)
+                while cur is not None:
+                    path.append(cur)
+                    cur = came_from[cur]
+                return path[::-1]
 
-            if len(path) > max_distance:
+            if depth > max_distance:
                 continue
 
             # 4방향 탐색
@@ -168,7 +175,8 @@ class BFSPathfinder:
                     continue
 
                 visited.add((nx, ny))
-                queue.append(((nx, ny), path + [(nx, ny)]))
+                came_from[(nx, ny)] = (x, y)
+                queue.append(((nx, ny), depth + 1))
 
         return None  # 경로 없음
 
@@ -1094,9 +1102,12 @@ class ObstacleAvoidanceController:
             if diag in blocked:
                 continue
             ddx, ddy = DIRECTIONS_8[diag]
-            # 목표 방향과의 일치도
-            score = (1 if (dx > 0) == (ddx > 0) else -1) + \
-                    (1 if (dy > 0) == (ddy > 0) else -1)
+            # 목표 방향과의 일치도 (축 정렬 시 중립 점수)
+            score = 0
+            if dx != 0:
+                score += 1 if (dx > 0) == (ddx > 0) else -1
+            if dy != 0:
+                score += 1 if (dy > 0) == (ddy > 0) else -1
             if score > best_score:
                 best_score = score
                 best = diag

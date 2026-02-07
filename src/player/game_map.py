@@ -38,6 +38,12 @@ class GameMap:
     """
 
     SOFT_BLOCKED_PROMOTE_THRESHOLD = 5  # 이 횟수 이상 실패 시 영구벽 승격
+    COORD_MAX = 500  # 좌표 유효 범위 (-COORD_MAX ~ +COORD_MAX), OCR 오독 방지
+
+    @staticmethod
+    def _is_valid_coord(x: int, y: int) -> bool:
+        """좌표 유효성 검사 (OCR 오독 필터링)"""
+        return -GameMap.COORD_MAX <= x <= GameMap.COORD_MAX and -GameMap.COORD_MAX <= y <= GameMap.COORD_MAX
 
     def __init__(self, name: str = "Unknown"):
         self.name = name
@@ -51,6 +57,9 @@ class GameMap:
     def mark_passable(self, x: int, y: int):
         """이동 가능한 좌표로 등록"""
         pos = (int(x), int(y))
+        if not self._is_valid_coord(pos[0], pos[1]):
+            logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
+            return
         self.passable.add(pos)
         # 장애물에서 제거 (혹시 잘못 등록됐으면)
         self.blocked.discard(pos)
@@ -61,6 +70,9 @@ class GameMap:
     def mark_blocked(self, x: int, y: int):
         """장애물 좌표로 등록 (영구벽)"""
         pos = (int(x), int(y))
+        if not self._is_valid_coord(pos[0], pos[1]):
+            logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
+            return
         self.blocked.add(pos)
         # 이동 가능에서 제거
         self.passable.discard(pos)
@@ -71,6 +83,8 @@ class GameMap:
     def mark_soft_blocked(self, x: int, y: int):
         """임시 장애물로 등록 (몬스터 등). fail_count 누적, 임계값 초과 시 영구벽 승격"""
         pos = (int(x), int(y))
+        if not self._is_valid_coord(pos[0], pos[1]):
+            return
         # 이미 영구벽이면 무시
         if pos in self.blocked:
             return
@@ -220,6 +234,10 @@ class GameMap:
             if self.is_blocked(nx, ny):
                 continue
 
+            # 출발 좌표(포탈 입구)는 벽 취급 (되돌아가기 방지)
+            if self.start_pos and (nx, ny) == self.start_pos:
+                continue
+
             # 임시 장애물은 통과 허용 (비용이 높을 뿐)
             if self.is_soft_blocked(nx, ny):
                 neighbors.append((nx, ny, direction))
@@ -362,15 +380,14 @@ class GameMap:
 
             before = len(self.passable) + len(self.blocked)
 
-            self.passable |= loaded_passable
-            self.blocked |= loaded_blocked
+            # 병합: 현재 메모리 상태 우선 (실행 중 발견한 벽/이동가능이 파일보다 최신)
+            self.passable |= (loaded_passable - self.blocked)
+            self.blocked |= (loaded_blocked - self.passable)
             # soft_blocked 병합: 더 높은 fail_count 유지
             for pos, count in loaded_soft_blocked.items():
                 existing = self.soft_blocked.get(pos, 0)
                 self.soft_blocked[pos] = max(existing, count)
 
-            # 충돌 해결: passable이 우선 (실제로 지나간 적 있으면 장애물 아님)
-            self.blocked -= self.passable
             # soft_blocked도 passable/blocked와 충돌 해결
             for pos in list(self.soft_blocked.keys()):
                 if pos in self.passable or pos in self.blocked:

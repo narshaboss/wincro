@@ -1650,34 +1650,27 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # 강화된 매처 사용
-            matcher = get_enhanced_matcher()
-
-            # ROI 기반 적응형 매칭 (이전 위치 근처 먼저 검색)
-            result = matcher.match_with_roi(screenshot_bgr, image_path, confidence)
-            logger.debug(f"[이미지 검색] ROI매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
+            # 1차: 마스크 매칭 (배경 무시, 글자만 비교)
+            from ..analyzer.template_matcher import TemplateMatcher
+            mask_matcher = TemplateMatcher()
+            result = mask_matcher.match_binary(screenshot_bgr, image_path, threshold=confidence)
+            logger.debug(f"[이미지 검색] 마스크매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
 
             if result.found and result.confidence >= confidence:
-                # 사용자 설정 confidence 이상일 때만 인정 (오탐 방지)
                 final_x = result.center_x + region_offset_x
                 final_y = result.center_y + region_offset_y
                 return (final_x, final_y, result.confidence)
 
-            # 중지 체크 - ROI 매칭 실패 후 추가 매칭 전에 확인
+            # 중지 체크
             if self._stop_event.is_set():
                 return None
 
-            # ROI 매칭 실패 시 추가 매칭 시도 (단, 사용자 설정 confidence 존중)
-            # edge_regions 등 낮은 신뢰도 매칭은 오탐 가능성이 높으므로 제한
-            min_threshold = max(confidence, 0.6)  # 사용자 설정값 이상으로만 매칭
-            result = matcher.match_best_effort(
-                screenshot_bgr, image_path,
-                min_threshold=min_threshold
-            )
-            logger.debug(f"[이미지 검색] best_effort: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
+            # 2차: 기존 강화 매처 폴백
+            matcher = get_enhanced_matcher()
+            result = matcher.match_with_roi(screenshot_bgr, image_path, confidence)
+            logger.debug(f"[이미지 검색] ROI매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
 
             if result.found and result.confidence >= confidence:
-                # 사용자 설정 confidence 이상일 때만 인정
                 final_x = result.center_x + region_offset_x
                 final_y = result.center_y + region_offset_y
                 return (final_x, final_y, result.confidence)

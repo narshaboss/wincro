@@ -225,6 +225,77 @@ class TemplateMatcher:
             logger.error(f"템플릿 매칭 오류: {e}")
             return MatchResult(found=False)
 
+    def match_binary(
+        self,
+        screen: np.ndarray,
+        template_path: str,
+        threshold: Optional[float] = None,
+    ) -> MatchResult:
+        """
+        마스크 매칭 — 글자 픽셀만 비교, 배경 완전 무시
+
+        템플릿에서 글자 영역만 마스크로 추출하고,
+        matchTemplate의 mask 파라미터로 글자 부분만 비교합니다.
+        """
+        template = self._load_template(template_path)
+        if template is None:
+            return MatchResult(found=False)
+
+        if threshold is None:
+            threshold = 0.5
+
+        try:
+            screen_h, screen_w = screen.shape[:2]
+            template_h, template_w = template.shape[:2]
+            if template_w > screen_w or template_h > screen_h:
+                return MatchResult(found=False)
+
+            # 그레이스케일 변환
+            if len(screen.shape) == 3:
+                screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+            else:
+                screen_gray = screen.copy()
+            if len(template.shape) == 3:
+                tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            else:
+                tmpl_gray = template.copy()
+
+            # 마스크 생성: Otsu로 글자 영역 추출
+            _, tmpl_bin = cv2.threshold(tmpl_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # 글자가 소수(어두운 쪽)면 반전 → 글자=255
+            if np.mean(tmpl_bin) > 127:
+                mask = cv2.bitwise_not(tmpl_bin)
+            else:
+                mask = tmpl_bin.copy()
+
+            # 마스크 약간 팽창 (글자 경계 포함)
+            kernel = np.ones((2, 2), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=1)
+
+            # TM_SQDIFF_NORMED + mask: 차이가 클수록 벌점 (0=완벽, 1=최악)
+            result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED, mask=mask)
+            min_val, _, min_loc, _ = cv2.minMaxLoc(result)
+
+            # 신뢰도 변환: 0(최악)~1(완벽)
+            confidence = 1.0 - min_val
+
+            if confidence >= threshold:
+                h, w = template.shape[:2]
+                return MatchResult(
+                    found=True,
+                    x=min_loc[0], y=min_loc[1],
+                    width=w, height=h,
+                    confidence=confidence,
+                    center_x=min_loc[0] + w // 2,
+                    center_y=min_loc[1] + h // 2,
+                )
+
+            return MatchResult(found=False, confidence=confidence)
+
+        except Exception as e:
+            logger.error(f"마스크 매칭 오류: {e}")
+            return MatchResult(found=False)
+
     def match_all(
         self,
         screen: np.ndarray,

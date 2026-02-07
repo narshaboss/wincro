@@ -929,11 +929,18 @@ class ActionPlayer:
             try:
                 screen = self._screen_recorder.capture_screenshot()
                 if screen is not None:
-                    result = self._template_matcher.match(
+                    result = self._template_matcher.match_binary(
                         screen,
                         action.wait_for_image,
                         threshold=action.confidence
                     )
+                    if not result.found:
+                        # 폴백: 기존 일반 매칭
+                        result = self._template_matcher.match(
+                            screen,
+                            action.wait_for_image,
+                            threshold=action.confidence
+                        )
 
                     if disappear:
                         # 이미지가 사라질 때까지 대기

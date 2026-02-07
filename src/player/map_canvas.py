@@ -73,7 +73,9 @@ class MapCanvas(tk.Canvas):
         self.bind("<ButtonPress-1>", self._on_drag_start)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_click)
-        self.bind("<ButtonRelease-3>", self._on_right_click)  # 우클릭: 타일 삭제
+        self.bind("<ButtonPress-3>", self._on_right_press)    # 우클릭: 타일 배치/삭제
+        self.bind("<B3-Motion>", self._on_right_drag)          # 우클릭 드래그: 연속 배치/삭제
+        self._right_drag_last = None  # 드래그 중 마지막 타일 좌표
         self.bind("<MouseWheel>", self._on_zoom)  # Windows
         self.bind("<Button-4>", self._on_zoom)    # Linux scroll up
         self.bind("<Button-5>", self._on_zoom)    # Linux scroll down
@@ -96,8 +98,17 @@ class MapCanvas(tk.Canvas):
         self.offset_x = self.canvas_width // 2 - int(x * self.tile_size * self.zoom)
         self.offset_y = self.canvas_height // 2 - int(y * self.tile_size * self.zoom)
 
+    def _sync_size(self):
+        """캔버스 실제 크기를 내부 변수에 반영"""
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w > 1 and h > 1:
+            self.canvas_width = w
+            self.canvas_height = h
+
     def auto_fit(self):
         """맵 전체가 보이도록 자동 조절 (이상치 무시)"""
+        self._sync_size()
         all_coords = list(self.game_map.passable | self.game_map.blocked | set(self.game_map.soft_blocked.keys()))
         if not all_coords:
             return
@@ -168,6 +179,7 @@ class MapCanvas(tk.Canvas):
 
     def render(self):
         """맵 렌더링"""
+        self._sync_size()
         self.delete("all")
 
         bounds = self.game_map.get_bounds()
@@ -472,19 +484,17 @@ class MapCanvas(tk.Canvas):
         elif tile_type == "soft_blocked":
             self.game_map.soft_blocked[pos] = 1
 
-    def _on_right_click(self, event):
-        """우클릭 - 타일 삭제"""
-        if not self.edit_tile_type:
-            return
-
+    def _get_tile_pos(self, event):
+        """마우스 이벤트에서 타일 좌표 계산"""
         ts = int(self.tile_size * self.zoom)
         if ts < 1:
             ts = 1
-
         tile_x = math.floor((event.x - self.offset_x) / ts)
         tile_y = math.floor((event.y - self.offset_y) / ts)
-        pos = (tile_x, tile_y)
+        return (tile_x, tile_y)
 
+    def _delete_tile(self, pos):
+        """타일 삭제 (모든 타입)"""
         removed = False
         if pos in self.game_map.passable:
             self.game_map.passable.discard(pos)
@@ -498,12 +508,43 @@ class MapCanvas(tk.Canvas):
         if pos in self.game_map.patrol_points:
             self.game_map.patrol_points.remove(pos)
             removed = True
+        if self.game_map.start_pos == pos:
+            self.game_map.start_pos = None
+            removed = True
+        if self.game_map.end_pos == pos:
+            self.game_map.end_pos = None
+            removed = True
+        return removed
 
-        if removed:
-            self.render()
-            self._show_coord_popup(event.x, event.y, tile_x, tile_y, "→ 삭제됨")
-            if self._on_tile_changed:
-                self._on_tile_changed()
+    def _on_right_press(self, event):
+        """우클릭 - 박스 활성화 시에만 배치"""
+        if not self.edit_tile_type:
+            return
+        pos = self._get_tile_pos(event)
+        self._right_drag_last = pos
+        self._place_tile(pos, self.edit_tile_type)
+        self.render()
+        self._show_coord_popup(event.x, event.y, pos[0], pos[1], f"→ {self.edit_tile_type}")
+        if self._on_tile_changed:
+            self._on_tile_changed()
+
+    def _on_right_drag(self, event):
+        """우클릭 드래그 - 박스 활성화 시에만 연속 배치"""
+        if not self.edit_tile_type:
+            return
+        pos = self._get_tile_pos(event)
+        if pos == self._right_drag_last:
+            return
+        self._right_drag_last = pos
+        self._place_tile(pos, self.edit_tile_type)
+        self.render()
+        if self._on_tile_changed:
+            self._on_tile_changed()
+        else:
+            if self._delete_tile(pos):
+                self.render()
+                if self._on_tile_changed:
+                    self._on_tile_changed()
 
     def _show_coord_popup(self, screen_x: int, screen_y: int,
                           tile_x: int, tile_y: int, tile_type: str):
@@ -569,12 +610,20 @@ class MapWindow(tk.Toplevel):
                  restore_callback=None, save_callback=None):
         super().__init__(master)
         self.title(f"🗺️ {title}")
-        self.geometry("700x550")
         self.configure(bg="#f0f4f8")
 
         self.game_map = game_map
         self._restore_callback = restore_callback
         self._save_callback = save_callback
+
+        # 맵 크기에 맞게 창 크기 자동 조절
+        win_w, win_h = self._calc_window_size(game_map)
+        self.geometry(f"{win_w}x{win_h}")
+        # 화면 중앙 배치
+        self.update_idletasks()
+        sx = (self.winfo_screenwidth() - win_w) // 2
+        sy = (self.winfo_screenheight() - win_h) // 2
+        self.geometry(f"+{sx}+{sy}")
 
         # 상단 툴바
         toolbar = tk.Frame(self, bg="#f0f4f8")
@@ -611,18 +660,47 @@ class MapWindow(tk.Toplevel):
                                      command=lambda t=tile_type: self._set_edit_type(t))
             self._legend_items[tile_type] = frame
 
-        # 맵 캔버스
-        self.map_canvas = MapCanvas(self, game_map, width=680, height=480)
+        # 맵 캔버스 (창 크기에 맞춤)
+        canvas_w = max(400, win_w - 20)
+        canvas_h = max(300, win_h - 70)
+        self.map_canvas = MapCanvas(self, game_map, width=canvas_w, height=canvas_h)
         self.map_canvas.pack(padx=10, pady=(0, 10), fill="both", expand=True)
         self.map_canvas._on_tile_changed = self._on_tile_changed
 
-        # 초기 렌더링
+        # 초기 렌더링 (레이아웃 확정 후 auto_fit)
+        self.update_idletasks()
         self.map_canvas.auto_fit()
         self.map_canvas.render()
 
         # 창을 최상단으로 강제로 올리기 (CustomTkinter 뒤에 숨는 문제 방지)
         self.attributes('-topmost', True)
         self.after(200, lambda: self.attributes('-topmost', False))
+
+    def _calc_window_size(self, game_map: GameMap):
+        """맵 크기에 맞게 창 크기 계산 (타일당 최소 8px 목표)"""
+        all_coords = list(game_map.passable | game_map.blocked | set(game_map.soft_blocked.keys()))
+        if not all_coords:
+            return 700, 550
+
+        xs = [p[0] for p in all_coords]
+        ys = [p[1] for p in all_coords]
+        map_w = max(xs) - min(xs) + 3  # 여백 포함
+        map_h = max(ys) - min(ys) + 3
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        max_w = int(screen_w * 0.85)
+        max_h = int(screen_h * 0.85)
+
+        # 타일당 최소 8px 확보 목표
+        toolbar_h = 70  # 툴바 + 범례 높이
+        margin = 30
+        ideal_w = map_w * 8 + margin
+        ideal_h = map_h * 8 + toolbar_h + margin
+
+        win_w = max(700, min(ideal_w, max_w))
+        win_h = max(550, min(ideal_h, max_h))
+        return win_w, win_h
 
     def _add_legend(self, parent, color: str, text: str, command=None):
         """범례 아이템 추가. command가 있으면 클릭 시 편집 모드 토글."""

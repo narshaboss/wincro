@@ -67,7 +67,8 @@ class SimplePathfinder:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
     def find_path(self, start: Tuple[int, int], goal: Tuple[int, int],
-                  allow_unknown: bool = False, stop_event=None) -> PathResult:
+                  allow_unknown: bool = False, stop_event=None,
+                  max_iterations: int = 0) -> PathResult:
         """
         A* 알고리즘으로 경로 탐색 (came_from 역추적 방식)
 
@@ -102,9 +103,13 @@ class SimplePathfinder:
         while open_set:
             # 50회마다 중지 체크 (오버헤드 최소화)
             _iter_count += 1
-            if _iter_count % 50 == 0 and stop_event and stop_event.is_set():
-                logger.debug("[Pathfinder] 중지 요청으로 탐색 중단")
-                return PathResult(found=False, path=[], directions=[], cost=-1)
+            if _iter_count % 50 == 0:
+                if stop_event and stop_event.is_set():
+                    logger.debug("[Pathfinder] 중지 요청으로 탐색 중단")
+                    return PathResult(found=False, path=[], directions=[], cost=-1)
+                if max_iterations > 0 and _iter_count >= max_iterations:
+                    logger.debug(f"[Pathfinder] 최대 반복 초과 ({max_iterations})")
+                    return PathResult(found=False, path=[], directions=[], cost=-1)
 
             f_cost, g_cost, current = heapq.heappop(open_set)
 
@@ -207,12 +212,27 @@ class SimplePathfinder:
             need_recalculate = True
         else:
             # 현재 위치가 경로에 있지만 인덱스가 맞지 않을 수 있음
-            try:
-                path_pos = self._current_path.path.index(current)
-                if path_pos != self._path_index:
+            # list.index()는 첫 번째 발견만 반환 → 중복 좌표 시 오류
+            # 현재 인덱스부터 앞으로 탐색 (가장 흔한 케이스: 전진)
+            path = self._current_path.path
+            if self._path_index < len(path) and path[self._path_index] == current:
+                pass  # 이미 올바른 인덱스
+            else:
+                path_pos = None
+                for i in range(self._path_index, len(path)):
+                    if path[i] == current:
+                        path_pos = i
+                        break
+                if path_pos is None:
+                    # 뒤로 이동한 경우 (드물지만 가능)
+                    for i in range(self._path_index - 1, -1, -1):
+                        if path[i] == current:
+                            path_pos = i
+                            break
+                if path_pos is not None:
                     self._path_index = path_pos
-            except ValueError:
-                need_recalculate = True
+                else:
+                    need_recalculate = True
 
         if need_recalculate:
             self._current_path = self.find_path(current, self._goal, allow_unknown)
