@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.109
+**현재 버전:** 1.0.111
 
 ---
 
@@ -542,6 +542,13 @@ wincro/
 ---
 
 ## 작업 히스토리
+
+### 2026-02-08: 경로탐색 버그 3건 수정 + 전체맵핑 안정화 (v1.0.111)
+- **BFS O(N²) 최적화:** `obstacle_avoidance.py` BFS 경로탐색에서 큐에 전체 경로 저장 → `came_from` dict + 역추적 패턴으로 O(N) 최적화
+- **list.index() 중복 좌표 버그:** `simple_pathfinder.py` 경로에 중복 좌표 있을 때 `list.index()`가 첫 번째만 반환 → 현재 인덱스 기준 순방향/역방향 탐색으로 수정
+- **대각선 방향 점수 오류:** `obstacle_avoidance.py` dx==0일 때 잘못된 방향에 +1 점수 → 축 정렬 시 중립 점수(0) 부여
+- **전체맵핑 안정화:** `full_mapping_exploring` 플래그 정상 동작 확인 (player_view.py)
+- **수정 파일:** `obstacle_avoidance.py`, `simple_pathfinder.py`, `player_view.py`, `config.py`
 
 ### 2026-02-07: 경유지 이미지 시스템 리팩토링 + 안정성 개선 (v1.0.109)
 - **경유지 이미지 시스템 변경:** 보스 이미지 pipe-delimited 문자열(`|`구분) → dict 구조로 변경

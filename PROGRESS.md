@@ -99,6 +99,33 @@
 
 ## 버그 수정 이력
 
+### 2026-02-08: 경로탐색 버그 3건 수정 + 전체맵핑 안정화 (v1.0.111)
+
+**수정된 버그:**
+
+| 파일 | 버그 | 수정 내용 |
+|------|------|----------|
+| `src/player/obstacle_avoidance.py` | BFS 경로탐색에서 큐에 전체 경로 저장 (O(N²) 메모리) | `came_from` dict + 역추적 패턴으로 O(N) 최적화 |
+| `src/player/simple_pathfinder.py` | `list.index()` 중복 좌표 시 첫 번째만 반환 → 경로 추적 오류 | 현재 인덱스 기준 순방향/역방향 탐색으로 정확한 위치 찾기 |
+| `src/player/obstacle_avoidance.py` | 대각선 방향 점수 계산에서 `dx==0`일 때 잘못된 방향에 +1 점수 | 축 정렬 시 중립 점수(0) 부여 |
+
+**전체맵핑 안정화:**
+- `full_mapping_exploring` 플래그로 전체맵핑 프런티어 탐색 정상 동작 확인
+- `is_boss_dungeon` 계산에 `full_mapping_exploring` 반영 (player_view.py)
+- 목표 도달 시 `continue`로 프런티어 탐색 진입 (target_idx 증가 건너뜀)
+
+**기타:**
+- 맵 데이터 업데이트 (흑해골굴 1~9굴)
+- 빌드/배포 설정 업데이트
+
+**수정된 파일:**
+- `src/player/obstacle_avoidance.py` - BFS came_from + 방향 점수 수정
+- `src/player/simple_pathfinder.py` - 경로 인덱스 추적 수정
+- `src/ui/player_view.py` - 전체맵핑 안정화
+- `src/utils/config.py` - APP_VERSION 1.0.110 → 1.0.111
+
+---
+
 ### 2026-02-07: 특화모드 저장 버그 수정 + 이미지 삭제 기능 (v1.0.110)
 
 **버그:** 저장 버튼 클릭 시 messagebox가 GameModeDialog 뒤에 숨어 프로그램이 멈춘 것처럼 보임
@@ -1169,7 +1196,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-07 (특화모드 저장 버그 수정 + 이미지 삭제 기능)
+- 마지막 업데이트: 2026-02-08 (경로탐색 버그 3건 수정 + 전체맵핑 안정화)
 
 ## 업데이트 규칙
 
