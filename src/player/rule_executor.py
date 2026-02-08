@@ -1562,13 +1562,10 @@ class RuleExecutor:
         search_region: Optional[list] = None,
     ) -> Optional[tuple]:
         """
-        화면에서 이미지 찾기 (강화된 매칭)
+        화면에서 이미지 찾기 (마스크 매칭)
 
-        여러 매칭 기법을 조합하여 더 정확한 이미지 인식을 제공합니다:
-        1. 그레이스케일 매칭 (색상 변화에 강함)
-        2. 엣지 기반 매칭 (밝기 변화에 강함)
-        3. 다중 스케일 매칭 (크기 변화에 강함)
-        4. 특징점 매칭 (부분 가림/변형에 강함)
+        Otsu 이진화로 전경/배경을 분리하고, 전경 픽셀만 비교하여
+        배경 변화에 강한 정확한 매칭을 수행합니다.
 
         search_region: 검색 영역 제한 [x1, y1, x2, y2] 또는 None (전체 화면)
         """
@@ -1656,25 +1653,11 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # 1차: 마스크 매칭 (배경 무시, 글자만 비교)
+            # 마스크 매칭 (Otsu 이진화로 전경만 비교)
             from ..analyzer.template_matcher import TemplateMatcher
             mask_matcher = TemplateMatcher()
             result = mask_matcher.match_binary(screenshot_bgr, image_path, threshold=confidence)
             logger.debug(f"[이미지 검색] 마스크매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
-
-            if result.found and result.confidence >= confidence:
-                final_x = result.center_x + region_offset_x
-                final_y = result.center_y + region_offset_y
-                return (final_x, final_y, result.confidence)
-
-            # 중지 체크
-            if self._stop_event.is_set():
-                return None
-
-            # 2차: 기존 강화 매처 폴백
-            matcher = get_enhanced_matcher()
-            result = matcher.match_with_roi(screenshot_bgr, image_path, confidence)
-            logger.debug(f"[이미지 검색] ROI매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
 
             if result.found and result.confidence >= confidence:
                 final_x = result.center_x + region_offset_x
