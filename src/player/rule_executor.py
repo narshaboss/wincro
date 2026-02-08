@@ -2041,7 +2041,7 @@ class RuleExecutor:
 
         wait_count = 0
         # 안전 타임아웃: 최대 모니터링 시간 (기본 2시간, 무한 행 방지)
-        max_monitoring_seconds = getattr(rule, 'monitoring_timeout', 7200) or 7200
+        max_monitoring_seconds = getattr(rule, 'monitoring_timeout', 14400) or 14400
         monitoring_start = time.time()
 
         while True:
