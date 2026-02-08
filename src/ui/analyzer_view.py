@@ -90,17 +90,16 @@ class ScreenRegionSelector(tk.Toplevel):
 
         # 기존 범위가 있으면 빨간색으로 표시
         if existing_region and len(existing_region) == 4:
-            x1, y1, x2, y2 = existing_region
-            # 빨간색 테두리 (기존 범위) - 굵은 선
-            for offset in range(5):
-                self._canvas.create_rectangle(
-                    x1 - offset, y1 - offset, x2 + offset, y2 + offset,
-                    outline="#ff0000", width=2, fill="", dash=(8, 4)
-                )
+            ex1, ey1, ex2, ey2 = existing_region
+            # 빨간색 테두리 (기존 범위) - 단일 사각형
+            self._canvas.create_rectangle(
+                ex1, ey1, ex2, ey2,
+                outline="#ff0000", width=3, fill="", dash=(8, 4)
+            )
             # 기존 범위 라벨
             self._canvas.create_text(
-                x1, y1 - 20,
-                text=f"기존 범위: ({x1}, {y1}) ~ ({x2}, {y2})",
+                ex1, ey1 - 20,
+                text=f"기존 범위: ({ex1}, {ey1}) ~ ({ex2}, {ey2})",
                 font=("맑은 고딕", 13, "bold"),
                 fill="#ff0000",
                 anchor="sw"
@@ -127,14 +126,10 @@ class ScreenRegionSelector(tk.Toplevel):
                 fill="white"
             )
 
-        # 이벤트 바인딩 - 창과 캔버스 모두에 바인딩
+        # 이벤트 바인딩
         self._canvas.bind("<ButtonPress-1>", self._on_mouse_down)
         self._canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self._canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
-        self._canvas.bind("<Escape>", self._on_escape)
-        self.bind("<ButtonPress-1>", self._on_mouse_down)
-        self.bind("<B1-Motion>", self._on_mouse_drag)
-        self.bind("<ButtonRelease-1>", self._on_mouse_up)
         self.bind("<Escape>", self._on_escape)
         self.bind("<Key>", self._on_key)  # 모든 키 이벤트
 

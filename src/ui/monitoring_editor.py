@@ -1402,7 +1402,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="w")
 
         ctk.CTkLabel(
-            main, text="이 이미지가 화면에 있어야 점프 액션이 실행됩니다.\n조건 없음 선택 시 항상 점프합니다.",
+            main, text="이 이미지가 화면에 없어야 점프 액션이 실행됩니다.\n조건 없음 선택 시 항상 점프합니다.",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
             justify="left",

@@ -2172,11 +2172,11 @@ class RuleExecutor:
                     if condition_image and Path(condition_image).exists():
                         condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
                         if condition_result:
-                            logger.info(f"{_GREEN}  ✓ 점프 조건 충족: {Path(condition_image).name} 발견 (인식률:{condition_confidence:.0%}){_RESET}")
-                            condition_met = True
-                        else:
-                            logger.info(f"{_YELLOW}  ✗ 점프 조건 미충족: {Path(condition_image).name} 없음 → 모니터링 복귀{_RESET}")
+                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} ({condition_confidence:.0%}) → 점프 안함, 모니터링 복귀{_RESET}")
                             condition_met = False
+                        else:
+                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} → 점프 실행{_RESET}")
+                            condition_met = True
 
                     # 해당 부모 액션 + 자식들 실행 (goto_index가 유효하고 조건 충족 시)
                     if goto_index >= 0 and condition_met:
