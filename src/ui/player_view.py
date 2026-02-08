@@ -1661,18 +1661,30 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         all_rules_flat = flatten_rules(self._plan.initial_rules)
 
-        # 클릭한 규칙의 인덱스 찾기 (rule_id로 비교 - 객체 동일성 대신)
+        # 클릭한 규칙의 인덱스 찾기 (객체 동일성으로 비교 - rule_id 중복 문제 방지)
         rule_index = -1
         logger.info(f"[부분실행] 검색할 rule_id={rule.rule_id}, action_type={rule.action_type}, 전체 {len(all_rules_flat)}개 규칙")
-        # 처음 10개와 마지막 5개 rule_id 표시 (디버그용)
-        if len(all_rules_flat) > 0:
-            preview = [f"{r.rule_id}:{r.action_type}" for r in all_rules_flat[:10]]
-            logger.info(f"[부분실행] 규칙 목록(앞10개): {preview}")
         for idx, r in enumerate(all_rules_flat):
-            if r.rule_id == rule.rule_id:
+            if r is rule:
                 rule_index = idx
-                logger.info(f"[부분실행] 원본에서 찾음: idx={idx}, 해당액션={r.action_type}")
+                logger.info(f"[부분실행] 원본에서 찾음(객체동일성): idx={idx}, 해당액션={r.action_type}")
                 break
+        # 객체 동일성 실패 시 rule_id 폴백 (모든 동일 ID 중 가장 적합한 것 선택)
+        if rule_index < 0:
+            candidates = [(idx, r) for idx, r in enumerate(all_rules_flat) if r.rule_id == rule.rule_id]
+            if len(candidates) == 1:
+                rule_index = candidates[0][0]
+                logger.info(f"[부분실행] rule_id로 찾음: idx={rule_index}")
+            elif len(candidates) > 1:
+                # 중복 ID: action_type과 description으로 구별
+                for idx, r in candidates:
+                    if r.action_type == rule.action_type and r.description == rule.description:
+                        rule_index = idx
+                        logger.info(f"[부분실행] 중복ID 중 매칭: idx={idx}, type={r.action_type}")
+                        break
+                if rule_index < 0:
+                    rule_index = candidates[0][0]
+                    logger.warning(f"[부분실행] 중복ID 첫번째 사용: idx={rule_index}")
 
         if rule_index < 0:
             # 리스트에 없으면 해당 규칙만 실행
@@ -1732,13 +1744,32 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 # 리로드된 플랜으로 규칙 재구성
                 all_rules_flat = flatten_rules(reloaded_plan.initial_rules)
                 logger.info(f"[부분실행] 리로드 후 전체 {len(all_rules_flat)}개 규칙")
-                # 인덱스 다시 찾기 (초기화 후 검색)
-                rule_index = -1  # 초기화 추가
-                for idx, r in enumerate(all_rules_flat):
-                    if r.rule_id == rule.rule_id:
-                        rule_index = idx
-                        logger.info(f"[부분실행] 리로드 후 찾음: idx={idx}, 해당액션={r.action_type}")
-                        break
+                # 인덱스 다시 찾기 (중복 ID 대응: 원래 인덱스를 힌트로 활용)
+                original_rule_index = rule_index  # 리로드 전 인덱스 보존
+                rule_index = -1
+                candidates = [(idx, r) for idx, r in enumerate(all_rules_flat) if r.rule_id == rule.rule_id]
+                if len(candidates) == 1:
+                    rule_index = candidates[0][0]
+                    logger.info(f"[부분실행] 리로드 후 찾음: idx={rule_index}")
+                elif len(candidates) > 1:
+                    # 중복 ID: 원래 인덱스 위치의 규칙 우선 사용
+                    if original_rule_index >= 0 and original_rule_index < len(all_rules_flat):
+                        r = all_rules_flat[original_rule_index]
+                        if r.rule_id == rule.rule_id:
+                            rule_index = original_rule_index
+                            logger.info(f"[부분실행] 리로드 후 원래인덱스 사용: idx={rule_index}")
+                    # 원래 인덱스가 안 맞으면 action_type+description으로 매칭
+                    if rule_index < 0:
+                        for idx, r in candidates:
+                            if r.action_type == rule.action_type and r.description == rule.description:
+                                rule_index = idx
+                                logger.info(f"[부분실행] 리로드 후 속성매칭: idx={idx}")
+                                break
+                    if rule_index < 0:
+                        rule_index = candidates[0][0]
+                        logger.warning(f"[부분실행] 리로드 후 중복ID 첫번째 사용: idx={rule_index}")
+                elif len(candidates) == 0:
+                    logger.warning(f"[부분실행] 리로드 후 rule_id={rule.rule_id} 못찾음")
                 if rule_index >= 0:
                     import copy
                     rules_to_run = []
@@ -2506,6 +2537,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _add_text_action(self):
         """텍스트 입력 액션 추가"""
+        import uuid
         dialog = ctk.CTkInputDialog(
             text="입력할 텍스트를 입력하세요:",
             title="텍스트 액션 추가",
@@ -2514,7 +2546,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         if text:
             new_rule = AutomationRule(
-                rule_id=f"rule_{len(self._plan.initial_rules):04d}",
+                rule_id=f"rule_{uuid.uuid4().hex[:8]}",
                 action_type="type",
                 action_text=text,
                 wait_after=0.5,
@@ -2526,12 +2558,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _add_key_action(self):
         """키 입력 액션 추가"""
+        import uuid
         dialog = KeyInputDialog(self)
         key = dialog.get_key()
 
         if key:
             new_rule = AutomationRule(
-                rule_id=f"rule_{len(self._plan.initial_rules):04d}",
+                rule_id=f"rule_{uuid.uuid4().hex[:8]}",
                 action_type="hotkey",
                 action_keys=[key.lower().strip()],
                 wait_after=0.5,
@@ -2543,6 +2576,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
+        import uuid
         from tkinter import simpledialog
 
         # X 좌표 입력
@@ -2568,7 +2602,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
 
         new_rule = AutomationRule(
-            rule_id=f"rule_{len(self._plan.initial_rules):04d}",
+            rule_id=f"rule_{uuid.uuid4().hex[:8]}",
             action_type="click",
             action_x=x,
             action_y=y,
@@ -2608,7 +2642,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             shutil.copy2(image_path, dest_path)
 
             new_rule = AutomationRule(
-                rule_id=f"rule_{len(self._plan.initial_rules):04d}",
+                rule_id=f"rule_{uuid.uuid4().hex[:8]}",
                 action_type="click",
                 target_image=str(dest_path),
                 wait_after=0.5,
@@ -2624,6 +2658,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _add_screenshot_action(self):
         """스크린샷 찍어서 이미지 액션으로 추가"""
+        import uuid
         from tkinter import filedialog, messagebox
         import pyautogui
         from pathlib import Path
@@ -2664,7 +2699,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
                 # 액션 추가
                 new_rule = AutomationRule(
-                    rule_id=f"rule_{len(self._plan.initial_rules):04d}",
+                    rule_id=f"rule_{uuid.uuid4().hex[:8]}",
                     action_type="click",
                     target_image=str(dest_path),
                     wait_after=0.5,

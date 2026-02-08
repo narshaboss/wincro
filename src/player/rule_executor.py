@@ -2120,27 +2120,7 @@ class RuleExecutor:
                         logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
                         self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
 
-                    # 점프 조건 이미지 체크 (모니터링 액션 실행 전에 먼저 확인)
-                    condition_image = watch.get('condition_image')
-                    condition_search_region = watch.get('condition_search_region')  # 조건 이미지 검색 범위
-                    condition_confidence = watch.get('condition_confidence', 0.65)  # 조건 이미지 인식률
-                    condition_met = True  # 조건 없으면 항상 충족
-                    if condition_image and Path(condition_image).exists():
-                        condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
-                        if condition_result:
-                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} ({condition_confidence:.0%}) → 액션+점프 건너뜀, 모니터링 대기{_RESET}")
-                            condition_met = False
-                        else:
-                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} → 액션+점프 실행{_RESET}")
-                            condition_met = True
-
-                    # 조건 미충족 시 모니터링 액션+점프 모두 건너뜀
-                    if not condition_met:
-                        wait_count = 0
-                        time.sleep(0.5)  # 즉시 재감지 방지
-                        break  # 감시 루프 탈출, 다시 검색
-
-                    # 모니터링 액션들 순차 실행 (monitor_actions 리스트)
+                    # 모니터링 액션들 순차 실행 (monitor_actions 리스트) - 조건과 무관하게 항상 실행
                     monitor_actions = watch.get('monitor_actions', [])
                     # 하위 호환: 단수형 monitor_action도 지원
                     if not monitor_actions and watch.get('monitor_action'):
@@ -2201,6 +2181,26 @@ class RuleExecutor:
                     # 중지 체크 - 모니터링 액션 후 goto 실행 전
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "실행 중지됨", start_time)
+
+                    # 점프 조건 이미지 체크 (모니터링 액션 실행 후, 점프 전에 확인)
+                    condition_image = watch.get('condition_image')
+                    condition_search_region = watch.get('condition_search_region')
+                    condition_confidence = watch.get('condition_confidence', 0.65)
+                    condition_met = True  # 조건 없으면 항상 충족
+                    if condition_image and Path(condition_image).exists():
+                        condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
+                        if condition_result:
+                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} ({condition_confidence:.0%}) → 점프 건너뜀, 모니터링 대기{_RESET}")
+                            condition_met = False
+                        else:
+                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} → 점프 실행{_RESET}")
+                            condition_met = True
+
+                    # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
+                    if not condition_met:
+                        wait_count = 0
+                        time.sleep(3.0)  # 재감지 쿨다운 (같은 감시 이미지가 계속 있을 때 무한루프 방지)
+                        break  # 감시 루프 탈출, 다시 검색
 
                     # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때)
                     if goto_index >= 0:

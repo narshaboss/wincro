@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable, Tuple
 from dataclasses import dataclass
 import threading
+import uuid
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
@@ -564,7 +565,7 @@ class VideoAnalyzer:
             search_radius = 120  # 클릭 위치 중심 120픽셀 반경에서만 검색
 
         rule = AutomationRule(
-            rule_id=f"rule_{index:04d}",
+            rule_id=f"rule_{uuid.uuid4().hex[:8]}",
             rule_type=RuleType.FIXED_SEQUENCE.value,
             description=desc,
             action_type=action_type,
