@@ -97,6 +97,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 "goto_index": w.get("goto_index", 0),
                 "search_region": w.get("search_region"),
                 "monitor_actions": monitor_actions,
+                "confidence": w.get("confidence", 0.65),  # 감시 이미지별 인식률
                 "condition_image": w.get("condition_image"),  # 점프 조건 이미지
                 "condition_search_region": w.get("condition_search_region"),  # 조건 이미지 검색 범위
                 "condition_confidence": w.get("condition_confidence", 0.80),  # 조건 이미지 인식률
@@ -1279,6 +1280,40 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             command=clear_region,
         ).pack(side="left")
 
+        # 인식률 설정 줄
+        row_conf = ctk.CTkFrame(detail_frame, fg_color="transparent")
+        row_conf.pack(fill="x", pady=(0, 5))
+
+        ctk.CTkLabel(
+            row_conf, text="인식률:",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", padx=(0, 5))
+
+        watch_conf = watch.get("confidence", 0.65)
+        conf_label = ctk.CTkLabel(
+            row_conf, text=f"{int(watch_conf * 100)}%",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["accent"],
+            width=35,
+        )
+        conf_label.pack(side="left", padx=(0, 5))
+
+        def on_conf_change(val, i=idx, lbl=conf_label):
+            self._watches_data[i]["confidence"] = float(val)
+            lbl.configure(text=f"{int(float(val) * 100)}%")
+
+        conf_slider = ctk.CTkSlider(
+            row_conf, from_=0.3, to=1.0, width=120, height=16,
+            number_of_steps=70,
+            button_color=COLORS["accent"],
+            button_hover_color=COLORS["accent_hover"],
+            progress_color=COLORS["accent"],
+            command=on_conf_change,
+        )
+        conf_slider.set(watch_conf)
+        conf_slider.pack(side="left")
+
         # 모니터링 액션 목록
         row3 = ctk.CTkFrame(detail_frame, fg_color="transparent")
         row3.pack(fill="x", pady=(0, 5))
@@ -1365,7 +1400,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _add_watch(self):
         """감시 항목 추가"""
         new_idx = len(self._watches_data)
-        self._watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": [], "condition_image": None, "condition_search_region": None, "condition_confidence": 0.80})
+        self._watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": [], "confidence": 0.65, "condition_image": None, "condition_search_region": None, "condition_confidence": 0.80})
         self._watch_collapsed[new_idx] = False
         self._refresh_watch_list()
 
@@ -1626,6 +1661,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     "goto_index": w.get("goto_index", 0),
                     "search_region": w.get("search_region"),
                     "monitor_actions": monitor_actions,
+                    "confidence": w.get("confidence", 0.65),  # 감시 이미지별 인식률
                     "condition_image": w.get("condition_image"),  # 점프 조건 이미지
                     "condition_search_region": w.get("condition_search_region"),  # 조건 이미지 검색 범위
                     "condition_confidence": w.get("condition_confidence", 0.80),  # 조건 이미지 인식률

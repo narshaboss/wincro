@@ -2089,8 +2089,8 @@ class RuleExecutor:
                     continue
                 watch_name = Path(watch_image).name
                 search_region = watch.get('search_region')
-                # rule의 confidence 통일 사용 (watch별 개별 설정 제거됨)
-                watch_confidence = confidence
+                # watch별 개별 인식률 사용, 없으면 rule의 confidence 폴백
+                watch_confidence = watch.get('confidence', confidence)
 
                 # search_radius가 있고 search_region이 없으면 변환
                 watch_search_radius = watch.get('search_radius', 0)
