@@ -2272,7 +2272,8 @@ class RuleExecutor:
                                 x2 = min(screen_w, watch_center_x + watch_search_radius)
                                 y2 = min(screen_h, watch_center_y + watch_search_radius)
                                 search_region = [x1, y1, x2, y2]
-                        recheck_result = self._find_image_on_screen(watch_image, confidence, search_region=search_region)
+                        recheck_confidence = watch.get('confidence', confidence)
+                        recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
                         if recheck_result:
                             recheck_watch_found = True
                             logger.info(f"{_YELLOW}{self._step_prefix}⚡ 감시 이미지 뒤늦게 발견! [{Path(watch_image).name}] - 최종 이미지 무시, 모니터링 계속{_RESET}")

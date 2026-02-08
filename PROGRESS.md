@@ -99,6 +99,19 @@
 
 ## 버그 수정 이력
 
+### 2026-02-08: 인식률 키보드 조절 + 재감지 confidence 버그 수정 (v1.0.119)
+
+**변경 1 - 키보드 조절:** 감시 이미지/조건 이미지 인식률 슬라이더에 키보드 좌우 화살표 지원 (1%씩 미세 조절).
+
+**변경 2 - 재감지 버그:** 최종 이미지 감지 후 감시 이미지 재감지 시 watch별 개별 confidence를 무시하고 rule 기본값만 사용하던 버그 수정.
+
+**수정된 파일:**
+- `src/ui/monitoring_editor.py` - 슬라이더 Left/Right 키바인딩 추가 (감시+조건 모두)
+- `src/player/rule_executor.py` - recheck 시 watch.get('confidence', confidence) 사용
+- `src/utils/config.py` - APP_VERSION 1.0.118 → 1.0.119
+
+---
+
 ### 2026-02-08: 감시 이미지별 인식률 UI 복원 (v1.0.118)
 
 **변경:** v1.0.53에서 제거된 감시 이미지별 인식률(confidence) 슬라이더를 모니터링 편집기에 복원. 각 감시 항목마다 30~100% 범위로 개별 인식률 설정 가능.

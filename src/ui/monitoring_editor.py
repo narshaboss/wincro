@@ -1314,6 +1314,22 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         conf_slider.set(watch_conf)
         conf_slider.pack(side="left")
 
+        # 키보드 좌우 화살표로 1%씩 조절
+        def on_conf_key(event, slider=conf_slider, i=idx, lbl=conf_label):
+            current = slider.get()
+            if event.keysym == "Left":
+                new_val = max(0.3, current - 0.01)
+            elif event.keysym == "Right":
+                new_val = min(1.0, current + 0.01)
+            else:
+                return
+            slider.set(new_val)
+            self._watches_data[i]["confidence"] = new_val
+            lbl.configure(text=f"{int(new_val * 100)}%")
+
+        conf_slider.bind("<Left>", on_conf_key)
+        conf_slider.bind("<Right>", on_conf_key)
+
         # 모니터링 액션 목록
         row3 = ctk.CTkFrame(detail_frame, fg_color="transparent")
         row3.pack(fill="x", pady=(0, 5))
@@ -1614,6 +1630,17 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         def update_conf_label(*args):
             conf_label.configure(text=f"{int(conf_var.get())}%")
         conf_var.trace_add("write", update_conf_label)
+
+        # 키보드 좌우 화살표로 1%씩 조절
+        def on_cond_conf_key(event):
+            current = conf_var.get()
+            if event.keysym == "Left":
+                conf_var.set(max(30, current - 1))
+            elif event.keysym == "Right":
+                conf_var.set(min(100, current + 1))
+
+        conf_slider.bind("<Left>", on_cond_conf_key)
+        conf_slider.bind("<Right>", on_cond_conf_key)
 
         # 저장/취소 버튼
         bottom_frame = ctk.CTkFrame(main, fg_color="transparent")
