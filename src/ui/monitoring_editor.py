@@ -99,7 +99,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 "monitor_actions": monitor_actions,
                 "condition_image": w.get("condition_image"),  # 점프 조건 이미지
                 "condition_search_region": w.get("condition_search_region"),  # 조건 이미지 검색 범위
-                "condition_confidence": w.get("condition_confidence", 0.65),  # 조건 이미지 인식률
+                "condition_confidence": w.get("condition_confidence", 0.80),  # 조건 이미지 인식률
             })
 
         # 부모 액션 목록 (드롭다운용)
@@ -1365,7 +1365,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _add_watch(self):
         """감시 항목 추가"""
         new_idx = len(self._watches_data)
-        self._watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": [], "condition_image": None, "condition_search_region": None, "condition_confidence": 0.65})
+        self._watches_data.append({"image": None, "goto_index": 0, "search_region": None, "monitor_actions": [], "condition_image": None, "condition_search_region": None, "condition_confidence": 0.80})
         self._watch_collapsed[new_idx] = False
         self._refresh_watch_list()
 
@@ -1377,7 +1377,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         watch = self._watches_data[watch_idx]
         current_condition = watch.get("condition_image")
         current_region = watch.get("condition_search_region")
-        current_confidence = watch.get("condition_confidence", 0.65)
+        current_confidence = watch.get("condition_confidence", 0.80)
 
         # 조건 설정 다이얼로그
         dialog = ctk.CTkToplevel(self)
@@ -1628,7 +1628,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     "monitor_actions": monitor_actions,
                     "condition_image": w.get("condition_image"),  # 점프 조건 이미지
                     "condition_search_region": w.get("condition_search_region"),  # 조건 이미지 검색 범위
-                    "condition_confidence": w.get("condition_confidence", 0.65),  # 조건 이미지 인식률
+                    "condition_confidence": w.get("condition_confidence", 0.80),  # 조건 이미지 인식률
                 })
 
         has_checkbox = self._is_monitoring_var.get()

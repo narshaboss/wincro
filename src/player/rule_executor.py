@@ -2126,8 +2126,11 @@ class RuleExecutor:
                     if not monitor_actions and watch.get('monitor_action'):
                         monitor_actions = [watch.get('monitor_action')]
 
-                    # 디버그: monitor_actions 확인
-                    logger.debug(f"[모니터링] monitor_actions 개수: {len(monitor_actions)}")
+                    # monitor_actions 개수 확인 (디버깅용)
+                    if monitor_actions:
+                        logger.info(f"{_CYAN}  📋 모니터링 액션 {len(monitor_actions)}개 실행 시작{_RESET}")
+                    else:
+                        logger.info(f"{_YELLOW}  ⚠ 모니터링 액션 없음 (설정된 액션 0개){_RESET}")
 
                     for monitor_action in monitor_actions:
                         if self._stop_event.is_set():
@@ -2185,15 +2188,16 @@ class RuleExecutor:
                     # 점프 조건 이미지 체크 (모니터링 액션 실행 후, 점프 전에 확인)
                     condition_image = watch.get('condition_image')
                     condition_search_region = watch.get('condition_search_region')
-                    condition_confidence = watch.get('condition_confidence', 0.65)
+                    condition_confidence = watch.get('condition_confidence', 0.80)
                     condition_met = True  # 조건 없으면 항상 충족
                     if condition_image and Path(condition_image).exists():
                         condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
                         if condition_result:
-                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} ({condition_confidence:.0%}) → 점프 건너뜀, 모니터링 대기{_RESET}")
+                            _, _, actual_conf = condition_result
+                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} (실제 {actual_conf:.0%}, 설정 {condition_confidence:.0%}) → 점프 건너뜀, 모니터링 대기{_RESET}")
                             condition_met = False
                         else:
-                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} → 점프 실행{_RESET}")
+                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} (설정 {condition_confidence:.0%}) → 점프 실행{_RESET}")
                             condition_met = True
 
                     # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
