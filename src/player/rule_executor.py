@@ -478,6 +478,13 @@ class RuleExecutor:
             logger.warning("이미 실행 중입니다")
             return False
 
+        # 이전 실행 스레드가 아직 살아있으면 종료 대기
+        if self._execution_thread and self._execution_thread.is_alive():
+            self._execution_thread.join(timeout=5.0)
+            if self._execution_thread.is_alive():
+                logger.warning("이전 실행 스레드가 종료되지 않아 시작할 수 없습니다")
+                return False
+
         self._current_plan = plan
         self._results.clear()
         self._stop_event.clear()
@@ -521,6 +528,7 @@ class RuleExecutor:
         """실행 일시정지"""
         try:
             self._pause_event.clear()
+            self._state_before_pause = self._state
             self._state = ExecutionState.PAUSED
             try:
                 self._update_progress("일시정지됨")
@@ -534,10 +542,7 @@ class RuleExecutor:
         """실행 재개"""
         try:
             self._pause_event.set()
-            if self._progress.initial_completed < self._progress.initial_total:
-                self._state = ExecutionState.RUNNING_INITIAL
-            else:
-                self._state = ExecutionState.MONITORING
+            self._state = getattr(self, '_state_before_pause', ExecutionState.RUNNING_INITIAL)
             try:
                 self._update_progress("실행 재개")
             except Exception as e:
@@ -737,7 +742,9 @@ class RuleExecutor:
                     is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
                     logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
                     if is_monitoring:
+                        self._state = ExecutionState.MONITORING
                         result = self._execute_monitoring_mode(rule, all_rules, i, step_num=step_num)
+                        self._state = ExecutionState.RUNNING_INITIAL
                         self._results.append(result)
                     else:
                         # 다음 규칙의 타겟 이미지 (확인용)
@@ -2136,9 +2143,9 @@ class RuleExecutor:
                                 action_result = self._execute_monitor_action(monitor_action, confidence)
                                 if action_result:
                                     if repeat_count > 1:
-                                        logger.info(f"{_GREEN}{self._step_prefix}✓ 모니터링 액션 완료 ({repeat_i+1}/{repeat_count}){_RESET}")
+                                        logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 액션 완료 ({repeat_i+1}/{repeat_count}){_RESET}")
                                     else:
-                                        logger.info(f"{_GREEN}{self._step_prefix}✓ 모니터링 액션 완료{_RESET}")
+                                        logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 액션 완료{_RESET}")
                                 else:
                                     action_type = monitor_action.get('type', '알수없음')
                                     if repeat_count > 1:
@@ -2192,7 +2199,9 @@ class RuleExecutor:
                     # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
                     if not condition_met:
                         wait_count = 0
-                        time.sleep(3.0)  # 재감지 쿨다운
+                        # 쿨다운 중에도 stop 즉시 반응
+                        if self._stop_event.wait(timeout=3.0):
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
                         break  # 감시 루프 탈출, 다시 검색
 
                     # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때)
@@ -2219,12 +2228,13 @@ class RuleExecutor:
                                 if not jump_result.success:
                                     logger.warning(f"  점프 액션 실패: {jump_result.message}")
                                     break
-                                # 대기 시간 적용
+                                # 대기 시간 적용 (stop 즉시 반응)
                                 wait_time = getattr(exec_rule, 'wait_after', 0.5)
                                 if wait_time > 0:
-                                    time.sleep(wait_time)
+                                    if self._stop_event.wait(timeout=wait_time):
+                                        break
                             else:
-                                logger.info(f"{_GREEN}{self._step_prefix}✓ 점프 액션 완료 → 모니터링 복귀{_RESET}")
+                                logger.info(f"{_GREEN}{step_prefix}✓ 점프 액션 완료 → 모니터링 복귀{_RESET}")
                         else:
                             logger.error(f"  잘못된 액션 인덱스: {goto_index} (전체 액션 수: {len(goto_rules)})")
                     # goto_index가 -1이면 점프 없이 모니터링 액션만 실행 (정상 케이스)
@@ -2239,7 +2249,7 @@ class RuleExecutor:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result
-                    logger.info(f"{_YELLOW}{self._step_prefix}최종 이미지 감지 [{final_name}] ({int(final_conf * 100)}%) - 감시이미지 재확인 대기{_RESET}")
+                    logger.info(f"{_YELLOW}{step_prefix}최종 이미지 감지 [{final_name}] ({int(final_conf * 100)}%) - 감시이미지 재확인 대기{_RESET}")
                     time.sleep(0.5)
                     # 감시이미지 재확인: 뒤늦게 나타난 감시이미지가 있으면 감시 우선 처리
                     recheck_watch_found = False
@@ -2265,19 +2275,23 @@ class RuleExecutor:
                         recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
                         if recheck_result:
                             recheck_watch_found = True
-                            logger.info(f"{_YELLOW}{self._step_prefix}⚡ 감시 이미지 뒤늦게 발견! [{Path(watch_image).name}] - 최종 이미지 무시, 모니터링 계속{_RESET}")
+                            logger.info(f"{_YELLOW}{step_prefix}⚡ 감시 이미지 뒤늦게 발견! [{Path(watch_image).name}] - 최종 이미지 무시, 모니터링 계속{_RESET}")
                             break
                     if not recheck_watch_found:
-                        logger.info(f"{_GREEN}{self._step_prefix}✓ 최종 이미지 확정! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
+                        logger.info(f"{_GREEN}{step_prefix}✓ 최종 이미지 확정! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
                         return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
                     # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
                     wait_count = 0
                     continue
+            else:
+                # 감시 이미지 처리 완료, 바로 다음 반복으로
+                continue
 
             # 3. 대기
             wait_count += 1
             if wait_count % 20 == 1:  # 10초마다 로그
-                logger.info(f"{_YELLOW}{step_prefix}모니터링 대기 중... {wait_count * 0.5:.0f}초{_RESET}")
+                elapsed = time.time() - monitoring_start
+                logger.info(f"{_YELLOW}{step_prefix}모니터링 대기 중... {elapsed:.0f}초{_RESET}")
             time.sleep(0.5)
 
     def _execute_monitor_action(
@@ -2301,8 +2315,8 @@ class RuleExecutor:
         typing_delay = monitor_action.get('typing_delay', 0.1)
         typing_delay_range = monitor_action.get('typing_delay_range', 0.05)
 
-        # 이미지 검색 옵션 (rule.confidence 통일 사용)
-        search_confidence = confidence
+        # 이미지 검색 옵션 (monitor_action 개별 인식률 우선, 없으면 rule confidence 폴백)
+        search_confidence = monitor_action.get('confidence', confidence)
         search_radius = monitor_action.get('search_radius', 0) or 0
 
         try:

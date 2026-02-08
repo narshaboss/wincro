@@ -99,6 +99,29 @@
 
 ## 버그 수정 이력
 
+### 2026-02-08: 모니터링 모드 버그 9건 일괄 수정 (v1.0.124)
+
+**4개 에이전트 병렬 심층 분석으로 발견된 버그 전량 수정.**
+
+**Major 수정 5건:**
+1. **감시 처리 후 불필요한 0.5초 대기**: watch 처리 완료 후 대기 구간으로 빠지는 문제 → `continue` 추가
+2. **조건 미충족 3초 쿨다운 중 stop 불가**: `time.sleep(3.0)` → `self._stop_event.wait(timeout=3.0)` 변경
+3. **monitor_action 개별 confidence 무시**: rule 전체 confidence만 사용 → `monitor_action.get('confidence', confidence)` 적용
+4. **ExecutionState.MONITORING 미설정**: 모니터링 실행 중에도 RUNNING_INITIAL 상태 → 진입 시 MONITORING 설정, 종료 시 복원
+5. **stop() 후 재진입 경쟁 상태**: 이전 스레드 alive 체크 없이 새 스레드 시작 → join(5초) 후 진행
+
+**Minor 수정 4건:**
+6. **대기 시간 로그 부정확**: `wait_count * 0.5` → `time.time() - monitoring_start` 실제 경과 시간 사용
+7. **step_prefix 혼용**: `self._step_prefix`와 지역변수 `step_prefix` 혼용 → `step_prefix`로 통일
+8. **goto 점프 후 sleep이 stop 무시**: `time.sleep(wait_time)` → `self._stop_event.wait(timeout=wait_time)` 변경
+9. **resume() 상태 복원 오류**: 일시정지 전 상태 저장(`_state_before_pause`) 후 resume 시 정확히 복원
+
+**수정된 파일:**
+- `src/player/rule_executor.py` - 모니터링 모드 전반 (9건)
+- `src/utils/config.py` - APP_VERSION 1.0.123 → 1.0.124
+
+---
+
 ### 2026-02-08: 이미지 오인식 수정 - 2차 매처 폴백 제거 (v1.0.123)
 
 **문제:** 감시 이미지가 화면에 없는데도 89%로 발견됨. 1차 마스크 매칭(match_binary)이 65%로 정확히 "없다"고 판정했지만, 2차 강화 매처(match_adaptive)가 6가지 방법 + 임계값 20% 하향으로 억지로 찾아내서 오인식 발생.
