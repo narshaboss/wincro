@@ -2051,6 +2051,8 @@ class RuleExecutor:
         # 안전 타임아웃: 최대 모니터링 시간 (기본 2시간, 무한 행 방지)
         max_monitoring_seconds = getattr(rule, 'monitoring_timeout', 14400) or 14400
         monitoring_start = time.time()
+        # 조건 대기 중인 watch 추적 (모니터링 액션 중복 실행 방지)
+        condition_pending_watch = None  # 조건 미충족으로 대기 중인 watch 이미지 경로
 
         while True:
             # 안전 타임아웃 체크
@@ -2104,29 +2106,38 @@ class RuleExecutor:
                     watch_x, watch_y, found_conf = watch_result
                     conf_pct = int(found_conf * 100)
                     has_condition = bool(watch.get('condition_image'))
-                    if goto_index >= 0:
-                        if has_condition:
-                            logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행 후 조건 확인{_RESET}")
+
+                    # 조건 대기 중인 watch면 모니터링 액션 건너뛰고 조건만 재확인
+                    skip_monitor_actions = (condition_pending_watch == watch_image)
+
+                    if skip_monitor_actions:
+                        logger.debug(f"  ⏳ 조건 대기 중 [{watch_name}] - 모니터링 액션 건너뛰고 조건 재확인")
+                    else:
+                        condition_pending_watch = None  # 새로운 watch이므로 초기화
+                        if goto_index >= 0:
+                            if has_condition:
+                                logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행 후 조건 확인{_RESET}")
+                            else:
+                                logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 액션 {goto_index + 1}로 점프{_RESET}")
+                            self._update_progress(f"감시 이미지 발견 → 액션 {goto_index + 1}")
                         else:
-                            logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 액션 {goto_index + 1}로 점프{_RESET}")
-                        self._update_progress(f"감시 이미지 발견 → 액션 {goto_index + 1}")
-                    else:
-                        logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
-                        self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
+                            logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
+                            self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
 
-                    # 모니터링 액션들 순차 실행 (monitor_actions 리스트) - 조건과 무관하게 항상 실행
-                    monitor_actions = watch.get('monitor_actions', [])
-                    # 하위 호환: 단수형 monitor_action도 지원
-                    if not monitor_actions and watch.get('monitor_action'):
-                        monitor_actions = [watch.get('monitor_action')]
+                    # 모니터링 액션들 순차 실행 (조건 대기 중이면 건너뜀)
+                    if not skip_monitor_actions:
+                        monitor_actions = watch.get('monitor_actions', [])
+                        # 하위 호환: 단수형 monitor_action도 지원
+                        if not monitor_actions and watch.get('monitor_action'):
+                            monitor_actions = [watch.get('monitor_action')]
 
-                    # monitor_actions 개수 확인 (디버깅용)
-                    if monitor_actions:
-                        logger.info(f"{_CYAN}  📋 모니터링 액션 {len(monitor_actions)}개 실행 시작{_RESET}")
-                    else:
-                        logger.info(f"{_YELLOW}  ⚠ 모니터링 액션 없음 (설정된 액션 0개){_RESET}")
+                        # monitor_actions 개수 확인 (디버깅용)
+                        if monitor_actions:
+                            logger.info(f"{_CYAN}  📋 모니터링 액션 {len(monitor_actions)}개 실행 시작{_RESET}")
+                        else:
+                            logger.info(f"{_YELLOW}  ⚠ 모니터링 액션 없음 (설정된 액션 0개){_RESET}")
 
-                    for monitor_action in monitor_actions:
+                    for monitor_action in ([] if skip_monitor_actions else monitor_actions):
                         if self._stop_event.is_set():
                             break
                         if monitor_action and monitor_action.get('type') and monitor_action.get('type') != '없음':
@@ -2199,10 +2210,14 @@ class RuleExecutor:
                     # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
                     if not condition_met:
                         wait_count = 0
+                        condition_pending_watch = watch_image  # 다음 루프에서 액션 건너뛰기
                         # 쿨다운 중에도 stop 즉시 반응
                         if self._stop_event.wait(timeout=3.0):
                             return self._make_result(rule, False, "실행 중지됨", start_time)
                         break  # 감시 루프 탈출, 다시 검색
+
+                    # 조건 충족 → 조건 대기 상태 해제
+                    condition_pending_watch = None
 
                     # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때)
                     if goto_index >= 0:
@@ -2243,6 +2258,10 @@ class RuleExecutor:
                     wait_count = 0
                     self._update_progress(f"{step_prefix}모니터링 복귀: {final_name} 대기 중")
                     break  # 감시 루프 탈출하고 처음부터 다시 검색
+
+            # 감시 이미지 미발견 → 조건 대기 상태 해제
+            if not watch_found:
+                condition_pending_watch = None
 
             # 2. 최종 이미지 검색 (감시이미지가 하나도 없을 때만)
             if not watch_found:
