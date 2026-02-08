@@ -2186,8 +2186,8 @@ class RuleExecutor:
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
                     # 점프 조건 이미지 체크 (모니터링 액션 실행 후, 점프 전에 확인)
-                    # 조건 이미지 발견 = 조건 충족 = 점프 실행
-                    # 조건 이미지 없음 = 조건 미충족 = 점프 대기
+                    # 조건 이미지 발견 = 점프 차단 (아직 조건 상태임)
+                    # 조건 이미지 없음 = 점프 실행 (조건 해소됨)
                     condition_image = watch.get('condition_image')
                     condition_search_region = watch.get('condition_search_region')
                     condition_confidence = watch.get('condition_confidence', 0.80)
@@ -2196,11 +2196,11 @@ class RuleExecutor:
                         condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
                         if condition_result:
                             _, _, actual_conf = condition_result
-                            logger.info(f"{_GREEN}  ✓ 조건 이미지 발견: {Path(condition_image).name} (실제 {actual_conf:.0%}, 설정 {condition_confidence:.0%}) → 조건 충족, 점프 실행{_RESET}")
-                            condition_met = True
-                        else:
-                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 없음: {Path(condition_image).name} (설정 {condition_confidence:.0%}) → 조건 미충족, 점프 대기{_RESET}")
+                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} (실제 {actual_conf:.0%}, 설정 {condition_confidence:.0%}) → 점프 대기{_RESET}")
                             condition_met = False
+                        else:
+                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} (설정 {condition_confidence:.0%}) → 점프 실행{_RESET}")
+                            condition_met = True
 
                     # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
                     if not condition_met:
