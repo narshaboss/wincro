@@ -2124,14 +2124,14 @@ class RuleExecutor:
                             logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
                             self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
 
-                    # 모니터링 액션들 순차 실행 (조건 대기 중이면 건너뜀)
-                    if not skip_monitor_actions:
-                        monitor_actions = watch.get('monitor_actions', [])
-                        # 하위 호환: 단수형 monitor_action도 지원
-                        if not monitor_actions and watch.get('monitor_action'):
-                            monitor_actions = [watch.get('monitor_action')]
+                    # 모니터링 액션들 가져오기
+                    monitor_actions = watch.get('monitor_actions', [])
+                    # 하위 호환: 단수형 monitor_action도 지원
+                    if not monitor_actions and watch.get('monitor_action'):
+                        monitor_actions = [watch.get('monitor_action')]
 
-                        # monitor_actions 개수 확인 (디버깅용)
+                    # 모니터링 액션 실행 (조건 대기 중이면 건너뜀)
+                    if not skip_monitor_actions:
                         if monitor_actions:
                             logger.info(f"{_CYAN}  📋 모니터링 액션 {len(monitor_actions)}개 실행 시작{_RESET}")
                         else:
@@ -2183,7 +2183,7 @@ class RuleExecutor:
                                 wait_after += random.uniform(-wait_range, wait_range)
                             time.sleep(max(0.05, wait_after))
 
-                    if monitor_actions:
+                    if not skip_monitor_actions and monitor_actions:
                         time.sleep(0.1)  # 모든 액션 완료 후 대기
 
                     # 중지 체크 - 모니터링 액션 후 goto 실행 전
