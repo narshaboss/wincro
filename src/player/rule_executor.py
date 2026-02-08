@@ -2113,9 +2113,13 @@ class RuleExecutor:
                     watch_found = True
                     watch_x, watch_y, found_conf = watch_result
                     conf_pct = int(found_conf * 100)
+                    has_condition = bool(watch.get('condition_image'))
                     if goto_index >= 0:
-                        logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 액션 {goto_index + 1}로 점프{_RESET}")
-                        self._update_progress(f"감시 이미지 발견 → 액션 {goto_index + 1} 실행")
+                        if has_condition:
+                            logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행 후 조건 확인{_RESET}")
+                        else:
+                            logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 액션 {goto_index + 1}로 점프{_RESET}")
+                        self._update_progress(f"감시 이미지 발견 → 액션 {goto_index + 1}")
                     else:
                         logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
                         self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
