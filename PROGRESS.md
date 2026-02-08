@@ -99,6 +99,28 @@
 
 ## 버그 수정 이력
 
+### 2026-02-09: 로그 개편 + ANSI 색상 통일 (v1.0.127)
+
+**로그 개편 (rule_executor.py):**
+- 저수준 마우스 로그(pynput, Win32, SendInput) 22건 → debug 강등
+- 사용자 중심 메시지 재작성 27건 (이모지→텍스트, 경로→파일명, 분:초 포맷)
+- ANSI 색상 적용: ✓ 성공(_GREEN), ⏳ 대기(_YELLOW), ✗ 에러(_RED), 헤더(_CYAN)
+- 불필요 로그 5건 삭제 (빈 줄, 중복 스킵 메시지 등)
+- 색상 오류 수정 7건 (_RED→_YELLOW 경고용, _YELLOW→_GREEN 성공용)
+
+**ANSI 색상 통일 (main_window.py, log_view.py):**
+- LogPanel, LogView, MiniPlayer 3곳에 ansi_red/ansi_cyan 태그 누락 수정
+- _parse_ansi() 파서에 91(빨강), 96(청록) 코드 파싱 추가
+- 4개 로그 표시 위치(에디터 LogPanel, LogView, 플레이 미니플레이어, 플레이 _append_log) 모두 동일 5색 지원
+
+**수정된 파일:**
+- `src/player/rule_executor.py` - 로그 ~50건 개편
+- `src/ui/main_window.py` - LogPanel/MiniPlayer ANSI 색상 태그+파서 수정
+- `src/ui/log_view.py` - LogView ANSI 색상 태그+파서 수정
+- `src/utils/config.py` - APP_VERSION 1.0.126 → 1.0.127
+
+---
+
 ### 2026-02-08: 모니터링 액션 중복 실행 + NameError 크래시 수정 (v1.0.126)
 
 **문제 1:** 조건 미충족 시 감시 이미지가 화면에 계속 있으면 매 루프마다 모니터링 액션 반복 실행.
@@ -1374,7 +1396,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-08 (부분실행 rule_id 중복 수정 + 모니터링 조건 순서 수정)
+- 마지막 업데이트: 2026-02-09 (로그 개편 + ANSI 색상 통일)
 
 ## 업데이트 규칙
 

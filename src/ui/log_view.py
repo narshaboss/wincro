@@ -156,9 +156,11 @@ class LogView(BaseView):
         self._log_text.tag_configure("TIMESTAMP", foreground="#81a1c1")
 
         # ANSI 색상 태그 (메시지 내 색상용)
-        self._log_text.tag_configure("ansi_green", foreground="#50fa7b")      # 초록 (액션 시작)
-        self._log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")     # 노랑 (성공)
-        self._log_text.tag_configure("ansi_pink", foreground="#ff79c6")       # 분홍 (중지/실패)
+        self._log_text.tag_configure("ansi_cyan", foreground="#8be9fd")       # 청록 (액션 번호)
+        self._log_text.tag_configure("ansi_green", foreground="#50fa7b")      # 초록 (성공)
+        self._log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")     # 노랑 (경고/대기)
+        self._log_text.tag_configure("ansi_pink", foreground="#ff79c6")       # 분홍 (중지)
+        self._log_text.tag_configure("ansi_red", foreground="#ff5555")        # 빨강 (에러)
 
     def _setup_log_handler(self) -> None:
         """로그 핸들러 등록"""
@@ -204,12 +206,16 @@ class LogView(BaseView):
 
             # ANSI 코드 처리
             code = match.group(1)
-            if code == '92':
+            if code == '91':
+                current_tag = 'ansi_red'     # 빨강
+            elif code == '92':
                 current_tag = 'ansi_green'   # 초록
             elif code == '93':
                 current_tag = 'ansi_yellow'  # 노랑
             elif code == '95':
                 current_tag = 'ansi_pink'    # 분홍
+            elif code == '96':
+                current_tag = 'ansi_cyan'    # 청록
             elif code == '0':
                 current_tag = None           # 리셋
 

@@ -192,9 +192,11 @@ class LogPanel(ctk.CTkFrame):
         self._log_text.tag_configure("CRITICAL", foreground="#b48ead")
 
         # ANSI 색상 태그
-        self._log_text.tag_configure("ansi_green", foreground="#50fa7b")   # 초록 (액션 시작)
-        self._log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")  # 노랑 (성공)
-        self._log_text.tag_configure("ansi_pink", foreground="#ff79c6")    # 분홍 (중지/실패)
+        self._log_text.tag_configure("ansi_cyan", foreground="#8be9fd")     # 청록 (액션 번호)
+        self._log_text.tag_configure("ansi_green", foreground="#50fa7b")   # 초록 (성공)
+        self._log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")  # 노랑 (경고/대기)
+        self._log_text.tag_configure("ansi_pink", foreground="#ff79c6")    # 분홍 (중지)
+        self._log_text.tag_configure("ansi_red", foreground="#ff5555")     # 빨강 (에러)
 
     def _setup_log_handler(self):
         root_logger = logging.getLogger()
@@ -239,12 +241,16 @@ class LogPanel(ctk.CTkFrame):
                 result.append((before, current_tag))
 
             code = match.group(1)
-            if code == '92':
+            if code == '91':
+                current_tag = 'ansi_red'
+            elif code == '92':
                 current_tag = 'ansi_green'
             elif code == '93':
                 current_tag = 'ansi_yellow'
             elif code == '95':
                 current_tag = 'ansi_pink'
+            elif code == '96':
+                current_tag = 'ansi_cyan'
             elif code == '0':
                 current_tag = None
 
@@ -755,6 +761,7 @@ class MainWindow(ctk.CTk):
         self._mini_log_text._textbox.tag_configure("ansi_green", foreground="#50fa7b")
         self._mini_log_text._textbox.tag_configure("ansi_yellow", foreground="#f1fa8c")
         self._mini_log_text._textbox.tag_configure("ansi_pink", foreground="#ff79c6")
+        self._mini_log_text._textbox.tag_configure("ansi_red", foreground="#ff5555")
 
         # 로그 핸들러 설정
         self._setup_mini_log_handler()

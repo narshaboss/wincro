@@ -210,12 +210,12 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
                 else:
                     _pynput_mouse.click(btn, 1)
 
-                logger.info(f"[pynput] 클릭 성공: ({x}, {y})")
+                logger.debug(f"[pynput] 클릭 성공: ({x}, {y})")
                 return True
             else:
-                logger.warning(f"[pynput] 이동 실패: 목표=({x}, {y}), 실제={actual}")
+                logger.debug(f"[pynput] 이동 실패: 목표=({x}, {y}), 실제={actual}")
         except Exception as e:
-            logger.warning(f"[pynput] 오류: {e}")
+            logger.debug(f"[pynput] 오류: {e}")
 
     # 2. ctypes SetCursorPos 시도
     try:
@@ -228,9 +228,9 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
             _perform_mouse_click(click_type)
             return True
         else:
-            logger.warning(f"[Win32] SetCursorPos 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
+            logger.debug(f"[Win32] SetCursorPos 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
     except Exception as e:
-        logger.warning(f"[Win32] SetCursorPos 오류: {e}")
+        logger.debug(f"[Win32] SetCursorPos 오류: {e}")
 
     # 3. SendInput API 시도 (가장 저수준)
     try:
@@ -264,7 +264,7 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
         # 위치 확인
         actual_pos = pyautogui.position()
         if abs(actual_pos[0] - x) >= PIXEL_TOLERANCE_LARGE or abs(actual_pos[1] - y) >= PIXEL_TOLERANCE_LARGE:
-            logger.warning(f"[SendInput] 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
+            logger.debug(f"[SendInput] 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
             return False
 
         # 클릭
@@ -297,7 +297,7 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
             time.sleep(0.02)
             ctypes.windll.user32.SendInput(1, ctypes.byref(click_up), ctypes.sizeof(INPUT))
 
-        logger.info(f"[SendInput] 클릭 성공: ({x}, {y})")
+        logger.debug(f"[SendInput] 클릭 성공: ({x}, {y})")
         return True
     except Exception as e:
         logger.error(f"[SendInput] 마우스 제어 실패: {e}")
@@ -322,7 +322,7 @@ def _win32_force_click_at(x: int, y: int, click_type: str = "click") -> bool:
         # 클릭 실행
         _perform_mouse_click(click_type)
         time.sleep(0.05)
-        logger.info(f"[클릭] 완료 ({x}, {y})")
+        logger.debug(f"[클릭] 완료 ({x}, {y})")
         return True
 
     except Exception as e:
@@ -493,7 +493,6 @@ class RuleExecutor:
         # 사용자 개입 감지 초기화
         self._last_mouse_pos = pyautogui.position()  # 현재 마우스 위치를 기준점으로
         self._is_moving_mouse = False
-        logger.info(f"[개입감지] 초기 마우스 위치: {self._last_mouse_pos}")
 
         # 진행 상태 초기화
         all_rules_count = len(plan.initial_rules) + len(plan.monitoring_rules)
@@ -534,7 +533,7 @@ class RuleExecutor:
                 self._update_progress("일시정지됨")
             except Exception as e:
                 logger.debug(f"일시정지 UI 업데이트 실패: {e}")
-            logger.info("실행 일시정지")
+            logger.info(f"{_YELLOW}⏸ 일시정지{_RESET}")
         except Exception as e:
             logger.error(f"일시정지 오류: {e}")
 
@@ -547,7 +546,7 @@ class RuleExecutor:
                 self._update_progress("실행 재개")
             except Exception as e:
                 logger.debug(f"재개 UI 업데이트 실패: {e}")
-            logger.info("실행 재개")
+            logger.info(f"{_GREEN}▶ 재개{_RESET}")
         except Exception as e:
             logger.error(f"재개 오류: {e}")
 
@@ -612,7 +611,6 @@ class RuleExecutor:
             # 마우스가 50픽셀 이상 이동했으면 사용자 개입으로 판단
             distance = ((current_pos[0] - last_x) ** 2 + (current_pos[1] - last_y) ** 2) ** 0.5
             if distance > INTERVENTION_DISTANCE_PX:
-                logger.info(f"[개입감지] 마우스 이동 감지: ({last_x}, {last_y}) -> ({current_pos[0]}, {current_pos[1]}) 거리={distance:.0f}px")
                 return True
         except (TypeError, ValueError, AttributeError):
             pass
@@ -621,7 +619,7 @@ class RuleExecutor:
 
     def _wait_after_intervention(self) -> None:
         """사용자 개입 후 대기"""
-        logger.info(f"[개입감지] 사용자 개입 감지! {self._intervention_pause_seconds}초 대기 후 재개...")
+        logger.info(f"{_YELLOW}⏸ 마우스 개입 감지 → {self._intervention_pause_seconds}초 대기{_RESET}")
         self._update_progress(f"사용자 개입 감지 - {self._intervention_pause_seconds}초 대기")
 
         for i in range(self._intervention_pause_seconds):
@@ -634,7 +632,7 @@ class RuleExecutor:
 
         # 대기 후 현재 마우스 위치를 새 기준점으로 설정
         self._last_mouse_pos = pyautogui.position()
-        logger.info(f"[개입감지] 대기 완료, 재개합니다. 새 기준점: {self._last_mouse_pos}")
+        logger.info(f"{_GREEN}▶ 대기 완료, 재개{_RESET}")
         self._update_progress("재개 중...")
 
         # 마우스 캡처 해제 시도 - 게임 충돌 방지를 위해 비활성화
@@ -683,7 +681,10 @@ class RuleExecutor:
             current_repeat = 0
 
             logger.info(f"{_CYAN}{'═'*50}{_RESET}")
-            logger.info(f"{_CYAN}▶ 실행 시작: {plan.name} (반복: {total_repeat_count}회){_RESET}")
+            if total_repeat_count > 1:
+                logger.info(f"{_CYAN}▶ 실행 시작: {plan.name} ({total_repeat_count}회 반복){_RESET}")
+            else:
+                logger.info(f"{_CYAN}▶ 실행 시작: {plan.name}{_RESET}")
             self._state = ExecutionState.RUNNING_INITIAL
 
             # 하위 항목(children) 포함해서 평탄화 + 단계 번호 추적
@@ -696,9 +697,7 @@ class RuleExecutor:
             while current_repeat < total_repeat_count:
                 current_repeat += 1
                 if total_repeat_count > 1:
-                    logger.info(f"{_CYAN}{'─'*50}{_RESET}")
-                    logger.info(f"{_CYAN}▶ 반복 {current_repeat}/{total_repeat_count} 시작{_RESET}")
-                    logger.info(f"{_CYAN}{'─'*50}{_RESET}")
+                    logger.info(f"{_CYAN}── 반복 {current_repeat}/{total_repeat_count} 시작 ──{_RESET}")
 
                 # 반복 시작 시 결과 초기화
                 if current_repeat > 1:
@@ -721,17 +720,16 @@ class RuleExecutor:
                     action_name = rule.description if rule.description else rule.action_type
 
                     # 액션 헤더 (단계 번호 + 이름)
-                    logger.info(f"")
                     logger.info(f"{_CYAN}[{step_num}] {action_name}{_RESET}")
 
                     # 핵심 정보만 한 줄씩 (간결하게)
                     if rule.target_image:
-                        logger.info(f"  📷 {Path(rule.target_image).name}")
+                        logger.info(f"  대상: {Path(rule.target_image).name}")
                     if rule.action_keys:
-                        logger.info(f"  ⌨️ {rule.action_keys}")
+                        logger.info(f"  키: {rule.action_keys}")
                     if rule.action_text:
                         text_preview = rule.action_text[:30] + "..." if len(rule.action_text) > 30 else rule.action_text
-                        logger.info(f"  📝 {text_preview}")
+                        logger.info(f"  입력: {text_preview}")
 
                     self._progress.current_rule = rule.rule_id
                     self._update_progress(f"[{step_num}] {action_name}")
@@ -776,8 +774,6 @@ class RuleExecutor:
 
                     # 대기 시간 적용 (스킵된 경우 제외)
                     is_skipped = "스킵됨" in result.message if result.message else False
-                    if is_skipped:
-                        logger.info(f"  → 대기시간 생략, 바로 다음으로")
                     if not self._stop_event.is_set() and not is_skipped:
                         wait_time = getattr(rule, 'wait_after', self._default_wait)
                         if getattr(rule, 'wait_random', False):
@@ -801,10 +797,9 @@ class RuleExecutor:
                 self._state = ExecutionState.COMPLETED
                 success_count = sum(1 for r in self._results if r.success)
                 total_count = len(self._results)
-                logger.info(f"")
                 logger.info(f"{_GREEN}{'═'*50}{_RESET}")
                 if total_repeat_count > 1:
-                    logger.info(f"{_GREEN}★ 완료! (총 {total_repeat_count}회 반복, 마지막 회차: {success_count}/{total_count} 성공){_RESET}")
+                    logger.info(f"{_GREEN}★ 완료! ({success_count}/{total_count} 성공, 총 {total_repeat_count}회 반복){_RESET}")
                 else:
                     logger.info(f"{_GREEN}★ 완료! ({success_count}/{total_count} 성공){_RESET}")
                 logger.info(f"{_GREEN}{'═'*50}{_RESET}")
@@ -880,7 +875,7 @@ class RuleExecutor:
             timeout = rule.timeout if rule.timeout > 0 else 30.0
             trigger_confidence = rule.confidence if rule.confidence > 0 else 0.65
             step_prefix = f"[{step_num}] " if step_num else ""
-            logger.info(f"{_YELLOW}{step_prefix}트리거 이미지 대기 중...{_RESET}")
+            logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중...{_RESET}")
             self._update_progress(f"{step_prefix}트리거 대기 중: {rule.description}")
 
             # 새로운 단순화된 트리거 대기
@@ -940,7 +935,7 @@ class RuleExecutor:
                         time.sleep(actual_delay)
 
             if not result.success:
-                logger.warning(f"{_RED}  ✗ 동작 실패 (시도 {attempt + 1}/{max_retries}): {result.message}{_RESET}")
+                logger.warning(f"{_YELLOW}  ✗ 동작 실패 (시도 {attempt + 1}/{max_retries}): {result.message}{_RESET}")
                 if attempt < max_retries - 1:
                     time.sleep(0.5)
                     continue
@@ -948,8 +943,6 @@ class RuleExecutor:
 
             # 클릭 동작이고 다음 타겟 이미지가 있으면 확인 (스킵된 경우 제외)
             is_skipped = "스킵됨" in result.message if result.message else False
-            if is_skipped:
-                logger.info(f"  → 스킵 완료, 다음 액션 준비")
             if is_click_action and next_target_image and not is_skipped:
                 check_interval = 0.5
                 waited = 0.0
@@ -961,10 +954,10 @@ class RuleExecutor:
                 logger.debug(f"  [DEBUG] 다음액션: {next_desc}, skip={next_skip}, wait_after={next_wait}")
                 if next_skip and next_wait > 0:
                     max_wait_time = next_wait
-                    logger.info(f"{_YELLOW}{step_prefix}다음 화면 대기 중: {Path(next_target_image).name} (스킵 대기: {max_wait_time:.1f}초){_RESET}")
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ 다음 화면 확인 중... ({max_wait_time:.0f}초){_RESET}")
                 else:
                     max_wait_time = EXECUTION_TIMEOUT
-                    logger.info(f"{_YELLOW}{step_prefix}다음 화면 대기 중: {Path(next_target_image).name if next_target_image else 'None'}{_RESET}")
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ 다음 화면 확인 중...{_RESET}")
 
                 while waited < max_wait_time:
                     if self._stop_event.is_set():
@@ -999,7 +992,7 @@ class RuleExecutor:
                                 next_search_region = [x1, y1, x2, y2]
 
                     if waited == 0:
-                        logger.info(f"{self._step_prefix}[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}")
+                        logger.debug(f"[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}")
 
                     search_start = time.time()
                     location = self._find_image_on_screen(next_target_image, next_confidence, search_region=next_search_region)
@@ -1007,7 +1000,7 @@ class RuleExecutor:
 
                     # 검색이 오래 걸리면 로그
                     if search_time > 3.0:
-                        logger.warning(f"  [DEBUG] 이미지 검색 {search_time:.1f}초 소요")
+                        logger.debug(f"이미지 검색 {search_time:.1f}초 소요")
                     if location:
                         return self._make_result(rule, True, f"{result.message}", start_time)
 
@@ -1020,9 +1013,9 @@ class RuleExecutor:
 
                 # 타임아웃 - 경고 후 계속 진행
                 if next_skip:
-                    logger.info(f"{self._step_prefix}⏭ 다음 화면 스킵 ({max_wait_time:.1f}초 대기 후)")
+                    logger.info(f"{_YELLOW}{self._step_prefix}⏭ 다음 화면 스킵 ({max_wait_time:.1f}초 대기 후){_RESET}")
                 else:
-                    logger.warning(f"{self._step_prefix}⚠ 다음 화면 대기 타임아웃 ({max_wait_time:.0f}초) - 계속 진행")
+                    logger.warning(f"{_YELLOW}{self._step_prefix}⚠ 다음 화면 대기 타임아웃 ({max_wait_time:.0f}초) - 계속 진행{_RESET}")
 
             # 클릭이 아니거나 다음 이미지가 없으면 바로 성공
             return result
@@ -1147,8 +1140,9 @@ class RuleExecutor:
                     # 이미지 파일 존재 확인 (최소 하나는 있어야 함)
                     valid_images = [p for p in all_target_images if Path(p).exists()]
                     if not valid_images:
-                        logger.error(f"타겟 이미지 파일 없음: {all_target_images}")
-                        return self._make_result(rule, False, f"이미지 파일 없음: {all_target_images}", start_time)
+                        img_names = [Path(p).name for p in all_target_images]
+                        logger.error(f"{_RED}{self._step_prefix}✗ 이미지 파일 없음: {', '.join(img_names)}{_RESET}")
+                        return self._make_result(rule, False, f"이미지 파일 없음: {', '.join(img_names)}", start_time)
 
                     locations = []
                     found_image = None
@@ -1229,8 +1223,7 @@ class RuleExecutor:
                             # 이미지 검색 후 타임아웃 체크
                             if elapsed >= skip_timeout:
                                 if skip_on_not_found:
-                                    logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵){_RESET}")
-                                    logger.info(f"{self._step_prefix}→ 스킵 처리 중... 다음 액션으로 이동")
+                                    logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후){_RESET}")
                                     return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
                                 else:
                                     # 최대 대기 시간 초과 - 실패 처리
@@ -1241,7 +1234,7 @@ class RuleExecutor:
                             if wait_count % 20 == 1:  # 10초마다 로그
                                 remaining = skip_timeout - elapsed
                                 skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
-                                logger.info(f"{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{skip_info}")
+                                logger.info(f"{_YELLOW}{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{skip_info}{_RESET}")
                             time.sleep(0.5)  # 0.5초마다 재검색
 
                     # 찾은 이미지 이름
@@ -1250,7 +1243,7 @@ class RuleExecutor:
                     if len(locations) == 1:
                         click_x, click_y, found_conf = locations[0]
                         click_method = "이미지"
-                        logger.info(f"{_YELLOW}{self._step_prefix}✓ 타겟 발견 [{found_name}] ({int(found_conf * 100)}%){_RESET}")
+                        logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
                     elif len(locations) > 1:
                         # 여러 개 발견됨 - action_x/y 힌트로 가장 가까운 것 선택
                         if rule.action_x is not None and rule.action_y is not None:
@@ -1258,14 +1251,14 @@ class RuleExecutor:
                             if closest:
                                 click_x, click_y, found_conf = closest
                                 click_method = f"{len(locations)}개 중 선택"
-                                logger.info(f"{_YELLOW}{self._step_prefix}✓ 타겟 발견 [{found_name}] ({int(found_conf * 100)}%) - {len(locations)}개 중 선택{_RESET}")
+                                logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
                             else:
                                 click_x, click_y, found_conf = locations[0]
                                 click_method = f"{len(locations)}개 중 첫번째"
                         else:
                             click_x, click_y, found_conf = locations[0]
                             click_method = f"{len(locations)}개 중 첫번째"
-                            logger.info(f"{_YELLOW}{self._step_prefix}✓ 타겟 발견 [{found_name}] ({int(found_conf * 100)}%) - 첫번째{_RESET}")
+                            logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
 
                 # 클릭 실행
                 if click_x is not None and click_y is not None:
@@ -1274,7 +1267,7 @@ class RuleExecutor:
                         dist_from_center = ((click_x - rule.action_x) ** 2 + (click_y - rule.action_y) ** 2) ** 0.5
                         if dist_from_center > rule.search_radius:
                             # 범위 밖이어도 경고만 하고 클릭은 진행 (해상도/스케일링 차이 허용)
-                            logger.warning(f"{_YELLOW}{self._step_prefix}⚠ 클릭 좌표가 검색 범위를 벗어남 (거리: {dist_from_center:.0f}px, 범위: {rule.search_radius}px) - 클릭 진행{_RESET}")
+                            logger.debug(f"클릭 좌표가 검색 범위를 벗어남 (거리: {dist_from_center:.0f}px, 범위: {rule.search_radius}px)")
 
                     # 클릭 전 사용자 개입 확인
                     if self._check_user_intervention():
@@ -1358,7 +1351,7 @@ class RuleExecutor:
                             logger.error(f"{_RED}  ✗ {action_name} 실패{_RESET}")
                             return self._make_result(rule, False, "클릭 실패", start_time)
 
-                logger.warning(f"{_RED}  ✗ 클릭 대상 없음{_RESET}")
+                logger.warning(f"{_YELLOW}  ⚠ 클릭 대상 없음 (이미지 필요){_RESET}")
                 return self._make_result(rule, False, "클릭 대상 없음 (target_image 필요)", start_time)
 
             elif action_type == "drag":
@@ -1459,7 +1452,8 @@ class RuleExecutor:
 
         except Exception as e:
             import traceback
-            logger.error(f"액션 실행 중 예외 발생: {e}\n{traceback.format_exc()}")
+            logger.error(f"{_RED}✗ 액션 실행 오류: {e}{_RESET}")
+            logger.debug(f"traceback: {traceback.format_exc()}")
             return self._make_result(rule, False, f"예외: {str(e)}", start_time)
 
     def _wait_for_image(
@@ -1588,7 +1582,7 @@ class RuleExecutor:
         try:
             # 파일 존재 확인 (타임아웃 적용)
             if not image_path:
-                logger.warning(f"이미지 경로가 없습니다")
+                logger.debug(f"이미지 경로가 없습니다")
                 return None
 
             file_exists = [False]
@@ -1640,7 +1634,7 @@ class RuleExecutor:
 
             capture_time = time.time() - capture_start
             if capture_time > 2.0:
-                logger.warning(f"화면 캡처 지연: {capture_time:.1f}초")
+                logger.debug(f"화면 캡처 지연: {capture_time:.1f}초")
             screenshot_np = np.array(screenshot)
             screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
 
@@ -1673,7 +1667,7 @@ class RuleExecutor:
 
             # 실패 - 이유 로깅
             if result.found:
-                logger.warning(f"[이미지 검색] 인식률 부족: {result.confidence:.1%} < 설정 {confidence:.1%} - {Path(image_path).name}")
+                logger.debug(f"[이미지 검색] 인식률 부족: {result.confidence:.1%} < 설정 {confidence:.1%} - {Path(image_path).name}")
             return None
 
         except Exception as e:
@@ -1708,18 +1702,18 @@ class RuleExecutor:
             # 파일 확인
             image_path = str(Path(image_path).resolve())
             if not Path(image_path).exists():
-                logger.error(f"[트리거] 파일 없음: {image_path}")
+                logger.error(f"[트리거] 파일 없음: {Path(image_path).name}")
                 return None
 
             # 템플릿 로드 (캐시 사용)
             cached = _get_cached_template(image_path)
             if cached is None:
-                logger.error(f"[트리거] 이미지 로드 실패: {image_path}")
+                logger.error(f"[트리거] 이미지 로드 실패: {Path(image_path).name}")
                 return None
 
             template_gray, h, w = cached
 
-            logger.info(f"[트리거] 대기 시작: {Path(image_path).name}, 인식률={confidence:.0%}")
+            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name}{_RESET}")
 
             waited = 0.0
             check_interval = 0.2
@@ -1759,7 +1753,8 @@ class RuleExecutor:
                     if max_val >= confidence:
                         center_x = max_loc[0] + w // 2
                         center_y = max_loc[1] + h // 2
-                        logger.info(f"[트리거] ✓ 발견! 위치=({center_x}, {center_y}), 점수={max_val:.2f}, 대기={waited:.1f}초")
+                        logger.info(f"{_GREEN}✓ 트리거 발견! ({waited:.1f}초 대기){_RESET}")
+                        logger.debug(f"[트리거] 위치=({center_x}, {center_y}), 점수={max_val:.2f}")
                         return (center_x, center_y)
                 finally:
                     # 메모리 해제 (저사양 PC 지원)
@@ -1769,9 +1764,9 @@ class RuleExecutor:
                 waited += check_interval
 
                 if waited % 5 < check_interval and waited > 0:
-                    logger.info(f"[트리거] 대기 중... {waited:.0f}초 (최고점수: {max_val:.2f})")
+                    logger.info(f"{_YELLOW}⏳ 트리거 대기 중... {waited:.0f}초{_RESET}")
 
-            logger.error(f"[트리거] ✗ 타임아웃 ({timeout}초)")
+            logger.error(f"{_RED}[트리거] ✗ 타임아웃 ({timeout}초){_RESET}")
             return None
 
         except Exception as e:
@@ -1787,7 +1782,7 @@ class RuleExecutor:
         user32 = ctypes.windll.user32
 
         # 1. 화면 안정화 대기
-        logger.info("[트리거→클릭] 화면 안정화 대기 (0.3초)")
+        logger.debug("[트리거→클릭] 화면 안정화 대기 (0.3초)")
         time.sleep(0.3)
 
         # 2. 마우스 캡처 해제 - 게임 충돌 방지를 위해 비활성화
@@ -1816,7 +1811,7 @@ class RuleExecutor:
             user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
 
             time.sleep(0.1)
-            logger.info(f"[트리거→클릭] 포커스 준비 완료 (hwnd={hwnd})")
+            logger.debug(f"[트리거→클릭] 포커스 준비 완료 (hwnd={hwnd})")
 
     def _find_all_images_on_screen(
         self,
@@ -2011,7 +2006,7 @@ class RuleExecutor:
 
         # 디버그: 실제 사용되는 인식률 로그
         step_prefix = f"[{step_num}] " if step_num else ""
-        logger.info(f"{step_prefix}[모니터링] rule.confidence={rule.confidence}, 사용 인식률={confidence:.0%}, rule_id={rule.rule_id}")
+        logger.debug(f"모니터링 설정: 인식률={confidence:.0%}, rule_id={rule.rule_id}")
 
         if not final_image:
             return self._make_result(rule, False, "타겟 이미지가 설정되지 않음", start_time)
@@ -2045,7 +2040,7 @@ class RuleExecutor:
             y2 = min(screen_h, rule.action_y + rule.search_radius)
             final_search_region = [x1, y1, x2, y2]
 
-        logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작 (감시 {len(valid_watches)}개){_RESET}")
+        logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 대기 중 (감시 {len(valid_watches)}개){_RESET}")
 
         wait_count = 0
         # 안전 타임아웃: 최대 모니터링 시간 (기본 2시간, 무한 행 방지)
@@ -2058,7 +2053,7 @@ class RuleExecutor:
             # 안전 타임아웃 체크
             monitoring_elapsed = time.time() - monitoring_start
             if monitoring_elapsed > max_monitoring_seconds:
-                logger.warning(f"{_YELLOW}{step_prefix}모니터링 안전 타임아웃 ({max_monitoring_seconds}초) - 자동 종료{_RESET}")
+                logger.warning(f"{_YELLOW}{step_prefix}■ 모니터링 타임아웃 ({max_monitoring_seconds // 60}분) - 자동 종료{_RESET}")
                 return self._make_result(rule, False, f"모니터링 타임아웃 ({max_monitoring_seconds}초)", start_time)
             # 중지 체크
             if self._stop_event.is_set():
@@ -2111,17 +2106,18 @@ class RuleExecutor:
                     skip_monitor_actions = (condition_pending_watch == watch_image)
 
                     if skip_monitor_actions:
-                        logger.debug(f"  ⏳ 조건 대기 중 [{watch_name}] - 모니터링 액션 건너뛰고 조건 재확인")
+                        elapsed = time.time() - monitoring_start
+                        logger.debug(f"조건 대기 중 [{watch_name}] ({elapsed:.0f}초) - 조건 재확인")
                     else:
                         condition_pending_watch = None  # 새로운 watch이므로 초기화
                         if goto_index >= 0:
                             if has_condition:
-                                logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행 후 조건 확인{_RESET}")
+                                logger.info(f"{_YELLOW}  ⚡ {watch_name} 감지 ({conf_pct}%) → 액션 실행 후 조건 확인{_RESET}")
                             else:
-                                logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 액션 {goto_index + 1}로 점프{_RESET}")
+                                logger.info(f"{_YELLOW}  ⚡ {watch_name} 감지 ({conf_pct}%) → 액션 {goto_index + 1} 실행{_RESET}")
                             self._update_progress(f"감시 이미지 발견 → 액션 {goto_index + 1}")
                         else:
-                            logger.info(f"{_YELLOW}  ⚡ 감시 이미지 발견! [{watch_name}] ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
+                            logger.info(f"{_YELLOW}  ⚡ {watch_name} 감지 ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
                             self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
 
                     # 모니터링 액션들 가져오기
@@ -2133,9 +2129,9 @@ class RuleExecutor:
                     # 모니터링 액션 실행 (조건 대기 중이면 건너뜀)
                     if not skip_monitor_actions:
                         if monitor_actions:
-                            logger.info(f"{_CYAN}  📋 모니터링 액션 {len(monitor_actions)}개 실행 시작{_RESET}")
+                            logger.debug(f"모니터링 액션 {len(monitor_actions)}개 실행 시작")
                         else:
-                            logger.info(f"{_YELLOW}  ⚠ 모니터링 액션 없음 (설정된 액션 0개){_RESET}")
+                            logger.warning(f"{_YELLOW}  ⚠ {watch_name}: 모니터링 액션 없음{_RESET}")
 
                     for monitor_action in ([] if skip_monitor_actions else monitor_actions):
                         if self._stop_event.is_set():
@@ -2201,10 +2197,10 @@ class RuleExecutor:
                         condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
                         if condition_result:
                             _, _, actual_conf = condition_result
-                            logger.info(f"{_YELLOW}  ✗ 조건 이미지 발견: {Path(condition_image).name} (실제 {actual_conf:.0%}, 설정 {condition_confidence:.0%}) → 점프 대기{_RESET}")
+                            logger.info(f"{_YELLOW}  ⏳ 조건 미충족: {Path(condition_image).name} ({actual_conf:.0%}) → 점프 대기{_RESET}")
                             condition_met = False
                         else:
-                            logger.info(f"{_GREEN}  ✓ 조건 이미지 없음: {Path(condition_image).name} (설정 {condition_confidence:.0%}) → 점프 실행{_RESET}")
+                            logger.info(f"{_GREEN}  ✓ 조건 충족: {Path(condition_image).name} 해소 → 점프 실행{_RESET}")
                             condition_met = True
 
                     # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
@@ -2222,36 +2218,38 @@ class RuleExecutor:
                     # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때)
                     if goto_index >= 0:
                         plan = self._current_plan
-                        # 부분 실행 시 원본 rules 사용 (goto_index는 원본 기준)
-                        goto_rules = getattr(plan, '_original_initial_rules', None) or plan.initial_rules
-                        if plan and goto_index < len(goto_rules):
-                            parent_rule = goto_rules[goto_index]
-                            # 부모 + 자식 평탄화
-                            rules_to_execute = self._flatten_rules([parent_rule])
-                            children_count = len(rules_to_execute) - 1
-
-                            # 디버그: 실행할 액션 정보 상세 출력
-                            logger.info(f"  📌 goto 실행: 액션 {goto_index + 1} ({parent_rule.action_type}) - {parent_rule.description or ''}")
-                            logger.info(f"  📌 goto 액션 인식률: {parent_rule.confidence if parent_rule.confidence > 0 else 0.65:.0%}")
-                            if children_count > 0:
-                                logger.info(f"  📂 부모 액션 + 하위 {children_count}개 실행")
-
-                            for exec_rule in rules_to_execute:
-                                if self._stop_event.is_set():
-                                    break
-                                jump_result = self._execute_rule_with_retry(exec_rule)
-                                if not jump_result.success:
-                                    logger.warning(f"  점프 액션 실패: {jump_result.message}")
-                                    break
-                                # 대기 시간 적용 (stop 즉시 반응)
-                                wait_time = getattr(exec_rule, 'wait_after', 0.5)
-                                if wait_time > 0:
-                                    if self._stop_event.wait(timeout=wait_time):
-                                        break
-                            else:
-                                logger.info(f"{_GREEN}{step_prefix}✓ 점프 액션 완료 → 모니터링 복귀{_RESET}")
+                        if not plan:
+                            logger.error(f"  실행 계획이 없음 - 점프 건너뜀")
                         else:
-                            logger.error(f"  잘못된 액션 인덱스: {goto_index} (전체 액션 수: {len(goto_rules)})")
+                            # 부분 실행 시 원본 rules 사용 (goto_index는 원본 기준)
+                            goto_rules = getattr(plan, '_original_initial_rules', None) or plan.initial_rules
+                            if goto_index < len(goto_rules):
+                                parent_rule = goto_rules[goto_index]
+                                # 부모 + 자식 평탄화
+                                rules_to_execute = self._flatten_rules([parent_rule])
+                                children_count = len(rules_to_execute) - 1
+
+                                logger.debug(f"goto 실행: 액션 {goto_index + 1} ({parent_rule.action_type}) - {parent_rule.description or ''}")
+                                logger.debug(f"goto 액션 인식률: {parent_rule.confidence if parent_rule.confidence > 0 else 0.65:.0%}")
+                                if children_count > 0:
+                                    logger.debug(f"부모 액션 + 하위 {children_count}개 실행")
+
+                                for exec_rule in rules_to_execute:
+                                    if self._stop_event.is_set():
+                                        break
+                                    jump_result = self._execute_rule_with_retry(exec_rule)
+                                    if not jump_result.success:
+                                        logger.warning(f"{_YELLOW}  ✗ 액션 {goto_index + 1} 실패: {jump_result.message}{_RESET}")
+                                        break
+                                    # 대기 시간 적용 (stop 즉시 반응)
+                                    wait_time = getattr(exec_rule, 'wait_after', 0.5)
+                                    if wait_time > 0:
+                                        if self._stop_event.wait(timeout=wait_time):
+                                            break
+                                else:
+                                    logger.info(f"{_GREEN}{step_prefix}✓ 점프 액션 완료 → 모니터링 복귀{_RESET}")
+                            else:
+                                logger.error(f"{_RED}  ✗ 잘못된 액션 번호: {goto_index + 1} (전체 {len(goto_rules)}개){_RESET}")
                     # goto_index가 -1이면 점프 없이 모니터링 액션만 실행 (정상 케이스)
 
                     # 다시 모니터링으로 복귀 (wait_count 초기화)
@@ -2262,13 +2260,12 @@ class RuleExecutor:
             # 감시 이미지 미발견 → 조건 대기 상태 해제
             if not watch_found:
                 condition_pending_watch = None
-
-            # 2. 최종 이미지 검색 (감시이미지가 하나도 없을 때만)
-            if not watch_found:
+            # 2. 최종 이미지 검색 (감시이미지가 없거나, 조건 대기 중일 때)
+            if not watch_found or condition_pending_watch is not None:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result
-                    logger.info(f"{_YELLOW}{step_prefix}최종 이미지 감지 [{final_name}] ({int(final_conf * 100)}%) - 감시이미지 재확인 대기{_RESET}")
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ {final_name} 감지 ({int(final_conf * 100)}%) - 감시 이미지 재확인 중...{_RESET}")
                     time.sleep(0.5)
                     # 감시이미지 재확인: 뒤늦게 나타난 감시이미지가 있으면 감시 우선 처리
                     recheck_watch_found = False
@@ -2277,6 +2274,9 @@ class RuleExecutor:
                             return self._make_result(rule, False, "실행 중지됨", start_time)
                         watch_image = watch.get('image')
                         if not watch_image:
+                            continue
+                        # 조건 대기 중인 watch는 재확인에서 제외 (어차피 점프 불가)
+                        if watch_image == condition_pending_watch:
                             continue
                         search_region = watch.get('search_region')
                         watch_search_radius = watch.get('search_radius', 0)
@@ -2294,23 +2294,27 @@ class RuleExecutor:
                         recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
                         if recheck_result:
                             recheck_watch_found = True
-                            logger.info(f"{_YELLOW}{step_prefix}⚡ 감시 이미지 뒤늦게 발견! [{Path(watch_image).name}] - 최종 이미지 무시, 모니터링 계속{_RESET}")
+                            logger.info(f"{_YELLOW}{step_prefix}⚡ {Path(watch_image).name} 뒤늦게 감지 → 모니터링 계속{_RESET}")
                             break
                     if not recheck_watch_found:
-                        logger.info(f"{_GREEN}{step_prefix}✓ 최종 이미지 확정! [{final_name}] ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
+                        logger.info(f"{_GREEN}{step_prefix}✓ {final_name} 확인 완료 ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
                         return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
                     # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
                     wait_count = 0
                     continue
-            else:
-                # 감시 이미지 처리 완료, 바로 다음 반복으로
+
+            # 감시 이미지 처리 완료 (조건 충족 → 점프 등), 다음 반복으로
+            if watch_found:
                 continue
 
             # 3. 대기
             wait_count += 1
             if wait_count % 20 == 1:  # 10초마다 로그
                 elapsed = time.time() - monitoring_start
-                logger.info(f"{_YELLOW}{step_prefix}모니터링 대기 중... {elapsed:.0f}초{_RESET}")
+                if elapsed >= 60:
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ 모니터링 대기 중... {int(elapsed)//60}분 {int(elapsed)%60}초{_RESET}")
+                else:
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ 모니터링 대기 중... {elapsed:.0f}초{_RESET}")
             time.sleep(0.5)
 
     def _execute_monitor_action(
@@ -2389,7 +2393,7 @@ class RuleExecutor:
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
 
                 # INFO 레벨로 실제 사용 값 출력 (디버깅용)
-                logger.info(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}, 인식률: {search_confidence:.0%}, 검색범위: {search_region}")
+                logger.debug(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}, 인식률: {search_confidence:.0%}, 검색범위: {search_region}")
 
                 # search_radius가 있고 search_region이 없으면 변환
                 if not search_region and search_radius > 0:
@@ -2405,17 +2409,17 @@ class RuleExecutor:
                         logger.debug(f"[이미지 클릭] search_radius로 범위 계산: {search_region}")
 
                 if not image_path:
-                    logger.warning(f"[이미지 클릭] 이미지 경로가 설정되지 않음")
+                    logger.warning(f"{_YELLOW}⚠ 이미지 클릭: 이미지가 설정되지 않음{_RESET}")
                     return None
                 if not Path(image_path).exists():
-                    logger.warning(f"[이미지 클릭] 이미지 파일 없음: {image_path}")
+                    logger.warning(f"{_YELLOW}⚠ 이미지 파일 없음: {Path(image_path).name}{_RESET}")
                     return None
 
                 location = self._find_image_on_screen(image_path, search_confidence, search_region=search_region)
                 if location:
                     x, y = location[0], location[1]
                     conf = location[2] if len(location) > 2 else 0
-                    logger.info(f"[이미지 클릭] 찾음! 위치=({x}, {y}), 인식률={conf:.0%}")
+                    logger.debug(f"[이미지 클릭] 찾음: 위치=({x}, {y}), 인식률={conf:.0%}")
                     input_ctrl = get_input_controller()
                     input_ctrl.move_to(x, y, duration=self._mouse_duration)
                     time.sleep(0.05)
@@ -2429,7 +2433,7 @@ class RuleExecutor:
                         input_ctrl.click()  # 이미 이동했으므로 좌표 없이 클릭
                         return f"이미지 클릭: {Path(image_path).name}"
                 else:
-                    logger.warning(f"  모니터링 액션 이미지 찾지 못함: {Path(image_path).name}")
+                    logger.warning(f"{_YELLOW}  ⚠ 이미지 찾지 못함: {Path(image_path).name}{_RESET}")
                     return None
 
             elif action_type == '스크롤':
@@ -2450,7 +2454,7 @@ class RuleExecutor:
                     return f"드래그: ({from_x},{from_y})→({to_x},{to_y})"
 
         except Exception as e:
-            logger.error(f"모니터링 액션 실행 오류: {e}")
+            logger.error(f"{_RED}✗ 모니터링 액션 오류: {e}{_RESET}")
             return None
 
         return None

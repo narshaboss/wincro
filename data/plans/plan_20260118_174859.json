@@ -2714,6 +2714,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": null,
           "condition_search_region": null,
           "condition_confidence": 0.65
@@ -2770,6 +2771,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": null,
           "condition_search_region": null,
           "condition_confidence": 0.65
@@ -2921,6 +2923,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": "condition_trigger_20260131_002759_560.png",
           "condition_search_region": [
             262,
@@ -3077,6 +3080,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": "condition_trigger_20260131_002759_560.png",
           "condition_search_region": [
             1147,
@@ -3819,6 +3823,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": null,
           "condition_search_region": null,
           "condition_confidence": 0.65
@@ -3875,6 +3880,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": null,
           "condition_search_region": null,
           "condition_confidence": 0.65
@@ -4026,6 +4032,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": "condition_trigger_20260131_002759_560.png",
           "condition_search_region": [
             257,
@@ -4182,6 +4189,7 @@
               "search_radius": 0
             }
           ],
+          "confidence": 0.8,
           "condition_image": "condition_trigger_20260131_002759_560.png",
           "condition_search_region": [
             1152,
