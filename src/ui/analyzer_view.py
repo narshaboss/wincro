@@ -512,17 +512,25 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 검색 범위 설정 버튼 (rule이 있을 때만)
         if self._rule is not None:
+            search_region = getattr(self._rule, 'search_region', None)
             search_radius = getattr(self._rule, 'search_radius', 0)
-            radius_text = f"검색범위: {search_radius}px" if search_radius > 0 else "검색범위: 전체"
+            has_region = search_region is not None or search_radius > 0
+            if search_region:
+                w, h = search_region[2] - search_region[0], search_region[3] - search_region[1]
+                radius_text = f"검색범위: {w}x{h}"
+            elif search_radius > 0:
+                radius_text = f"검색범위: {search_radius}px"
+            else:
+                radius_text = "검색범위: 전체"
             self._search_radius_btn = ctk.CTkButton(
                 btn_frame,
                 text=radius_text,
                 command=self._set_search_radius,
                 width=130,
                 height=40,
-                fg_color="#8b5cf6" if search_radius > 0 else COLORS["bg_card"],
-                hover_color="#7c3aed" if search_radius > 0 else COLORS["bg_card_hover"],
-                text_color="white" if search_radius > 0 else COLORS["text_secondary"],
+                fg_color="#8b5cf6" if has_region else COLORS["bg_card"],
+                hover_color="#7c3aed" if has_region else COLORS["bg_card_hover"],
+                text_color="white" if has_region else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
             )
             self._search_radius_btn.pack(side="left", padx=5)
@@ -993,31 +1001,27 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         def on_region_select(x1, y1, x2, y2):
             """영역 선택 완료"""
-            # 선택 영역의 중심점과 반경 계산
+            # 직사각형 좌표 그대로 저장
+            self._rule.search_region = [x1, y1, x2, y2]
+
+            # 중심점도 업데이트 (backward compat)
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
-            width = x2 - x1
-            height = y2 - y1
-
-            # 반경은 가로/세로 중 큰 값의 절반
-            radius = max(width, height) // 2
-
-            # rule에 저장
-            self._rule.search_radius = radius
-            # action_x/y도 업데이트 (검색 중심점)
             self._rule.action_x = center_x
             self._rule.action_y = center_y
+            self._rule.search_radius = max(x2 - x1, y2 - y1) // 2
 
-            logger.info(f"검색 범위 설정: 중심({center_x}, {center_y}), 반경 {radius}px")
+            logger.info(f"검색 범위 설정: ({x1}, {y1}) ~ ({x2}, {y2})")
 
             # 다이얼로그 다시 표시
             self.deiconify()
             self.grab_set()
 
             # 버튼 텍스트 업데이트
+            w, h = x2 - x1, y2 - y1
             if hasattr(self, '_search_radius_btn'):
                 self._search_radius_btn.configure(
-                    text=f"검색범위: {radius}px",
+                    text=f"검색범위: {w}x{h}",
                     fg_color="#8b5cf6",
                     hover_color="#7c3aed",
                     text_color="white"
@@ -1030,8 +1034,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             messagebox.showinfo(
                 "설정 완료",
                 f"검색 범위가 설정되었습니다.\n\n"
-                f"중심점: ({center_x}, {center_y})\n"
-                f"검색 반경: {radius}px"
+                f"영역: ({x1}, {y1}) ~ ({x2}, {y2})\n"
+                f"크기: {w} x {h}px"
             )
 
         def on_cancel():
@@ -1041,7 +1045,9 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 기존 검색 범위 계산
         existing_region = None
-        if self._rule and self._rule.search_radius and self._rule.action_x and self._rule.action_y:
+        if self._rule and getattr(self._rule, 'search_region', None):
+            existing_region = self._rule.search_region
+        elif self._rule and self._rule.search_radius and self._rule.action_x and self._rule.action_y:
             cx, cy, r = self._rule.action_x, self._rule.action_y, self._rule.search_radius
             existing_region = [cx - r, cy - r, cx + r, cy + r]
 

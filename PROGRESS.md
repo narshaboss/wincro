@@ -99,6 +99,18 @@
 
 ## 버그 수정 이력
 
+### 2026-02-08: 검색범위 직사각형 모델 도입 (v1.0.114)
+
+**변경:** 검색범위를 center+radius(정사각형) 대신 [x1,y1,x2,y2] 직사각형으로 저장하도록 개선. 얇은 영역 선택 시 정사각형으로 뻥튀기되던 문제 해결.
+
+**수정된 파일:**
+- `src/analyzer/automation_models.py` - `search_region` 필드 추가 (Optional[List[int]])
+- `src/ui/analyzer_view.py` - 선택 영역을 search_region에 직사각형 그대로 저장, 버튼/표시 텍스트 개선
+- `src/player/rule_executor.py` - search_region 우선 사용 (3곳), _find_all_images_on_screen에 search_region 파라미터 추가
+- `src/utils/config.py` - APP_VERSION 1.0.113 → 1.0.114
+
+---
+
 ### 2026-02-08: 검색범위(ScreenRegionSelector) 좌표 버그 수정 (v1.0.113)
 
 **수정된 버그:**
@@ -1219,7 +1231,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-08 (검색범위 좌표 버그 수정)
+- 마지막 업데이트: 2026-02-08 (검색범위 직사각형 모델 도입)
 
 ## 업데이트 규칙
 

@@ -80,6 +80,7 @@ class AutomationRule:
     trigger_y: Optional[int] = None  # 트리거 검색 영역 중심 Y 좌표
     confidence: float = 0.65  # 매칭 신뢰도 (낮출수록 더 유연하게 인식)
     search_radius: int = 0  # 타겟 검색 범위 (0=전체화면, >0=action_x/y 중심 반경 픽셀)
+    search_region: Optional[List[int]] = None  # 직사각형 검색 범위 [x1, y1, x2, y2] (search_radius보다 우선)
     move_mouse_before_search: bool = False  # 검색 전 마우스를 영역 밖으로 이동 (hover 효과 방지)
 
     # 타이밍
@@ -163,6 +164,7 @@ class AutomationRule:
             "trigger_y": self.trigger_y,
             "confidence": self.confidence,
             "search_radius": self.search_radius,
+            "search_region": self.search_region,
             "move_mouse_before_search": self.move_mouse_before_search,
             "wait_after": self.wait_after,
             "wait_random": self.wait_random,
@@ -243,6 +245,7 @@ class AutomationRule:
             trigger_y=data.get("trigger_y"),
             confidence=data.get("confidence", 0.65),
             search_radius=data.get("search_radius", 0),
+            search_region=data.get("search_region"),
             move_mouse_before_search=data.get("move_mouse_before_search", False),
             wait_after=data.get("wait_after", 0.5),
             wait_random=data.get("wait_random", False),

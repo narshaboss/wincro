@@ -972,20 +972,24 @@ class RuleExecutor:
                     # 사용자가 설정한 인식률은 실제 액션(모니터링, 감시 등)에만 적용
                     next_confidence = NEXT_SCREEN_CONFIDENCE
 
-                    # 다음 액션의 검색 범위 계산 (search_radius가 있으면 사용)
+                    # 다음 액션의 검색 범위 계산 (search_region 우선, 없으면 search_radius)
                     next_search_region = None
                     if next_rule:
-                        next_search_radius = getattr(next_rule, 'search_radius', 0) or 0
-                        next_action_x = getattr(next_rule, 'action_x', None)
-                        next_action_y = getattr(next_rule, 'action_y', None)
-                        if next_search_radius > 0 and next_action_x is not None and next_action_y is not None:
-                            import pyautogui
-                            screen_w, screen_h = pyautogui.size()
-                            x1 = max(0, next_action_x - next_search_radius)
-                            y1 = max(0, next_action_y - next_search_radius)
-                            x2 = min(screen_w, next_action_x + next_search_radius)
-                            y2 = min(screen_h, next_action_y + next_search_radius)
-                            next_search_region = [x1, y1, x2, y2]
+                        next_sr = getattr(next_rule, 'search_region', None)
+                        if next_sr and len(next_sr) == 4:
+                            next_search_region = list(next_sr)
+                        else:
+                            next_search_radius = getattr(next_rule, 'search_radius', 0) or 0
+                            next_action_x = getattr(next_rule, 'action_x', None)
+                            next_action_y = getattr(next_rule, 'action_y', None)
+                            if next_search_radius > 0 and next_action_x is not None and next_action_y is not None:
+                                import pyautogui
+                                screen_w, screen_h = pyautogui.size()
+                                x1 = max(0, next_action_x - next_search_radius)
+                                y1 = max(0, next_action_y - next_search_radius)
+                                x2 = min(screen_w, next_action_x + next_search_radius)
+                                y2 = min(screen_h, next_action_y + next_search_radius)
+                                next_search_region = [x1, y1, x2, y2]
 
                     if waited == 0:
                         logger.info(f"{self._step_prefix}[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}")
@@ -1192,6 +1196,7 @@ class RuleExecutor:
                                 pass
 
                         # 모든 타겟 이미지 검색 (OR 조건)
+                        rule_search_region = getattr(rule, 'search_region', None)
                         for img_path in valid_images:
                             locations = self._find_all_images_on_screen(
                                 img_path,
@@ -1199,6 +1204,7 @@ class RuleExecutor:
                                 search_radius=rule.search_radius,
                                 center_x=rule.action_x,
                                 center_y=rule.action_y,
+                                search_region=rule_search_region,
                             )
                             if locations:
                                 found_image = img_path
@@ -1829,6 +1835,7 @@ class RuleExecutor:
         search_radius: int = 0,
         center_x: int = None,
         center_y: int = None,
+        search_region: list = None,
     ) -> List[tuple]:
         """
         화면에서 모든 일치하는 이미지 위치 찾기
@@ -1836,6 +1843,7 @@ class RuleExecutor:
         Args:
             search_radius: 검색 범위 (0=전체화면, >0=center_x/y 중심 반경 픽셀)
             center_x, center_y: 검색 중심 좌표 (search_radius > 0일 때 사용)
+            search_region: 직사각형 검색 범위 [x1, y1, x2, y2] (search_radius보다 우선)
 
         Returns:
             List[tuple]: 발견된 모든 위치 [(x, y), ...]
@@ -1878,19 +1886,26 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return []
 
-            # ROI 적용 (search_radius > 0이면 해당 범위만 검색)
+            # ROI 적용 (search_region 우선, 없으면 search_radius)
             roi_offset_x, roi_offset_y = 0, 0
-            if search_radius > 0 and center_x is not None and center_y is not None:
-                # ROI 영역 계산
+            roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, 0, 0
+            has_roi = False
+            if search_region and len(search_region) == 4:
+                roi_x1, roi_y1, roi_x2, roi_y2 = search_region
+                roi_x1, roi_y1 = max(0, roi_x1), max(0, roi_y1)
+                roi_x2, roi_y2 = min(screen_w, roi_x2), min(screen_h, roi_y2)
+                has_roi = True
+            elif search_radius > 0 and center_x is not None and center_y is not None:
                 roi_x1 = max(0, center_x - search_radius)
                 roi_y1 = max(0, center_y - search_radius)
                 roi_x2 = min(screen_w, center_x + search_radius)
                 roi_y2 = min(screen_h, center_y + search_radius)
+                has_roi = True
 
-                # ROI가 유효하고 템플릿보다 큰 경우만 적용
-                if roi_x2 > roi_x1 and roi_y2 > roi_y1 and (roi_x2 - roi_x1) > w and (roi_y2 - roi_y1) > h:
-                    screenshot_gray = screenshot_gray[roi_y1:roi_y2, roi_x1:roi_x2]
-                    roi_offset_x, roi_offset_y = roi_x1, roi_y1
+            # ROI가 유효하고 템플릿보다 큰 경우만 적용
+            if has_roi and roi_x2 > roi_x1 and roi_y2 > roi_y1 and (roi_x2 - roi_x1) > w and (roi_y2 - roi_y1) > h:
+                screenshot_gray = screenshot_gray[roi_y1:roi_y2, roi_x1:roi_x2]
+                roi_offset_x, roi_offset_y = roi_x1, roi_y1
 
             # 크기 체크: 템플릿이 화면보다 크면 스킵
             scr_h, scr_w = screenshot_gray.shape[:2]
@@ -2024,9 +2039,12 @@ class RuleExecutor:
 
         final_name = Path(final_image).name
 
-        # 최종 이미지 검색 범위 계산 (rule의 search_radius 사용)
+        # 최종 이미지 검색 범위 계산 (search_region 우선, 없으면 search_radius)
         final_search_region = None
-        if rule.search_radius > 0 and rule.action_x is not None and rule.action_y is not None:
+        rule_sr = getattr(rule, 'search_region', None)
+        if rule_sr and len(rule_sr) == 4:
+            final_search_region = list(rule_sr)
+        elif rule.search_radius > 0 and rule.action_x is not None and rule.action_y is not None:
             from PIL import ImageGrab
             screen = ImageGrab.grab()
             screen_w, screen_h = screen.size
