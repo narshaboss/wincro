@@ -3624,22 +3624,28 @@ class GameModeDialog(ctk.CTkToplevel):
             return dirs[iteration % 4]
 
         def _find_nearest_frontier(cx, cy):
-            """가장 가까운 frontier(미탐색 이웃이 있는 passable 타일) 찾기"""
-            best = None
-            best_dist = float('inf')
-            for (px, py) in self._game_map.passable:
-                if px == cx and py == cy:
-                    continue
+            """가장 가까운 frontier 찾기 (BFS - 가까운 것부터 탐색)"""
+            from collections import deque
+            visited = {(cx, cy)}
+            queue = deque([(cx, cy, 0)])
+            while queue:
+                px, py, dist = queue.popleft()
+                if dist > 150:  # 최대 탐색 거리
+                    break
                 if (px, py) in explore_unreachable:
                     continue
+                # frontier 체크: passable 타일의 미탐색 이웃이 있는가
+                if (px, py) in self._game_map.passable and (px != cx or py != cy):
+                    for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                        if not self._game_map.is_known(px + ddx, py + ddy):
+                            return (px, py)
+                # 인접 타일 탐색 (passable만)
                 for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
-                    if not self._game_map.is_known(px + ddx, py + ddy):
-                        dist = abs(px - cx) + abs(py - cy)
-                        if dist < best_dist:
-                            best_dist = dist
-                            best = (px, py)
-                        break
-            return best
+                    nx, ny = px + ddx, py + ddy
+                    if (nx, ny) not in visited and (nx, ny) in self._game_map.passable:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny, dist + 1))
+            return None
 
         try:
             iteration = 0
@@ -3648,6 +3654,7 @@ class GameModeDialog(ctk.CTkToplevel):
             max_coord_fails = 50  # 연속 50회 실패 시 중단
             while not self._stop_event.is_set() and iteration < max_iterations:
                 iteration += 1
+                _ui_update_ok = (iteration % 3 == 0)  # UI 업데이트는 3회당 1번
 
                 # 중지 확인 (좌표 읽기 전 즉시 체크)
                 if self._stop_event.is_set():
@@ -3769,6 +3776,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             is_boss_dungeon = True  # 전체맵핑은 보스 던전처럼 프런티어 탐색
                             full_mapping_exploring = True  # 다음 반복에서도 보스던전 핸들러 진입
                             prev_x, prev_y = current_x, current_y
+                            time.sleep(0.05)
                             continue  # target_idx 증가 건너뛰고 프런티어 탐색 시작
                     target_idx += 1
                     if target_idx >= len(all_targets):
@@ -3823,6 +3831,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             mark_portal_entry = True
                         portal_grace = 10  # 구간 전환 후 점프 필터 비활성
                         prev_x, prev_y = current_x, current_y
+                        time.sleep(0.05)
                         continue
 
                 # 포탈 감지: 경유지 근접(1칸) 상태에서 좌표 점프 시 다음 경유지로 전환
@@ -3917,7 +3926,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 30칸마다 자동 저장 (디바운스, 중지 시 생략)
                             passable_count = len(self._game_map.passable)
                             if passable_count % 30 == 0 and not self._map_save_lock.locked() and not self._stop_event.is_set():
-                                self.after(0, lambda pc=passable_count: self._append_log(f"💾 자동저장 ({pc}타일)"))
+                                if _ui_update_ok:
+                                    self.after(0, lambda pc=passable_count: self._append_log(f"💾 자동저장 ({pc}타일)"))
                                 threading.Thread(target=self._auto_save_map, daemon=True).start()
                         stuck_count = 0
                         total_stuck_count = 0
@@ -3971,7 +3981,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                 current_path = []
                                 path_index = 0
                                 path_pos_index = {}
-                                self.after(0, lambda: self._append_log("🔄 벽 발견 → 경로 재계산"))
+                                if _ui_update_ok:
+                                    self.after(0, lambda: self._append_log("🔄 벽 발견 → 경로 재계산"))
                                 # 벽 발견시 저장 (디바운스, 중지 시 생략)
                                 if not self._map_save_lock.locked() and not self._stop_event.is_set():
                                     threading.Thread(target=self._auto_save_map, daemon=True).start()
@@ -3980,6 +3991,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 계속 정체되면 장기정체 복구(>=8)가 발동해야 함
                             prev_x, prev_y = current_x, current_y  # 현재 위치로 갱신 (출발지 재등록 방지)
                             last_dir = None
+                            time.sleep(0.05)
                             continue  # 벽 등록 후 즉시 재탐색 (같은 방향 재시도 방지)
 
                         # 장기 정체 복구: 인접 벽 해제 (잘못된 벽 등록 자동 수정)
@@ -4029,6 +4041,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         logger.error(f"[좌표모드] 탈출 스킬 키 입력 실패: {e}")
                         total_stuck_count = 0
                         last_escape_time = time.time()
+                        time.sleep(0.05)
                         continue
                     time.sleep(0.3)
 
@@ -4056,6 +4069,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     path_pos_index = {}
                     explored_from = {}
                     unknown_path_fails = 0
+                    time.sleep(0.05)
                     continue
 
                 # ── 보스 던전 핸들러 ──
@@ -4081,10 +4095,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda cx=current_x, cy=current_y:
                                     self._append_log(f"🚪 보스 던전 입장! 입구 벽 등록: ({cx},{cy})"))
                                 prev_x, prev_y = current_x, current_y
+                                time.sleep(0.05)
                                 continue
                         # 아직 텔레포트 안됨 → 이동 시도만 (맵 기록 없음)
                         prev_x, prev_y = current_x, current_y
-                        time.sleep(move_delay)
+                        time.sleep(0.3)  # 이동 대기 (0.3초)
                         continue
 
                     # 포탈 탈출 감지: 탐색 중 좌표 점프 → 포탈 타일 벽 등록 + 복귀
@@ -4109,6 +4124,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 return
                             # 테스트 모드: 다음 경유지로 전환
                             prev_x, prev_y = current_x, current_y
+                            time.sleep(0.05)
                             continue
 
                     # 보스 던전: 현재 위치를 이동가능으로 보장
@@ -4311,6 +4327,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         portal_grace = 10  # 구간 전환 후 점프 필터 비활성
                                         prev_x, prev_y = current_x, current_y
                                         boss_no_frontier_count = 0
+                                        time.sleep(0.05)
                                         continue
 
                     elif boss_mode == "approaching":
@@ -4360,6 +4377,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                        cx=current_x, cy=current_y, dy=dy_pixel:
                                                 self._append_log(f"🎯 보스 근접! ({cx},{cy}) dy={dy}px {s}회 → 접근 완료 (신뢰도={conf:.1%})"))
                                             prev_x, prev_y = current_x, current_y
+                                            time.sleep(0.05)
                                             continue
 
                                         # ── 보스 추적: Y 오프셋으로 방향 계산, 즉시 돌진 ──
@@ -4460,9 +4478,10 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_index = 0
                             path_pos_index = {}
                             prev_x, prev_y = None, None
+                            time.sleep(0.05)
                             continue
 
-                        if not self._stop_event.is_set():
+                        if not self._stop_event.is_set() and _ui_update_ok:
                             if _boss_chasing:
                                 self.after(0, lambda cx=current_x, cy=current_y, d=direction,
                                            tx=_move_target[0], ty=_move_target[1]:
@@ -4497,6 +4516,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     press_key(direction)
                     last_dir = direction
                     prev_x, prev_y = current_x, current_y
+                    time.sleep(0.05)
                     continue
                 # ── 보스 던전 핸들러 끝 ──
 
@@ -4521,7 +4541,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 slow_approach_dist = 2  # 모든 경유지 N칸 전부터 감속 (포탈 감지용)
                 is_slow = dist <= slow_approach_dist
 
-                if not self._stop_event.is_set():
+                if not self._stop_event.is_set() and _ui_update_ok:
                     symbols = {"up": "↑", "down": "↓", "left": "←", "right": "→"}
                     seg_name = all_targets[target_idx][2]
                     mode_text = "🐢 감속접근" if is_slow else "이동중"
@@ -4531,7 +4551,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
                 # 경유지 근접 시 감속 (포탈 등 좌표 변경 대비)
                 if is_slow:
-                    if not self._stop_event.is_set():
+                    if not self._stop_event.is_set() and _ui_update_ok:
                         self.after(0, lambda cx=current_x, cy=current_y, d=dist:
                             self._append_log(f"🐢 감속접근 ({cx},{cy}) 거리:{d}칸"))
                     time.sleep(0.3)
@@ -4551,6 +4571,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         if check_dist == 0:
                             # 이미 도착! 방향키 누르지 않고 루프로
                             current_x, current_y = int(check_x), int(check_y)
+                            time.sleep(0.05)
                             continue
 
                 # 이동 (포탈 근접 시 짧은 탭으로 오버슈트 방지)
@@ -4639,8 +4660,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._log_text.delete("1.0", f"{line_count - 500}.0")
             self._log_text.see("end")
             self._log_text.configure(state="disabled")
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
 
     def _clear_log(self):
         """로그 초기화"""
@@ -4650,8 +4671,8 @@ class GameModeDialog(ctk.CTkToplevel):
             self._log_text.configure(state="disabled")
             self._key_press_count = 0
             self._key_count_label.configure(text="0회")
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
 
     def _show_notification(self, title: str, message: str, duration: int = 3000):
         """비블로킹 알림 (duration ms 후 자동 닫힘, 메인스레드 블로킹 없음)"""
@@ -5032,9 +5053,9 @@ class GameModeDialog(ctk.CTkToplevel):
     def _auto_save_map(self) -> str:
         """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장)"""
         import os
-        acquired = self._map_save_lock.acquire(timeout=5.0)
+        acquired = self._map_save_lock.acquire(timeout=2.0)
         if not acquired:
-            logger.warning("[맵핑] 맵 저장 락 획득 실패 (5초 타임아웃)")
+            logger.warning("[맵핑] 맵 저장 락 획득 실패 (2초 타임아웃)")
             return ""
         try:
             segment_idx = getattr(self, '_current_segment_idx', 0)
@@ -5113,9 +5134,9 @@ class GameModeDialog(ctk.CTkToplevel):
             return False
 
         # 맵 전환은 save lock 안에서 수행 (백그라운드 auto-save와 경합 방지)
-        acquired = self._map_save_lock.acquire(timeout=3.0)
+        acquired = self._map_save_lock.acquire(timeout=1.0)
         if not acquired:
-            logger.error("[맵핑] 맵 전환 락 획득 실패 (3초 타임아웃)")
+            logger.error("[맵핑] 맵 전환 락 획득 실패 (1초 타임아웃)")
             return False
         try:
             # 현재 맵 저장 (메모리 데이터를 직접 저장 — 오염 방지)
@@ -5166,8 +5187,8 @@ class GameModeDialog(ctk.CTkToplevel):
             try:
                 if hasattr(self, '_game_map') and self._game_map.passable:
                     self._auto_save_map()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"무시된 예외: {e}")
             # 배지 갱신: 파일 I/O를 여기서 수행 (백그라운드), UI 업데이트만 메인스레드로
             self._refresh_badges_async()
         threading.Thread(target=do_save, daemon=True).start()
@@ -5216,8 +5237,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         sp = (int(prev_wp[0]), int(prev_wp[1]))
                         if game_map.is_known(sp[0], sp[1]):
                             start_pos = sp
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
 
         # 그래픽 맵 창 열기
         try:
@@ -6731,6 +6752,8 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _save_config(self):
         """설정 저장 (JSON 파일만, messagebox 없음)"""
+        import time as _time
+        _save_start = _time.time()
         self._config.enabled = True
         self._apply_settings()
         self._plan.game_mode = self._config
@@ -6778,6 +6801,9 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.info(f"[특화모드] 설정 저장: {plan_file}")
         except Exception as e:
             logger.error(f"[특화모드] 설정 저장 실패: {e}")
+        _save_elapsed = _time.time() - _save_start
+        if _save_elapsed > 0.5:
+            logger.warning(f"[특화모드] 설정 저장 느림: {_save_elapsed:.1f}초")
 
     def _save_config_with_msg(self):
         """저장 버튼 클릭 시: 설정 저장 + messagebox 표시"""
@@ -6867,7 +6893,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 워커/모니터 스레드 종료 대기
         import time
-        time.sleep(0.2)
+        time.sleep(0.05)
 
         # 맵 데이터 저장 (변경된 경우)
         if hasattr(self, '_game_map') and self._game_map:
@@ -8884,22 +8910,23 @@ class PlayerView(BaseView):
                     except Exception as e:
                         logger.error(f"자동화 계획 로드 실패 ({plan_file}): {e}")
             plans.sort(key=lambda p: p.created_at, reverse=True)
-            self.after(0, lambda: self._apply_loaded_data(sequences, plans, current_gen))
+            # plan_id → locked 캐시도 백그라운드에서 구축 (UI 차단 방지)
+            lock_cache = {}
+            for plan in plans:
+                recording = self._db.get_recording_by_plan_id(plan.plan_id)
+                lock_cache[plan.plan_id] = recording.locked if recording else False
+            self.after(0, lambda: self._apply_loaded_data(sequences, plans, current_gen, lock_cache))
 
         threading.Thread(target=_load, daemon=True).start()
 
-    def _apply_loaded_data(self, sequences, plans, generation=None):
+    def _apply_loaded_data(self, sequences, plans, generation=None, lock_cache=None):
         """로드 완료 후 UI 갱신"""
-        # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
+        # generation이 현재보다 오래된 경우 무시
         if generation is not None and generation < self._load_generation:
             return
         self._sequences = sequences
         self._automation_plans = plans
-        # plan_id → locked 캐시 구축 (DB 쿼리 배치)
-        self._plan_lock_cache = {}
-        for plan in self._automation_plans:
-            recording = self._db.get_recording_by_plan_id(plan.plan_id)
-            self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
+        self._plan_lock_cache = lock_cache if lock_cache is not None else {}
         self._render_sequence_list()
 
     def _render_sequence_list(self):
@@ -9320,84 +9347,8 @@ class PlayerView(BaseView):
         )
 
     def _load_sequences(self) -> None:
-        """재생 목록 로드 (동기 — 삭제/수정 후 새로고침용)"""
-        self._load_generation += 1  # 진행 중인 async 로드 무효화
-        for widget in self._sequence_frame.winfo_children():
-            widget.destroy()
-
-        self._selected_item_widget = None  # 선택 상태 초기화
-        self._sequences = self._db.get_all_sequences()
-        self._load_automation_plans()
-        # plan_id → locked 캐시 갱신
-        self._plan_lock_cache = {}
-        for plan in self._automation_plans:
-            recording = self._db.get_recording_by_plan_id(plan.plan_id)
-            self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
-
-        has_items = False
-
-        # 자동화 계획 먼저 표시
-        if self._automation_plans:
-            # 섹션 헤더 (라벨 + 정리 버튼)
-            section_header = ctk.CTkFrame(self._sequence_frame, fg_color="transparent")
-            section_header.pack(fill="x", padx=10, pady=(10, 5))
-
-            ctk.CTkLabel(
-                section_header,
-                text="[ 자동화 계획 ]",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=COLORS["accent"],
-            ).pack(side="left")
-
-            for plan in self._automation_plans:
-                self._create_plan_item(plan)
-            has_items = True
-
-        # 일반 재생 표시
-        if self._sequences:
-            section_label = ctk.CTkLabel(
-                self._sequence_frame,
-                text="[ 일반 재생 ]",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=COLORS["text_secondary"],
-            )
-            section_label.pack(anchor="w", padx=10, pady=(15, 5))
-
-            for sequence in self._sequences:
-                self._create_sequence_item(sequence)
-            has_items = True
-
-        if not has_items:
-            empty_label = ctk.CTkLabel(
-                self._sequence_frame,
-                text="📋 실행할 재생가 없습니다\n\n사용 방법:\n1. 녹화 탭에서 화면 녹화\n2. 분석 탭에서 동작 분석\n3. 여기서 실행",
-                text_color=COLORS["text_secondary"],
-                font=ctk.CTkFont(size=12),
-                justify="center",
-            )
-            empty_label.pack(expand=True, pady=30)
-
-    def _load_automation_plans(self) -> None:
-        """자동화 계획 목록 로드"""
-        self._automation_plans = []
-
-        if not PLANS_DIR.exists():
-            return
-
-        templates_dir = DATA_DIR / "templates"
-        for plan_file in PLANS_DIR.glob("*.json"):
-            try:
-                with open(plan_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                if plan.user_verified:  # 승인된 계획만 표시
-                    self._automation_plans.append(plan)
-            except Exception as e:
-                logger.error(f"자동화 계획 로드 실패 ({plan_file}): {e}")
-
-        # 최신순 정렬
-        self._automation_plans.sort(key=lambda p: p.created_at, reverse=True)
-        logger.info(f"자동화 계획 {len(self._automation_plans)}개 로드")
+        """재생 목록 로드 (비동기 — UI 차단 방지)"""
+        self._load_sequences_async()
 
     def _create_plan_item(self, plan: AutomationPlan) -> None:
         """자동화 계획 항목 생성"""
@@ -9785,25 +9736,30 @@ class PlayerView(BaseView):
         """디스크에서 최신 버전의 계획을 다시 로드"""
         try:
             plan_file = PLANS_DIR / f"{plan_id}.json"
-            if plan_file.exists():
-                with open(plan_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                templates_dir = DATA_DIR / "templates"
-                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                logger.info(f"계획 재로드 완료: {plan.name}")
+            if not plan_file.exists():
+                return None
+            # File size check to avoid loading huge files on UI thread
+            file_size = plan_file.stat().st_size
+            if file_size > 5_000_000:  # 5MB 이상이면 비동기 로드 권장
+                logger.warning(f"플랜 파일이 크므로 비동기 로드 권장: {file_size/1024:.0f}KB")
+            with open(plan_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            templates_dir = DATA_DIR / "templates"
+            plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+            logger.info(f"계획 재로드 완료: {plan.name}")
 
-                # 디버그: trigger_image가 있는 규칙 확인
-                def check_trigger_images(rules, depth=0):
-                    for rule in rules:
-                        if rule.trigger_image:
-                            logger.info(f"[디버그] 트리거 이미지 발견: rule={rule.rule_id}, trigger={rule.trigger_image}")
-                        if rule.children:
-                            check_trigger_images(rule.children, depth + 1)
+            # 디버그: trigger_image가 있는 규칙 확인
+            def check_trigger_images(rules, depth=0):
+                for rule in rules:
+                    if rule.trigger_image:
+                        logger.info(f"[디버그] 트리거 이미지 발견: rule={rule.rule_id}, trigger={rule.trigger_image}")
+                    if rule.children:
+                        check_trigger_images(rule.children, depth + 1)
 
-                check_trigger_images(plan.initial_rules)
-                check_trigger_images(plan.monitoring_rules)
+            check_trigger_images(plan.initial_rules)
+            check_trigger_images(plan.monitoring_rules)
 
-                return plan
+            return plan
         except Exception as e:
             logger.error(f"계획 재로드 실패: {e}")
         return None

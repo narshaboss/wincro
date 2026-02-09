@@ -430,6 +430,9 @@ class RuleExecutor:
         # 현재 실행 중인 액션 번호 (로깅용)
         self._current_step_num = ""
 
+        # 화면 캡처 동시 실행 제한 (스레드 누수 방지)
+        self._capture_semaphore = threading.Semaphore(3)  # Max 3 concurrent captures
+
 
     @property
     def state(self) -> ExecutionState:
@@ -1181,10 +1184,12 @@ class RuleExecutor:
                             if self._stop_event.is_set():
                                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                        # 검색 전 마우스 이동 (hover 효과 방지)
+                        # 검색 전 마우스 이동 (hover/커서 간섭 방지)
+                        # move_mouse_before_search 설정이거나, 30초 이상 못 찾으면 자동으로 마우스 치움
                         mouse_moved_for_search = False
                         original_mouse_pos = None
-                        if getattr(rule, 'move_mouse_before_search', False):
+                        should_move_mouse = getattr(rule, 'move_mouse_before_search', False) or elapsed > 30
+                        if should_move_mouse:
                             try:
                                 original_mouse_pos = pyautogui.position()
                                 # 화면 왼쪽 하단으로 이동
@@ -1234,7 +1239,9 @@ class RuleExecutor:
                             if wait_count % 20 == 1:  # 10초마다 로그
                                 remaining = skip_timeout - elapsed
                                 skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
-                                logger.info(f"{_YELLOW}{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{skip_info}{_RESET}")
+                                max_score = getattr(self, '_last_max_match_score', 0)
+                                score_info = f" [최고:{max_score:.0%}]" if max_score > 0.3 else ""
+                                logger.info(f"{_YELLOW}{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{score_info}{skip_info}{_RESET}")
                             time.sleep(0.5)  # 0.5초마다 재검색
 
                     # 찾은 이미지 이름
@@ -1580,61 +1587,57 @@ class RuleExecutor:
             return None
 
         try:
-            # 파일 존재 확인 (타임아웃 적용)
+            # 파일 존재 확인 (직접 확인 - 스레드 불필요)
             if not image_path:
                 logger.debug(f"이미지 경로가 없습니다")
                 return None
 
-            file_exists = [False]
-            def check_file():
-                try:
-                    file_exists[0] = Path(image_path).exists()
-                except Exception:
-                    file_exists[0] = False
-
-            check_thread = threading.Thread(target=check_file, daemon=True)
-            check_thread.start()
-            check_thread.join(timeout=3.0)  # 3초 타임아웃
-
-            if check_thread.is_alive():
-                logger.warning(f"파일 존재 확인 타임아웃 (3초): {Path(image_path).name}")
-                return None
-
-            if not file_exists[0]:
-                logger.warning(f"템플릿 파일 없음: {Path(image_path).name}")
+            try:
+                if not Path(image_path).exists():
+                    logger.warning(f"템플릿 파일 없음: {Path(image_path).name}")
+                    return None
+            except OSError as e:
+                logger.warning(f"파일 확인 실패: {e}")
                 return None
 
             # 중지 체크
             if self._stop_event.is_set():
                 return None
 
-            # 화면 캡처 (타임아웃 적용)
+            # 화면 캡처 (타임아웃 + 세마포어 적용)
             screenshot = None
             capture_result = [None]
 
-            def capture_screen():
-                try:
-                    capture_result[0] = ImageGrab.grab()
-                except Exception as e:
-                    logger.error(f"화면 캡처 오류: {e}")
-
-            capture_thread = threading.Thread(target=capture_screen, daemon=True)
-            capture_start = time.time()
-            capture_thread.start()
-            capture_thread.join(timeout=5.0)  # 5초 타임아웃
-
-            if capture_thread.is_alive():
-                logger.warning(f"화면 캡처 타임아웃 (5초) - 건너뜀")
+            if not self._capture_semaphore.acquire(timeout=2.0):
+                logger.warning("화면 캡처 세마포어 대기 타임아웃")
                 return None
 
-            screenshot = capture_result[0]
-            if screenshot is None:
-                logger.warning("화면 캡처 실패")
-                return None
+            try:
+                def capture_screen():
+                    try:
+                        capture_result[0] = ImageGrab.grab()
+                    except Exception as e:
+                        logger.error(f"화면 캡처 오류: {e}")
 
-            capture_time = time.time() - capture_start
-            if capture_time > 2.0:
-                logger.debug(f"화면 캡처 지연: {capture_time:.1f}초")
+                capture_thread = threading.Thread(target=capture_screen, daemon=True)
+                capture_start = time.time()
+                capture_thread.start()
+                capture_thread.join(timeout=5.0)  # 5초 타임아웃
+
+                if capture_thread.is_alive():
+                    logger.warning(f"화면 캡처 타임아웃 (5초) - 건너뜀")
+                    return None
+
+                screenshot = capture_result[0]
+                if screenshot is None:
+                    logger.warning("화면 캡처 실패")
+                    return None
+
+                capture_time = time.time() - capture_start
+                if capture_time > 2.0:
+                    logger.debug(f"화면 캡처 지연: {capture_time:.1f}초")
+            finally:
+                self._capture_semaphore.release()
             screenshot_np = np.array(screenshot)
             screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
 
@@ -1911,10 +1914,13 @@ class RuleExecutor:
 
             # 최고 매칭 점수 확인
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            self._last_max_match_score = max_val
 
             # 임계값 이상인 모든 위치 찾기
             locations = []
             loc = np.where(result >= confidence)
+            if not loc[0].size and max_val > 0.3:
+                logger.debug(f"  [매칭] {Path(image_path).name}: 최고={max_val:.3f} < 임계값={confidence:.2f}")
 
             for pt in zip(*loc[::-1]):
                 found_x = pt[0] + w // 2 + roi_offset_x
@@ -2043,8 +2049,8 @@ class RuleExecutor:
         logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 대기 중 (감시 {len(valid_watches)}개){_RESET}")
 
         wait_count = 0
-        # 안전 타임아웃: 최대 모니터링 시간 (기본 2시간, 무한 행 방지)
-        max_monitoring_seconds = getattr(rule, 'monitoring_timeout', 14400) or 14400
+        # 안전 타임아웃: 최대 모니터링 시간 (기본 1시간, 무한 행 방지)
+        max_monitoring_seconds = max(60, getattr(rule, 'monitoring_timeout', 3600) or 3600)
         monitoring_start = time.time()
         # 조건 대기 중인 watch 추적 (모니터링 액션 중복 실행 방지)
         condition_pending_watch = None  # 조건 미충족으로 대기 중인 watch 이미지 경로

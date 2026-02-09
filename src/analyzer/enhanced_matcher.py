@@ -83,6 +83,11 @@ class EnhancedMatcher:
         self._orb = None
         self._bf_matcher = None
 
+        # 화면 전처리 캐시 (동일 화면 반복 호출 방지)
+        self._screen_cache_shape = None
+        self._screen_cache_mean = None
+        self._screen_cache_result = None
+
     def _get_orb(self):
         """ORB 검출기 지연 로딩"""
         if self._orb is None:
@@ -166,7 +171,16 @@ class EnhancedMatcher:
             return None
 
     def _preprocess_screen(self, screen: np.ndarray) -> Dict[str, np.ndarray]:
-        """화면 이미지 전처리"""
+        """화면 이미지 전처리 (동일 화면이면 캐시 반환)"""
+        # 빠른 근사 비교: shape + mean
+        cur_shape = screen.shape
+        cur_mean = float(np.mean(screen))
+
+        if (self._screen_cache_result is not None
+                and self._screen_cache_shape == cur_shape
+                and self._screen_cache_mean == cur_mean):
+            return self._screen_cache_result
+
         result = {'original': screen}
 
         if len(screen.shape) == 3:
@@ -177,6 +191,11 @@ class EnhancedMatcher:
         result['gray_eq'] = cv2.equalizeHist(result['gray'])
         result['edges'] = cv2.Canny(result['gray'], 50, 150)
         result['gray_blur'] = cv2.GaussianBlur(result['gray'], (3, 3), 0)
+
+        # 캐시 갱신
+        self._screen_cache_shape = cur_shape
+        self._screen_cache_mean = cur_mean
+        self._screen_cache_result = result
 
         return result
 
@@ -670,6 +689,9 @@ class EnhancedMatcher:
         with self._cache_lock:
             self._cache.clear()
             self._last_positions.clear()
+        self._screen_cache_shape = None
+        self._screen_cache_mean = None
+        self._screen_cache_result = None
         logger.debug("강화 매처 캐시 초기화")
 
     def invalidate_template(self, template_path: str):

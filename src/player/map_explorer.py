@@ -199,8 +199,16 @@ class MapExplorer:
             이동 방향 또는 None (탐색 완료)
         """
         self._state = ExplorationState.BACKTRACKING
+        max_iterations = 200
+        iterations = 0
 
         while self._stack:
+            iterations += 1
+            if iterations > max_iterations:
+                logger.warning(f"[Explorer] 백트래킹 최대 반복 초과 ({max_iterations}), 스택 초기화")
+                self._stack.clear()
+                return None
+
             # 현재 위치가 스택 맨 위와 같으면 pop
             if self._stack[-1] == (current_x, current_y):
                 self._stack.pop()

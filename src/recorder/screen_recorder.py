@@ -330,47 +330,50 @@ class ScreenRecorder:
         while self._recording:
             loop_start = time.time()
 
-            if not self._paused:
-                try:
-                    frame = camera.grab()
+            with self._pause_lock:
+                if self._paused:
+                    pass  # skip frame capture while paused
+                else:
+                    try:
+                        frame = camera.grab()
 
-                    if frame is not None:
-                        fail_count = 0
+                        if frame is not None:
+                            fail_count = 0
 
-                        # 영역 크롭
-                        h, w = frame.shape[:2]
-                        left = max(0, self._region.left)
-                        top = max(0, self._region.top)
-                        right = min(w, left + self._region.width)
-                        bottom = min(h, top + self._region.height)
-                        frame = frame[top:bottom, left:right]
+                            # 영역 크롭
+                            h, w = frame.shape[:2]
+                            left = max(0, self._region.left)
+                            top = max(0, self._region.top)
+                            right = min(w, left + self._region.width)
+                            bottom = min(h, top + self._region.height)
+                            frame = frame[top:bottom, left:right]
 
-                        # 크기 맞추기
-                        if frame.shape[1] != self._region.width or frame.shape[0] != self._region.height:
-                            frame = cv2.resize(frame, (self._region.width, self._region.height))
+                            # 크기 맞추기
+                            if frame.shape[1] != self._region.width or frame.shape[0] != self._region.height:
+                                frame = cv2.resize(frame, (self._region.width, self._region.height))
 
-                        self._writer.write(frame)
-                        self._frame_count += 1
+                            self._writer.write(frame)
+                            self._frame_count += 1
 
-                        # 마지막 프레임 저장 (스크린샷용)
-                        with self._frame_lock:
-                            self._last_frame = frame.copy()
-                    else:
+                            # 마지막 프레임 저장 (스크린샷용)
+                            with self._frame_lock:
+                                self._last_frame = frame.copy()
+                        else:
+                            fail_count += 1
+                            if fail_count >= 10:
+                                logger.warning("dxcam 연속 실패, mss로 전환")
+                                self._engine = "mss"
+                                self._loop_mss(frame_interval)
+                                return
+                    except Exception as e:
+                        logger.error(f"dxcam 캡처 오류: {e}")
                         fail_count += 1
                         if fail_count >= 10:
-                            logger.warning("dxcam 연속 실패, mss로 전환")
                             self._engine = "mss"
                             self._loop_mss(frame_interval)
                             return
-                except Exception as e:
-                    logger.error(f"dxcam 캡처 오류: {e}")
-                    fail_count += 1
-                    if fail_count >= 10:
-                        self._engine = "mss"
-                        self._loop_mss(frame_interval)
-                        return
 
-            # 프레임 레이트 유지
+            # 프레임 레이트 유지 (lock 밖에서 sleep)
             sleep_time = frame_interval - (time.time() - loop_start)
             if sleep_time > 0:
                 time.sleep(sleep_time)
@@ -388,20 +391,24 @@ class ScreenRecorder:
             while self._recording:
                 loop_start = time.time()
 
-                if not self._paused:
-                    try:
-                        screenshot = sct.grab(monitor)
-                        frame = np.array(screenshot)
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-                        self._writer.write(frame)
-                        self._frame_count += 1
+                with self._pause_lock:
+                    if self._paused:
+                        pass  # skip frame capture while paused
+                    else:
+                        try:
+                            screenshot = sct.grab(monitor)
+                            frame = np.array(screenshot)
+                            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                            self._writer.write(frame)
+                            self._frame_count += 1
 
-                        # 마지막 프레임 저장 (스크린샷용)
-                        with self._frame_lock:
-                            self._last_frame = frame.copy()
-                    except Exception as e:
-                        logger.error(f"mss 캡처 오류: {e}")
+                            # 마지막 프레임 저장 (스크린샷용)
+                            with self._frame_lock:
+                                self._last_frame = frame.copy()
+                        except Exception as e:
+                            logger.error(f"mss 캡처 오류: {e}")
 
+                # lock 밖에서 sleep
                 sleep_time = frame_interval - (time.time() - loop_start)
                 if sleep_time > 0:
                     time.sleep(sleep_time)

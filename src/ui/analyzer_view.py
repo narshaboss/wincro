@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, Canvas
 from typing import Optional, Callable
 from pathlib import Path
+import os
 import threading
 import cv2
 import numpy as np
@@ -2008,14 +2009,23 @@ class AnalyzerView(BaseView):
 
     def _build_plan_modified_cache(self):
         """플랜 파일의 modified 상태를 미리 캐시 (recording item에서 파일 I/O 방지)"""
+        prev_cache = getattr(self, '_plan_modified_cache', {})
+        prev_mtime = getattr(self, '_plan_mtime_cache', {})
         self._plan_modified_cache = {}
+        self._plan_mtime_cache = {}
         if PLANS_DIR.exists():
             for plan_file in PLANS_DIR.glob("*.json"):
                 try:
-                    with open(plan_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    plan_id = data.get("plan_id", plan_file.stem)
-                    self._plan_modified_cache[plan_id] = data.get("modified", False)
+                    plan_id = plan_file.stem
+                    mtime = os.path.getmtime(plan_file)
+                    self._plan_mtime_cache[plan_id] = mtime
+                    # mtime 변경 없으면 이전 캐시 값 재사용 (전체 JSON 파싱 방지)
+                    if plan_id in prev_mtime and prev_mtime[plan_id] == mtime:
+                        self._plan_modified_cache[plan_id] = prev_cache.get(plan_id, False)
+                    else:
+                        with open(plan_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        self._plan_modified_cache[plan_id] = data.get("modified", False)
                 except Exception:
                     pass
 
@@ -2053,6 +2063,8 @@ class AnalyzerView(BaseView):
         # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
         if generation is not None and generation < self._plans_load_generation:
             return
+        # 레이아웃 재계산 방지: 부모 숨김 → 자식 제거 → 부모 복원
+        self._plans_scroll.pack_forget()
         for widget in self._plans_scroll.winfo_children():
             widget.destroy()
 
@@ -2064,16 +2076,20 @@ class AnalyzerView(BaseView):
                 text_color=COLORS["text_muted"],
                 justify="center",
             ).pack(pady=30)
+            self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
             return
 
-        # plan_id → locked 캐시 구축 (루프 내 DB 쿼리 방지)
+        # plan_id → locked 캐시 구축 (단일 쿼리로 전체 조회)
         self._plan_lock_cache = {}
+        all_recordings = self._db.get_all_recordings()
+        rec_by_plan = {r.automation_plan_id: r for r in all_recordings if r.automation_plan_id}
         for plan in plans:
-            recording = self._db.get_recording_by_plan_id(plan.plan_id)
+            recording = rec_by_plan.get(plan.plan_id)
             self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
 
         for plan in plans:
             self._create_plan_item(plan)
+        self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     def _setup_ui(self):
         # 스크롤 가능한 메인 컨테이너 (로그 패널 확장 시 축소 가능)
@@ -2237,6 +2253,8 @@ class AnalyzerView(BaseView):
     def _load_plans(self):
         """분석된 재생 목록 로드"""
         self._plans_load_generation += 1  # 진행 중인 async 로드 무효화
+        # 레이아웃 재계산 방지: 부모 숨김 → 자식 제거 → 부모 복원
+        self._plans_scroll.pack_forget()
         for widget in self._plans_scroll.winfo_children():
             widget.destroy()
 
@@ -2270,16 +2288,20 @@ class AnalyzerView(BaseView):
                 text_color=COLORS["text_muted"],
                 justify="center",
             ).pack(pady=30)
+            self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
             return
 
-        # plan_id → locked 캐시 갱신
+        # plan_id → locked 캐시 갱신 (단일 쿼리로 전체 조회)
         self._plan_lock_cache = {}
+        all_recordings = self._db.get_all_recordings()
+        rec_by_plan = {r.automation_plan_id: r for r in all_recordings if r.automation_plan_id}
         for plan in plans:
-            recording = self._db.get_recording_by_plan_id(plan.plan_id)
+            recording = rec_by_plan.get(plan.plan_id)
             self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
 
         for plan in plans:
             self._create_plan_item(plan)
+        self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     def _create_plan_item(self, plan: AutomationPlan):
         """분석된 재생 항목 생성"""

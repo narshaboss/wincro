@@ -147,8 +147,15 @@ class BFSPathfinder:
         queue = deque([(start, 0)])
         visited = {start}
         came_from = {start: None}
+        max_iterations = 10000
+        iterations = 0
 
         while queue:
+            iterations += 1
+            if iterations > max_iterations:
+                logger.warning(f"[BFS] 최대 반복 초과 ({max_iterations}): {start} → {goal}")
+                return None
+
             (x, y), depth = queue.popleft()
 
             if (x, y) == goal:
@@ -1296,6 +1303,14 @@ class ObstacleAvoidanceController:
 
     def record_position(self, x: int, y: int, direction: Optional[str] = None):
         """위치 및 방향 기록 (진동 감지용)"""
+        # DirectionMemory 하드 캡: 1000개 초과 시 가장 오래된 500개 강제 제거
+        if len(self.direction_memory.memory) > 1000:
+            sorted_keys = sorted(self.direction_memory.memory.keys(),
+                                 key=lambda k: self.direction_memory.memory[k]["age"])
+            for key in sorted_keys[:500]:
+                del self.direction_memory.memory[key]
+            logger.debug(f"[방향메모리] 하드 캡 적용: {len(self.direction_memory.memory)}개로 축소")
+
         self.oscillation_detector.add_position(x, y, direction)
         self.direction_memory.tick_and_decay()
 

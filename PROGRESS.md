@@ -99,6 +99,31 @@
 
 ## 버그 수정 이력
 
+### 2026-02-09: 전체 프리징/행 방지 대규모 최적화 (v1.0.129)
+
+**문제:** 15개 파일에서 UI 프리징, 스레드 교착, 타이트 루프, 무한 대기 등 31건의 성능/안정성 이슈 발견.
+
+**수정 (31건):**
+- **game_map.py**: RLock 추가로 스레드 안전성 확보 (mark_passable/blocked/soft_blocked, save/load 전부 보호)
+- **player_view.py**: undefined move_delay 수정, continue 전 sleep 12곳 추가, _find_nearest_frontier BFS 최적화, UI 업데이트 rate-limit, 락 타임아웃 축소 (5→2초, 3→1초), bare except 4곳 로깅 추가, _on_close sleep 축소
+- **action_player.py**: 일시정지 루프 탈출 불가 수정, _wait_for_image 타임아웃 체크, 스크린샷 로깅 경량화
+- **rule_executor.py**: 모니터링 기본 타임아웃 4시간→1시간, 스크린샷 스레드 누수 Semaphore(3) 제한, 파일체크 스레드→직접호출
+- **minimap_pathfinder.py**: A* max_iterations=5000 제한, _find_nearest_walkable BFS 최적화
+- **obstacle_avoidance.py**: BFS max_iterations=10000, DirectionMemory 1000개 초과 강제 정리
+- **map_explorer.py**: _backtrack() max_iterations=200 + 스택 클리어
+- **map_canvas.py**: 5000타일 초과 간소화 렌더링, 스레드 안전 스냅샷, 비메인스레드 차단
+- **enhanced_matcher.py**: 스크린 전처리 캐시 (shape+mean)
+- **updater.py**: SSL 폴백 전체 타임아웃 15초 캡, 다운로드 300→60초
+- **settings_view.py**: 버전체크 개별 20→8초 + 전체 20초 캡, 펌웨어체크 sleep 축소
+- **analyzer_view.py**: 위젯 파괴 O(N²)→O(N), JSON mtime 캐시, DB 쿼리 N→1 배치화
+- **recorder_view.py**: 폴링 30→10초, 적응형 인터벌
+- **screen_recorder.py**: _pause_lock으로 레이스 컨디션 해결
+- **db_manager.py**: SQLite timeout 30→10초
+- **window_position.py**: configure 이벤트 500ms 디바운스
+- **arduino_uploader.py**: 긴 작업 전 로그 + AVR 타임아웃 300→180초
+
+---
+
 ### 2026-02-09: 조건 대기 중 최종 이미지로 모니터링 탈출하는 버그 수정 (v1.0.128)
 
 **문제:** 모니터링에서 조건 이미지가 아직 있는 상태(점프 차단)인데, 최종 이미지가 화면에 나타나면 모니터링을 종료해버림. 점프가 실행되지 않아 화면 전환이 안 된 상태에서 자식 규칙이 실행 → 타겟 이미지 없음 → 300초 × 3회 = 15분 낭비.
@@ -1410,7 +1435,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-09 (조건 대기 중 최종 이미지 탈출 버그 수정)
+- 마지막 업데이트: 2026-02-09 (전체 프리징/행 방지 대규모 최적화 31건)
 
 ## 업데이트 규칙
 

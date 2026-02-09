@@ -65,7 +65,10 @@ class DatabaseManager:
         """데이터베이스 연결 컨텍스트 매니저"""
         conn = None
         try:
-            conn = sqlite3.connect(self._db_path, timeout=30.0)
+            # SQLite 연결 풀링 미사용: SQLite는 프로세스 내 파일 잠금 기반이라
+            # 커넥션 풀링이 오히려 잠금 경합 및 스레드 안전성 문제를 유발할 수 있음.
+            # 매 쿼리마다 새 연결 생성이 SQLite의 권장 패턴.
+            conn = sqlite3.connect(self._db_path, timeout=10.0)
             conn.row_factory = sqlite3.Row
             # Foreign key 제약 조건 활성화
             conn.execute("PRAGMA foreign_keys = ON")

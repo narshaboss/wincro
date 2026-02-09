@@ -549,17 +549,21 @@ class RecorderView(BaseView):
                 async_result_name = self._async_result_name
 
             if async_done is None:
-                # 최대 300회 (30초) 폴링 후 타임아웃
-                if _poll_count >= 300:
-                    logger.error("[녹화] 비동기 결과 폴링 타임아웃 (30초)")
-                    self._on_recording_start_failed_with_message("녹화 시작 타임아웃 (30초)")
+                # 최대 100회 (~10초) 폴링 후 타임아웃
+                if _poll_count >= 100:
+                    logger.error("[녹화] 비동기 결과 폴링 타임아웃 (10초)")
+                    self._on_recording_start_failed_with_message("녹화 시작 타임아웃 (10초)")
                     with self._async_lock:
                         self._async_done = None
                         self._async_error = None
                         self._async_result_name = None
                     return
-                # 아직 완료되지 않음 - 100ms 후 다시 확인
-                self.after(100, lambda: self._poll_async_result(_poll_count + 1))
+                # 적응형 폴링: 처음 20회는 100ms, 이후 200ms
+                if _poll_count < 20:
+                    interval = 100
+                else:
+                    interval = 200
+                self.after(interval, lambda: self._poll_async_result(_poll_count + 1))
                 return
 
             if async_done == "success":
@@ -654,8 +658,11 @@ class RecorderView(BaseView):
     def _iconify_window(self):
         """창 최소화 (녹화 중일 때만)"""
         if self._is_recording and not self._stopping:
-            main_window = self.winfo_toplevel()
-            main_window.iconify()
+            try:
+                main_window = self.winfo_toplevel()
+                main_window.iconify()
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _on_stop_recording(self):
         """녹화 중지"""

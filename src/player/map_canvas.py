@@ -8,11 +8,18 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Optional, Tuple, List, Set, Dict
 import math
+import threading
+import logging
 
 try:
     from .game_map import GameMap, TileInfo, DIRECTIONS_4
 except ImportError:
     from game_map import GameMap, TileInfo, DIRECTIONS_4
+
+logger = logging.getLogger(__name__)
+
+# 이 타일 수를 초과하면 개별 타일 대신 간략화된 뷰 표시
+_MAX_VISIBLE_TILES = 5000
 
 
 class MapCanvas(tk.Canvas):
@@ -179,11 +186,20 @@ class MapCanvas(tk.Canvas):
 
     def render(self):
         """맵 렌더링"""
+        # 스레드 안전: Tkinter는 메인 스레드에서만 호출 가능
+        if threading.current_thread() is not threading.main_thread():
+            logger.warning("render()가 메인 스레드가 아닌 곳에서 호출됨 — 무시")
+            return
+
         self._sync_size()
         self.delete("all")
 
-        bounds = self.game_map.get_bounds()
-        if not self.game_map.passable and not self.game_map.blocked and not self.game_map.soft_blocked:
+        # 스레드 안전 스냅샷 사용
+        passable_snap = self.game_map.get_passable_snapshot()
+        blocked_snap = self.game_map.get_blocked_snapshot()
+        soft_blocked_snap = self.game_map.get_soft_blocked_snapshot()
+
+        if not passable_snap and not blocked_snap and not soft_blocked_snap:
             self._draw_empty_message()
             return
 
@@ -198,50 +214,58 @@ class MapCanvas(tk.Canvas):
         min_tile_y = int(-self.offset_y / ts) - 2
         max_tile_y = int((self.canvas_height - self.offset_y) / ts) + 2
 
-        # 경로 셋
-        path_set = set(self.path) if self.path else set()
+        # 보이는 타일 수 추정 (대략적)
+        total_tiles = len(passable_snap) + len(blocked_snap) + len(soft_blocked_snap)
 
-        # 1. 이동 가능 타일 그리기 (스냅샷 — 실행 중 백그라운드 수정 안전)
-        for (tx, ty) in list(self.game_map.passable):
-            if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
-                continue
+        # 타일이 너무 많으면 간략화된 뷰 (경계 사각형만 표시)
+        if total_tiles > _MAX_VISIBLE_TILES:
+            self._draw_simplified_bounds(passable_snap, blocked_snap, soft_blocked_snap, ts)
+            # 경로, 순찰, 출발/도착, 플레이어, 정보는 계속 표시
+        else:
+            # 경로 셋
+            path_set = set(self.path) if self.path else set()
 
-            x1 = self.offset_x + tx * ts
-            y1 = self.offset_y + ty * ts
-            x2 = x1 + ts
-            y2 = y1 + ts
+            # 1. 이동 가능 타일 그리기 (스냅샷 — 스레드 안전)
+            for (tx, ty) in passable_snap:
+                if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
+                    continue
 
-            if (tx, ty) in path_set:
-                color = self.COLORS["path"]
-            else:
-                color = self.COLORS["explored"]
-            self.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+                x1 = self.offset_x + tx * ts
+                y1 = self.offset_y + ty * ts
+                x2 = x1 + ts
+                y2 = y1 + ts
 
-        # 2. 벽(장애물) 타일 그리기 - 빨간 박스
-        for (tx, ty) in list(self.game_map.blocked):
-            if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
-                continue
+                if (tx, ty) in path_set:
+                    color = self.COLORS["path"]
+                else:
+                    color = self.COLORS["explored"]
+                self.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
 
-            x1 = self.offset_x + tx * ts
-            y1 = self.offset_y + ty * ts
-            x2 = x1 + ts
-            y2 = y1 + ts
+            # 2. 벽(장애물) 타일 그리기 - 빨간 박스
+            for (tx, ty) in blocked_snap:
+                if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
+                    continue
 
-            self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["wall"],
-                                outline=self.COLORS["wall_border"], width=2)
+                x1 = self.offset_x + tx * ts
+                y1 = self.offset_y + ty * ts
+                x2 = x1 + ts
+                y2 = y1 + ts
 
-        # 2.5. 임시벽 타일 그리기 - 주황 박스 (스냅샷)
-        for (tx, ty) in list(self.game_map.soft_blocked):
-            if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
-                continue
+                self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["wall"],
+                                    outline=self.COLORS["wall_border"], width=2)
 
-            x1 = self.offset_x + tx * ts
-            y1 = self.offset_y + ty * ts
-            x2 = x1 + ts
-            y2 = y1 + ts
+            # 2.5. 임시벽 타일 그리기 - 주황 박스 (스냅샷)
+            for (tx, ty) in soft_blocked_snap:
+                if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
+                    continue
 
-            self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["soft_blocked"],
-                                outline=self.COLORS["soft_blocked_border"], width=1)
+                x1 = self.offset_x + tx * ts
+                y1 = self.offset_y + ty * ts
+                x2 = x1 + ts
+                y2 = y1 + ts
+
+                self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["soft_blocked"],
+                                    outline=self.COLORS["soft_blocked_border"], width=1)
 
         # 2.7. 순찰 좌표 그리기 - 검정 박스 + 번호
         for idx, (tx, ty) in enumerate(self.game_map.patrol_points):
@@ -387,6 +411,44 @@ class MapCanvas(tk.Canvas):
             self.create_text(x1 + padding, y1 + padding + i * line_height,
                            text=line, anchor="nw", font=("맑은 고딕", 9),
                            fill="#333")
+
+    def _draw_simplified_bounds(self, passable_snap, blocked_snap, soft_blocked_snap, ts):
+        """타일이 너무 많을 때 간략화된 경계 사각형만 표시"""
+        all_coords = passable_snap | blocked_snap | set(soft_blocked_snap.keys())
+        if not all_coords:
+            return
+
+        xs = [p[0] for p in all_coords]
+        ys = [p[1] for p in all_coords]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        # 탐색 영역 경계 사각형
+        x1 = self.offset_x + min_x * ts
+        y1 = self.offset_y + min_y * ts
+        x2 = self.offset_x + (max_x + 1) * ts
+        y2 = self.offset_y + (max_y + 1) * ts
+
+        self.create_rectangle(x1, y1, x2, y2,
+                            fill=self.COLORS["explored"], outline=self.COLORS["grid"], width=2)
+
+        # 벽 영역이 있으면 별도 경계
+        if blocked_snap:
+            bxs = [p[0] for p in blocked_snap]
+            bys = [p[1] for p in blocked_snap]
+            bx1 = self.offset_x + min(bxs) * ts
+            by1 = self.offset_y + min(bys) * ts
+            bx2 = self.offset_x + (max(bxs) + 1) * ts
+            by2 = self.offset_y + (max(bys) + 1) * ts
+            self.create_rectangle(bx1, by1, bx2, by2,
+                                outline=self.COLORS["wall"], width=2, dash=(4, 4))
+
+        total = len(passable_snap) + len(blocked_snap) + len(soft_blocked_snap)
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        self.create_text(cx, cy,
+                        text=f"타일 {total}개 (간략 뷰)\n줌인하면 상세 표시",
+                        font=("맑은 고딕", 11), fill="#555", justify="center")
 
     def _draw_empty_message(self):
         """빈 맵 메시지"""

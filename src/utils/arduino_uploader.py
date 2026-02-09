@@ -72,6 +72,7 @@ def download_arduino_cli(progress_callback=None) -> bool:
                 progress_callback("Arduino 코어 설치 중...")
 
             # 코어 인덱스 업데이트
+            logger.info("[Arduino] 코어 인덱스 업데이트 시작 (최대 120초 소요)...")
             update_result = subprocess.run(
                 [str(ARDUINO_CLI_EXE), "core", "update-index"],
                 capture_output=True,
@@ -82,11 +83,12 @@ def download_arduino_cli(progress_callback=None) -> bool:
                 logger.warning(f"코어 인덱스 업데이트 실패: {update_result.stderr}")
 
             # AVR 코어 설치
+            logger.info("[Arduino] AVR 코어 설치 시작 (최대 180초 소요)...")
             install_result = subprocess.run(
                 [str(ARDUINO_CLI_EXE), "core", "install", "arduino:avr"],
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=180
             )
             if install_result.returncode != 0:
                 logger.warning(f"AVR 코어 설치 실패: {install_result.stderr}")
@@ -141,6 +143,7 @@ def install_avr_core(progress_callback=None) -> bool:
             progress_callback("AVR 코어 설치 중...")
 
         # 코어 인덱스 업데이트
+        logger.info("[Arduino] 코어 인덱스 업데이트 시작 (최대 120초 소요)...")
         subprocess.run(
             [str(ARDUINO_CLI_EXE), "core", "update-index"],
             capture_output=True,
@@ -148,11 +151,12 @@ def install_avr_core(progress_callback=None) -> bool:
         )
 
         # AVR 코어 설치
+        logger.info("[Arduino] AVR 코어 설치 시작 (최대 180초 소요)...")
         result = subprocess.run(
             [str(ARDUINO_CLI_EXE), "core", "install", "arduino:avr"],
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=180
         )
 
         if result.returncode != 0:
@@ -165,11 +169,13 @@ def install_avr_core(progress_callback=None) -> bool:
         if progress_callback:
             progress_callback("HID 라이브러리 설치 중...")
 
+        logger.info("[Arduino] Mouse 라이브러리 설치 시작 (최대 120초 소요)...")
         subprocess.run(
             [str(ARDUINO_CLI_EXE), "lib", "install", "Mouse"],
             capture_output=True,
             timeout=120
         )
+        logger.info("[Arduino] Keyboard 라이브러리 설치 시작 (최대 120초 소요)...")
         subprocess.run(
             [str(ARDUINO_CLI_EXE), "lib", "install", "Keyboard"],
             capture_output=True,
@@ -217,11 +223,13 @@ def upload_firmware(port: str, progress_callback=None) -> Tuple[bool, str]:
             progress_callback("HID 라이브러리 확인 중...")
 
         try:
+            logger.info("[Arduino] Mouse 라이브러리 설치 확인 (최대 120초 소요)...")
             subprocess.run(
                 [str(ARDUINO_CLI_EXE), "lib", "install", "Mouse"],
                 capture_output=True,
                 timeout=120
             )
+            logger.info("[Arduino] Keyboard 라이브러리 설치 확인 (최대 120초 소요)...")
             subprocess.run(
                 [str(ARDUINO_CLI_EXE), "lib", "install", "Keyboard"],
                 capture_output=True,
@@ -239,7 +247,7 @@ def upload_firmware(port: str, progress_callback=None) -> Tuple[bool, str]:
         if progress_callback:
             progress_callback("펌웨어 컴파일 중...")
 
-        logger.info("펌웨어 컴파일 시작...")
+        logger.info("[Arduino] 펌웨어 컴파일 시작 (최대 120초 소요)...")
         compile_result = subprocess.run(
             [
                 str(ARDUINO_CLI_EXE),
@@ -260,7 +268,7 @@ def upload_firmware(port: str, progress_callback=None) -> Tuple[bool, str]:
         if progress_callback:
             progress_callback("펌웨어 업로드 중...")
 
-        logger.info(f"펌웨어 업로드 시작: {port}")
+        logger.info(f"[Arduino] 펌웨어 업로드 시작: {port} (최대 60초 소요)...")
         upload_result = subprocess.run(
             [
                 str(ARDUINO_CLI_EXE),

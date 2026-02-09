@@ -36,10 +36,16 @@ UPDATE_CACHE_FILE = DATA_DIR / "update_cache.json"
 UPDATE_CACHE_DURATION = 0  # 캐시 비활성화 (항상 새로 확인)
 
 
-def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
-    """SSL 폴백을 포함한 URL 열기 - 4가지 방법 시도"""
+def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10, overall_timeout: int = 15):
+    """SSL 폴백을 포함한 URL 열기 - 4가지 방법 시도 (전체 제한: overall_timeout초)"""
     req = urllib.request.Request(url, headers=headers)
     last_error = None
+    start_time = time.monotonic()
+
+    def _check_elapsed():
+        """overall_timeout 초과 시 마지막 예외를 raise"""
+        if time.monotonic() - start_time > overall_timeout:
+            raise last_error if last_error else TimeoutError("overall timeout exceeded")
 
     # 방법 1: 기본 SSL
     try:
@@ -49,6 +55,8 @@ def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
     except Exception as e1:
         last_error = e1
         logger.debug(f"SSL 방법 1 실패: {e1}")
+
+    _check_elapsed()
 
     # 방법 2: SSL 검증 완화
     try:
@@ -60,6 +68,8 @@ def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
         last_error = e2
         logger.debug(f"SSL 방법 2 실패: {e2}")
 
+    _check_elapsed()
+
     # 방법 3: SSL 컨텍스트 없이
     try:
         req = urllib.request.Request(url, headers=headers)
@@ -67,6 +77,8 @@ def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10):
     except Exception as e3:
         last_error = e3
         logger.debug(f"SSL 방법 3 실패: {e3}")
+
+    _check_elapsed()
 
     # 방법 4: 프록시 핸들러
     try:
@@ -282,7 +294,7 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
             'Accept': 'application/octet-stream'
         }
 
-        with _urlopen_with_fallback(url, headers, timeout=300) as response:
+        with _urlopen_with_fallback(url, headers, timeout=60, overall_timeout=60) as response:
             total_size = int(response.headers.get('Content-Length', 0))
             downloaded = 0
 

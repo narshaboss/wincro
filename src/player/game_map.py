@@ -6,6 +6,7 @@
 
 import json
 import logging
+import threading
 from typing import Dict, Optional, Tuple, List, Set
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class GameMap:
 
     def __init__(self, name: str = "Unknown"):
         self.name = name
+        self._lock = threading.RLock()  # 스레드 안전: passable/blocked/soft_blocked 보호
         self.passable: Set[Tuple[int, int]] = set()  # 이동 가능한 좌표
         self.blocked: Set[Tuple[int, int]] = set()   # 장애물 좌표 (영구)
         self.soft_blocked: Dict[Tuple[int, int], int] = {}  # 임시 장애물 {(x,y): fail_count}
@@ -60,11 +62,12 @@ class GameMap:
         if not self._is_valid_coord(pos[0], pos[1]):
             logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
             return
-        self.passable.add(pos)
-        # 장애물에서 제거 (혹시 잘못 등록됐으면)
-        self.blocked.discard(pos)
-        # 임시 장애물에서도 제거
-        self.soft_blocked.pop(pos, None)
+        with self._lock:
+            self.passable.add(pos)
+            # 장애물에서 제거 (혹시 잘못 등록됐으면)
+            self.blocked.discard(pos)
+            # 임시 장애물에서도 제거
+            self.soft_blocked.pop(pos, None)
         logger.debug(f"[Map] {pos} 이동 가능")
 
     def mark_blocked(self, x: int, y: int):
@@ -73,11 +76,12 @@ class GameMap:
         if not self._is_valid_coord(pos[0], pos[1]):
             logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
             return
-        self.blocked.add(pos)
-        # 이동 가능에서 제거
-        self.passable.discard(pos)
-        # 임시 장애물에서도 제거 (영구벽으로 승격됨)
-        self.soft_blocked.pop(pos, None)
+        with self._lock:
+            self.blocked.add(pos)
+            # 이동 가능에서 제거
+            self.passable.discard(pos)
+            # 임시 장애물에서도 제거 (영구벽으로 승격됨)
+            self.soft_blocked.pop(pos, None)
         logger.debug(f"[Map] {pos} 장애물!")
 
     def mark_soft_blocked(self, x: int, y: int):
@@ -85,26 +89,28 @@ class GameMap:
         pos = (int(x), int(y))
         if not self._is_valid_coord(pos[0], pos[1]):
             return
-        # 이미 영구벽이면 무시
-        if pos in self.blocked:
-            return
-        count = self.soft_blocked.get(pos, 0) + 1
-        if count >= self.SOFT_BLOCKED_PROMOTE_THRESHOLD:
-            # 영구벽으로 승격
-            self.mark_blocked(x, y)
-            logger.info(f"[Map] {pos} 임시→영구벽 승격 (실패 {count}회)")
-        else:
-            self.soft_blocked[pos] = count
-            # passable에서 제거하지 않음 — soft_blocked은 임시이므로
-            # 만료 시 passable 상태가 자동 복원됨 (A*는 soft_blocked을 별도 처리)
-            logger.debug(f"[Map] {pos} 임시 장애물 (실패 {count}회)")
+        with self._lock:
+            # 이미 영구벽이면 무시
+            if pos in self.blocked:
+                return
+            count = self.soft_blocked.get(pos, 0) + 1
+            if count >= self.SOFT_BLOCKED_PROMOTE_THRESHOLD:
+                # 영구벽으로 승격 (mark_blocked 내부에서도 _lock 재진입 - RLock이므로 안전)
+                self.mark_blocked(x, y)
+                logger.info(f"[Map] {pos} 임시→영구벽 승격 (실패 {count}회)")
+            else:
+                self.soft_blocked[pos] = count
+                # passable에서 제거하지 않음 — soft_blocked은 임시이므로
+                # 만료 시 passable 상태가 자동 복원됨 (A*는 soft_blocked을 별도 처리)
+                logger.debug(f"[Map] {pos} 임시 장애물 (실패 {count}회)")
 
     def clear_soft_blocked(self, x: int, y: int):
         """임시 장애물 해제 (이동 성공 시)"""
         pos = (int(x), int(y))
-        if pos in self.soft_blocked:
-            del self.soft_blocked[pos]
-            logger.debug(f"[Map] {pos} 임시 장애물 해제")
+        with self._lock:
+            if pos in self.soft_blocked:
+                del self.soft_blocked[pos]
+                logger.debug(f"[Map] {pos} 임시 장애물 해제")
 
     def is_soft_blocked(self, x: int, y: int) -> bool:
         """임시 장애물인지 확인"""
@@ -116,18 +122,41 @@ class GameMap:
             return 50
         return 1
 
+    # --- 스레드 안전 스냅샷 접근자 (iteration용) ---
+
+    def get_passable_snapshot(self) -> Set[Tuple[int, int]]:
+        """passable 세트의 스레드 안전 복사본 반환"""
+        with self._lock:
+            return set(self.passable)
+
+    def get_blocked_snapshot(self) -> Set[Tuple[int, int]]:
+        """blocked 세트의 스레드 안전 복사본 반환"""
+        with self._lock:
+            return set(self.blocked)
+
+    def get_soft_blocked_snapshot(self) -> Dict[Tuple[int, int], int]:
+        """soft_blocked 딕셔너리의 스레드 안전 복사본 반환"""
+        with self._lock:
+            return dict(self.soft_blocked)
+
+    def get_all_snapshots(self) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]], Dict[Tuple[int, int], int]]:
+        """passable, blocked, soft_blocked의 일관된 스냅샷을 한번에 반환"""
+        with self._lock:
+            return set(self.passable), set(self.blocked), dict(self.soft_blocked)
+
     def tick(self):
         """주기적 호출: 임시 장애물 fail_count 감소, 0 이하면 해제"""
-        expired = []
-        for pos, count in list(self.soft_blocked.items()):
-            new_count = count - 1
-            if new_count <= 0:
-                expired.append(pos)
-            else:
-                self.soft_blocked[pos] = new_count
-        for pos in expired:
-            del self.soft_blocked[pos]
-            logger.debug(f"[Map] {pos} 임시 장애물 만료")
+        with self._lock:
+            expired = []
+            for pos, count in list(self.soft_blocked.items()):
+                new_count = count - 1
+                if new_count <= 0:
+                    expired.append(pos)
+                else:
+                    self.soft_blocked[pos] = new_count
+            for pos in expired:
+                del self.soft_blocked[pos]
+                logger.debug(f"[Map] {pos} 임시 장애물 만료")
 
     def mark_walkable(self, from_x: int, from_y: int, direction: str, walkable: bool):
         """
@@ -253,7 +282,8 @@ class GameMap:
 
     def get_bounds(self) -> dict:
         """맵 경계"""
-        all_coords = self.passable | self.blocked | set(self.soft_blocked.keys())
+        with self._lock:
+            all_coords = self.passable | self.blocked | set(self.soft_blocked.keys())
         if not all_coords:
             return {"min_x": 0, "max_x": 0, "min_y": 0, "max_y": 0}
 
@@ -268,48 +298,61 @@ class GameMap:
 
     def get_statistics(self) -> dict:
         """맵 통계"""
-        # soft_blocked이 passable과 겹칠 수 있으므로 중복 제거
-        all_coords = self.passable | self.blocked | set(self.soft_blocked.keys())
+        with self._lock:
+            # soft_blocked이 passable과 겹칠 수 있으므로 중복 제거
+            all_coords = self.passable | self.blocked | set(self.soft_blocked.keys())
+            passable_count = len(self.passable)
+            blocked_count = len(self.blocked)
+            soft_blocked_count = len(self.soft_blocked)
         return {
             "name": self.name,
             "total_tiles": len(all_coords),
-            "passable_tiles": len(self.passable),
-            "blocked_tiles": len(self.blocked),
-            "soft_blocked_tiles": len(self.soft_blocked),
-            "explored_tiles": len(self.passable),  # 호환성
-            "walkable_edges": len(self.passable),   # 호환성
-            "blocked_edges": len(self.blocked),     # 호환성
+            "passable_tiles": passable_count,
+            "blocked_tiles": blocked_count,
+            "soft_blocked_tiles": soft_blocked_count,
+            "explored_tiles": passable_count,  # 호환성
+            "walkable_edges": passable_count,   # 호환성
+            "blocked_edges": blocked_count,     # 호환성
             "bounds": self.get_bounds(),
         }
 
     def is_fully_explored(self) -> bool:
         """맵 경계가 완전히 폐쇄되었는지 확인.
         모든 passable 타일의 4방향 이웃이 known(passable/blocked/soft_blocked)이면 True."""
-        if len(self.passable) < 10:
+        with self._lock:
+            passable_snap = set(self.passable)
+            blocked_snap = set(self.blocked)
+            soft_blocked_keys = set(self.soft_blocked.keys())
+        if len(passable_snap) < 10:
             return False
-        for (x, y) in self.passable:
+        for (x, y) in passable_snap:
             for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                 neighbor = (x + dx, y + dy)
-                if neighbor not in self.passable and \
-                   neighbor not in self.blocked and \
-                   neighbor not in self.soft_blocked:
+                if neighbor not in passable_snap and \
+                   neighbor not in blocked_snap and \
+                   neighbor not in soft_blocked_keys:
                     return False
         return True
 
     def save(self, filepath: str):
-        """JSON 저장 (스레드 안전: 스냅샷 후 직렬화)"""
-        # 스냅샷으로 복사 — 다른 스레드의 동시 수정으로 인한 RuntimeError 방지
-        passable_snapshot = list(self.passable)
-        blocked_snapshot = list(self.blocked)
-        soft_blocked_snapshot = dict(self.soft_blocked)
+        """JSON 저장 (스레드 안전: lock 내에서 스냅샷 후, lock 밖에서 파일 I/O)"""
+        with self._lock:
+            passable_snapshot = list(self.passable)
+            blocked_snapshot = list(self.blocked)
+            soft_blocked_snapshot = dict(self.soft_blocked)
+            patrol_snapshot = list(self.patrol_points)
+            start_snap = self.start_pos
+            end_snap = self.end_pos
+            name_snap = self.name
+
         data = {
-            "name": self.name,
+            "name": name_snap,
             "passable": [list(p) for p in passable_snapshot],
             "blocked": [list(p) for p in blocked_snapshot],
             "soft_blocked": {f"{p[0]},{p[1]}": c for p, c in soft_blocked_snapshot.items()},
-            "patrol_points": [list(p) for p in self.patrol_points],
-            "start_pos": list(self.start_pos) if self.start_pos else None,
-            "end_pos": list(self.end_pos) if self.end_pos else None,
+            "patrol_points": [list(p) for p in patrol_snapshot],
+            "start_pos": list(start_snap) if start_snap else None,
+            "end_pos": list(end_snap) if end_snap else None,
         }
 
         path = Path(filepath)
@@ -318,10 +361,10 @@ class GameMap:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"[Map] 저장: {filepath} (이동가능 {len(self.passable)}개, 장애물 {len(self.blocked)}개, 임시벽 {len(self.soft_blocked)}개)")
+        logger.info(f"[Map] 저장: {filepath} (이동가능 {len(passable_snapshot)}개, 장애물 {len(blocked_snapshot)}개, 임시벽 {len(soft_blocked_snapshot)}개)")
 
     def load(self, filepath: str) -> bool:
-        """JSON 로드"""
+        """JSON 로드 (파일 I/O는 lock 밖, 데이터 할당은 lock 안)"""
         path = Path(filepath)
         if not path.exists():
             return False
@@ -330,82 +373,94 @@ class GameMap:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            self.name = data.get("name", "Unknown")
-            self.passable = set(tuple(p) for p in data.get("passable", []))
-            self.blocked = set(tuple(p) for p in data.get("blocked", []))
-            # soft_blocked 로드 (하위 호환: 없으면 빈 dict)
+            # 파싱은 lock 밖에서 수행
+            new_name = data.get("name", "Unknown")
+            new_passable = set(tuple(p) for p in data.get("passable", []))
+            new_blocked = set(tuple(p) for p in data.get("blocked", []))
             raw_sb = data.get("soft_blocked", {})
-            self.soft_blocked = {}
+            new_soft_blocked = {}
             for key, count in raw_sb.items():
                 parts = key.split(",")
                 pos = (int(parts[0]), int(parts[1]))
-                self.soft_blocked[pos] = count
-            # 순찰 좌표 로드 (하위 호환)
-            self.patrol_points = [tuple(p) for p in data.get("patrol_points", [])]
-            # 출발지/도착지 로드 (하위 호환)
+                new_soft_blocked[pos] = count
+            new_patrol = [tuple(p) for p in data.get("patrol_points", [])]
             sp = data.get("start_pos")
-            self.start_pos = tuple(sp) if sp else None
+            new_start = tuple(sp) if sp else None
             ep = data.get("end_pos")
-            self.end_pos = tuple(ep) if ep else None
+            new_end = tuple(ep) if ep else None
 
-            logger.info(f"[Map] 로드: {filepath} (이동가능 {len(self.passable)}개, 장애물 {len(self.blocked)}개, 순찰 {len(self.patrol_points)}개)")
+            # 데이터 할당은 lock 안에서 원자적으로
+            with self._lock:
+                self.name = new_name
+                self.passable = new_passable
+                self.blocked = new_blocked
+                self.soft_blocked = new_soft_blocked
+                self.patrol_points = new_patrol
+                self.start_pos = new_start
+                self.end_pos = new_end
+
+            logger.info(f"[Map] 로드: {filepath} (이동가능 {len(new_passable)}개, 장애물 {len(new_blocked)}개, 순찰 {len(new_patrol)}개)")
             return True
         except Exception as e:
             logger.error(f"[Map] 로드 실패: {e}")
             return False
 
     def load_and_merge(self, filepath: str) -> bool:
-        """JSON 로드 후 병합 (데이터 누적)"""
+        """JSON 로드 후 병합 (파일 I/O는 lock 밖, 병합은 lock 안)"""
         path = Path(filepath)
         if not path.exists():
             return False
 
         try:
+            # 파일 I/O와 파싱은 lock 밖에서 수행
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            if self.name == "Unknown":
-                self.name = data.get("name", "Unknown")
-
-            # 기존 데이터에 추가
             loaded_passable = set(tuple(p) for p in data.get("passable", []))
             loaded_blocked = set(tuple(p) for p in data.get("blocked", []))
-            # soft_blocked 로드
             raw_sb = data.get("soft_blocked", {})
             loaded_soft_blocked = {}
             for key, count in raw_sb.items():
                 parts = key.split(",")
                 pos = (int(parts[0]), int(parts[1]))
                 loaded_soft_blocked[pos] = count
-
-            before = len(self.passable) + len(self.blocked)
-
-            # 병합: 현재 메모리 상태 우선 (실행 중 발견한 벽/이동가능이 파일보다 최신)
-            self.passable |= (loaded_passable - self.blocked)
-            self.blocked |= (loaded_blocked - self.passable)
-            # soft_blocked 병합: 더 높은 fail_count 유지
-            for pos, count in loaded_soft_blocked.items():
-                existing = self.soft_blocked.get(pos, 0)
-                self.soft_blocked[pos] = max(existing, count)
-
-            # soft_blocked도 passable/blocked와 충돌 해결
-            for pos in list(self.soft_blocked.keys()):
-                if pos in self.passable or pos in self.blocked:
-                    del self.soft_blocked[pos]
-
-            # 순찰 좌표 병합 (없으면 가져옴)
             loaded_patrol = [tuple(p) for p in data.get("patrol_points", [])]
-            if loaded_patrol and not self.patrol_points:
-                self.patrol_points = loaded_patrol
-            # 출발지/도착지 병합 (없으면 가져옴)
             sp = data.get("start_pos")
-            if sp and not self.start_pos:
-                self.start_pos = tuple(sp)
+            loaded_start = tuple(sp) if sp else None
             ep = data.get("end_pos")
-            if ep and not self.end_pos:
-                self.end_pos = tuple(ep)
+            loaded_end = tuple(ep) if ep else None
+            loaded_name = data.get("name", "Unknown")
 
-            after = len(self.passable) + len(self.blocked)
+            # 병합은 lock 안에서 원자적으로
+            with self._lock:
+                if self.name == "Unknown":
+                    self.name = loaded_name
+
+                before = len(self.passable) + len(self.blocked)
+
+                # 병합: 현재 메모리 상태 우선 (실행 중 발견한 벽/이동가능이 파일보다 최신)
+                self.passable |= (loaded_passable - self.blocked)
+                self.blocked |= (loaded_blocked - self.passable)
+                # soft_blocked 병합: 더 높은 fail_count 유지
+                for pos, count in loaded_soft_blocked.items():
+                    existing = self.soft_blocked.get(pos, 0)
+                    self.soft_blocked[pos] = max(existing, count)
+
+                # soft_blocked도 passable/blocked와 충돌 해결
+                for pos in list(self.soft_blocked.keys()):
+                    if pos in self.passable or pos in self.blocked:
+                        del self.soft_blocked[pos]
+
+                # 순찰 좌표 병합 (없으면 가져옴)
+                if loaded_patrol and not self.patrol_points:
+                    self.patrol_points = loaded_patrol
+                # 출발지/도착지 병합 (없으면 가져옴)
+                if loaded_start and not self.start_pos:
+                    self.start_pos = loaded_start
+                if loaded_end and not self.end_pos:
+                    self.end_pos = loaded_end
+
+                after = len(self.passable) + len(self.blocked)
 
             logger.info(f"[Map] 병합: {before}개 → {after}개")
             return True
@@ -417,38 +472,39 @@ class GameMap:
         """이상치(다른 맵에서 오염된 좌표) 자동 제거.
         가장 큰 좌표 클러스터만 남기고 나머지 삭제.
         Returns: 제거된 타일 수"""
-        all_coords = list(self.passable | self.blocked | set(self.soft_blocked.keys()))
-        if len(all_coords) < 10:
-            return 0
+        with self._lock:
+            all_coords = list(self.passable | self.blocked | set(self.soft_blocked.keys()))
+            if len(all_coords) < 10:
+                return 0
 
-        # X, Y 각각에서 메인 범위 찾기 (gap 기반)
-        xs = sorted(set(p[0] for p in all_coords))
-        ys = sorted(set(p[1] for p in all_coords))
+            # X, Y 각각에서 메인 범위 찾기 (gap 기반)
+            xs = sorted(set(p[0] for p in all_coords))
+            ys = sorted(set(p[1] for p in all_coords))
 
-        min_x, max_x = self._find_main_cluster(xs)
-        min_y, max_y = self._find_main_cluster(ys)
+            min_x, max_x = self._find_main_cluster(xs)
+            min_y, max_y = self._find_main_cluster(ys)
 
-        # 패딩 추가
-        pad = 2
-        min_x -= pad
-        max_x += pad
-        min_y -= pad
-        max_y += pad
+            # 패딩 추가
+            pad = 2
+            min_x -= pad
+            max_x += pad
+            min_y -= pad
+            max_y += pad
 
-        # 범위 밖 타일 제거
-        removed = 0
-        for pos in list(self.passable):
-            if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
-                self.passable.discard(pos)
-                removed += 1
-        for pos in list(self.blocked):
-            if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
-                self.blocked.discard(pos)
-                removed += 1
-        for pos in list(self.soft_blocked.keys()):
-            if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
-                del self.soft_blocked[pos]
-                removed += 1
+            # 범위 밖 타일 제거
+            removed = 0
+            for pos in list(self.passable):
+                if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
+                    self.passable.discard(pos)
+                    removed += 1
+            for pos in list(self.blocked):
+                if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
+                    self.blocked.discard(pos)
+                    removed += 1
+            for pos in list(self.soft_blocked.keys()):
+                if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
+                    del self.soft_blocked[pos]
+                    removed += 1
 
         if removed > 0:
             logger.info(f"[Map] 이상치 정리: {removed}개 타일 제거 (범위: X[{min_x}~{max_x}] Y[{min_y}~{max_y}])")
@@ -484,10 +540,11 @@ class GameMap:
 
     def clear(self):
         """초기화"""
-        self.passable.clear()
-        self.blocked.clear()
-        self.soft_blocked.clear()
-        self.patrol_points.clear()
+        with self._lock:
+            self.passable.clear()
+            self.blocked.clear()
+            self.soft_blocked.clear()
+            self.patrol_points.clear()
         logger.info("[Map] 초기화")
 
 

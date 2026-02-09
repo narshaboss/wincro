@@ -1213,6 +1213,7 @@ class SettingsView(BaseView):
         import ssl
         import json
         import socket
+        import time
 
         try:
             # 캐싱된 업데이트 체크 사용 (API 제한 방지)
@@ -1240,57 +1241,68 @@ class SettingsView(BaseView):
 
             data = None
             last_error = None
+            _fallback_start = time.monotonic()
+            _FALLBACK_OVERALL_TIMEOUT = 20  # 전체 폴백 제한 (초)
 
             # 방법 1: 기본 SSL 컨텍스트
             try:
                 logger.debug("방법 1: 기본 SSL 컨텍스트 시도")
                 ssl_context = ssl.create_default_context()
                 req = urllib.request.Request(api_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                     data = json.loads(response.read().decode())
                 logger.info("방법 1 성공")
             except Exception as e1:
                 last_error = e1
                 logger.warning(f"방법 1 실패: {e1}")
 
-                # 방법 2: SSL 검증 완화
-                try:
-                    logger.debug("방법 2: SSL 검증 완화 시도")
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
-                    req = urllib.request.Request(api_url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
-                        data = json.loads(response.read().decode())
-                    logger.info("방법 2 성공")
-                except Exception as e2:
-                    last_error = e2
-                    logger.warning(f"방법 2 실패: {e2}")
-
-                    # 방법 3: SSL 컨텍스트 없이 시도
+                if time.monotonic() - _fallback_start < _FALLBACK_OVERALL_TIMEOUT:
+                    # 방법 2: SSL 검증 완화
                     try:
-                        logger.debug("방법 3: SSL 컨텍스트 없이 시도")
+                        logger.debug("방법 2: SSL 검증 완화 시도")
+                        ssl_context = ssl.create_default_context()
+                        ssl_context.check_hostname = False
+                        ssl_context.verify_mode = ssl.CERT_NONE
                         req = urllib.request.Request(api_url, headers=headers)
-                        with urllib.request.urlopen(req, timeout=20) as response:
+                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                             data = json.loads(response.read().decode())
-                        logger.info("방법 3 성공")
-                    except Exception as e3:
-                        last_error = e3
-                        logger.warning(f"방법 3 실패: {e3}")
+                        logger.info("방법 2 성공")
+                    except Exception as e2:
+                        last_error = e2
+                        logger.warning(f"방법 2 실패: {e2}")
 
-                        # 방법 4: 프록시 환경변수 확인 후 시도
-                        try:
-                            import os
-                            logger.debug("방법 4: 프록시 설정 확인")
-                            proxy_handler = urllib.request.ProxyHandler()
-                            opener = urllib.request.build_opener(proxy_handler)
-                            req = urllib.request.Request(api_url, headers=headers)
-                            with opener.open(req, timeout=20) as response:
-                                data = json.loads(response.read().decode())
-                            logger.info("방법 4 성공")
-                        except Exception as e4:
-                            last_error = e4
-                            logger.error(f"방법 4 실패: {e4}")
+                        if time.monotonic() - _fallback_start < _FALLBACK_OVERALL_TIMEOUT:
+                            # 방법 3: SSL 컨텍스트 없이 시도
+                            try:
+                                logger.debug("방법 3: SSL 컨텍스트 없이 시도")
+                                req = urllib.request.Request(api_url, headers=headers)
+                                with urllib.request.urlopen(req, timeout=8) as response:
+                                    data = json.loads(response.read().decode())
+                                logger.info("방법 3 성공")
+                            except Exception as e3:
+                                last_error = e3
+                                logger.warning(f"방법 3 실패: {e3}")
+
+                                if time.monotonic() - _fallback_start < _FALLBACK_OVERALL_TIMEOUT:
+                                    # 방법 4: 프록시 환경변수 확인 후 시도
+                                    try:
+                                        import os
+                                        logger.debug("방법 4: 프록시 설정 확인")
+                                        proxy_handler = urllib.request.ProxyHandler()
+                                        opener = urllib.request.build_opener(proxy_handler)
+                                        req = urllib.request.Request(api_url, headers=headers)
+                                        with opener.open(req, timeout=8) as response:
+                                            data = json.loads(response.read().decode())
+                                        logger.info("방법 4 성공")
+                                    except Exception as e4:
+                                        last_error = e4
+                                        logger.error(f"방법 4 실패: {e4}")
+                                else:
+                                    logger.warning("전체 폴백 시간 초과, 방법 4 건너뜀")
+                        else:
+                            logger.warning("전체 폴백 시간 초과, 방법 3-4 건너뜀")
+                else:
+                    logger.warning("전체 폴백 시간 초과, 방법 2-4 건너뜀")
 
             # 결과 처리
             if data:
@@ -2903,7 +2915,7 @@ del "%~f0"
             ser.flush()
 
             import time
-            time.sleep(0.3)
+            time.sleep(0.1)
 
             if ser.in_waiting:
                 response = ser.readline().decode().strip()

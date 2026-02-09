@@ -126,7 +126,7 @@ def apply_window_position(window, window_id: str) -> bool:
 
 def bind_window_position_save(window, window_id: str):
     """
-    창 이동 시 자동 저장 바인딩
+    창 이동 시 자동 저장 바인딩 (500ms 디바운스 적용)
 
     Args:
         window: Tkinter 창 객체
@@ -135,19 +135,32 @@ def bind_window_position_save(window, window_id: str):
     def on_configure(event):
         # 창이 표시된 후에만 저장 (초기 위치 설정 제외)
         if hasattr(window, '_position_initialized') and window._position_initialized:
-            try:
-                x = window.winfo_x()
-                y = window.winfo_y()
-                # 유효한 위치인 경우만 저장
-                if x >= 0 and y >= 0:
-                    save_window_position(window_id, x, y)
-            except (tk.TclError, RuntimeError, OSError):
-                pass
+            # 기존 예약된 저장이 있으면 취소 (디바운스)
+            if hasattr(window, '_position_save_timer') and window._position_save_timer is not None:
+                try:
+                    window.after_cancel(window._position_save_timer)
+                except (tk.TclError, ValueError):
+                    pass
+            # 500ms 후 저장 예약 (드래그 중 매 이벤트마다 디스크 I/O 방지)
+            window._position_save_timer = window.after(500, lambda: _do_save_position(window, window_id))
+
+    def _do_save_position(win, wid):
+        try:
+            x = win.winfo_x()
+            y = win.winfo_y()
+            # 유효한 위치인 경우만 저장
+            if x >= 0 and y >= 0:
+                save_window_position(wid, x, y)
+        except (tk.TclError, RuntimeError, OSError):
+            pass
+        finally:
+            win._position_save_timer = None
 
     def mark_initialized():
         window._position_initialized = True
 
     window._position_initialized = False
+    window._position_save_timer = None
     window.bind("<Configure>", on_configure)
     # 약간의 지연 후 초기화 완료 표시 (초기 위치 설정이 끝난 후)
     window.after(500, mark_initialized)

@@ -55,13 +55,15 @@ class AStarPathfinder:
             return self.grid[y, x] == 1
         return False
 
-    def find_path(self, start: Tuple[int, int], goal: Tuple[int, int]) -> List[Tuple[int, int]]:
+    def find_path(self, start: Tuple[int, int], goal: Tuple[int, int],
+                  max_iterations: int = 5000) -> List[Tuple[int, int]]:
         """
         A* 알고리즘으로 최단 경로 탐색
 
         Args:
             start: 시작 좌표 (x, y)
             goal: 목표 좌표 (x, y)
+            max_iterations: 최대 반복 횟수 (무한 루프 방지)
 
         Returns:
             경로 좌표 리스트 [(x1,y1), (x2,y2), ...] 또는 빈 리스트
@@ -95,7 +97,13 @@ class AStarPathfinder:
         g_score = {start: 0}
         f_score = {start: self._heuristic(start, goal)}
 
+        iterations = 0
         while open_set:
+            iterations += 1
+            if iterations > max_iterations:
+                logger.warning(f"[A*] 최대 반복 초과 ({max_iterations}): {start} → {goal}")
+                return []
+
             _, _, current = heapq.heappop(open_set)
 
             if current == goal:
@@ -129,15 +137,25 @@ class AStarPathfinder:
         return []
 
     def _find_nearest_walkable(self, pos: Tuple[int, int], max_search: int = 20) -> Optional[Tuple[int, int]]:
-        """주변에서 가장 가까운 이동 가능 지점 찾기"""
+        """주변에서 가장 가까운 이동 가능 지점 찾기 (BFS)"""
+        from collections import deque
         x, y = pos
-        for r in range(1, max_search + 1):
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    if abs(dx) == r or abs(dy) == r:
-                        nx, ny = x + dx, y + dy
-                        if self._is_valid(nx, ny):
-                            return (nx, ny)
+        visited = {(x, y)}
+        queue = deque([(x, y, 0)])
+
+        while queue:
+            cx, cy, dist = queue.popleft()
+            if dist > max_search:
+                break
+            # 시작점이 아닌 유효한 타일을 찾으면 반환
+            if (cx, cy) != (x, y) and self._is_valid(cx, cy):
+                return (cx, cy)
+            for dx, dy in self.DIRECTIONS:
+                nx, ny = cx + dx, cy + dy
+                if (nx, ny) not in visited and 0 <= nx < self.width and 0 <= ny < self.height:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny, dist + 1))
+
         return None
 
 

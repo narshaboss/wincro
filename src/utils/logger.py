@@ -109,9 +109,9 @@ class LoggerManager:
         file_handler.setFormatter(logging.Formatter(DETAILED_FORMAT))
 
         # 콘솔 핸들러
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(ColoredFormatter(DEFAULT_FORMAT))
+        self._console_handler = logging.StreamHandler(sys.stdout)
+        self._console_handler.setLevel(logging.INFO)
+        self._console_handler.setFormatter(ColoredFormatter(DEFAULT_FORMAT))
 
         # QueueHandler + QueueListener 설정 (멀티스레드 안전)
         self._log_queue = queue.Queue(-1)  # 무제한 큐
@@ -122,7 +122,7 @@ class LoggerManager:
         self._queue_listener = QueueListener(
             self._log_queue,
             file_handler,
-            console_handler,
+            self._console_handler,
             respect_handler_level=True
         )
         self._queue_listener.start()
@@ -160,10 +160,8 @@ class LoggerManager:
             level: 로그 레벨
         """
         log_level = LOG_LEVELS.get(level.upper(), logging.INFO)
-        root_logger = logging.getLogger()
-        for handler in root_logger.handlers:
-            if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
-                handler.setLevel(log_level)
+        if hasattr(self, '_console_handler'):
+            self._console_handler.setLevel(log_level)
 
     def add_file_handler(
         self,

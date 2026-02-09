@@ -727,43 +727,18 @@ class ActionPlayer:
                         elapsed = time.time() - start_wait_time
                         if elapsed > timeout:
                             break
+                    # After pause loop - check if we should exit
+                    if self._state == PlayerState.STOPPED:
+                        return False, "중지됨"
 
                     locations = self._find_all_images_on_screen(action.target_image, confidence)
                     if not locations:
-                        # 5초마다 대기 상태 및 최고 매칭 점수 로그
-                        if int(elapsed) % 5 == 0 and int(elapsed) > 0:
-                            # 현재 최고 매칭 점수 확인
-                            screenshot = None
-                            screenshot_np = None
-                            screenshot_gray = None
-                            template = None
-                            template_gray = None
-                            result = None
-                            try:
-                                screenshot = ImageGrab.grab()
-                                screenshot_np = np.array(screenshot)
-                                screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
-                                # 한글 경로 지원
-                                img_arr = np.fromfile(action.target_image, np.uint8)
-                                template = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                                if template is not None:
-                                    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-                                    # 크기 체크
-                                    scr_h, scr_w = screenshot_gray.shape[:2]
-                                    tpl_h, tpl_w = template_gray.shape[:2]
-                                    if tpl_h <= scr_h and tpl_w <= scr_w:
-                                        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-                                        _, max_val, _, _ = cv2.minMaxLoc(result)
-                                        logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name}, 최고점수={max_val:.3f}, 임계값={confidence}")
-                                    else:
-                                        logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name} (템플릿 크기 초과)")
-                                else:
-                                    logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name}")
-                            except Exception:
-                                logger.info(f"조건 이미지 대기 중... ({int(elapsed)}초/{int(timeout)}초): {Path(action.target_image).name}")
-                            finally:
-                                # 메모리 해제 (저사양 PC 지원)
-                                del screenshot, screenshot_np, screenshot_gray, template, template_gray, result
+                        # 10초마다 간단한 대기 상태 로그 (스크린샷 없이)
+                        elapsed_int = int(elapsed)
+                        if elapsed_int % 10 == 0 and elapsed_int > 0:
+                            if not hasattr(self, '_last_wait_log_time') or self._last_wait_log_time != elapsed_int:
+                                logger.debug(f"이미지 대기 중: {elapsed_int}초/{int(timeout)}초 - {Path(action.target_image).name}")
+                                self._last_wait_log_time = elapsed_int
                         time.sleep(0.5)  # 0.5초마다 재검색
 
                 if not locations:
@@ -923,6 +898,12 @@ class ActionPlayer:
                 time.sleep(0.1)
                 if self._state == PlayerState.STOPPED:
                     return False, "중지됨"
+                # 타임아웃 체크
+                if time.time() - start_time > timeout:
+                    break
+            # After pause loop - check if we should exit
+            if self._state == PlayerState.STOPPED:
+                return False, "중지됨"
 
             # 화면 캡처 및 이미지 매칭
             screen = None
