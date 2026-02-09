@@ -90,7 +90,7 @@ MIN_WAIT_SECONDS = 0.8            # 최소 대기 시간 (초)
 MIN_MOUSE_DURATION = 0.4          # 최소 마우스 이동 시간 (초)
 INTERVENTION_DISTANCE_PX = 50     # 사용자 개입 감지 거리 (픽셀)
 NEXT_SCREEN_CONFIDENCE = 0.45     # 다음 화면 대기 신뢰도
-EXECUTION_TIMEOUT = 300.0         # 실행 타임아웃 (초, 5분)
+EXECUTION_TIMEOUT = 0             # 이미지 타임아웃 없음 (stop_event로만 중지)
 MAX_MOVE_ATTEMPTS = 10            # 마우스 이동 최대 재시도
 
 # 성능 최적화용 캐시
@@ -875,21 +875,20 @@ class RuleExecutor:
 
         # trigger_image가 설정되어 있으면 해당 이미지가 나타날 때까지 대기
         if rule.trigger_image:
-            timeout = rule.timeout if rule.timeout > 0 else 30.0
             trigger_confidence = rule.confidence if rule.confidence > 0 else 0.65
             step_prefix = f"[{step_num}] " if step_num else ""
-            logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중...{_RESET}")
+            logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중... (무제한){_RESET}")
             self._update_progress(f"{step_prefix}트리거 대기 중: {rule.description}")
 
-            # 새로운 단순화된 트리거 대기
+            # 트리거 대기 (타임아웃 없음 - stop_event로만 중지)
             trigger_location = self._wait_for_trigger(
                 rule.trigger_image,
                 confidence=trigger_confidence,
-                timeout=timeout
+                timeout=0
             )
 
             if trigger_location is None:
-                return self._make_result(rule, False, f"트리거 이미지 타임아웃 ({timeout}초)", start_time)
+                return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
 
             # 트리거 발견 후 클릭 준비 (포커스 확보)
             self._prepare_for_click_after_trigger()
@@ -959,10 +958,10 @@ class RuleExecutor:
                     max_wait_time = next_wait
                     logger.info(f"{_YELLOW}{step_prefix}⏳ 다음 화면 확인 중... ({max_wait_time:.0f}초){_RESET}")
                 else:
-                    max_wait_time = EXECUTION_TIMEOUT
-                    logger.info(f"{_YELLOW}{step_prefix}⏳ 다음 화면 확인 중...{_RESET}")
+                    max_wait_time = 0  # 무제한 대기
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ 다음 화면 확인 중... (무제한){_RESET}")
 
-                while waited < max_wait_time:
+                while max_wait_time <= 0 or waited < max_wait_time:
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
@@ -1151,9 +1150,8 @@ class RuleExecutor:
                     found_image = None
                     wait_count = 0
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
-                    # 무한 대기 방지: 최대 300초(5분) 타임아웃 설정
-                    max_wait_timeout = EXECUTION_TIMEOUT
-                    skip_timeout = rule.wait_after if skip_on_not_found else max_wait_timeout
+                    # 스킵 모드: wait_after 타임아웃 적용 / 일반: 무제한 대기
+                    skip_timeout = rule.wait_after if skip_on_not_found else 0
                     search_start = time.time()
                     if skip_on_not_found:
                         logger.debug(f"  [DEBUG] 현재액션 스킵설정: wait_after={rule.wait_after}초")
@@ -1164,15 +1162,12 @@ class RuleExecutor:
                         if self._stop_event.is_set():
                             return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                        # 타임아웃 체크: 대기시간 초과시 스킵 또는 실패
-                        elapsed = time.time() - search_start
-                        if elapsed >= skip_timeout:
-                            if skip_on_not_found:
+                        # 스킵 모드일 때만 타임아웃 체크
+                        if skip_on_not_found and skip_timeout > 0:
+                            elapsed = time.time() - search_start
+                            if elapsed >= skip_timeout:
                                 logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵){_RESET}")
                                 return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
-                            else:
-                                logger.error(f"{_RED}{self._step_prefix}✗ 타임아웃: 이미지를 찾지 못함 ({max_wait_timeout:.0f}초 대기){_RESET}")
-                                return self._make_result(rule, False, f"타임아웃: 이미지 없음 ({max_wait_timeout:.0f}초 대기)", start_time)
 
                         # 일시정지 대기
                         if self._wait_for_resume():
@@ -1184,12 +1179,10 @@ class RuleExecutor:
                             if self._stop_event.is_set():
                                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                        # 검색 전 마우스 이동 (hover/커서 간섭 방지)
-                        # move_mouse_before_search 설정이거나, 30초 이상 못 찾으면 자동으로 마우스 치움
+                        # 검색 전 마우스 이동 (hover 효과 방지)
                         mouse_moved_for_search = False
                         original_mouse_pos = None
-                        should_move_mouse = getattr(rule, 'move_mouse_before_search', False) or elapsed > 30
-                        if should_move_mouse:
+                        if getattr(rule, 'move_mouse_before_search', False):
                             try:
                                 original_mouse_pos = pyautogui.position()
                                 # 화면 왼쪽 하단으로 이동
@@ -1239,9 +1232,7 @@ class RuleExecutor:
                             if wait_count % 20 == 1:  # 10초마다 로그
                                 remaining = skip_timeout - elapsed
                                 skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
-                                max_score = getattr(self, '_last_max_match_score', 0)
-                                score_info = f" [최고:{max_score:.0%}]" if max_score > 0.3 else ""
-                                logger.info(f"{_YELLOW}{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{score_info}{skip_info}{_RESET}")
+                                logger.info(f"{_YELLOW}{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{skip_info}{_RESET}")
                             time.sleep(0.5)  # 0.5초마다 재검색
 
                     # 찾은 이미지 이름
@@ -1477,25 +1468,25 @@ class RuleExecutor:
         start_time = time.time()
         check_interval = 0.5
 
-        while time.time() - start_time < timeout:
+        while True:
             if self._stop_event.is_set():
                 return (False, "실행 중지됨")
+
+            # 타임아웃 설정 시에만 체크 (timeout > 0)
+            if timeout > 0 and (time.time() - start_time) >= timeout:
+                mode = "사라짐" if disappear else "나타남"
+                return (False, f"타임아웃: 이미지 {mode} 대기 실패 ({timeout}초)")
 
             location = self._find_image_on_screen(image_path, confidence)
 
             if disappear:
-                # 이미지가 사라질 때까지 대기
                 if location is None:
                     return (True, "이미지가 사라졌습니다")
             else:
-                # 이미지가 나타날 때까지 대기
                 if location is not None:
                     return (True, "이미지가 나타났습니다")
 
             time.sleep(check_interval)
-
-        mode = "사라짐" if disappear else "나타남"
-        return (False, f"타임아웃: 이미지 {mode} 대기 실패 ({timeout}초)")
 
     def _type_text_with_clipboard(self, text: str, typing_random: bool = False,
                                     typing_delay: float = 0.1, typing_delay_range: float = 0.05) -> None:
@@ -1657,20 +1648,33 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # 마스크 매칭 (Otsu 이진화로 전경만 비교)
-            from ..analyzer.template_matcher import TemplateMatcher
-            mask_matcher = TemplateMatcher()
-            result = mask_matcher.match_binary(screenshot_bgr, image_path, threshold=confidence)
-            logger.debug(f"[이미지 검색] 마스크매칭: found={result.found}, conf={result.confidence:.2f}, 설정={confidence:.2f}")
+            # TM_CCOEFF_NORMED 매칭 (v1.0.108 방식 — 오탐률 낮음)
+            template = cv2.imread(image_path)
+            if template is None:
+                logger.warning(f"템플릿 로드 실패: {Path(image_path).name}")
+                return None
 
-            if result.found and result.confidence >= confidence:
-                final_x = result.center_x + region_offset_x
-                final_y = result.center_y + region_offset_y
-                return (final_x, final_y, result.confidence)
+            if len(template.shape) == 3:
+                tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            else:
+                tmpl_gray = template
+            screen_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
 
-            # 실패 - 이유 로깅
-            if result.found:
-                logger.debug(f"[이미지 검색] 인식률 부족: {result.confidence:.1%} < 설정 {confidence:.1%} - {Path(image_path).name}")
+            th, tw = tmpl_gray.shape[:2]
+            sh, sw = screen_gray.shape[:2]
+            if tw > sw or th > sh:
+                return None
+
+            result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            logger.debug(f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f} - {Path(image_path).name}")
+
+            if max_val >= confidence:
+                final_x = max_loc[0] + tw // 2 + region_offset_x
+                final_y = max_loc[1] + th // 2 + region_offset_y
+                return (final_x, final_y, max_val)
+
             return None
 
         except Exception as e:
@@ -1716,13 +1720,18 @@ class RuleExecutor:
 
             template_gray, h, w = cached
 
-            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name}{_RESET}")
+            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name} (무제한){_RESET}")
 
             waited = 0.0
             check_interval = 0.2
 
-            while waited < timeout:
+            while True:
                 if self._stop_event.is_set():
+                    return None
+
+                # 타임아웃 설정 시에만 체크 (timeout > 0)
+                if timeout > 0 and waited >= timeout:
+                    logger.error(f"{_RED}[트리거] ✗ 타임아웃 ({timeout}초){_RESET}")
                     return None
 
                 # 일시정지 체크
@@ -1766,11 +1775,8 @@ class RuleExecutor:
                 time.sleep(check_interval)
                 waited += check_interval
 
-                if waited % 5 < check_interval and waited > 0:
+                if waited % 10 < check_interval and waited > 0:
                     logger.info(f"{_YELLOW}⏳ 트리거 대기 중... {waited:.0f}초{_RESET}")
-
-            logger.error(f"{_RED}[트리거] ✗ 타임아웃 ({timeout}초){_RESET}")
-            return None
 
         except Exception as e:
             logger.error(f"[트리거] 오류: {e}")
@@ -1914,13 +1920,10 @@ class RuleExecutor:
 
             # 최고 매칭 점수 확인
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-            self._last_max_match_score = max_val
 
             # 임계값 이상인 모든 위치 찾기
             locations = []
             loc = np.where(result >= confidence)
-            if not loc[0].size and max_val > 0.3:
-                logger.debug(f"  [매칭] {Path(image_path).name}: 최고={max_val:.3f} < 임계값={confidence:.2f}")
 
             for pt in zip(*loc[::-1]):
                 found_x = pt[0] + w // 2 + roi_offset_x

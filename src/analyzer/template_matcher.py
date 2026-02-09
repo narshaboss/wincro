@@ -272,8 +272,19 @@ class TemplateMatcher:
             kernel = np.ones((2, 2), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=1)
 
-            # TM_SQDIFF_NORMED + mask: 차이가 클수록 벌점 (0=완벽, 1=최악)
-            result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED, mask=mask)
+            # 마스크 커버리지 검증: 너무 적으면 마스크 매칭이 불안정 → 마스크 없이 매칭
+            total_pixels = mask.shape[0] * mask.shape[1]
+            mask_pixels = int(np.count_nonzero(mask))
+            mask_ratio = mask_pixels / total_pixels if total_pixels > 0 else 0
+
+            if mask_ratio < 0.15 or mask_pixels < 200:
+                # 마스크 픽셀이 15% 미만이거나 200개 미만 → 마스크 없이 일반 매칭
+                logger.debug(f"[마스크매칭] 마스크 커버리지 낮음 ({mask_ratio:.1%}, {mask_pixels}px) → 마스크 없이 매칭")
+                result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED)
+            else:
+                # TM_SQDIFF_NORMED + mask: 차이가 클수록 벌점 (0=완벽, 1=최악)
+                result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED, mask=mask)
+
             min_val, _, min_loc, _ = cv2.minMaxLoc(result)
 
             # 신뢰도 변환: 0(최악)~1(완벽)

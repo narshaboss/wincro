@@ -99,6 +99,25 @@
 
 ## 버그 수정 이력
 
+### 2026-02-09: 이미지 타임아웃 제거 + 이미지 매칭 오탐 수정 (v1.0.130)
+
+**수정 1 — 이미지 타임아웃 전부 제거:**
+- **의도**: 이미지가 안 나타나도 무한 대기 (stop_event로만 중단)
+- `rule_executor.py`: EXECUTION_TIMEOUT=0, 트리거/다음화면/target 이미지 검색 전부 무제한
+- `action_player.py`: target 이미지 타임아웃 제거, `_wait_for_image` 무제한
+
+**수정 2 — 이미지 매칭 TM_CCOEFF_NORMED로 복원:**
+- **문제**: v1.0.111에서 `_find_image_on_screen`이 `match_binary`(TM_SQDIFF_NORMED + Otsu mask)로 변경됨 → 금색 버튼 템플릿이 비슷한 색의 UI 요소에 89% 오탐
+- **수정**: `_find_image_on_screen`을 `TM_CCOEFF_NORMED` 직접 매칭으로 변경 (v1.0.108 방식 복원)
+- 3개 메서드 전부 `TM_CCOEFF_NORMED`: `_find_image_on_screen`, `_wait_for_trigger`, `_find_all_images_on_screen`
+
+**수정된 파일:**
+- `src/player/rule_executor.py` - 이미지 타임아웃 제거 + TM_CCOEFF_NORMED 복원
+- `src/player/action_player.py` - 이미지 타임아웃 제거
+- `src/utils/config.py` - APP_VERSION 1.0.129 → 1.0.130
+
+---
+
 ### 2026-02-09: 전체 프리징/행 방지 대규모 최적화 (v1.0.129)
 
 **문제:** 15개 파일에서 UI 프리징, 스레드 교착, 타이트 루프, 무한 대기 등 31건의 성능/안정성 이슈 발견.

@@ -696,22 +696,18 @@ class ActionPlayer:
 
                 # 스킵 모드 확인
                 skip_on_not_found = getattr(action, 'skip_on_not_found', False)
-                # 스킵 모드면 wait_after를 타임아웃으로, 아니면 60초
-                timeout = action.wait_after if skip_on_not_found and action.wait_after > 0 else 60.0
+                # 스킵 모드면 wait_after를 타임아웃으로, 아니면 무제한
+                skip_timeout = action.wait_after if skip_on_not_found and action.wait_after > 0 else 0
                 start_wait_time = time.time()
 
-                # 이미지가 나타날 때까지 대기 (타임아웃 적용)
+                # 이미지가 나타날 때까지 대기 (무제한 - stop으로만 중지)
                 while not locations:
-                    # 타임아웃 확인
                     elapsed = time.time() - start_wait_time
-                    if elapsed > timeout:
-                        if skip_on_not_found:
-                            # 스킵 모드: 성공으로 처리하고 다음 액션으로
-                            logger.info(f"\033[93m⏭ 스킵: 이미지 못찾음 ({timeout:.1f}초 대기 후 스킵)\033[0m")
-                            return True, f"스킵됨 (이미지 없음, {timeout:.1f}초 대기)"
-                        else:
-                            logger.error(f"조건 이미지 대기 타임아웃 ({timeout}초): {action.target_image}")
-                            return False, f"조건 이미지 타임아웃 ({timeout}초)"
+
+                    # 스킵 모드일 때만 타임아웃 체크
+                    if skip_on_not_found and skip_timeout > 0 and elapsed > skip_timeout:
+                        logger.info(f"\033[93m⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후 스킵)\033[0m")
+                        return True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)"
 
                     # 긴급 중지 확인
                     if self._emergency_stop.is_triggered:
@@ -719,25 +715,22 @@ class ActionPlayer:
                     if self._state == PlayerState.STOPPED:
                         return False, "중지됨"
 
-                    # 일시 정지 대기 (일시정지 시간도 타임아웃에 포함)
+                    # 일시 정지 대기
                     while self._state == PlayerState.PAUSED:
                         time.sleep(0.1)
                         if self._state == PlayerState.STOPPED:
                             return False, "중지됨"
-                        elapsed = time.time() - start_wait_time
-                        if elapsed > timeout:
-                            break
                     # After pause loop - check if we should exit
                     if self._state == PlayerState.STOPPED:
                         return False, "중지됨"
 
                     locations = self._find_all_images_on_screen(action.target_image, confidence)
                     if not locations:
-                        # 10초마다 간단한 대기 상태 로그 (스크린샷 없이)
+                        # 30초마다 간단한 대기 상태 로그
                         elapsed_int = int(elapsed)
-                        if elapsed_int % 10 == 0 and elapsed_int > 0:
+                        if elapsed_int % 30 == 0 and elapsed_int > 0:
                             if not hasattr(self, '_last_wait_log_time') or self._last_wait_log_time != elapsed_int:
-                                logger.debug(f"이미지 대기 중: {elapsed_int}초/{int(timeout)}초 - {Path(action.target_image).name}")
+                                logger.debug(f"이미지 대기 중: {elapsed_int}초 - {Path(action.target_image).name}")
                                 self._last_wait_log_time = elapsed_int
                         time.sleep(0.5)  # 0.5초마다 재검색
 
@@ -870,21 +863,15 @@ class ActionPlayer:
         if not action.wait_for_image:
             return False, "대기할 이미지가 지정되지 않았습니다"
 
-        timeout = action.wait_for_image_timeout
         disappear = action.wait_for_image_disappear
         check_interval = 0.5  # 0.5초마다 확인
 
         start_time = time.time()
         mode = "사라짐" if disappear else "나타남"
 
-        logger.info(f"이미지 대기 시작: {mode} 대기 (최대 {timeout}초)")
+        logger.info(f"이미지 대기 시작: {mode} 대기 (무제한)")
 
         while True:
-            # 타임아웃 확인
-            elapsed = time.time() - start_time
-            if elapsed >= timeout:
-                return False, f"이미지 대기 타임아웃 ({timeout}초)"
-
             # 긴급 중지 확인
             if self._emergency_stop.is_triggered:
                 return False, "긴급 중지"
@@ -898,9 +885,6 @@ class ActionPlayer:
                 time.sleep(0.1)
                 if self._state == PlayerState.STOPPED:
                     return False, "중지됨"
-                # 타임아웃 체크
-                if time.time() - start_time > timeout:
-                    break
             # After pause loop - check if we should exit
             if self._state == PlayerState.STOPPED:
                 return False, "중지됨"
