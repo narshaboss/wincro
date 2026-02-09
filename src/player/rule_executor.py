@@ -752,7 +752,11 @@ class RuleExecutor:
                         next_rule = None
                         if i + 1 < len(all_rules):
                             next_rule = all_rules[i + 1]
-                            next_target_image = next_rule.target_image
+                            # 다음 액션이 모니터링이면 target_image는 종료 조건이므로 기다리지 않음
+                            next_has_watches = len(getattr(next_rule, 'monitoring_watches', []) or []) > 0
+                            next_is_monitoring = getattr(next_rule, 'is_monitoring_mode', False) or next_has_watches
+                            if not next_is_monitoring:
+                                next_target_image = next_rule.target_image
 
                         # 규칙 실행 (재시도 포함)
                         result = self._execute_rule_with_retry(rule, next_target_image, next_rule=next_rule, step_num=step_num)
@@ -1656,7 +1660,7 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # TM_CCOEFF_NORMED 매칭 (v1.0.108 방식 — 오탐률 낮음)
+            # TM_CCOEFF_NORMED 매칭 (오탐률 낮음 — 절대 변경 금지)
             cached = _get_cached_template(image_path)
             if cached is None:
                 logger.warning(f"템플릿 로드 실패: {Path(image_path).name}")
@@ -2058,7 +2062,15 @@ class RuleExecutor:
             y2 = min(screen_h, rule.action_y + rule.search_radius)
             final_search_region = [x1, y1, x2, y2]
 
-        logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 대기 중 (감시 {len(valid_watches)}개){_RESET}")
+        # 모니터링 시작 시 최종 이미지가 이미 화면에 있는지 확인
+        # (이전 액션이 target_image를 찾고 넘어오므로 대부분 이미 존재함)
+        initial_check = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
+        final_ever_absent = (initial_check is None)  # 시작 시 없으면 바로 True
+
+        if initial_check:
+            logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 이미 존재 → 사라질 때까지 대기 (감시 {len(valid_watches)}개){_RESET}")
+        else:
+            logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 대기 중 (감시 {len(valid_watches)}개){_RESET}")
 
         wait_count = 0
         # 안전 타임아웃: 최대 모니터링 시간 (기본 1시간, 무한 행 방지)
@@ -2066,8 +2078,6 @@ class RuleExecutor:
         monitoring_start = time.time()
         # 조건 대기 중인 watch 추적 (모니터링 액션 중복 실행 방지)
         condition_pending_watch = None  # 조건 미충족으로 대기 중인 watch 이미지 경로
-        # 첫 루프에서는 최종 이미지 체크 건너뛰기 (이전 화면의 잔상 방지)
-        skip_first_final_check = True
 
         while True:
             # 안전 타임아웃 체크
@@ -2102,8 +2112,12 @@ class RuleExecutor:
                 # search_radius가 있고 search_region이 없으면 변환
                 watch_search_radius = watch.get('search_radius', 0)
                 if not search_region and watch_search_radius > 0:
-                    watch_center_x = watch.get('center_x') or watch.get('x')
-                    watch_center_y = watch.get('center_y') or watch.get('y')
+                    watch_center_x = watch.get('center_x')
+                    if watch_center_x is None:
+                        watch_center_x = watch.get('x')
+                    watch_center_y = watch.get('center_y')
+                    if watch_center_y is None:
+                        watch_center_y = watch.get('y')
                     if watch_center_x is not None and watch_center_y is not None:
                         screen_w, screen_h = pyautogui.size()
                         x1 = max(0, watch_center_x - watch_search_radius)
@@ -2281,52 +2295,61 @@ class RuleExecutor:
             if not watch_found:
                 condition_pending_watch = None
             # 2. 최종 이미지 검색 (감시이미지가 없을 때만)
-            # 조건 대기 중(condition_pending_watch)이면 최종 이미지로 탈출 금지
-            # → 조건 해소(점프 실행) 전에 탈출하면 자식 규칙이 잘못된 화면 상태에서 실행됨
-            # 첫 루프에서는 건너뛰기 (이전 화면의 최종 이미지 잔상으로 즉시 종료 방지)
-            if skip_first_final_check:
-                skip_first_final_check = False
-            elif not watch_found:
+            if not watch_found:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result
-                    logger.info(f"{_YELLOW}{step_prefix}⏳ {final_name} 감지 ({int(final_conf * 100)}%) - 감시 이미지 재확인 중...{_RESET}")
-                    time.sleep(0.5)
-                    # 감시이미지 재확인: 뒤늦게 나타난 감시이미지가 있으면 감시 우선 처리
-                    recheck_watch_found = False
-                    for watch in valid_watches:
-                        if self._stop_event.is_set():
-                            return self._make_result(rule, False, "실행 중지됨", start_time)
-                        watch_image = watch.get('image')
-                        if not watch_image:
-                            continue
-                        # 조건 대기 중인 watch는 재확인에서 제외 (어차피 점프 불가)
-                        if watch_image == condition_pending_watch:
-                            continue
-                        search_region = watch.get('search_region')
-                        watch_search_radius = watch.get('search_radius', 0)
-                        if not search_region and watch_search_radius > 0:
-                            watch_center_x = watch.get('center_x') or watch.get('x')
-                            watch_center_y = watch.get('center_y') or watch.get('y')
-                            if watch_center_x is not None and watch_center_y is not None:
-                                screen_w, screen_h = pyautogui.size()
-                                x1 = max(0, watch_center_x - watch_search_radius)
-                                y1 = max(0, watch_center_y - watch_search_radius)
-                                x2 = min(screen_w, watch_center_x + watch_search_radius)
-                                y2 = min(screen_h, watch_center_y + watch_search_radius)
-                                search_region = [x1, y1, x2, y2]
-                        recheck_confidence = watch.get('confidence', confidence)
-                        recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
-                        if recheck_result:
-                            recheck_watch_found = True
-                            logger.info(f"{_YELLOW}{step_prefix}⚡ {Path(watch_image).name} 뒤늦게 감지 → 모니터링 계속{_RESET}")
-                            break
-                    if not recheck_watch_found:
-                        logger.info(f"{_GREEN}{step_prefix}✓ {final_name} 확인 완료 ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
-                        return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
-                    # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
-                    wait_count = 0
-                    continue
+                    # 최종 이미지가 시작부터 있었고 아직 사라진 적 없으면 → 종료 금지
+                    if not final_ever_absent:
+                        logger.debug(f"{step_prefix}{final_name} 존재 중 (시작부터 유지) - 사라질 때까지 대기")
+                    else:
+                        # 사라졌다 재출현 → 진짜 종료 조건
+                        logger.info(f"{_YELLOW}{step_prefix}⏳ {final_name} 감지 ({int(final_conf * 100)}%) - 감시 이미지 재확인 중...{_RESET}")
+                        time.sleep(0.5)
+                        # 감시이미지 재확인: 뒤늦게 나타난 감시이미지가 있으면 감시 우선 처리
+                        recheck_watch_found = False
+                        for watch in valid_watches:
+                            if self._stop_event.is_set():
+                                return self._make_result(rule, False, "실행 중지됨", start_time)
+                            watch_image = watch.get('image')
+                            if not watch_image:
+                                continue
+                            # 조건 대기 중인 watch는 재확인에서 제외 (어차피 점프 불가)
+                            if watch_image == condition_pending_watch:
+                                continue
+                            search_region = watch.get('search_region')
+                            watch_search_radius = watch.get('search_radius', 0)
+                            if not search_region and watch_search_radius > 0:
+                                watch_center_x = watch.get('center_x')
+                                if watch_center_x is None:
+                                    watch_center_x = watch.get('x')
+                                watch_center_y = watch.get('center_y')
+                                if watch_center_y is None:
+                                    watch_center_y = watch.get('y')
+                                if watch_center_x is not None and watch_center_y is not None:
+                                    screen_w, screen_h = pyautogui.size()
+                                    x1 = max(0, watch_center_x - watch_search_radius)
+                                    y1 = max(0, watch_center_y - watch_search_radius)
+                                    x2 = min(screen_w, watch_center_x + watch_search_radius)
+                                    y2 = min(screen_h, watch_center_y + watch_search_radius)
+                                    search_region = [x1, y1, x2, y2]
+                            recheck_confidence = watch.get('confidence', confidence)
+                            recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
+                            if recheck_result:
+                                recheck_watch_found = True
+                                logger.info(f"{_YELLOW}{step_prefix}⚡ {Path(watch_image).name} 뒤늦게 감지 → 모니터링 계속{_RESET}")
+                                break
+                        if not recheck_watch_found:
+                            logger.info(f"{_GREEN}{step_prefix}✓ {final_name} 확인 완료 ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
+                            return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
+                        # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
+                        wait_count = 0
+                        continue
+                else:
+                    # 최종 이미지가 화면에 없음 → 사라진 적 있음 표시
+                    if not final_ever_absent:
+                        final_ever_absent = True
+                        logger.info(f"{_CYAN}{step_prefix}▶ {final_name} 사라짐 → 재출현 시 모니터링 종료{_RESET}")
 
             # 감시 이미지 처리 완료 (조건 충족 → 점프 등), 다음 반복으로
             if watch_found:
