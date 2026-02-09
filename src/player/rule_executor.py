@@ -708,7 +708,6 @@ class RuleExecutor:
                     self._progress.initial_completed = 0
 
                 # 모든 규칙 순차 실행 (룰과 스텝 번호를 함께 순회)
-                execution_failed = False
                 for i, (rule, step_num) in enumerate(all_rules_with_step):
                     if self._stop_event.is_set():
                         break
@@ -1016,11 +1015,9 @@ class RuleExecutor:
                         else:
                             logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (무제한)")
 
-                # 타임아웃 - 경고 후 계속 진행
-                if next_skip:
-                    logger.info(f"{_YELLOW}{self._step_prefix}⏭ 다음 화면 스킵 ({max_wait_time:.1f}초 대기 후){_RESET}")
-                else:
-                    logger.warning(f"{_YELLOW}{self._step_prefix}⚠ 다음 화면 대기 타임아웃 ({max_wait_time:.0f}초) - 계속 진행{_RESET}")
+                # 타임아웃 도달 = next_skip=True (max_wait_time>0) 경우만 가능
+                # next_skip=False이면 max_wait_time=0(무제한)이므로 while에서 빠져나오지 않음
+                logger.info(f"{_YELLOW}{self._step_prefix}⏭ 다음 화면 스킵 ({max_wait_time:.1f}초 대기 후){_RESET}")
 
             # 클릭이 아니거나 다음 이미지가 없으면 바로 성공
             return result
@@ -1154,6 +1151,7 @@ class RuleExecutor:
                     wait_count = 0
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
                     # 스킵 모드: wait_after 타임아웃 적용 / 일반: 무제한 대기
+                    # wait_after <= 0이면 첫 검색 실패 시 즉시 스킵 (무한 대기 방지)
                     skip_timeout = rule.wait_after if skip_on_not_found else 0
                     search_start = time.time()
                     if skip_on_not_found:
@@ -1165,7 +1163,8 @@ class RuleExecutor:
                         if self._stop_event.is_set():
                             return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                        # 스킵 모드일 때만 타임아웃 체크
+                        # 스킵 모드일 때 타임아웃 체크
+                        # skip_timeout <= 0이면 첫 검색 실패 시 즉시 스킵 (무한 대기 방지)
                         if skip_on_not_found and skip_timeout > 0:
                             elapsed = time.time() - search_start
                             if elapsed >= skip_timeout:
@@ -1222,9 +1221,10 @@ class RuleExecutor:
                         if not locations:
                             elapsed = time.time() - search_start
                             # skip_on_not_found일 때만 타임아웃 체크 (일반 모드는 무제한 대기)
-                            if skip_on_not_found and skip_timeout > 0 and elapsed >= skip_timeout:
-                                logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후){_RESET}")
-                                return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
+                            # skip_timeout <= 0이면 첫 검색 실패 시 즉시 스킵
+                            if skip_on_not_found and (skip_timeout <= 0 or elapsed >= skip_timeout):
+                                logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({elapsed:.1f}초 대기 후){_RESET}")
+                                return self._make_result(rule, True, f"스킵됨 (이미지 없음, {elapsed:.1f}초 대기)", start_time)
 
                             wait_count += 1
                             if wait_count % 20 == 1:  # 10초마다 로그
@@ -1431,6 +1431,9 @@ class RuleExecutor:
                     except (ValueError, TypeError):
                         return self._make_result(rule, False, "스크롤 양이 지정되지 않음", start_time)
 
+                if scroll_amount == 0:
+                    return self._make_result(rule, False, "스크롤 양이 지정되지 않음", start_time)
+
                 input_ctrl = get_input_controller()
                 input_ctrl.scroll(scroll_amount, rule.action_x, rule.action_y)
                 logger.info(f"{_GREEN}{self._step_prefix}✓ 스크롤 완료{_RESET}")
@@ -1471,6 +1474,10 @@ class RuleExecutor:
 
         while True:
             if self._stop_event.is_set():
+                return (False, "실행 중지됨")
+
+            # 일시정지 대기 (중지 이벤트 주기적 체크)
+            if self._wait_for_resume():
                 return (False, "실행 중지됨")
 
             # 타임아웃 설정 시에만 체크 (timeout > 0)
@@ -1716,17 +1723,21 @@ class RuleExecutor:
 
             template_gray, h, w = cached
 
-            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name} (무제한){_RESET}")
+            timeout_desc = "무제한" if timeout <= 0 else f"최대 {timeout}초"
+            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name} ({timeout_desc}){_RESET}")
 
-            waited = 0.0
             check_interval = 0.2
+            trigger_start = time.time()
+            last_log_time = trigger_start
 
             while True:
                 if self._stop_event.is_set():
                     return None
 
+                elapsed = time.time() - trigger_start
+
                 # 타임아웃 설정 시에만 체크 (timeout > 0)
-                if timeout > 0 and waited >= timeout:
+                if timeout > 0 and elapsed >= timeout:
                     logger.error(f"{_RED}[트리거] ✗ 타임아웃 ({timeout}초){_RESET}")
                     return None
 
@@ -1761,7 +1772,7 @@ class RuleExecutor:
                     if max_val >= confidence:
                         center_x = max_loc[0] + w // 2
                         center_y = max_loc[1] + h // 2
-                        logger.info(f"{_GREEN}✓ 트리거 발견! ({waited:.1f}초 대기){_RESET}")
+                        logger.info(f"{_GREEN}✓ 트리거 발견! ({elapsed:.1f}초 대기){_RESET}")
                         logger.debug(f"[트리거] 위치=({center_x}, {center_y}), 점수={max_val:.2f}")
                         return (center_x, center_y)
                 finally:
@@ -1769,10 +1780,12 @@ class RuleExecutor:
                     del screenshot, screenshot_np, screenshot_gray, result
 
                 time.sleep(check_interval)
-                waited += check_interval
 
-                if waited % 10 < check_interval and waited > 0:
-                    logger.info(f"{_YELLOW}⏳ 트리거 대기 중... {waited:.0f}초{_RESET}")
+                now = time.time()
+                if now - last_log_time >= 10.0:
+                    actual_elapsed = now - trigger_start
+                    logger.info(f"{_YELLOW}⏳ 트리거 대기 중... {actual_elapsed:.0f}초{_RESET}")
+                    last_log_time = now
 
         except Exception as e:
             logger.error(f"[트리거] 오류: {e}")
@@ -2053,6 +2066,8 @@ class RuleExecutor:
         monitoring_start = time.time()
         # 조건 대기 중인 watch 추적 (모니터링 액션 중복 실행 방지)
         condition_pending_watch = None  # 조건 미충족으로 대기 중인 watch 이미지 경로
+        # 첫 루프에서는 최종 이미지 체크 건너뛰기 (이전 화면의 잔상 방지)
+        skip_first_final_check = True
 
         while True:
             # 안전 타임아웃 체크
@@ -2268,7 +2283,10 @@ class RuleExecutor:
             # 2. 최종 이미지 검색 (감시이미지가 없을 때만)
             # 조건 대기 중(condition_pending_watch)이면 최종 이미지로 탈출 금지
             # → 조건 해소(점프 실행) 전에 탈출하면 자식 규칙이 잘못된 화면 상태에서 실행됨
-            if not watch_found:
+            # 첫 루프에서는 건너뛰기 (이전 화면의 최종 이미지 잔상으로 즉시 종료 방지)
+            if skip_first_final_check:
+                skip_first_final_check = False
+            elif not watch_found:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result

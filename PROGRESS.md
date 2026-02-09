@@ -99,6 +99,26 @@
 
 ## 버그 수정 이력
 
+### 2026-02-10: 액션 전환/트리거/모니터링 흐름 버그 수정 (v1.0.132)
+
+**문제:** 액션 간 전환, 트리거 대기, 부분실행 등에서 런타임 버그 7건 발견.
+
+**수정 (7건):**
+- **rule_executor.py**: `skip_on_not_found=True` + `wait_after=0`일 때 무한대기 → 즉시 스킵으로 수정
+- **rule_executor.py**: `_wait_for_trigger` 시간 드리프트 (waited += interval → wall-clock 시간)
+- **rule_executor.py**: `_wait_for_trigger` 로그 하드코딩 "무제한" → timeout 반영
+- **rule_executor.py**: `_wait_for_trigger` 부동소수점 modulo → last_log_time 추적
+- **rule_executor.py**: `_wait_for_image` 일시정지(pause) 체크 누락 추가
+- **rule_executor.py**: `scroll_amount=0` 무의미 스크롤 성공 반환 → 에러 반환
+- **rule_executor.py**: 모니터링 첫 루프에서 최종 이미지 즉시 감지 → skip_first_final_check 추가
+- 데드코드 제거 (next_image 타임아웃 분기, execution_failed 미사용 변수)
+
+**수정된 파일:**
+- `src/player/rule_executor.py`
+- `src/utils/config.py` - APP_VERSION 1.0.131 → 1.0.132
+
+---
+
 ### 2026-02-09: v1.0.129~130 수정 검증 및 잔존 버그 수정 (v1.0.131)
 
 **문제:** v1.0.129~130 대규모 수정 후 런타임 버그 8건 잔존.
