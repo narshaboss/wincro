@@ -268,7 +268,6 @@ class VideoAnalyzer:
             actions: 액션 목록
             input_log_duration: 입력 로그 총 시간 (타임스탬프 보정용)
         """
-        import uuid
         import os
         from concurrent.futures import ThreadPoolExecutor, as_completed
 

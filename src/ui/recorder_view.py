@@ -641,13 +641,10 @@ class RecorderView(BaseView):
         """녹화 시작 실패 - 상세 메시지 표시 (메인 스레드에서 호출)"""
         from tkinter import messagebox
 
-        self._starting = False  # 시작 실패 시 플래그 해제
-        self._start_btn.configure(state="normal")
-        self._status_label.configure(text="❌ 녹화 시작 실패")
+        self._on_recording_start_failed()
+
+        # 힌트를 오류 메시지로 변경
         self._status_hint.configure(text="오류가 발생했습니다")
-        self._status_indicator.configure(text_color=COLORS["error"])
-        # GlobalHotKeys 재시작 (녹화 시작 전에 중지했으므로)
-        self._resume_global_hotkeys()
 
         # 사용자에게 상세 오류 메시지 표시
         messagebox.showerror(
@@ -1039,74 +1036,6 @@ class RecorderView(BaseView):
                 logger.warning("F7: 앱 창을 찾을 수 없음")
         except Exception as e:
             logger.error(f"F7: 창 복원 오류: {e}")
-
-    def _update_ui_after_stop(self):
-        """녹화 중지 후 UI 업데이트 (메인 스레드)"""
-        try:
-            self._update_ui_state()
-            self._status_label.configure(text="✅ 녹화 완료")
-            self._status_hint.configure(text="녹화가 저장되었습니다. 분석 탭에서 동작을 추출하세요.")
-            self._status_indicator.configure(text_color=COLORS["success"])
-            self._refresh_recordings_list()
-
-            # 전역 F8 캡쳐 다시 활성화
-            main_window = self.winfo_toplevel()
-            if hasattr(main_window, 'set_recording_active'):
-                main_window.set_recording_active(False)
-        except Exception as e:
-            logger.warning(f"UI 업데이트 오류: {e}")
-
-    def _setup_hotkeys_pynput(self):
-        """pynput 폴백 - keyboard 모듈 사용 불가 시"""
-        if hasattr(self, '_hotkey_listener') and self._hotkey_listener is not None:
-            try:
-                self._hotkey_listener.stop()
-            except (OSError, RuntimeError):
-                pass
-            self._hotkey_listener = None
-
-        self._f7_toggle_requested = False
-
-        try:
-            from pynput import keyboard
-
-            def on_press(key):
-                try:
-                    if key == keyboard.Key.f7:
-                        self._f7_toggle_requested = True
-                except (AttributeError, ValueError):
-                    pass
-
-            self._hotkey_listener = keyboard.Listener(on_press=on_press)
-            self._hotkey_listener.start()
-            logger.info("녹화 단축키 활성화: F7 (pynput)")
-            self._poll_f7_hotkey()
-
-        except Exception as e:
-            logger.warning(f"pynput 단축키 설정 실패: {e}")
-            self._hotkey_listener = None
-
-    def _poll_f7_hotkey(self):
-        """F7 단축키 플래그 확인 (pynput 폴백용)"""
-        try:
-            if not self.winfo_exists():
-                return
-
-            if self._f7_toggle_requested:
-                self._f7_toggle_requested = False
-                logger.info(f"F7 감지(pynput) - 녹화 상태: {self._is_recording}")
-                main_window = self.winfo_toplevel()
-                if self._is_recording:
-                    self._on_stop_recording()
-                    main_window.deiconify()
-                    main_window.lift()
-                    main_window.focus_force()
-                else:
-                    self._on_start_recording()
-
-            self.after(100, self._poll_f7_hotkey)
-        except Exception as e:
-            logger.warning(f"F7 폴링 오류: {e}")
 
     def refresh(self):
         """뷰 새로고침"""

@@ -6,7 +6,6 @@ GitHub Release를 통한 자동 업데이트와 녹화 파일 공유 기능을 �
 
 import json
 import os
-import socket
 import time
 import urllib.request
 import urllib.error

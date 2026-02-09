@@ -98,13 +98,13 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
         ma = {"type": "키 입력", "keys": keys}
 
     elif action_type in ["click", "double_click", "right_click"]:
+        click_type_map = {
+            "click": "click",
+            "double_click": "double_click",
+            "right_click": "right_click",
+        }
         target_img = getattr(action, 'target_image', None) or getattr(action, 'screenshot_path', None)
         if target_img:
-            click_type_map = {
-                "click": "click",
-                "double_click": "double_click",
-                "right_click": "right_click",
-            }
             ma = {
                 "type": "이미지 클릭",
                 "image_path": str(target_img),
@@ -113,11 +113,6 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
         else:
             x = getattr(action, 'x', 0) or 0
             y = getattr(action, 'y', 0) or 0
-            click_type_map = {
-                "click": "click",
-                "double_click": "double_click",
-                "right_click": "right_click",
-            }
             ma = {
                 "type": "좌표 클릭",
                 "x": x,

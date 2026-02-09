@@ -6,7 +6,6 @@ WinCro 관리자 권한 유틸리티
 
 import sys
 import ctypes
-import os
 from typing import Optional
 
 from .logger import get_logger

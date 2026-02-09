@@ -5,7 +5,6 @@ WinCro 규칙 기반 실행 엔진
 시간 기반이 아닌 조건(이미지 감지 등) 기반으로 동작합니다.
 """
 
-import gc
 import time
 import random
 import threading
@@ -90,7 +89,6 @@ MIN_WAIT_SECONDS = 0.8            # 최소 대기 시간 (초)
 MIN_MOUSE_DURATION = 0.4          # 최소 마우스 이동 시간 (초)
 INTERVENTION_DISTANCE_PX = 50     # 사용자 개입 감지 거리 (픽셀)
 NEXT_SCREEN_CONFIDENCE = 0.45     # 다음 화면 대기 신뢰도
-EXECUTION_TIMEOUT = 0             # 이미지 타임아웃 없음 (stop_event로만 중지)
 MAX_MOVE_ATTEMPTS = 10            # 마우스 이동 최대 재시도
 
 # 성능 최적화용 캐시
@@ -820,42 +818,6 @@ class RuleExecutor:
             if self._on_complete:
                 self._on_complete(False, str(e))
 
-    def _monitor_loop(self, rules: List[AutomationRule]) -> None:
-        """모니터링 루프 - 조건 감시"""
-        check_interval = 0.5  # 0.5초마다 확인
-
-        while not self._stop_event.is_set():
-            # 일시정지 대기 (중지 이벤트 주기적 체크)
-            if self._wait_for_resume():
-                break
-
-            # 각 모니터링 규칙 확인
-            for rule in rules:
-                if self._stop_event.is_set():
-                    break
-
-                # 트리거 조건 확인
-                if self._check_trigger(rule):
-                    logger.info(f"모니터링 규칙 트리거: {rule.description}")
-                    self._progress.current_rule = rule.rule_id
-                    self._update_progress(f"모니터링 규칙 발동: {rule.description}")
-
-                    result = self._execute_rule(rule)
-                    self._results.append(result)
-                    self._progress.monitoring_triggers += 1
-
-                    if self._on_rule_executed:
-                        self._on_rule_executed(result)
-
-            time.sleep(check_interval)
-
-    def _check_trigger(self, rule: AutomationRule) -> bool:
-        """트리거 조건 확인"""
-        if rule.trigger_image:
-            location = self._find_image_on_screen(rule.trigger_image, rule.confidence)
-            return location is not None
-        return False
-
     def _execute_rule_with_retry(
         self,
         rule: AutomationRule,
@@ -988,13 +950,7 @@ class RuleExecutor:
                             next_action_x = getattr(next_rule, 'action_x', None)
                             next_action_y = getattr(next_rule, 'action_y', None)
                             if next_search_radius > 0 and next_action_x is not None and next_action_y is not None:
-                                import pyautogui
-                                screen_w, screen_h = pyautogui.size()
-                                x1 = max(0, next_action_x - next_search_radius)
-                                y1 = max(0, next_action_y - next_search_radius)
-                                x2 = min(screen_w, next_action_x + next_search_radius)
-                                y2 = min(screen_h, next_action_y + next_search_radius)
-                                next_search_region = [x1, y1, x2, y2]
+                                next_search_region = self._radius_to_region(next_action_x, next_action_y, next_search_radius)
 
                     if waited == 0:
                         logger.debug(f"[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}")
@@ -1690,7 +1646,6 @@ class RuleExecutor:
         finally:
             # 메모리 해제 (저사양 PC 지원)
             del screenshot, screenshot_np, screenshot_bgr
-            gc.collect()
 
     def _wait_for_trigger(
         self,
@@ -1857,7 +1812,6 @@ class RuleExecutor:
         """
         screenshot = None
         screenshot_np = None
-        screenshot_bgr = None
         screenshot_gray = None
         result = None
 
@@ -1875,8 +1829,7 @@ class RuleExecutor:
             # 화면 캡처
             screenshot = ImageGrab.grab()
             screenshot_np = np.array(screenshot)
-            screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
-            screenshot_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
+            screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
             screen_h, screen_w = screenshot_gray.shape
 
             # 중지 체크
@@ -1960,8 +1913,7 @@ class RuleExecutor:
             return []
         finally:
             # 메모리 해제 (저사양 PC 지원)
-            del screenshot, screenshot_np, screenshot_bgr, screenshot_gray, result
-            gc.collect()
+            del screenshot, screenshot_np, screenshot_gray, result
 
     def _find_closest_image(
         self,
@@ -2052,15 +2004,7 @@ class RuleExecutor:
         if rule_sr and len(rule_sr) == 4:
             final_search_region = list(rule_sr)
         elif rule.search_radius > 0 and rule.action_x is not None and rule.action_y is not None:
-            from PIL import ImageGrab
-            screen = ImageGrab.grab()
-            screen_w, screen_h = screen.size
-            del screen  # 메모리 해제
-            x1 = max(0, rule.action_x - rule.search_radius)
-            y1 = max(0, rule.action_y - rule.search_radius)
-            x2 = min(screen_w, rule.action_x + rule.search_radius)
-            y2 = min(screen_h, rule.action_y + rule.search_radius)
-            final_search_region = [x1, y1, x2, y2]
+            final_search_region = self._radius_to_region(rule.action_x, rule.action_y, rule.search_radius)
 
         # 모니터링 시작 시 최종 이미지가 이미 화면에 있는지 확인
         # (이전 액션이 target_image를 찾고 넘어오므로 대부분 이미 존재함)
@@ -2119,12 +2063,7 @@ class RuleExecutor:
                     if watch_center_y is None:
                         watch_center_y = watch.get('y')
                     if watch_center_x is not None and watch_center_y is not None:
-                        screen_w, screen_h = pyautogui.size()
-                        x1 = max(0, watch_center_x - watch_search_radius)
-                        y1 = max(0, watch_center_y - watch_search_radius)
-                        x2 = min(screen_w, watch_center_x + watch_search_radius)
-                        y2 = min(screen_h, watch_center_y + watch_search_radius)
-                        search_region = [x1, y1, x2, y2]
+                        search_region = self._radius_to_region(watch_center_x, watch_center_y, watch_search_radius)
 
                 watch_result = self._find_image_on_screen(
                     watch_image, watch_confidence,
@@ -2327,12 +2266,7 @@ class RuleExecutor:
                                 if watch_center_y is None:
                                     watch_center_y = watch.get('y')
                                 if watch_center_x is not None and watch_center_y is not None:
-                                    screen_w, screen_h = pyautogui.size()
-                                    x1 = max(0, watch_center_x - watch_search_radius)
-                                    y1 = max(0, watch_center_y - watch_search_radius)
-                                    x2 = min(screen_w, watch_center_x + watch_search_radius)
-                                    y2 = min(screen_h, watch_center_y + watch_search_radius)
-                                    search_region = [x1, y1, x2, y2]
+                                    search_region = self._radius_to_region(watch_center_x, watch_center_y, watch_search_radius)
                             recheck_confidence = watch.get('confidence', confidence)
                             recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
                             if recheck_result:
@@ -2448,12 +2382,7 @@ class RuleExecutor:
                     action_center_x = monitor_action.get('x') or monitor_action.get('center_x')
                     action_center_y = monitor_action.get('y') or monitor_action.get('center_y')
                     if action_center_x is not None and action_center_y is not None:
-                        screen_w, screen_h = pyautogui.size()
-                        x1 = max(0, action_center_x - search_radius)
-                        y1 = max(0, action_center_y - search_radius)
-                        x2 = min(screen_w, action_center_x + search_radius)
-                        y2 = min(screen_h, action_center_y + search_radius)
-                        search_region = [x1, y1, x2, y2]
+                        search_region = self._radius_to_region(action_center_x, action_center_y, search_radius)
                         logger.debug(f"[이미지 클릭] search_radius로 범위 계산: {search_region}")
 
                 if not image_path:
@@ -2658,6 +2587,12 @@ class RuleExecutor:
             on_progress(total, total, "완료")
 
         return all_success, results
+
+    def _radius_to_region(self, center_x, center_y, radius):
+        """search_radius + center 좌표를 [x1, y1, x2, y2] 영역으로 변환"""
+        screen_w, screen_h = _get_screen_size_cached()
+        return [max(0, center_x - radius), max(0, center_y - radius),
+                min(screen_w, center_x + radius), min(screen_h, center_y + radius)]
 
     def _make_result(
         self,

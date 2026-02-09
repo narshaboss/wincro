@@ -4,7 +4,6 @@ WinCro 동작 재현 모듈
 pyautogui를 사용하여 녹화된 동작을 재현합니다.
 """
 
-import gc
 import time
 import random
 import threading
@@ -418,8 +417,6 @@ class ActionPlayer:
         logger.info("실행 중지")
 
         # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
-        import threading as _threading
-
         def _join_and_finalize():
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=2.0)
@@ -427,7 +424,7 @@ class ActionPlayer:
                     logger.warning("실행 스레드가 2초 후에도 응답 없음")
             self._finalize_execution(False, "사용자에 의해 중지됨")
 
-        _threading.Thread(target=_join_and_finalize, daemon=True).start()
+        threading.Thread(target=_join_and_finalize, daemon=True).start()
         return True
 
     def _on_emergency_stop(self) -> None:
@@ -638,7 +635,6 @@ class ActionPlayer:
         finally:
             # 메모리 해제 (저사양 PC 지원)
             del screenshot, screenshot_np, screenshot_gray, result
-            gc.collect()
 
     def _find_closest_image(
         self,
@@ -681,7 +677,6 @@ class ActionPlayer:
 
             # 이미지 기반 인식 우선, 좌표는 대체 수단
             x, y = action.x, action.y
-            image_match_used = False
 
             if action.target_image:
                 # 이미지 매칭 시도 - 이미지가 나타날 때까지 대기 (타임아웃 있음)
@@ -749,7 +744,6 @@ class ActionPlayer:
                         # 좌표 힌트가 없으면 첫 번째 사용
                         x, y = locations[0]
                         logger.info(f"이미지 매칭 성공 (첫 번째 사용): ({x}, {y})")
-                image_match_used = True
 
             # 액션 유형별 실행
             action_type = action.action_type

@@ -99,6 +99,32 @@
 
 ## 버그 수정 이력
 
+### 2026-02-10: 코드 중복 제거 및 최적화 (v1.0.134)
+
+**전체 코드베이스 점검 후 중복 코드 제거 및 성능 최적화. 순 267줄 감소.**
+
+**rule_executor.py 최적화:**
+- `_radius_to_region` 헬퍼 추출 → search_radius 변환 코드 5곳 중복 제거
+- `gc.collect()` 매 이미지 검색마다 호출 → 제거 (`del`만 유지)
+- `pyautogui.size()` → `_get_screen_size_cached()` 캐시 활용
+- `ImageGrab.grab()`으로 화면 크기만 얻는 낭비 제거
+- `_find_all_images_on_screen` RGB→BGR→GRAY 이중 변환 → 단일 변환
+- 미사용 코드 삭제: `EXECUTION_TIMEOUT`, `_monitor_loop`, `_check_trigger`
+- 중복 import 제거: `import pyautogui`, `from PIL import ImageGrab`
+
+**player_view.py 최적화:**
+- `convert_to_monitor_action` 3중 복제 → `_convert_action_to_monitor_dict` 통합 (~93줄 감소)
+- `collect_all_actions` 3중 복제 → constants.py import 활용
+
+**기타 파일 정리:**
+- action_player.py: gc.collect 제거, 미사용 변수/import 삭제
+- input_controller.py: 빈 함수 `_release_mouse_capture` + 호출부 삭제, 미사용 ctypes 삭제
+- constants.py: `click_type_map` 2중 정의 → 1회로 통합
+- recorder_view.py: dead code 3개 메서드 삭제, 중복 핸들러 통합
+- admin.py, updater.py, video_analyzer.py: 미사용 import 삭제
+
+**수정된 파일:** rule_executor.py, player_view.py, action_player.py, constants.py, recorder_view.py, input_controller.py, admin.py, updater.py, video_analyzer.py, config.py
+
 ### 2026-02-10: 모니터링 즉시 종료 버그 수정 (v1.0.133)
 
 **문제:** 모니터링 액션 시작 시 최종 타겟 이미지가 이미 화면에 있어서 즉시 종료됨. 이전 액션이 모니터링의 target_image를 next_target_image로 기다려서, 모니터링 진입 시 이미 존재.
@@ -1505,7 +1531,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-10 (모니터링 즉시 종료 버그 수정)
+- 마지막 업데이트: 2026-02-10 (코드 중복 제거 및 최적화)
 
 ## 업데이트 규칙
 

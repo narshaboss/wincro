@@ -111,6 +111,55 @@ def invalidate_thumbnail_cache(image_path: str):
             del _thumbnail_cache[key]
 
 
+def _convert_action_to_monitor_dict(action):
+    """액션을 monitor_action 형식으로 변환 (모든 속성 포함).
+
+    PlanDetailDialog, SequenceDetailDialog 등에서 클립보드 액션을
+    모니터링 액션 딕셔너리로 변환할 때 공통으로 사용합니다.
+    """
+    action_type = action.action_type
+    monitor_action = None
+
+    if action_type == "type":
+        monitor_action = {"type": "텍스트 입력", "text": action.action_text or ""}
+    elif action_type in ["hotkey", "key_press"]:
+        monitor_action = {"type": "키 입력", "keys": action.action_keys or []}
+    elif action_type in ["click", "double_click", "right_click"]:
+        if getattr(action, 'target_image', None):
+            monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": action_type}
+        else:
+            monitor_action = {"type": "마우스 클릭", "x": action.action_x, "y": action.action_y, "click_type": action_type}
+    elif action_type == "scroll":
+        monitor_action = {"type": "스크롤", "amount": getattr(action, 'scroll_amount', 0)}
+    elif action_type == "drag":
+        monitor_action = {
+            "type": "드래그",
+            "from_x": action.action_x,
+            "from_y": action.action_y,
+            "to_x": getattr(action, 'drag_to_x', 0),
+            "to_y": getattr(action, 'drag_to_y', 0)
+        }
+    elif getattr(action, 'target_image', None):
+        monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": "click"}
+    else:
+        monitor_action = {"type": "마우스 클릭", "x": action.action_x or 0, "y": action.action_y or 0, "click_type": "click"}
+
+    # 공통 속성 복사
+    if monitor_action:
+        monitor_action["wait_after"] = getattr(action, 'wait_after', 0.5)
+        monitor_action["wait_random"] = getattr(action, 'wait_random', False)
+        monitor_action["wait_random_range"] = getattr(action, 'wait_random_range', 0.3)
+        monitor_action["repeat_count"] = getattr(action, 'repeat_count', 1)
+        monitor_action["repeat_delay"] = getattr(action, 'repeat_delay', 0.5)
+        monitor_action["repeat_delay_random"] = getattr(action, 'repeat_delay_random', False)
+        monitor_action["repeat_delay_random_range"] = getattr(action, 'repeat_delay_random_range', 0.3)
+        monitor_action["typing_random"] = getattr(action, 'typing_random', False)
+        monitor_action["typing_delay"] = getattr(action, 'typing_delay', 0.1)
+        monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
+        monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
+
+    return monitor_action
+
 
 class PlanDetailDialog(ctk.CTkToplevel):
     """자동화 계획 상세보기/수정 다이얼로그"""
@@ -2348,62 +2397,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if watch_index >= len(watches):
             return
 
-        def convert_to_monitor_action(action):
-            """액션을 monitor_action 형식으로 변환 (모든 속성 포함)"""
-            action_type = action.action_type
-            monitor_action = None
-
-            if action_type == "type":
-                monitor_action = {"type": "텍스트 입력", "text": action.action_text or ""}
-            elif action_type in ["hotkey", "key_press"]:
-                monitor_action = {"type": "키 입력", "keys": action.action_keys or []}
-            elif action_type in ["click", "double_click", "right_click"]:
-                if getattr(action, 'target_image', None):
-                    monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": action_type}
-                else:
-                    monitor_action = {"type": "마우스 클릭", "x": action.action_x, "y": action.action_y, "click_type": action_type}
-            elif action_type == "scroll":
-                monitor_action = {"type": "스크롤", "amount": getattr(action, 'scroll_amount', 0)}
-            elif action_type == "drag":
-                monitor_action = {
-                    "type": "드래그",
-                    "from_x": action.action_x,
-                    "from_y": action.action_y,
-                    "to_x": getattr(action, 'drag_to_x', 0),
-                    "to_y": getattr(action, 'drag_to_y', 0)
-                }
-            elif getattr(action, 'target_image', None):
-                monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": "click"}
-
-            # 공통 속성 복사
-            if monitor_action:
-                monitor_action["wait_after"] = getattr(action, 'wait_after', 0.5)
-                monitor_action["wait_random"] = getattr(action, 'wait_random', False)
-                monitor_action["wait_random_range"] = getattr(action, 'wait_random_range', 0.3)
-                monitor_action["repeat_count"] = getattr(action, 'repeat_count', 1)
-                monitor_action["repeat_delay"] = getattr(action, 'repeat_delay', 0.5)
-                monitor_action["repeat_delay_random"] = getattr(action, 'repeat_delay_random', False)
-                monitor_action["repeat_delay_random_range"] = getattr(action, 'repeat_delay_random_range', 0.3)
-                monitor_action["typing_random"] = getattr(action, 'typing_random', False)
-                monitor_action["typing_delay"] = getattr(action, 'typing_delay', 0.1)
-                monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
-                monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
-
-            return monitor_action
-
-        def collect_all_actions(action):
-            """액션과 모든 자식 액션을 수집"""
-            result = [action]
-            for child in getattr(action, 'children', []) or []:
-                result.extend(collect_all_actions(child))
-            return result
-
         # 클립보드 액션과 모든 자식 수집
         all_actions = collect_all_actions(clipboard)
         monitor_actions = []
 
         for action in all_actions:
-            ma = convert_to_monitor_action(action)
+            ma = _convert_action_to_monitor_dict(action)
             if ma:
                 monitor_actions.append(ma)
 
@@ -2425,64 +2424,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if not hasattr(rule, 'monitoring_watches') or rule.monitoring_watches is None:
             rule.monitoring_watches = []
 
-        def convert_to_monitor_action(action):
-            """액션을 monitor_action 형식으로 변환 (모든 속성 포함)"""
-            action_type = action.action_type
-            monitor_action = None
-
-            if action_type == "type":
-                monitor_action = {"type": "텍스트 입력", "text": action.action_text or ""}
-            elif action_type in ["hotkey", "key_press"]:
-                monitor_action = {"type": "키 입력", "keys": action.action_keys or []}
-            elif action_type in ["click", "double_click", "right_click"]:
-                if getattr(action, 'target_image', None):
-                    monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": action_type}
-                else:
-                    monitor_action = {"type": "마우스 클릭", "x": action.action_x, "y": action.action_y, "click_type": action_type}
-            elif action_type == "scroll":
-                monitor_action = {"type": "스크롤", "amount": getattr(action, 'scroll_amount', 0)}
-            elif action_type == "drag":
-                monitor_action = {
-                    "type": "드래그",
-                    "from_x": action.action_x,
-                    "from_y": action.action_y,
-                    "to_x": getattr(action, 'drag_to_x', 0),
-                    "to_y": getattr(action, 'drag_to_y', 0)
-                }
-            elif getattr(action, 'target_image', None):
-                monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": "click"}
-            else:
-                monitor_action = {"type": "마우스 클릭", "x": action.action_x or 0, "y": action.action_y or 0, "click_type": "click"}
-
-            # 공통 속성 복사
-            if monitor_action:
-                monitor_action["wait_after"] = getattr(action, 'wait_after', 0.5)
-                monitor_action["wait_random"] = getattr(action, 'wait_random', False)
-                monitor_action["wait_random_range"] = getattr(action, 'wait_random_range', 0.3)
-                monitor_action["repeat_count"] = getattr(action, 'repeat_count', 1)
-                monitor_action["repeat_delay"] = getattr(action, 'repeat_delay', 0.5)
-                monitor_action["repeat_delay_random"] = getattr(action, 'repeat_delay_random', False)
-                monitor_action["repeat_delay_random_range"] = getattr(action, 'repeat_delay_random_range', 0.3)
-                monitor_action["typing_random"] = getattr(action, 'typing_random', False)
-                monitor_action["typing_delay"] = getattr(action, 'typing_delay', 0.1)
-                monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
-                monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
-
-            return monitor_action
-
-        def collect_all_actions(action):
-            """액션과 모든 자식 액션을 수집"""
-            result = [action]
-            for child in getattr(action, 'children', []) or []:
-                result.extend(collect_all_actions(child))
-            return result
-
         # 클립보드 액션과 모든 자식 수집
         all_actions = collect_all_actions(clipboard)
         monitor_actions = []
 
         for action in all_actions:
-            ma = convert_to_monitor_action(action)
+            ma = _convert_action_to_monitor_dict(action)
             if ma:
                 monitor_actions.append(ma)
 
@@ -8170,63 +8117,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if clipboard is None:
             return
 
-        def convert_to_monitor_action(act):
-            """액션을 monitor_action 형식으로 변환 (모든 속성 포함)"""
-            action_type = act.action_type
-            monitor_action = None
-
-            if action_type == "type":
-                monitor_action = {"type": "텍스트 입력", "text": act.action_text or ""}
-            elif action_type in ["hotkey", "key_press"]:
-                monitor_action = {"type": "키 입력", "keys": act.action_keys or []}
-            elif action_type in ["click", "double_click", "right_click"]:
-                target_img = getattr(act, 'target_image', None)
-                if target_img:
-                    monitor_action = {"type": "이미지 클릭", "image": target_img, "click_type": action_type}
-                else:
-                    monitor_action = {"type": "마우스 클릭", "x": act.action_x, "y": act.action_y, "click_type": action_type}
-            elif action_type == "scroll":
-                monitor_action = {"type": "스크롤", "amount": getattr(act, 'scroll_amount', 0)}
-            elif action_type == "drag":
-                monitor_action = {
-                    "type": "드래그",
-                    "from_x": act.action_x,
-                    "from_y": act.action_y,
-                    "to_x": getattr(act, 'drag_to_x', 0),
-                    "to_y": getattr(act, 'drag_to_y', 0)
-                }
-            else:
-                monitor_action = {"type": "마우스 클릭", "x": act.action_x or 0, "y": act.action_y or 0, "click_type": "click"}
-
-            # 공통 속성 복사
-            if monitor_action:
-                monitor_action["wait_after"] = getattr(act, 'wait_after', 0.5)
-                monitor_action["wait_random"] = getattr(act, 'wait_random', False)
-                monitor_action["wait_random_range"] = getattr(act, 'wait_random_range', 0.3)
-                monitor_action["repeat_count"] = getattr(act, 'repeat_count', 1)
-                monitor_action["repeat_delay"] = getattr(act, 'repeat_delay', 0.5)
-                monitor_action["repeat_delay_random"] = getattr(act, 'repeat_delay_random', False)
-                monitor_action["repeat_delay_random_range"] = getattr(act, 'repeat_delay_random_range', 0.3)
-                monitor_action["typing_random"] = getattr(act, 'typing_random', False)
-                monitor_action["typing_delay"] = getattr(act, 'typing_delay', 0.1)
-                monitor_action["typing_delay_range"] = getattr(act, 'typing_delay_range', 0.05)
-                monitor_action["search_radius"] = getattr(act, 'search_radius', 0)
-
-            return monitor_action
-
-        def collect_all_actions(act):
-            """액션과 모든 자식 액션을 수집"""
-            result = [act]
-            for child in getattr(act, 'children', []) or []:
-                result.extend(collect_all_actions(child))
-            return result
-
         # 클립보드 액션과 모든 자식 수집
         all_actions = collect_all_actions(clipboard)
         monitor_actions = []
 
         for act in all_actions:
-            ma = convert_to_monitor_action(act)
+            ma = _convert_action_to_monitor_dict(act)
             if ma:
                 monitor_actions.append(ma)
 

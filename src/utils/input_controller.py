@@ -5,7 +5,6 @@ pyautogui와 Arduino HID를 추상화하여 설정에 따라 적절한 입력 �
 """
 
 import time
-import ctypes
 from typing import Optional, List, Tuple
 import pyautogui
 
@@ -13,15 +12,6 @@ from .logger import get_logger
 from .config import get_config
 
 logger = get_logger(__name__)
-
-
-def _release_mouse_capture():
-    """마우스 캡처/클리핑 해제 - 게임 충돌 방지를 위해 비활성화
-
-    Note: ReleaseCapture()가 게임의 마우스 캡처를 강제로 해제하여
-    게임 충돌을 유발할 수 있어 비활성화함.
-    """
-    pass
 
 # 전역 Arduino HID 인스턴스 (지연 로딩)
 _arduino_hid = None
@@ -106,14 +96,12 @@ class InputController:
     def _move_before_action(self, x: Optional[int], y: Optional[int],
                             duration: float = 0.0) -> None:
         """액션 전 마우스 이동 (공통 로직)"""
-        _release_mouse_capture()
         if x is not None and y is not None:
             pyautogui.moveTo(x, y, duration=duration)
             time.sleep(0.05)
 
     def move_to(self, x: int, y: int, duration: float = 0.0) -> None:
         """마우스를 절대 좌표로 이동 (항상 소프트웨어)"""
-        _release_mouse_capture()
         pyautogui.moveTo(x, y, duration=duration)
 
     def move(self, dx: int, dy: int) -> None:
@@ -164,7 +152,6 @@ class InputController:
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int,
              duration: float = 0.5, button: str = 'left') -> None:
         """마우스 드래그 (이동: 소프트웨어, 버튼: 하드웨어)"""
-        _release_mouse_capture()
         pyautogui.moveTo(start_x, start_y)
         time.sleep(0.05)
 
