@@ -5339,13 +5339,14 @@ class GameModeDialog(ctk.CTkToplevel):
             c['card'].configure(
                 border_width=2 if is_f else 1,
                 border_color=COLORS["accent_orange"] if is_f else COLORS["border"])
-            c['final_btn'].configure(
-                text="★ 최종" if is_f else "☆ 최종",
-                font=ctk.CTkFont(size=11, weight="bold") if is_f else ctk.CTkFont(size=11),
-                fg_color=COLORS["accent_orange"] if is_f else "transparent",
-                text_color="#ffffff" if is_f else COLORS["text_secondary"],
-                border_width=0 if is_f else 1,
-                border_color=COLORS["accent_orange"] if is_f else COLORS["border"])
+            if 'final_btn' in c:
+                c['final_btn'].configure(
+                    text="★ 최종" if is_f else "☆ 최종",
+                    font=ctk.CTkFont(size=11, weight="bold") if is_f else ctk.CTkFont(size=11),
+                    fg_color=COLORS["accent_orange"] if is_f else "transparent",
+                    text_color="#ffffff" if is_f else COLORS["text_secondary"],
+                    border_width=0 if is_f else 1,
+                    border_color=COLORS["accent_orange"] if is_f else COLORS["border"])
 
         # 카드가 0개면 빈 안내 표시
         if not self._config.waypoints:

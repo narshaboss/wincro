@@ -99,6 +99,24 @@
 
 ## 버그 수정 이력
 
+### 2026-02-09: v1.0.129~130 수정 검증 및 잔존 버그 수정 (v1.0.131)
+
+**문제:** v1.0.129~130 대규모 수정 후 런타임 버그 8건 잔존.
+
+**수정 (8건):**
+- **rule_executor.py**: skip_timeout=0일 때 `remaining` 음수 로그 수정, 무제한 대기 시 "최대 0초" → "(무제한)" 표시
+- **action_player.py**: `_wait_for_image`에서 `elapsed` 미정의 NameError 수정
+- **map_canvas.py**: `auto_fit()`, `_calc_window_size()`, `_cleanup_outliers()` 3곳 스레드 안전 스냅샷 미적용 → `get_all_snapshots()`/`get_statistics()` 사용
+- **player_view.py**: `_remove_waypoint()`에서 `final_btn` KeyError 수정 (가드 체크 추가)
+- **screen_recorder.py**: `_loop_dxcam()` mss 폴백 시 `_pause_lock` 데드락 수정 (락 해제 후 호출)
+
+**수정된 파일:**
+- `src/player/rule_executor.py`, `src/player/action_player.py`, `src/player/map_canvas.py`
+- `src/ui/player_view.py`, `src/recorder/screen_recorder.py`
+- `src/utils/config.py` - APP_VERSION 1.0.130 → 1.0.131
+
+---
+
 ### 2026-02-09: 이미지 타임아웃 제거 + 이미지 매칭 오탐 수정 (v1.0.130)
 
 **수정 1 — 이미지 타임아웃 전부 제거:**

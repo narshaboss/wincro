@@ -907,6 +907,8 @@ class ActionPlayer:
                             threshold=action.confidence
                         )
 
+                    elapsed = time.time() - start_time
+
                     if disappear:
                         # 이미지가 사라질 때까지 대기
                         if not result.found:

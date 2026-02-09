@@ -1011,7 +1011,10 @@ class RuleExecutor:
 
                     # 10초마다 로그 출력
                     if waited % 10 < check_interval and waited > 0:
-                        logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (최대 {max_wait_time:.0f}초)")
+                        if max_wait_time > 0:
+                            logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (최대 {max_wait_time:.0f}초)")
+                        else:
+                            logger.info(f"  ⏳ 다음 화면 대기... {waited:.0f}초 (무제한)")
 
                 # 타임아웃 - 경고 후 계속 진행
                 if next_skip:
@@ -1218,20 +1221,18 @@ class RuleExecutor:
 
                         if not locations:
                             elapsed = time.time() - search_start
-                            # 이미지 검색 후 타임아웃 체크
-                            if elapsed >= skip_timeout:
-                                if skip_on_not_found:
-                                    logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후){_RESET}")
-                                    return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
-                                else:
-                                    # 최대 대기 시간 초과 - 실패 처리
-                                    logger.error(f"{_RED}{self._step_prefix}✗ 타임아웃: 이미지를 찾지 못함 ({max_wait_timeout:.0f}초 대기){_RESET}")
-                                    return self._make_result(rule, False, f"타임아웃: 이미지 없음 ({max_wait_timeout:.0f}초 대기)", start_time)
+                            # skip_on_not_found일 때만 타임아웃 체크 (일반 모드는 무제한 대기)
+                            if skip_on_not_found and skip_timeout > 0 and elapsed >= skip_timeout:
+                                logger.info(f"{_YELLOW}{self._step_prefix}⏭ 스킵: 이미지 못찾음 ({skip_timeout:.1f}초 대기 후){_RESET}")
+                                return self._make_result(rule, True, f"스킵됨 (이미지 없음, {skip_timeout:.1f}초 대기)", start_time)
 
                             wait_count += 1
                             if wait_count % 20 == 1:  # 10초마다 로그
-                                remaining = skip_timeout - elapsed
-                                skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
+                                if skip_on_not_found and skip_timeout > 0:
+                                    remaining = skip_timeout - elapsed
+                                    skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
+                                else:
+                                    skip_info = ""
                                 logger.info(f"{_YELLOW}{self._step_prefix}⏳ 타겟 이미지 대기 중... {elapsed:.0f}초{skip_info}{_RESET}")
                             time.sleep(0.5)  # 0.5초마다 재검색
 
@@ -1649,18 +1650,13 @@ class RuleExecutor:
                 return None
 
             # TM_CCOEFF_NORMED 매칭 (v1.0.108 방식 — 오탐률 낮음)
-            template = cv2.imread(image_path)
-            if template is None:
+            cached = _get_cached_template(image_path)
+            if cached is None:
                 logger.warning(f"템플릿 로드 실패: {Path(image_path).name}")
                 return None
+            tmpl_gray, th, tw = cached
 
-            if len(template.shape) == 3:
-                tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-            else:
-                tmpl_gray = template
             screen_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
-
-            th, tw = tmpl_gray.shape[:2]
             sh, sw = screen_gray.shape[:2]
             if tw > sw or th > sh:
                 return None

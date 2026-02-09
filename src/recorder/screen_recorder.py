@@ -330,6 +330,8 @@ class ScreenRecorder:
         while self._recording:
             loop_start = time.time()
 
+            fallback_to_mss = False
+
             with self._pause_lock:
                 if self._paused:
                     pass  # skip frame capture while paused
@@ -363,15 +365,18 @@ class ScreenRecorder:
                             if fail_count >= 10:
                                 logger.warning("dxcam 연속 실패, mss로 전환")
                                 self._engine = "mss"
-                                self._loop_mss(frame_interval)
-                                return
+                                fallback_to_mss = True
                     except Exception as e:
                         logger.error(f"dxcam 캡처 오류: {e}")
                         fail_count += 1
                         if fail_count >= 10:
                             self._engine = "mss"
-                            self._loop_mss(frame_interval)
-                            return
+                            fallback_to_mss = True
+
+            # mss 폴백은 _pause_lock 해제 후 호출 (데드락 방지)
+            if fallback_to_mss:
+                self._loop_mss(frame_interval)
+                return
 
             # 프레임 레이트 유지 (lock 밖에서 sleep)
             sleep_time = frame_interval - (time.time() - loop_start)

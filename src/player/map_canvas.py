@@ -116,7 +116,9 @@ class MapCanvas(tk.Canvas):
     def auto_fit(self):
         """맵 전체가 보이도록 자동 조절 (이상치 무시)"""
         self._sync_size()
-        all_coords = list(self.game_map.passable | self.game_map.blocked | set(self.game_map.soft_blocked.keys()))
+        # 스레드 안전 스냅샷 사용 (워커 스레드가 game_map을 수정할 수 있음)
+        passable_snap, blocked_snap, soft_blocked_snap = self.game_map.get_all_snapshots()
+        all_coords = list(passable_snap | blocked_snap | set(soft_blocked_snap.keys()))
         if not all_coords:
             return
 
@@ -740,7 +742,9 @@ class MapWindow(tk.Toplevel):
 
     def _calc_window_size(self, game_map: GameMap):
         """맵 크기에 맞게 창 크기 계산 (타일당 최소 8px 목표)"""
-        all_coords = list(game_map.passable | game_map.blocked | set(game_map.soft_blocked.keys()))
+        # 스레드 안전 스냅샷 사용
+        passable_snap, blocked_snap, soft_blocked_snap = game_map.get_all_snapshots()
+        all_coords = list(passable_snap | blocked_snap | set(soft_blocked_snap.keys()))
         if not all_coords:
             return 700, 550
 
@@ -816,7 +820,8 @@ class MapWindow(tk.Toplevel):
     def _cleanup_outliers(self):
         """이상치 자동 정리"""
         from tkinter import messagebox
-        before = len(self.game_map.passable) + len(self.game_map.blocked) + len(self.game_map.soft_blocked)
+        stats = self.game_map.get_statistics()
+        before = stats['passable_tiles'] + stats['blocked_tiles'] + stats['soft_blocked_tiles']
         removed = self.game_map.cleanup_outliers()
         if removed > 0:
             self.map_canvas.auto_fit()
