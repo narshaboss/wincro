@@ -2260,8 +2260,10 @@ class RuleExecutor:
             # 감시 이미지 미발견 → 조건 대기 상태 해제
             if not watch_found:
                 condition_pending_watch = None
-            # 2. 최종 이미지 검색 (감시이미지가 없거나, 조건 대기 중일 때)
-            if not watch_found or condition_pending_watch is not None:
+            # 2. 최종 이미지 검색 (감시이미지가 없을 때만)
+            # 조건 대기 중(condition_pending_watch)이면 최종 이미지로 탈출 금지
+            # → 조건 해소(점프 실행) 전에 탈출하면 자식 규칙이 잘못된 화면 상태에서 실행됨
+            if not watch_found:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result
