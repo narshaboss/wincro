@@ -2096,7 +2096,7 @@ class RuleExecutor:
                     # 모니터링 액션 실행 (조건 대기 중이면 건너뜀)
                     if not skip_monitor_actions:
                         if monitor_actions:
-                            logger.debug(f"모니터링 액션 {len(monitor_actions)}개 실행 시작")
+                            logger.info(f"{_CYAN}  ▶▶ 모니터링 액션 {len(monitor_actions)}개 실행 시작 [{watch_name}]{_RESET}")
                         else:
                             logger.warning(f"{_YELLOW}  ⚠ {watch_name}: 모니터링 액션 없음{_RESET}")
 
@@ -2114,18 +2114,26 @@ class RuleExecutor:
                                 if self._stop_event.is_set():
                                     break
 
+                                action_type = monitor_action.get('type', '알수없음')
+                                action_detail = ""
+                                if action_type == '이미지 클릭':
+                                    img = monitor_action.get('image', '')
+                                    action_detail = f" [{Path(img).name}]" if img else ""
+                                elif action_type == '키 입력':
+                                    keys = monitor_action.get('keys', [])
+                                    action_detail = f" [{'+'.join(keys)}]" if keys else ""
+                                logger.info(f"{_CYAN}    ▷ 모니터링 액션 실행: {action_type}{action_detail}{_RESET}")
                                 action_result = self._execute_monitor_action(monitor_action, confidence)
                                 if action_result:
                                     if repeat_count > 1:
-                                        logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 액션 완료 ({repeat_i+1}/{repeat_count}){_RESET}")
+                                        logger.info(f"{_GREEN}    ✓✓ 모니터링 액션 성공: {action_result} ({repeat_i+1}/{repeat_count}){_RESET}")
                                     else:
-                                        logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 액션 완료{_RESET}")
+                                        logger.info(f"{_GREEN}    ✓✓ 모니터링 액션 성공: {action_result}{_RESET}")
                                 else:
-                                    action_type = monitor_action.get('type', '알수없음')
                                     if repeat_count > 1:
-                                        logger.warning(f"{_YELLOW}  ⚠ 모니터링 액션 실패 ({repeat_i+1}/{repeat_count}): {action_type}{_RESET}")
+                                        logger.warning(f"{_YELLOW}    ✗✗ 모니터링 액션 실패: {action_type}{action_detail} ({repeat_i+1}/{repeat_count}){_RESET}")
                                     else:
-                                        logger.warning(f"{_YELLOW}  ⚠ 모니터링 액션 실패: {action_type}{_RESET}")
+                                        logger.warning(f"{_YELLOW}    ✗✗ 모니터링 액션 실패: {action_type}{action_detail}{_RESET}")
 
                                 # 반복 사이 대기 (마지막 반복 제외)
                                 if repeat_i < repeat_count - 1:
@@ -2160,6 +2168,7 @@ class RuleExecutor:
                     condition_search_region = watch.get('condition_search_region')
                     condition_confidence = watch.get('condition_confidence', 0.80)
                     condition_met = True  # 조건 없으면 항상 충족
+                    logger.info(f"  [점프판정] condition_image={repr(condition_image)}, goto_index={goto_index}, condition_met={condition_met}")
                     if condition_image and Path(condition_image).exists():
                         condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
                         if condition_result:
@@ -2183,6 +2192,7 @@ class RuleExecutor:
                     condition_pending_watch = None
 
                     # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때)
+                    logger.info(f"  [점프실행] condition_met={condition_met}, goto_index={goto_index}")
                     if goto_index >= 0:
                         plan = self._current_plan
                         if not plan:

@@ -2924,14 +2924,14 @@
             }
           ],
           "confidence": 0.8,
-          "condition_image": "condition_trigger_20260131_002759_560.png",
+          "condition_image": "condition_trigger_20260210_132538_210_crop_6dc1ac.png",
           "condition_search_region": [
-            262,
-            569,
-            375,
-            634
+            267,
+            551,
+            365,
+            624
           ],
-          "condition_confidence": 0.65
+          "condition_confidence": 0.8
         },
         {
           "image": "trigger_20260121_231533_002.png",
@@ -3081,14 +3081,14 @@
             }
           ],
           "confidence": 0.8,
-          "condition_image": "condition_trigger_20260131_002759_560.png",
+          "condition_image": "condition_trigger_20260210_132538_210_crop_6dc1ac.png",
           "condition_search_region": [
             1147,
             562,
             1252,
             641
           ],
-          "condition_confidence": 0.65
+          "condition_confidence": 0.8
         }
       ]
     },
@@ -4033,14 +4033,14 @@
             }
           ],
           "confidence": 0.8,
-          "condition_image": "condition_trigger_20260131_002759_560.png",
+          "condition_image": "condition_trigger_20260210_132538_210_crop_6dc1ac.png",
           "condition_search_region": [
             257,
             568,
             361,
             644
           ],
-          "condition_confidence": 0.65
+          "condition_confidence": 0.8
         },
         {
           "image": "trigger_20260121_231533_002.png",
@@ -4190,14 +4190,14 @@
             }
           ],
           "confidence": 0.8,
-          "condition_image": "condition_trigger_20260131_002759_560.png",
+          "condition_image": "condition_trigger_20260210_132538_210_crop_6dc1ac.png",
           "condition_search_region": [
             1152,
             568,
             1256,
             643
           ],
-          "condition_confidence": 0.65
+          "condition_confidence": 0.8
         }
       ]
     },
