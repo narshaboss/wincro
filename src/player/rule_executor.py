@@ -14,7 +14,7 @@ from enum import Enum
 from datetime import datetime
 
 import pyautogui
-pyautogui.FAILSAFE = True  # 화면 구석 이동 시 안전 기능 활성화 (action_player와 일관성 유지)
+pyautogui.FAILSAFE = False
 import pyperclip
 import cv2
 import numpy as np
@@ -411,7 +411,7 @@ class RuleExecutor:
         self._on_error: Optional[Callable[[str, AutomationRule], None]] = None
 
         # PyAutoGUI 설정
-        pyautogui.FAILSAFE = True
+        pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.3  # 기본 대기 시간
 
         # 속도 설정 (자연스러운 속도를 위해 최소값 설정)
@@ -2007,28 +2007,22 @@ class RuleExecutor:
             final_search_region = self._radius_to_region(rule.action_x, rule.action_y, rule.search_radius)
 
         # 모니터링 시작 시 최종 이미지가 이미 화면에 있는지 확인
-        # (이전 액션이 target_image를 찾고 넘어오므로 대부분 이미 존재함)
         initial_check = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
         final_ever_absent = (initial_check is None)  # 시작 시 없으면 바로 True
+        absent_grace_start = time.time() if not final_ever_absent else None  # 사라짐 대기 시작 시각
+        ABSENT_GRACE_SECONDS = 15  # 시작부터 존재 시 최대 대기 시간
 
         if initial_check:
-            logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 이미 존재 → 사라질 때까지 대기 (감시 {len(valid_watches)}개){_RESET}")
+            logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 이미 존재 → 최대 {ABSENT_GRACE_SECONDS}초 대기 후 감시 (감시 {len(valid_watches)}개){_RESET}")
         else:
             logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 대기 중 (감시 {len(valid_watches)}개){_RESET}")
 
         wait_count = 0
-        # 안전 타임아웃: 최대 모니터링 시간 (기본 1시간, 무한 행 방지)
-        max_monitoring_seconds = max(60, getattr(rule, 'monitoring_timeout', 3600) or 3600)
         monitoring_start = time.time()
         # 조건 대기 중인 watch 추적 (모니터링 액션 중복 실행 방지)
         condition_pending_watch = None  # 조건 미충족으로 대기 중인 watch 이미지 경로
 
         while True:
-            # 안전 타임아웃 체크
-            monitoring_elapsed = time.time() - monitoring_start
-            if monitoring_elapsed > max_monitoring_seconds:
-                logger.warning(f"{_YELLOW}{step_prefix}■ 모니터링 타임아웃 ({max_monitoring_seconds // 60}분) - 자동 종료{_RESET}")
-                return self._make_result(rule, False, f"모니터링 타임아웃 ({max_monitoring_seconds}초)", start_time)
             # 중지 체크
             if self._stop_event.is_set():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
@@ -2238,9 +2232,15 @@ class RuleExecutor:
                 final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
                 if final_result:
                     _, _, final_conf = final_result
-                    # 최종 이미지가 시작부터 있었고 아직 사라진 적 없으면 → 종료 금지
+                    # 최종 이미지가 시작부터 있었고 아직 사라진 적 없으면 → 일정 시간 대기
                     if not final_ever_absent:
-                        logger.debug(f"{step_prefix}{final_name} 존재 중 (시작부터 유지) - 사라질 때까지 대기")
+                        # 대기 시간 초과 시 강제로 absent 처리
+                        if absent_grace_start and (time.time() - absent_grace_start) >= ABSENT_GRACE_SECONDS:
+                            final_ever_absent = True
+                            absent_grace_start = None
+                            logger.info(f"{_CYAN}{step_prefix}▶ {final_name} {ABSENT_GRACE_SECONDS}초간 유지 → 재출현 대기 해제{_RESET}")
+                        else:
+                            logger.debug(f"{step_prefix}{final_name} 존재 중 (시작부터 유지) - 사라질 때까지 대기")
                     else:
                         # 사라졌다 재출현 → 진짜 종료 조건
                         logger.info(f"{_YELLOW}{step_prefix}⏳ {final_name} 감지 ({int(final_conf * 100)}%) - 감시 이미지 재확인 중...{_RESET}")
@@ -2283,6 +2283,7 @@ class RuleExecutor:
                     # 최종 이미지가 화면에 없음 → 사라진 적 있음 표시
                     if not final_ever_absent:
                         final_ever_absent = True
+                        absent_grace_start = None
                         logger.info(f"{_CYAN}{step_prefix}▶ {final_name} 사라짐 → 재출현 시 모니터링 종료{_RESET}")
 
             # 감시 이미지 처리 완료 (조건 충족 → 점프 등), 다음 반복으로

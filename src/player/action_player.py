@@ -53,7 +53,7 @@ from .rule_executor import RuleExecutor, get_rule_executor, ExecutionState, Exec
 logger = get_logger(__name__)
 
 # PyAutoGUI 안전 설정
-pyautogui.FAILSAFE = True  # 화면 모서리로 이동 시 중지
+pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.1  # 각 동작 후 대기 시간
 
 # 화면 크기 캐시 (성능 최적화)
