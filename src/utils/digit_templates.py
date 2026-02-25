@@ -308,7 +308,7 @@ class DigitTemplateMatcher:
             new_end = x_pos + width
 
             for start_x, end_x in used_ranges:
-                # 범위가 겹치는지 확인 (80% 이상 겹치면 제외)
+                # 범위가 겹치는지 확인 (50% 이상 겹치면 제외)
                 overlap_start = max(new_start, start_x)
                 overlap_end = min(new_end, end_x)
                 overlap_width = max(0, overlap_end - overlap_start)
@@ -383,6 +383,9 @@ class DigitTemplateMatcher:
         except Exception as e:
             logger.error(f"[템플릿] 스크린샷 캡처 실패: {e}")
             return None, None
+
+        # 스크린샷 캐시 (보스 이미지 검색 등에서 재사용)
+        self._last_screenshot = screenshot
 
         x_coord = self.read_number_from_region(x_region, screenshot)
         y_coord = self.read_number_from_region(y_region, screenshot)

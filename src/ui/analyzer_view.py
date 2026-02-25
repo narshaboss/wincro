@@ -898,18 +898,6 @@ class ImageCropDialog(ctk.CTkToplevel):
                 logger.info(f"[크롭] 원본 유지: {self._image_path}")
                 logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}, 파일크기: {new_size} bytes")
 
-                # 마스크 자동 생성 (배경 변화에 강건한 매칭용)
-                try:
-                    from ..analyzer.template_matcher import generate_text_mask
-                    mask = generate_text_mask(cropped_bgr)
-                    # 마스크 파일명: 이미지이름_mask.확장자 (로드 패턴과 일치)
-                    crop_stem = new_path.stem  # e.g., "screenshot_crop_abc123"
-                    mask_path = parent / f"{crop_stem}_mask{suffix}"
-                    cv2.imwrite(str(mask_path), mask)
-                    logger.info(f"[크롭] 마스크 생성: {mask_path}")
-                except Exception as me:
-                    logger.warning(f"[크롭] 마스크 생성 실패 (무시): {me}")
-
                 if self._on_crop:
                     self._on_crop(str(new_path))
                 self.destroy()

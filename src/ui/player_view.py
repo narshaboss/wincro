@@ -24,6 +24,7 @@ from .constants import (
     ACTION_NAMES, ACTION_NAMES_SHORT, ACTION_COLORS,
     convert_to_monitor_action, collect_all_actions, assign_new_ids,
     get_action_clipboard, set_action_clipboard,
+    get_waypoint_clipboard, set_waypoint_clipboard,
 )
 from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
@@ -856,7 +857,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 width=30,
                 height=26,
                 corner_radius=4,
-                command=self._open_game_mode_dialog,
+                command=lambda r=rule: self._open_game_mode_dialog(config_rule_id=r.rule_id),
             ).pack(side="right", padx=(4, 0))
 
         # 대기시간 버튼 (랜덤 여부 표시)
@@ -1289,6 +1290,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if parent and rule in parent.children:
                 parent.children.remove(rule)
 
+        # game_modes에서 연결된 특화모드 설정도 제거
+        if rule.action_type == "game_mode" and hasattr(self, '_plan'):
+            self._plan.game_modes.pop(rule.rule_id, None)
+
         self._modified = True
         self._refresh_action_list()
         logger.info(f"규칙 삭제: {rule.rule_id}")
@@ -1616,6 +1621,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _stop_execution(self):
         """실행 중지"""
+        # 숨겨진 GameModeDialog 중지
+        _gm = getattr(self, '_gm_dialog', None)
+        if _gm:
+            logger.info("[부분실행] 특화모드 중지 요청")
+            try:
+                _gm._stop_event.set()
+            except Exception:
+                pass
+            # 곧 _check_gm_done에서 destroy + _on_game_mode_complete 호출됨
+            return
+
         if self._running_executor:
             logger.info("[부분실행] 중지 요청")
             try:
@@ -1627,51 +1643,68 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
         self.configure(fg_color=COLORS["bg_dark"])
-        self.update()
 
-    def _run_game_mode(self):
-        """특화모드 실행"""
-        from ..player.rule_executor import get_rule_executor
-        import threading
-
-        config = self._plan.game_mode
+    def _run_game_mode(self, config_rule_id=None):
+        """특화모드 실행 — 숨긴 GameModeDialog로 _run_coordinate_loop 사용"""
+        config = self._plan.game_modes.get(config_rule_id) if config_rule_id else self._plan.game_mode
         if not config:
             return
 
-        # 실행 중 상태 표시 (다른 액션과 동일하게 초록색 배경)
+        # 실행 중 상태 표시 (PlanDetailDialog에서 관리)
         self._is_running = True
         self.title("▶ 특화모드 실행 중... (ESC로 중지)")
-        self.configure(fg_color="#1a3a1a")  # 녹색 배경
+        self.configure(fg_color="#1a3a1a")
         self.update_idletasks()
-
-        # grab 해제 (다른 윈도우 조작 가능하게)
         try:
             self.grab_release()
         except tk.TclError:
             pass
 
-        # 전역 executor 사용
-        executor = get_rule_executor()
-        self._running_executor = executor
+        # GameModeDialog를 숨겨서 생성 + 자동 실행
+        self._gm_dialog = GameModeDialog(self, self._plan, self._save_plan, self._refresh_action_list,
+                                         config_rule_id=config_rule_id, auto_run=True)
+        self._gm_dialog.withdraw()  # 창 숨기기
+        self._running_executor = None
 
-        def run():
+        # 실행 완료 감시 (500ms 폴링)
+        def _check_gm_done():
+            gm = getattr(self, '_gm_dialog', None)
+            if not gm:
+                return
             try:
-                logger.info(f"[특화모드] 실행 시작!")
-                result = executor.execute_game_mode(config)
-                self.after(0, lambda: self._on_game_mode_complete(result))
-            except Exception as e:
-                logger.error(f"[특화모드] 실행 오류: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                self.after(0, lambda: self._on_game_mode_complete(False))
+                if not gm.winfo_exists():
+                    self._gm_dialog = None
+                    self._on_game_mode_complete(False)
+                    return
+                if not gm._is_running:
+                    # 정상 완료 vs 사용자 중지 구분 (_on_arrival에서 _completed_normally 설정)
+                    completed_ok = getattr(gm, '_completed_normally', False)
+                    gm.destroy()
+                    self._gm_dialog = None
+                    self._on_game_mode_complete(completed_ok)
+                    return
+                self.after(500, _check_gm_done)
+            except Exception:
+                self._gm_dialog = None
+                self._on_game_mode_complete(False)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.after(500, _check_gm_done)
 
     def _on_game_mode_complete(self, success: bool, error_msg: str = None):
-        """특화모드 완료"""
+        """특화모드 완료 — 나머지 규칙이 있으면 이어서 실행"""
+        remaining = getattr(self, '_gm_remaining_rules', [])
+        self._gm_remaining_rules = []
+
+        # 성공 + 나머지 규칙 있으면 → executor로 이어서 실행
+        if success and remaining:
+            logger.info(f"[부분실행] 특화모드 완료, 이후 {len(remaining)}개 액션 이어서 실행")
+            self._run_remaining_rules(remaining)
+            return
+
+        # 나머지 없거나 실패 → UI 복원 + 메시지
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
-        self.configure(fg_color=COLORS["bg_dark"])  # 배경색 복원
+        self.configure(fg_color=COLORS["bg_dark"])
         self.update()
         from tkinter import messagebox
         if success:
@@ -1679,6 +1712,120 @@ class PlanDetailDialog(ctk.CTkToplevel):
         else:
             msg = error_msg if error_msg else "특화모드가 종료되었습니다."
             messagebox.showinfo("종료", msg)
+
+    def _run_remaining_rules(self, rules_to_run):
+        """특화모드 완료 후 나머지 규칙 실행 — game_mode는 GameModeDialog로 라우팅"""
+        if not rules_to_run:
+            self._is_running = False
+            self.title(f"계획 수정 - {self._plan.name}")
+            self.configure(fg_color=COLORS["bg_dark"])
+            return
+
+        # 첫 번째 game_mode 규칙 위치 찾기
+        first_gm_idx = None
+        for i, r in enumerate(rules_to_run):
+            if r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id):
+                first_gm_idx = i
+                break
+
+        if first_gm_idx is None:
+            # game_mode 없음 → 전부 RuleExecutor
+            self._run_remaining_via_executor(rules_to_run, chain_remaining=None)
+            return
+
+        if first_gm_idx == 0:
+            # 첫 규칙이 game_mode → GameModeDialog로 바로 실행
+            gm_rule = rules_to_run[0]
+            self._gm_remaining_rules = rules_to_run[1:]
+            logger.info(f"[이어서실행] game_mode → GameModeDialog ({len(self._gm_remaining_rules)}개 대기)")
+            self._run_game_mode(config_rule_id=gm_rule.rule_id)
+            return
+
+        # game_mode가 중간 → 앞부분만 RuleExecutor, 완료 후 나머지 체이닝
+        before_gm = rules_to_run[:first_gm_idx]
+        gm_and_after = rules_to_run[first_gm_idx:]
+        logger.info(f"[이어서실행] {len(before_gm)}개 먼저 실행, 이후 game_mode 체이닝")
+        self._run_remaining_via_executor(before_gm, chain_remaining=gm_and_after)
+
+    def _run_remaining_via_executor(self, rules_to_run, chain_remaining=None):
+        """RuleExecutor로 non-game_mode 규칙 실행
+
+        Args:
+            rules_to_run: 실행할 규칙 리스트
+            chain_remaining: 완료 시 _run_remaining_rules(chain_remaining) 체이닝 (None이면 종료)
+        """
+        from ..player.rule_executor import get_rule_executor
+        from ..analyzer.automation_models import AutomationPlan
+        import threading
+
+        partial_plan = AutomationPlan(
+            name=f"{self._plan.name} (이어서 실행)",
+            description=f"특화모드 이후 {len(rules_to_run)}개 액션",
+            initial_rules=rules_to_run,
+            monitoring_rules=[],
+        )
+        partial_plan._original_initial_rules = self._plan.initial_rules
+        partial_plan.game_modes = self._plan.game_modes
+
+        executor = get_rule_executor()
+        self._running_executor = executor
+
+        if executor.state.value in ["running_initial", "monitoring"]:
+            executor.stop()
+
+        # 실행 중 상태 유지
+        self._is_running = True
+        self.title("▶ 이어서 실행 중... (아무 ▶ 버튼 클릭시 중지)")
+        self.update_idletasks()
+
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+
+        from ..utils.config import get_config
+        config = get_config()
+        main_window = self.winfo_toplevel().master
+
+        def on_complete(success, msg):
+            logger.info(f"[이어서실행] 완료: {msg}")
+            try:
+                if not self.winfo_exists():
+                    return
+                if success and chain_remaining:
+                    # 다음 game_mode로 체이닝 (executor 정리 후 main thread에서)
+                    self._running_executor = None
+                    self.after(0, lambda: self._run_remaining_rules(chain_remaining))
+                else:
+                    self.after(0, self._on_execution_complete)
+                    if config.ui.minimize_on_run and main_window:
+                        self.after(100, lambda: main_window.deiconify())
+            except (tk.TclError, KeyError, AttributeError, RuntimeError):
+                pass
+
+        def on_error(msg, failed_rule):
+            logger.error(f"[이어서실행] 오류: {msg}")
+            try:
+                if not self.winfo_exists():
+                    return
+                self.after(0, self._on_execution_complete)
+                if config.ui.minimize_on_run and main_window:
+                    self.after(100, lambda: main_window.deiconify())
+            except (tk.TclError, RuntimeError):
+                pass
+
+        executor.set_callbacks(on_complete=on_complete, on_error=on_error)
+
+        def run():
+            try:
+                logger.info(f"[이어서실행] {len(rules_to_run)}개 액션 시작")
+                executor.execute_plan(partial_plan)
+            except Exception as e:
+                logger.error(f"[이어서실행] 예외: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _test_run_rule(self, rule: AutomationRule):
         """해당 규칙부터 끝까지 실행 (토글 방식: 실행 중이면 중지)"""
@@ -1693,12 +1840,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._stop_execution()
             return
 
-        # 게임모드 액션인 경우 특별 처리
-        if rule.action_type == "game_mode" and self._plan.game_mode:
-            if messagebox.askyesno("특화모드 실행", "특화모드를 실행합니다.\nESC로 중지 가능\n\n시작할까요?"):
-                self._run_game_mode()
-            return
-
         # 모든 규칙을 평탄화 (자식 포함)
         def flatten_rules(rules):
             result = []
@@ -1707,6 +1848,26 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 if r.children:
                     result.extend(flatten_rules(r.children))
             return result
+
+        # 게임모드 액션인 경우 특별 처리 (이후 액션도 이어서 실행)
+        if rule.action_type == "game_mode" and self._plan.game_modes.get(rule.rule_id):
+            # 이 game_mode 이후 규칙들 수집
+            all_rules_flat = flatten_rules(self._plan.initial_rules)
+            _gm_idx = next((i for i, r in enumerate(all_rules_flat) if r is rule), -1)
+            if _gm_idx < 0:
+                _gm_idx = next((i for i, r in enumerate(all_rules_flat) if r.rule_id == rule.rule_id), -1)
+            remaining_after = []
+            if _gm_idx >= 0 and _gm_idx + 1 < len(all_rules_flat):
+                import copy
+                for r in all_rules_flat[_gm_idx + 1:]:
+                    r_copy = copy.copy(r)
+                    r_copy.children = []
+                    remaining_after.append(r_copy)
+            count_msg = f"\n(이후 {len(remaining_after)}개 액션도 이어서 실행)" if remaining_after else ""
+            if messagebox.askyesno("특화모드 실행", f"특화모드를 실행합니다.\nESC로 중지 가능{count_msg}\n\n시작할까요?"):
+                self._gm_remaining_rules = remaining_after
+                self._run_game_mode(config_rule_id=rule.rule_id)
+            return
 
         all_rules_flat = flatten_rules(self._plan.initial_rules)
 
@@ -1756,91 +1917,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 실행할 액션 개수 (이미 평탄화됨)
         remaining_count = len(rules_to_run)
 
-        # 확인 메시지
-        if not messagebox.askyesno(
-            "실행 확인",
-            f"'{rule.description or rule.action_type}'부터 끝까지 {remaining_count}개 액션을 실행합니다.\n\n계속하시겠습니까?"
-        ):
-            return
-
-        # 수정된 내용이 있으면 저장 확인
+        # 수정된 내용이 있으면 백그라운드 저장 (대화상자 없이)
         if self._modified:
-            result = messagebox.askyesnocancel(
-                "저장 확인",
-                "수정된 내용이 있습니다.\n\n"
-                "예: 저장 후 실행\n"
-                "아니오: 저장 없이 실행\n"
-                "취소: 실행 취소"
-            )
-            if result is None:  # 취소
-                return
-            if result:  # 예 - 저장 후 실행
-                self._save_plan()
+            try:
+                PLANS_DIR.mkdir(parents=True, exist_ok=True)
+                plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
+                with open(plan_file, 'w', encoding='utf-8') as f:
+                    json.dump(self._plan.to_dict(), f, ensure_ascii=False, indent=2)
+                self._modified = False
+                logger.info(f"[부분실행] 플랜 자동 저장 완료")
+            except Exception as e:
+                logger.warning(f"[부분실행] 자동 저장 실패: {e}")
 
-        # 실행 전 플랜 파일에서 최신 데이터 리로드 (업데이트 반영)
-        logger.info(f"[부분실행] 플랜 리로드 시작...")
-        original_initial_rules = self._plan.initial_rules  # 기본값: 현재 플랜
-        try:
-            plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
-            logger.debug(f"[부분실행] 플랜 파일: {plan_file}")
-            if plan_file.exists():
-                with open(plan_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                logger.debug(f"[부분실행] JSON 로드 완료")
-                templates_dir = DATA_DIR / "templates"
-                reloaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                logger.debug(f"[부분실행] from_dict 완료")
-                # 리로드된 플랜으로 규칙 재구성
-                all_rules_flat = flatten_rules(reloaded_plan.initial_rules)
-                logger.info(f"[부분실행] 리로드 후 전체 {len(all_rules_flat)}개 규칙")
-                # 인덱스 다시 찾기 (중복 ID 대응: 원래 인덱스를 힌트로 활용)
-                original_rule_index = rule_index  # 리로드 전 인덱스 보존
-                rule_index = -1
-                candidates = [(idx, r) for idx, r in enumerate(all_rules_flat) if r.rule_id == rule.rule_id]
-                if len(candidates) == 1:
-                    rule_index = candidates[0][0]
-                    logger.info(f"[부분실행] 리로드 후 찾음: idx={rule_index}")
-                elif len(candidates) > 1:
-                    # 중복 ID: 원래 인덱스 위치의 규칙 우선 사용
-                    if original_rule_index >= 0 and original_rule_index < len(all_rules_flat):
-                        r = all_rules_flat[original_rule_index]
-                        if r.rule_id == rule.rule_id:
-                            rule_index = original_rule_index
-                            logger.info(f"[부분실행] 리로드 후 원래인덱스 사용: idx={rule_index}")
-                    # 원래 인덱스가 안 맞으면 action_type+description으로 매칭
-                    if rule_index < 0:
-                        for idx, r in candidates:
-                            if r.action_type == rule.action_type and r.description == rule.description:
-                                rule_index = idx
-                                logger.info(f"[부분실행] 리로드 후 속성매칭: idx={idx}")
-                                break
-                    if rule_index < 0:
-                        rule_index = candidates[0][0]
-                        logger.warning(f"[부분실행] 리로드 후 중복ID 첫번째 사용: idx={rule_index}")
-                elif len(candidates) == 0:
-                    logger.warning(f"[부분실행] 리로드 후 rule_id={rule.rule_id} 못찾음")
-                if rule_index >= 0:
-                    import copy
-                    rules_to_run = []
-                    for r in all_rules_flat[rule_index:]:
-                        r_copy = copy.copy(r)
-                        r_copy.children = []
-                        rules_to_run.append(r_copy)
-                    remaining_count = len(rules_to_run)
-                    # 리로드 성공 시 리로드된 플랜의 규칙 사용
-                    original_initial_rules = reloaded_plan.initial_rules
-                    # 리로드 후 첫 번째 액션 확인
-                    if rules_to_run:
-                        first_r = rules_to_run[0]
-                        logger.info(f"[부분실행] 리로드 후 첫번째 액션: rule_id={first_r.rule_id}, type={first_r.action_type}")
-                else:
-                    # 리로드 후 찾지 못하면 클릭한 규칙만 단독 실행
-                    logger.warning(f"[부분실행] 리로드 후 rule_id={rule.rule_id}를 찾지 못함! 클릭한 규칙만 실행")
-                    rules_to_run = [rule]
-                    remaining_count = 1
-                logger.info(f"[부분실행] 플랜 최신 버전 로드됨")
-        except Exception as e:
-            logger.warning(f"[부분실행] 플랜 리로드 실패, 기존 데이터 사용: {e}")
+        # 현재 메모리의 플랜 데이터를 직접 사용 (느린 JSON 리로드 생략)
+        original_initial_rules = self._plan.initial_rules
 
         logger.info(f"[부분실행] 준비: {rule.description or rule.action_type} ({remaining_count}개 액션)")
         # 최종 확인: 실행할 첫번째 액션
@@ -1858,7 +1948,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # goto 점프 시 원본 계획의 rules를 참조할 수 있도록 저장 (리로드 성공 시 리로드된 규칙 사용)
         partial_plan._original_initial_rules = original_initial_rules
         # 특화모드 설정 복사
-        partial_plan.game_mode = self._plan.game_mode
+        partial_plan.game_modes = self._plan.game_modes
 
         # 전역 executor 사용
         executor = get_rule_executor()
@@ -1872,7 +1962,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._is_running = True
         self.title("▶ 실행 중... (아무 ▶ 버튼 클릭시 중지)")
         self.configure(fg_color="#1a3a1a")  # 녹색 배경으로 변경
-        self.update_idletasks()
 
         # grab 해제 (다른 윈도우 조작 가능하게)
         try:
@@ -2314,8 +2403,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 깊은 복사로 하위 규칙까지 모두 복사
         copied_rule = copy.deepcopy(rule)
         # game_mode 액션이면 game_mode 설정도 함께 저장
-        if rule.action_type == "game_mode" and hasattr(self, '_plan') and self._plan.game_mode:
-            copied_rule._game_mode_config = copy.deepcopy(self._plan.game_mode)
+        if rule.action_type == "game_mode" and hasattr(self, '_plan') and self._plan.game_modes.get(rule.rule_id):
+            copied_rule._game_mode_config = copy.deepcopy(self._plan.game_modes[rule.rule_id])
         set_action_clipboard(copied_rule)
         logger.info(f"규칙 복사됨: {rule.rule_id} (하위 {len(rule.children)}개 포함)")
 
@@ -2342,7 +2431,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # game_mode 설정 복원
         if hasattr(new_rule, '_game_mode_config') and new_rule._game_mode_config:
-            self._plan.game_mode = copy.deepcopy(new_rule._game_mode_config)
+            self._plan.game_modes[new_rule.rule_id] = copy.deepcopy(new_rule._game_mode_config)
             delattr(new_rule, '_game_mode_config')
 
         # 대상 규칙의 자식으로 추가
@@ -2374,7 +2463,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # game_mode 설정 복원
         if hasattr(new_rule, '_game_mode_config') and new_rule._game_mode_config:
-            self._plan.game_mode = copy.deepcopy(new_rule._game_mode_config)
+            self._plan.game_modes[new_rule.rule_id] = copy.deepcopy(new_rule._game_mode_config)
             delattr(new_rule, '_game_mode_config')
 
         # 최상위에 추가
@@ -2902,9 +2991,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 return parent
         return None
 
-    def _open_game_mode_dialog(self):
-        """게임 특화모드 설정 다이얼로그 열기"""
-        dialog = GameModeDialog(self, self._plan, self._save_plan, self._refresh_action_list)
+    def _open_game_mode_dialog(self, config_rule_id=None):
+        """게임 특화모드 설정 다이얼로그 열기
+
+        Args:
+            config_rule_id: 편집할 특화모드의 rule_id. None이면 새 특화모드 생성.
+        """
+        dialog = GameModeDialog(self, self._plan, self._save_plan, self._refresh_action_list,
+                                config_rule_id=config_rule_id)
         dialog.grab_set()
 
     def _on_close(self):
@@ -2923,7 +3017,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 class GameModeDialog(ctk.CTkToplevel):
     """게임 특화모드 설정 다이얼로그"""
 
-    def __init__(self, parent, plan: AutomationPlan, save_callback, refresh_callback=None):
+    def __init__(self, parent, plan: AutomationPlan, save_callback, refresh_callback=None,
+                 config_rule_id=None, auto_run=False):
         super().__init__(parent)
 
         self._plan = plan
@@ -2934,12 +3029,26 @@ class GameModeDialog(ctk.CTkToplevel):
         self._stop_event = threading.Event()
         self._map_save_lock = threading.Lock()
         self._wp_cards = []
+        self._auto_run = auto_run
         self._wp_empty_label = None
+        self._config_rule_id = config_rule_id  # None이면 새 특화모드
 
-        if not plan.game_mode:
-            from ..analyzer.automation_models import GameModeConfig
-            plan.game_mode = GameModeConfig()
-        self._config = plan.game_mode
+        from ..analyzer.automation_models import GameModeConfig
+        if config_rule_id and config_rule_id in plan.game_modes:
+            # 기존 특화모드 편집
+            self._config = plan.game_modes[config_rule_id]
+        else:
+            # 새 특화모드: 기본값 로드
+            _defaults_file = DATA_DIR / "game_mode_defaults.json"
+            if _defaults_file.exists():
+                try:
+                    with open(_defaults_file, 'r', encoding='utf-8') as f:
+                        _defaults = json.load(f)
+                    self._config = GameModeConfig.from_dict(_defaults)
+                except Exception:
+                    self._config = GameModeConfig()
+            else:
+                self._config = GameModeConfig()
 
         self.title("🎮 특화모드")
         self.resizable(True, True)
@@ -2956,6 +3065,10 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # UI 구성 후 저장된 창 위치/크기 불러오기 (위젯 레이아웃 후 적용해야 덮어쓰기 방지)
         self.after(150, self._load_window_geometry)
+
+        # 자동 실행 모드: UI 구축 후 바로 실행 시작
+        if self._auto_run:
+            self.after(300, self._start_execution)
 
     def _build_ui(self):
         """UI 구성"""
@@ -3029,6 +3142,27 @@ class GameModeDialog(ctk.CTkToplevel):
         ctk.CTkEntry(auto_skill_row, textvariable=self._auto_skill_cd_var, width=40, height=24).pack(side="left", padx=(5, 0))
         ctk.CTkLabel(auto_skill_row, text="초",
                      font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(side="left", padx=(5, 0))
+        # 쿨타임 이미지 (같은 행)
+        self._auto_skill_cd_preview = ctk.CTkLabel(auto_skill_row, text="없음",
+                                                    width=24, height=24,
+                                                    font=ctk.CTkFont(size=9))
+        self._auto_skill_cd_preview.pack(side="left", padx=(8, 0))
+        ctk.CTkButton(auto_skill_row, text="📷", width=24, height=22,
+                      font=ctk.CTkFont(size=10),
+                      command=self._select_auto_skill_cd_image).pack(side="left", padx=(2, 0))
+        ctk.CTkButton(auto_skill_row, text="✕", width=20, height=22,
+                      font=ctk.CTkFont(size=10), fg_color="#bf616a",
+                      command=self._clear_auto_skill_cd_image).pack(side="left", padx=(1, 0))
+        # 검색범위 (같은 행 — ScreenRegionSelector 사용)
+        _cd_region = getattr(self._config, 'auto_skill_cd_region', None)
+        self._auto_skill_cd_region_label = ctk.CTkLabel(
+            auto_skill_row, text=self._format_coord_region(_cd_region),
+            font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"], anchor="w")
+        self._auto_skill_cd_region_label.pack(side="left", padx=(6, 0))
+        ctk.CTkButton(auto_skill_row, text="범위", width=32, height=22,
+                      font=ctk.CTkFont(size=9), fg_color="#5e81ac",
+                      command=self._select_auto_skill_cd_region).pack(side="left", padx=(2, 0))
+        self._update_previews()
 
         # 탈출 스킬 설정
         escape_skill_row = ctk.CTkFrame(settings_inner, fg_color="transparent")
@@ -3166,43 +3300,142 @@ class GameModeDialog(ctk.CTkToplevel):
             self._config.auto_skill_cooldown_image = str(dest)
             self._update_previews()
 
+    def _clear_auto_skill_cd_image(self):
+        """상시 스킬 쿨타임 이미지 제거"""
+        self._config.auto_skill_cooldown_image = ""
+        self._update_previews()
+
+    def _select_auto_skill_cd_region(self):
+        """상시 스킬 쿨타임 이미지 검색 영역 선택 (ScreenRegionSelector)"""
+        from .analyzer_view import ScreenRegionSelector
+        existing = getattr(self._config, 'auto_skill_cd_region', None)
+
+        def on_select(x1, y1, x2, y2):
+            self._config.auto_skill_cd_region = [x1, y1, x2, y2]
+            self._auto_skill_cd_region_label.configure(
+                text=self._format_coord_region([x1, y1, x2, y2]))
+
+        ScreenRegionSelector(self, on_select, lambda: None, existing_region=existing)
+
     def _toggle_execution(self):
+        # 스레드가 죽었는데 _is_running이 True로 남은 경우 강제 리셋
         if self._is_running:
+            _rt = getattr(self, '_run_thread', None)
+            if _rt is not None and not _rt.is_alive():
+                logger.warning("[실행] 스레드 종료됨 but _is_running=True → 강제 리셋")
+                self._is_running = False
+                self._stop_event.set()
+                self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
+                if hasattr(self, '_mapping_test_btn'):
+                    self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+                self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
+                self._single_waypoint_mode = False
+                self._is_mapping_test = False
+                return
             self._stop_execution()
         else:
             self._single_waypoint_mode = False
+            self._is_mapping_test = False
             self._start_execution()
+
+    def _toggle_mapping_test(self):
+        """전체 맵핑테스트 토글 (각 구간 전체맵핑 → 목표좌표 이동)"""
+        if self._is_running:
+            _rt = getattr(self, '_run_thread', None)
+            if _rt is not None and not _rt.is_alive():
+                logger.warning("[실행] 스레드 종료됨 but _is_running=True → 강제 리셋")
+                self._is_running = False
+                self._stop_event.set()
+                self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
+                self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+                self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
+                self._single_waypoint_mode = False
+                self._is_mapping_test = False
+                return
+            self._stop_execution()
+        else:
+            self._single_waypoint_mode = False
+            self._is_mapping_test = True
+            self._start_execution()
+
+    def _run_single_mapping_test(self, idx: int):
+        """특정 경유지만 맵핑테스트 (해당 경유지 좌표만 맵핑 후 종료)"""
+        if self._is_running:
+            prev_idx = getattr(self, '_single_waypoint_idx', -1)
+            _rt = getattr(self, '_run_thread', None)
+            if _rt is not None and not _rt.is_alive():
+                # 스레드 죽음 → 정리 후 새 테스트
+                self._is_running = False
+                self._stop_event.set()
+                if getattr(self, '_is_mapping_test', False) and prev_idx >= 0:
+                    self._update_card_mapping_btn(prev_idx, False)
+                self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
+                if hasattr(self, '_mapping_test_btn'):
+                    self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+            elif getattr(self, '_is_mapping_test', False) and prev_idx == idx:
+                # 같은 카드 클릭 → 토글 (중지만)
+                self._stop_execution()
+                return
+            else:
+                # 다른 테스트 실행 중 → 중지 후 새 테스트 스케줄
+                self._stop_execution()
+                self._single_waypoint_mode = True
+                self._single_waypoint_idx = idx
+                self._is_mapping_test = True
+                self._update_card_mapping_btn(idx, True)
+                self.after(500, self._start_execution)
+                return
+        self._single_waypoint_mode = True
+        self._single_waypoint_idx = idx
+        self._is_mapping_test = True
+        # 버튼 → 중지 상태
+        self._update_card_mapping_btn(idx, True)
+        self.after(300, self._start_execution)
 
     def _run_single_waypoint(self, idx: int):
         """특정 경유지만 테스트 실행"""
         if self._is_running:
-            self._stop_execution()
-            return
+            # 스레드 죽었는데 _is_running True면 강제 리셋
+            _rt = getattr(self, '_run_thread', None)
+            if _rt is not None and not _rt.is_alive():
+                self._is_running = False
+                self._stop_event.set()
+            else:
+                self._stop_execution()
+                return
         self._single_waypoint_mode = True
         self._single_waypoint_idx = idx
-        # 카드 테스트 버튼을 중지 버튼으로 변경
-        cards = getattr(self, '_wp_cards', [])
-        if 0 <= idx < len(cards):
-            btn = cards[idx].get('test_btn')
-            if btn:
-                btn.configure(text="■ 중지", fg_color="#bf616a", hover_color="#a04050",
-                              text_color="#ffffff")
-        self._start_execution()
+        # 이전 스레드 finally 정리 대기 후 시작
+        self.after(300, self._start_execution)
 
     def _start_execution(self):
-        self._apply_settings()
+        try:
+            self._apply_settings()
+        except Exception as e:
+            logger.error(f"[실행] 설정 적용 오류: {e}")
         self._is_running = True
         self._stop_event.clear()
         self._key_press_count = 0
-        self._run_btn.configure(text="■ 중지", fg_color="#bf616a")
+        # 일반 전체 테스트에서는 맵 저장/기록 안 함
+        self._no_save_mode = (not getattr(self, '_is_mapping_test', False)
+                              and not getattr(self, '_is_mapping', False)
+                              and not getattr(self, '_single_waypoint_mode', False))
+        if getattr(self, '_is_mapping_test', False):
+            self._mapping_test_btn.configure(text="■ 중지", fg_color="#bf616a")
+        else:
+            self._run_btn.configure(text="■ 중지", fg_color="#bf616a")
         self._status_label.configure(text="상태: 실행중", text_color="#a3be8c")
         self._append_log("="*40)
         if getattr(self, '_single_waypoint_mode', False):
             idx = getattr(self, '_single_waypoint_idx', 0)
             self._append_log(f"경유지 {idx+1} 테스트 시작 (ESC로 중지)")
+        elif getattr(self, '_is_mapping_test', False):
+            self._append_log(f"전체 맵핑테스트 시작 (ESC로 중지)")
         else:
             self._append_log(f"전체 테스트 시작 (ESC로 중지)")
-        threading.Thread(target=self._run_loop, daemon=True).start()
+        t = threading.Thread(target=self._run_loop, daemon=True)
+        self._run_thread = t
+        t.start()
 
     def _stop_execution(self):
         # 이미 중지된 상태면 무시 (중복 호출 방지)
@@ -3217,6 +3450,8 @@ class GameModeDialog(ctk.CTkToplevel):
         # UI 업데이트 (예외 발생해도 중지 처리는 계속)
         try:
             self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
+            if hasattr(self, '_mapping_test_btn'):
+                self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
             self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
             self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회")
             # 맵핑 카드 버튼 복원
@@ -3225,20 +3460,23 @@ class GameModeDialog(ctk.CTkToplevel):
             # 개별 테스트 카드 버튼 복원
             if getattr(self, '_single_waypoint_mode', False):
                 single_idx = getattr(self, '_single_waypoint_idx', -1)
-                cards = getattr(self, '_wp_cards', [])
-                if 0 <= single_idx < len(cards):
-                    btn = cards[single_idx].get('test_btn')
-                    if btn:
-                        btn.configure(text="▶ 테스트", fg_color="#a3be8c", hover_color="#8fa97a",
-                                      text_color="#1a1a1a")
+                # 맵핑테스트 버튼 복원
+                if getattr(self, '_is_mapping_test', False) and single_idx >= 0:
+                    self._update_card_mapping_btn(single_idx, False)
                 self._single_waypoint_mode = False
+            self._is_mapping_test = False
         except Exception:
             pass
 
+        # 보스 경유지 플래그 리셋 (auto_save 차단 해제 — return 경로 누락 방지 안전망)
+        self._boss_segment_active = False
+
         # 맵 데이터 저장 + 배지 갱신 (모두 백그라운드 스레드에서 수행)
+        # 일반 전체 테스트에서는 맵 저장 건너뜀
+        _skip_save = getattr(self, '_no_save_mode', False)
         def do_save():
             try:
-                if hasattr(self, '_game_map') and self._game_map.passable:
+                if not _skip_save and hasattr(self, '_game_map') and self._game_map.passable:
                     self._auto_save_map()
                     stats = self._game_map.get_statistics()
                     self.after(0, lambda s=stats: self._append_log(
@@ -3251,7 +3489,22 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _run_loop(self):
         """좌표 기반 실행 루프"""
-        self._run_coordinate_loop()
+        _my_thread = threading.current_thread()
+        try:
+            self._run_coordinate_loop()
+        except Exception as e:
+            logger.error(f"[실행루프] 치명적 오류: {e}", exc_info=True)
+            self.after(0, lambda err=str(e): self._append_log(f"⚠️ 치명적 오류: {err}"))
+        finally:
+            # 새 스레드가 이미 시작됐으면 이전 스레드의 정리를 스킵 (레이스 컨디션 방지)
+            if getattr(self, '_run_thread', None) is not _my_thread:
+                logger.debug("[실행루프] 새 스레드 감지 → 이전 스레드 정리 스킵")
+                return
+            self._stop_event.set()
+            try:
+                self.after(0, self._stop_execution)
+            except Exception:
+                self._is_running = False
 
     def _run_coordinate_loop(self):
         """좌표 기반 이동 루프 - 단순 알고리즘"""
@@ -3294,7 +3547,7 @@ class GameModeDialog(ctk.CTkToplevel):
             final_wp_idx = single_idx
 
         # 최종 목표까지의 경유지만 포함
-        all_targets = []  # [(x, y, name, is_boss_dungeon, boss_image_path), ...]
+        all_targets = []  # [(x, y, name, is_boss, boss_img, char_img, arrival_keys, route_ends), ...]
         start_idx = single_idx if single_mode else 0
         for i, wp in enumerate(waypoints_raw):
             if i < start_idx:
@@ -3304,11 +3557,44 @@ class GameModeDialog(ctk.CTkToplevel):
             if isinstance(wp, (list, tuple)) and len(wp) >= 2:
                 wp_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{i+1}"
                 is_boss = (int(wp[0]) == 0 and int(wp[1]) == 0)
-                # 경유지 이미지 경로 추출
                 boss_img_path = None
+                char_img_path = None
+                arrival_keys = []
+                route_ends = []  # 도착좌표 리스트 [(x,y), ...]
+                route_starts = []  # 출발좌표 리스트 [(x,y), ...]
+                _disabled_ends = []  # 비활성 도착좌표 (벽으로 처리)
                 if len(wp) >= 4 and isinstance(wp[3], dict):
                     boss_img_path = wp[3].get("target_image")
-                all_targets.append((int(wp[0]), int(wp[1]), wp_name, is_boss, boss_img_path))
+                    char_img_path = wp[3].get("character_image")
+                    arrival_keys = wp[3].get("arrival_keys", [])
+                    # 구버전 호환
+                    if not arrival_keys and wp[3].get("arrival_key"):
+                        arrival_keys = [{"key": k.strip(), "wait_after": 0.3}
+                                        for k in wp[3]["arrival_key"].split(",") if k.strip()]
+                    # 도착좌표 리스트 추출 (활성만 / 비활성은 벽으로)
+                    for e in wp[3].get("route_ends", []):
+                        ex, ey = e.get("x"), e.get("y")
+                        if ex is not None and ey is not None and (int(ex) != 0 or int(ey) != 0):
+                            if e.get("enabled", True):
+                                route_ends.append((int(ex), int(ey)))
+                            else:
+                                _disabled_ends.append((int(ex), int(ey)))
+                    # 출발좌표 리스트 추출
+                    for s in wp[3].get("route_starts", []):
+                        sx, sy = s.get("x"), s.get("y")
+                        if sx is not None and sy is not None and (int(sx) != 0 or int(sy) != 0):
+                            route_starts.append((int(sx), int(sy)))
+                # 벽좌표 리스트 추출
+                route_walls = []
+                if len(wp) >= 4 and isinstance(wp[3], dict):
+                    for w in wp[3].get("route_walls", []):
+                        wx, wy = w.get("x"), w.get("y")
+                        if wx is not None and wy is not None and (int(wx) != 0 or int(wy) != 0):
+                            route_walls.append((int(wx), int(wy)))
+                # 비활성 도착좌표 → 벽 등록 (맵 오염 방지)
+                route_walls.extend(_disabled_ends)
+                map_locked = bool(wp[3].get('map_locked')) if len(wp) >= 4 and isinstance(wp[3], dict) else False
+                all_targets.append((int(wp[0]), int(wp[1]), wp_name, is_boss, boss_img_path, char_img_path, arrival_keys, route_ends, route_starts, map_locked, route_walls))
 
         if not all_targets:
             self.after(0, lambda: self._append_log("⚠️ 경유지가 없습니다. 경유지를 추가하세요."))
@@ -3331,16 +3617,33 @@ class GameModeDialog(ctk.CTkToplevel):
             if single_mode:
                 self._switch_segment_map(single_idx)
             else:
-                self._current_segment_idx = 0
+                # 전체 테스트: 반드시 세그먼트 0 맵 로드 (이전 테스트 데이터 오염 방지)
+                self._switch_segment_map(0)
 
-        target_x, target_y = all_targets[target_idx][0], all_targets[target_idx][1]
+        import random as _rand
+
+        def _pick_target(tidx):
+            """도착좌표가 여러 개면 랜덤 선택, 없으면 기본 wp 좌표"""
+            _re = all_targets[tidx][7] if len(all_targets[tidx]) > 7 else []
+            if _re:
+                tx, ty = _rand.choice(_re)
+            else:
+                tx, ty = all_targets[tidx][0], all_targets[tidx][1]
+            return tx, ty
+
+        target_x, target_y = _pick_target(target_idx)
 
         self.after(0, lambda tx=target_x, ty=target_y, n=all_targets[target_idx][2]:
             self._append_log(f"🎯 목표: ({tx}, {ty}) [{n}]"))
 
         # 맵 데이터 사용 여부
         use_map = hasattr(self, '_game_map')
-        mapping_on = True  # 실행 중 자동 맵핑 항상 활성 (이동 데이터 기록)
+        # 맵 기록: 맵핑테스트에서만 활성화 (전체테스트/부분실행에서는 맵 오염 방지)
+        _no_save = getattr(self, '_no_save_mode', False)
+        mapping_on = not _no_save  # 맵핑테스트=True, 전체테스트/부분실행=False
+        _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+        if _segment_map_locked:
+            mapping_on = False
 
         # 맵 상태 로깅 (UI에도 표시)
         if use_map:
@@ -3368,10 +3671,22 @@ class GameModeDialog(ctk.CTkToplevel):
         mark_portal_entry = False  # 구간 전환 후 첫 좌표를 입구 포탈로 등록
         unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
         portal_grace = 0  # 구간 전환 후 점프 필터 비활성 카운터
+        _jump_reject_coord = None  # 연속 거부된 좌표
+        _jump_reject_count = 0  # 연속 거부 횟수
+        _pending_start_pos = None  # 포탈 전환 후 등록된 출발지 (교정용)
         self._start_registered = False  # 시작 위치 등록 1회 제한 플래그
         # 전체맵핑: 목표 좌표 없이 현재 위치에서 바로 프런티어 탐색
         mapping_mode = getattr(self, '_mapping_mode', 'path')
-        full_mapping_exploring = (getattr(self, '_is_mapping', False) and mapping_mode == "full")
+        _is_mapping_test = getattr(self, '_is_mapping_test', False)
+        # 맵핑테스트: 출발좌표 있는 경유지만 전체맵핑, 없으면 경로맵핑만
+        _mt_has_starts = bool(all_targets[target_idx][8]) if _is_mapping_test and len(all_targets[target_idx]) > 8 else False
+        full_mapping_exploring = (getattr(self, '_is_mapping', False) and mapping_mode == "full") or (_is_mapping_test and _mt_has_starts)
+        # 출발좌표 없는 맵핑테스트: 근처 전체맵핑 후 경로맵핑 (2단계)
+        _local_explore_phase = _is_mapping_test and not _mt_has_starts  # 1단계: 근처 전체맵핑
+        _local_explore_radius = 20  # 반경 제한 (맨해튼 거리)
+        _local_explore_center = None  # 시작 위치 (첫 좌표 읽기 시 설정)
+        if _local_explore_phase:
+            full_mapping_exploring = True  # 프런티어 탐색 활성화
 
         # 보스 던전 상태 변수
         boss_mode = "exploring"       # "exploring" | "patrolling" | "approaching"
@@ -3379,23 +3694,60 @@ class GameModeDialog(ctk.CTkToplevel):
         explore_target = None          # (x,y) — 탐색 목표 (도달 전까지 고정)
         explore_target_tries = 0       # 현재 explore_target 시도 횟수
         explore_unreachable = set()    # 도달 불가 프런티어 좌표들
+        _portal_protected = set()      # 포탈 좌표 (절대 unblock 금지)
+        _is_backtrack_dir = False      # find_path_direction이 백트래킹으로 반환했는지
         boss_no_frontier_count = 0     # 프런티어 미발견 연속 횟수 (탐색 완료 판정용)
         boss_pre_teleport = False      # 보스 던전 전환 후 텔레포트 대기 (맵 기록 중지)
         boss_approach_steps = 0        # 보스 감지 횟수
+        boss_appr_miss = 0            # approaching 모드 연속 미감지 횟수
         boss_first_detect_iter = 0    # 보스 최초 감지 시점 (iteration)
         boss_approaching = False       # (미사용, 호환성)
         boss_approach_target = None    # (미사용, 호환성)
         boss_approach_retries = 0      # (미사용, 호환성)
         boss_approach_cooldown = 0     # (미사용, 호환성)
+        _boss_chasing = False          # 보스 추적 중 (반복 간 유지)
+        _chase_tx = 0                  # 추적 목표 X
+        _chase_ty = 0                  # 추적 목표 Y
+        _boss_chase_miss = 0           # 추적 중 보스 미감지 연속 횟수
+        patrol_skip_count = 0          # 순찰 스킵 카운트 (로컬)
+
 
         # 탈출 스킬 설정
         escape_skill_enabled = getattr(self._config, 'escape_skill_enabled', False)
         escape_skill_key = getattr(self._config, 'escape_skill_key', 'z') or 'z'
-        escape_skill_stuck_threshold = getattr(self._config, 'escape_skill_stuck_threshold', 10)
+        escape_skill_stuck_threshold = 10  # 우회 시도 충분히 한 뒤 발동
         escape_skill_direction_count = getattr(self._config, 'escape_skill_direction_count', 5)
         escape_skill_wait_after = getattr(self._config, 'escape_skill_wait_after', 0.5)
         escape_skill_cooldown = getattr(self._config, 'escape_skill_cooldown', 10.0)
         last_escape_time = 0
+
+        # 상시 스킬 설정
+        auto_skill_enabled = getattr(self._config, 'auto_skill_enabled', False)
+        auto_skill_key = getattr(self._config, 'auto_skill_key', '') or ''
+        auto_skill_cooldown = getattr(self._config, 'auto_skill_cooldown', 5.0)
+        # last_auto_skill_time 제거됨 (쿨타임 타이머 미사용)
+        auto_skill_cd_image = getattr(self._config, 'auto_skill_cooldown_image', '') or ''
+        if auto_skill_cd_image and not Path(auto_skill_cd_image).exists():
+            auto_skill_cd_image = ''  # 파일 없으면 타이머 폴백
+        auto_skill_cd_region = getattr(self._config, 'auto_skill_cd_region', None)  # [x1,y1,x2,y2]
+        # 쿨타임 이미지 미리 로드 (매번 imread 방지)
+        _auto_skill_cd_tmpl = None
+        if auto_skill_cd_image:
+            try:
+                import cv2 as _ascv_init
+                _auto_skill_cd_tmpl = _ascv_init.imread(auto_skill_cd_image)
+            except Exception:
+                pass
+        if auto_skill_enabled and auto_skill_key:
+            _as_mode = "이미지" if _auto_skill_cd_tmpl is not None else f"타이머({auto_skill_cooldown}초)"
+            self.after(0, lambda k=auto_skill_key, m=_as_mode:
+                self._append_log(f"🔄 상시스킬: 키={k}, 쿨타임={m}"))
+
+        # 보스 스킬 설정
+        boss_skill_enabled = getattr(self._config, 'boss_skill_enabled', False)
+        boss_skill_key = getattr(self._config, 'boss_skill_key', '') or ''
+        boss_skill_cooldown = getattr(self._config, 'boss_skill_cooldown', 3.0)
+        last_boss_skill_time = 0
 
         # A* 경로탐색 사용
         from ..player.simple_pathfinder import SimplePathfinder
@@ -3406,19 +3758,29 @@ class GameModeDialog(ctk.CTkToplevel):
         recent_positions = []  # 최근 방문 위치 (반복 감지용)
 
         def _rebuild_path_index():
-            """경로 변경 시 역매핑 재구축"""
+            """경로 변경 시 역매핑 재구축 (중복 좌표는 첫 등장만 유지)"""
             nonlocal path_pos_index
-            path_pos_index = {pos: i for i, pos in enumerate(current_path)}
+            path_pos_index = {}
+            for i, pos in enumerate(current_path):
+                if pos not in path_pos_index:
+                    path_pos_index[pos] = i
 
         def press_key(direction):
             """방향키 누르기"""
             if self._stop_event.is_set():
                 return
+            _t_pk = time.time()
             key = self._config.move_keys.get(direction, direction)
             if smooth_move:
                 self._smooth_key_input_ui([key], interval)
             else:
-                pyautogui.press(key)
+                # PAUSE=0 강제 (rule_executor/action_player가 0.1~0.3 설정 → press() 1회당 0.2~0.6초 낭비 방지)
+                _orig_pause = pyautogui.PAUSE
+                pyautogui.PAUSE = 0
+                try:
+                    pyautogui.press(key)
+                finally:
+                    pyautogui.PAUSE = _orig_pause
                 self._key_press_count += 1
                 # 중단 가능한 sleep
                 sleep_until = time.time() + interval
@@ -3426,6 +3788,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     if self._stop_event.is_set():
                         return
                     time.sleep(0.02)
+            _t_pk_ms = int((time.time() - _t_pk) * 1000)
+            logger.info(f"[타이밍] press_key: {_t_pk_ms}ms interval={interval} smooth={smooth_move}")
 
         def find_path_direction(cx, cy, tx, ty):
             """
@@ -3436,8 +3800,9 @@ class GameModeDialog(ctk.CTkToplevel):
             4. 비벽 방향 재시도 (백트래킹)
             5. 최후 직진
             """
-            nonlocal current_path, path_index, path_pos_index, explored_from, unknown_path_fails
+            nonlocal current_path, path_index, path_pos_index, explored_from, unknown_path_fails, _is_backtrack_dir
 
+            _is_backtrack_dir = False
             current_pos = (cx, cy)
             target_pos = (tx, ty)
 
@@ -3448,46 +3813,154 @@ class GameModeDialog(ctk.CTkToplevel):
                     path_index = idx
                     if path_index + 1 < len(current_path):
                         next_pos = current_path[path_index + 1]
-                        if not self._game_map.is_blocked(next_pos[0], next_pos[1]):
+                        # 다음 타일이 벽/소프트블록/출발지이면 캐시 무효화 → A* 재계산
+                        _is_start = (self._game_map.start_pos is not None and next_pos == self._game_map.start_pos)
+                        if use_map and (_is_start or
+                                        self._game_map.is_blocked(next_pos[0], next_pos[1]) or
+                                        self._game_map.is_soft_blocked(next_pos[0], next_pos[1])):
+                            current_path = None
+                            path_index = 0
+                            path_pos_index = {}
+                        else:
                             dx = next_pos[0] - cx
                             dy = next_pos[1] - cy
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 if ddx == dx and ddy == dy:
                                     remaining = len(current_path) - path_index - 1
-                                    self.after(0, lambda d2=d, r=remaining:
-                                        self._append_log(f"🚶 경로추적 {d2} (잔여:{r}칸)"))
+                                    if _ui_update_ok:
+                                        self.after(0, lambda d2=d, r=remaining:
+                                            self._append_log(f"🚶 경로추적 {d2} (잔여:{r}칸)"))
                                     return d
 
-            # 1차: 알려진 이동가능 경로만
-            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, stop_event=self._stop_event)
-            if self._stop_event.is_set():
-                return None
-            if result.found and len(result.directions) > 0:
-                current_path = result.path
-                path_index = 0
-                _rebuild_path_index()
-                unknown_path_fails = 0  # 확실한 경로 → 실패 카운터 리셋
-                self.after(0, lambda l=len(result.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
-                return result.directions[0]
+            _manhattan = abs(cx - tx) + abs(cy - ty)
+            _skip_to_explore = False  # 최단경로 모드 A* 실패 시 True → 1차~2차 건너뜀
 
-            # 2차: 미탐색 영역 포함 (연속 실패 3회 이상이면 건너뜀 → 3차 탐색으로)
-            if unknown_path_fails < 3:
-                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=True, stop_event=self._stop_event)
+            # ── 맵핑테스트 최단경로 전용 모드 ──────────────────────────
+            # 맵 데이터 충분(50타일+) OR 출발좌표 없는 맵핑테스트:
+            # allow_unknown A*로 최단 경로 (캐릭터가 맵 밖이어도 미지 영역 통과)
+            # 벽 발견 → 맵 갱신 → 다음 호출에서 A* 재계산 → 자연 수렴
+            # 재생/전체테스트/부분실행은 _is_mapping_test=False → 절대 진입 안 함
+            if _is_mapping_test and (not full_mapping_exploring or _mt_has_map):
+                _sp_result = pathfinder.find_path(
+                    current_pos, target_pos, allow_unknown=True,
+                    stop_event=self._stop_event,
+                    max_iterations=max(_manhattan * 30, 20000),
+                    unknown_cost=3)  # 미탐색 비용 3배 → 알려진 경로 우선
                 if self._stop_event.is_set():
                     return None
-                if result.found and len(result.directions) > 0:
-                    current_path = result.path
+                if _sp_result.found and _sp_result.directions:
+                    current_path = _sp_result.path
                     path_index = 0
                     _rebuild_path_index()
-                    self.after(0, lambda l=len(result.path): self._append_log(f"🔍 탐색 경로: {l}칸 (미지 영역 포함)"))
-                    return result.directions[0]
+                    if _ui_update_ok:
+                        self.after(0, lambda l=len(_sp_result.path):
+                            self._append_log(f"🛤️ 최단경로: {l}칸"))
+                    return _sp_result.directions[0]
+                # A* 실패 (사방 벽 등 극단적 경우) → 1차~2차 건너뛰고 3차로 직행
+                _skip_to_explore = True
+
+            # 1차~2차: 일반 모드 경로 탐색 (최단경로 맵핑 모드에서는 건너뜀)
+            if not _skip_to_explore:
+                # 1차: 알려진 이동가능 경로만 (soft_blocked 제외 — 깨끗한 우회)
+                # allow_unknown=False → 탐색 범위가 알려진 타일로 한정되므로 max_iterations 불필요
+                result_clean = pathfinder.find_path(current_pos, target_pos, allow_unknown=False,
+                                              stop_event=self._stop_event, allow_soft_blocked=False)
+                if self._stop_event.is_set():
+                    return None
+
+                _max_clean = max(int(_manhattan * 5), 100)
+                # 알려진 경로가 맨해튼 대비 과도하게 길면 미탐색 직선 경로가 나을 수 있음
+                _known_too_long = (result_clean.found and len(result_clean.path) > max(_manhattan * 3, 30))
+
+                if result_clean.found and len(result_clean.directions) > 0 and len(result_clean.path) <= _max_clean and not _known_too_long:
+                    # 깨끗한 경로가 합리적 길이 → 바로 사용
+                    current_path = result_clean.path
+                    path_index = 0
+                    _rebuild_path_index()
+                    unknown_path_fails = 0
+                    self.after(0, lambda l=len(result_clean.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
+                    return result_clean.directions[0]
+
+                # 1.5차: soft_blocked 포함 (우회로 없거나 1차 경로가 너무 길 때)
+                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False,
+                                              stop_event=self._stop_event, allow_soft_blocked=True)
+                if self._stop_event.is_set():
+                    return None
+                # 1.5차 결과 중 best known path 선택
+                _best_known = None
+                if result.found and len(result.directions) > 0:
+                    if result_clean.found and len(result.path) >= len(result_clean.path):
+                        _best_known = result_clean
+                    else:
+                        _best_known = result
+                elif result_clean.found and len(result_clean.directions) > 0:
+                    _best_known = result_clean
+
+                # 2차: 미탐색 영역 포함 경로 시도
+                # 전체맵핑 모드에서는 사용 안 함 (사용자 설정 벽 주변 미탐색 영역 잘못 진입 방지)
+                # 조건: (1) known 경로 없음, (2) known 경로가 맨해튼 대비 과도하게 김, (3) 연속 실패 < 3
+                _try_unknown = (not _is_mapping_test and unknown_path_fails < 3 and
+                                (_best_known is None or len(_best_known.path) > max(_manhattan * 3, 30)))
+                _result_unknown = None
+                if _try_unknown:
+                    _result_unknown = pathfinder.find_path(current_pos, target_pos, allow_unknown=True,
+                                                           stop_event=self._stop_event,
+                                                           max_iterations=max(_manhattan * 30, 20000),
+                                                           unknown_cost=3)  # 미탐색 비용 3배 → 알려진 경로 우선
+                    if self._stop_event.is_set():
+                        return None
+                    if _result_unknown.found and len(_result_unknown.directions) > 0:
+                        _max_path = max(int(_manhattan * 5), 100)
+                        if len(_result_unknown.path) > _max_path:
+                            self.after(0, lambda l=len(_result_unknown.path), m=_max_path:
+                                self._append_log(f"⚠️ 우회 {l}칸 > 최대 {m}칸 → 스킵"))
+                            unknown_path_fails += 1
+                            _result_unknown = None
+                    else:
+                        _result_unknown = None
+
+                # 최종 선택: known vs unknown 중 짧은 경로
+                if _best_known and _result_unknown:
+                    if len(_result_unknown.path) < len(_best_known.path):
+                        # 미탐색 경로가 더 짧음 → 직선으로 시도
+                        current_path = _result_unknown.path
+                        path_index = 0
+                        _rebuild_path_index()
+                        self.after(0, lambda l=len(_result_unknown.path), kl=len(_best_known.path):
+                            self._append_log(f"🔍 직선 경로: {l}칸 (기존 우회 {kl}칸)"))
+                        return _result_unknown.directions[0]
+                    else:
+                        # 알려진 경로가 더 짧거나 같음
+                        current_path = _best_known.path
+                        path_index = 0
+                        _rebuild_path_index()
+                        unknown_path_fails = 0
+                        _label = "임시벽 통과" if _best_known is result else "경로"
+                        self.after(0, lambda l=len(_best_known.path), lb=_label: self._append_log(f"🛤️ {lb} 발견: {l}칸"))
+                        return _best_known.directions[0]
+                elif _best_known:
+                    current_path = _best_known.path
+                    path_index = 0
+                    _rebuild_path_index()
+                    unknown_path_fails = 0
+                    self.after(0, lambda l=len(_best_known.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
+                    return _best_known.directions[0]
+                elif _result_unknown:
+                    current_path = _result_unknown.path
+                    path_index = 0
+                    _rebuild_path_index()
+                    self.after(0, lambda l=len(_result_unknown.path): self._append_log(f"🔍 탐색 경로: {l}칸 (미지 영역 포함)"))
+                    return _result_unknown.directions[0]
 
             # 3차: 스마트 탐색 — 현재 위치에서 아직 안 가본 방향 시도
+            _start_pos = self._game_map.start_pos
             tried = explored_from.get(current_pos, set())
             candidates = []
             for d, (ddx, ddy) in DIRECTIONS_4.items():
                 nx, ny = cx + ddx, cy + ddy
                 if d not in tried and not self._game_map.is_blocked(nx, ny):
+                    if _start_pos is not None and (nx, ny) == _start_pos:
+                        continue  # 출발지 회피
                     dist = abs(nx - tx) + abs(ny - ty)
                     candidates.append((dist, d))
 
@@ -3500,6 +3973,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 return chosen
 
             # 4차: 이미 시도했지만 벽이 아닌 방향 재시도 (백트래킹)
+            _is_backtrack_dir = True
             # 최근 방문 위치 회피 + 반복 감지 시 벽 해제
             recent_positions.append((cx, cy))
             if len(recent_positions) > 20:
@@ -3514,23 +3988,24 @@ class GameModeDialog(ctk.CTkToplevel):
                     unblocked = 0
                     for d2, (ddx2, ddy2) in DIRECTIONS_4.items():
                         nb = (cx + ddx2, cy + ddy2)
+                        if nb in _portal_protected:
+                            continue  # 포탈 좌표 보호
                         if self._game_map.is_blocked(nb[0], nb[1]):
-                            self._game_map.blocked.discard(nb)
                             self._game_map.mark_passable(nb[0], nb[1])
                             unblocked += 1
                         elif self._game_map.is_soft_blocked(nb[0], nb[1]):
-                            self._game_map.soft_blocked.pop(nb, None)
                             self._game_map.mark_passable(nb[0], nb[1])
                             unblocked += 1
                     if unblocked > 0:
                         self.after(0, lambda u=unblocked, cx2=cx, cy2=cy:
                             self._append_log(f"🔓 반복감지({cx2},{cy2}) → {u}개 인접벽 해제"))
                         recent_positions.clear()
-                        explored_from.pop((cx, cy), None)
+                        # 현재 위치의 explored_from 초기화 (해제된 벽 방향 재시도 허용)
+                        explored_from.pop(current_pos, None)
                         current_path = []
                         path_index = 0
                         path_pos_index = {}
-                        return None  # 경로 재계산 유도
+                        # return None 제거: 벽 해제 후 아래 백트래킹으로 즉시 방향 결정
 
             # 최근 방문 위치를 피해서 백트래킹
             recent_set = set(recent_positions[-6:])
@@ -3538,26 +4013,35 @@ class GameModeDialog(ctk.CTkToplevel):
             backtrack_candidates = []
             for d, (ddx, ddy) in DIRECTIONS_4.items():
                 nx, ny = cx + ddx, cy + ddy
+                if _start_pos is not None and (nx, ny) == _start_pos:
+                    continue  # 출발지 회피
                 if not self._game_map.is_blocked(nx, ny) and not self._game_map.is_soft_blocked(nx, ny):
                     backtrack_candidates.append((d, (nx, ny)))
+            # 맵핑테스트: 목표 방향 우선 정렬 (먼 곳 탐색 방지, 전체맵핑 중엔 비활성)
+            if _is_mapping_test and not full_mapping_exploring and backtrack_candidates:
+                backtrack_candidates.sort(key=lambda x: abs(x[1][0] - tx) + abs(x[1][1] - ty))
             if backtrack_candidates:
                 # 이미 실패한 방향 제외 + 최근 방문 안 한 곳 우선
                 for d, pos in backtrack_candidates:
                     if d not in tried_dirs and pos not in recent_set and d != last_dir:
-                        self.after(0, lambda d2=d: self._append_log(f"↩ 되돌아가기 ({d2})"))
+                        if _ui_update_ok:
+                            self.after(0, lambda d2=d: self._append_log(f"↩ 되돌아가기 ({d2})"))
                         return d
                 # 실패 방향 제외만
                 for d, pos in backtrack_candidates:
                     if d not in tried_dirs and d != last_dir:
-                        self.after(0, lambda d2=d: self._append_log(f"↩ 되돌아가기 ({d2})"))
+                        if _ui_update_ok:
+                            self.after(0, lambda d2=d: self._append_log(f"↩ 되돌아가기 ({d2})"))
                         return d
                 # 실패 방향뿐이면 최근 방문 안 한 곳이라도
                 for d, pos in backtrack_candidates:
                     if pos not in recent_set:
-                        self.after(0, lambda d2=d: self._append_log(f"↩ 되돌아가기 ({d2})"))
+                        if _ui_update_ok:
+                            self.after(0, lambda d2=d: self._append_log(f"↩ 되돌아가기 ({d2})"))
                         return d
                 # 전부 실패 방향뿐이면 어쩔 수 없이 사용
-                self.after(0, lambda d2=backtrack_candidates[0][0]: self._append_log(f"↩ 되돌아가기 ({d2})"))
+                if _ui_update_ok:
+                    self.after(0, lambda d2=backtrack_candidates[0][0]: self._append_log(f"↩ 되돌아가기 ({d2})"))
                 return backtrack_candidates[0][0]
 
             # 5차: 사방이 벽 (진짜 막다른 길) — 방향 순환 시도
@@ -3570,50 +4054,77 @@ class GameModeDialog(ctk.CTkToplevel):
                     return d
             return dirs[iteration % 4]
 
-        def _find_nearest_frontier(cx, cy):
+        frontier_cooldown = set()  # 최근 도달/무효화된 프런티어 (재선택 방지)
+        frontier_cooldown_iter = 0  # 쿨다운 리셋 기준 반복
+
+        def _find_nearest_frontier(cx, cy, max_radius=150):
             """가장 가까운 frontier 찾기 (BFS - 가까운 것부터 탐색)"""
             from collections import deque
+            _delta_to_dir = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}
+            _start_pos = self._game_map.start_pos
             visited = {(cx, cy)}
             queue = deque([(cx, cy, 0)])
             while queue:
                 px, py, dist = queue.popleft()
-                if dist > 150:  # 최대 탐색 거리
+                if dist > max_radius:  # 최대 탐색 거리
                     break
-                if (px, py) in explore_unreachable:
-                    continue
-                # frontier 체크: passable 타일의 미탐색 이웃이 있는가
-                if (px, py) in self._game_map.passable and (px != cx or py != cy):
-                    for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
-                        if not self._game_map.is_known(px + ddx, py + ddy):
-                            return (px, py)
-                # 인접 타일 탐색 (passable만)
+                # frontier 체크 (explore_unreachable은 프런티어 반환만 스킵, 이웃 확장은 허용)
+                if (px, py) not in explore_unreachable:
+                    if (px, py) in self._game_map.passable and (px != cx or py != cy):
+                        if (px, py) not in frontier_cooldown:
+                            _ef = explored_from.get((px, py), set())
+                            for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                                if not self._game_map.is_known(px + ddx, py + ddy):
+                                    # 이미 시도+실패한 방향은 frontier 판정에서 제외
+                                    if _delta_to_dir.get((ddx, ddy)) in _ef:
+                                        continue
+                                    return (px, py)
+                # 인접 타일 탐색 (passable만, start_pos 제외 — A* 일관성)
                 for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                     nx, ny = px + ddx, py + ddy
                     if (nx, ny) not in visited and (nx, ny) in self._game_map.passable:
-                        visited.add((nx, ny))
-                        queue.append((nx, ny, dist + 1))
+                        if _start_pos is None or (nx, ny) != _start_pos:
+                            visited.add((nx, ny))
+                            queue.append((nx, ny, dist + 1))
+            # 쿨다운 때문에 못 찾았으면 쿨다운 무시하고 재시도
+            if frontier_cooldown:
+                frontier_cooldown.clear()
+                return _find_nearest_frontier(cx, cy)
             return None
 
         try:
+            # 게임 창 전환 대기 — stop_event 오염 방지 위해 직전 재클리어
+            if self._stop_event.is_set():
+                logger.warning("[좌표모드] 2초 대기 전 stop_event가 이미 set → 재클리어")
+                self._stop_event.clear()
+            # stop_event.wait 사용 → 중지 즉시 반응 (time.sleep 대신)
+            if self._stop_event.wait(2.0):
+                self.after(0, lambda: self._append_log("⚠️ 2초 대기 중 중지 감지"))
+                self.after(0, self._stop_execution)
+                return
+
             iteration = 0
             max_iterations = 5000
             coord_fail_count = 0
             max_coord_fails = 50  # 연속 50회 실패 시 중단
             while not self._stop_event.is_set() and iteration < max_iterations:
                 iteration += 1
-                _ui_update_ok = (iteration % 3 == 0)  # UI 업데이트는 3회당 1번
+                _ui_update_ok = (iteration % 10 == 0)  # UI 업데이트는 10회당 1번 (Tkinter 큐 폭주 방지)
+                _t_iter_start = time.time()
 
                 # 중지 확인 (좌표 읽기 전 즉시 체크)
                 if self._stop_event.is_set():
                     break
 
                 # 좌표 읽기 (stop_event 전달 → 중지 시 즉시 반환)
+                _t_ocr_start = time.time()
                 current_x, current_y = matcher.read_both_coordinates(
                     self._config.coord_x_region,
                     self._config.coord_y_region,
                     "X", "Y",
                     stop_event=self._stop_event
                 )
+                _t_ocr_ms = int((time.time() - _t_ocr_start) * 1000)
 
                 # 좌표 읽기 후 중지 재확인
                 if self._stop_event.is_set():
@@ -3628,7 +4139,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     if coord_fail_count % 5 == 1:
                         self.after(0, lambda c=coord_fail_count: self._append_log(f"⚠️ 좌표 읽기 실패 ({c}/{max_coord_fails})"))
                     self.after(0, lambda: self._status_label.configure(text="좌표 읽기 실패"))
-                    time.sleep(0.1)
+                    self._stop_event.wait(0.1)
                     continue
 
                 coord_fail_count = 0  # 성공 시 리셋
@@ -3642,11 +4153,28 @@ class GameModeDialog(ctk.CTkToplevel):
                     if iteration % 10 == 1:
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"⚠️ 좌표 범위 초과 무시: ({cx},{cy})"))
-                    time.sleep(0.1)
+                    self._stop_event.wait(0.1)
                     continue
                 # 2) 이전 좌표 대비 점프 거리: 30칸 이상이면 OCR 오독 의심
                 if portal_grace > 0:
                     portal_grace -= 1
+                    _jump_reject_coord = None
+                    _jump_reject_count = 0
+                    # 포탈 전환 후 좌표 안정화: 로딩 중 잘못된 좌표로 출발지 등록됐으면 교정
+                    if _pending_start_pos is not None and mapping_on and use_map:
+                        dist_from_pending = abs(current_x - _pending_start_pos[0]) + abs(current_y - _pending_start_pos[1])
+                        if dist_from_pending >= 5:
+                            old_sp = _pending_start_pos
+                            if old_sp not in _portal_protected:
+                                self._game_map.blocked.discard(old_sp)
+                            _pending_start_pos = (current_x, current_y)
+                            self._game_map.start_pos = _pending_start_pos
+                            self._game_map.mark_blocked(current_x, current_y)
+                            self.after(0, lambda ox=old_sp[0], oy=old_sp[1], cx=current_x, cy=current_y:
+                                self._append_log(f"🔄 출발지 교정: ({ox},{oy})→({cx},{cy})"))
+                    # portal_grace 만료 → 교정 종료
+                    if portal_grace == 0:
+                        _pending_start_pos = None
                 elif prev_x is not None:
                     jump = abs(current_x - prev_x) + abs(current_y - prev_y)
                     if jump >= 30:
@@ -3654,27 +4182,135 @@ class GameModeDialog(ctk.CTkToplevel):
                         was_near = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
                         # 포탈 전환 중이면 허용 (mark_portal_entry, boss_pre_teleport, 목표 근접)
                         if not mark_portal_entry and not boss_pre_teleport and not was_near:
+                            # 맵핑테스트/전체맵핑: 30칸+ 점프도 포탈로 처리 (벽 등록 + 중지)
+                            if (full_mapping_exploring or _is_mapping_test) and mapping_on and use_map:
+                                if last_dir:
+                                    _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
+                                    _portal_tile = (prev_x + _pdx, prev_y + _pdy)
+                                    self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
+                                    _portal_protected.add(_portal_tile)
+                                    self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
+                                        self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                                self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
+                                    self._append_log(f"🛑 맵핑 중 포탈 텔레포트 ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
+                                self._stop_event.set()
+                                break
+                            # 비정상 좌표 점프: portal_grace/mark_portal_entry로 처리 안 된 점프
+                            if (current_x, current_y) == _jump_reject_coord:
+                                _jump_reject_count += 1
+                                if _jump_reject_count >= 3:
+                                    # 동일 좌표 3회 반복 = 실제 좌표 변경이지만 예상된 포탈 아님
+                                    # → 맵 오염 방지를 위해 실행 중지
+                                    self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
+                                        self._append_log(f"🛑 비정상 좌표 점프: ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
+                                    self._stop_event.set()
+                                    break
+                            else:
+                                _jump_reject_coord = (current_x, current_y)
+                                _jump_reject_count = 1
                             self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
                                 self._append_log(f"⚠️ 좌표 점프 무시: ({px},{py})→({cx},{cy}) 거리={j}"))
-                            time.sleep(0.1)
+                            self._stop_event.wait(0.1)
                             continue
+                    elif full_mapping_exploring and jump >= 5:
+                        # 전체맵핑 중 5칸+ 점프 = 입구 포탈 밟음 → 맵 오염 방지
+                        # 이동 방향의 타일을 벽으로 등록 (포탈 위치)
+                        if last_dir and mapping_on and use_map:
+                            _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
+                            _portal_tile = (prev_x + _pdx, prev_y + _pdy)
+                            self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
+                            _portal_protected.add(_portal_tile)
+                            self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
+                                self._append_log(f"🚪 전체맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                        self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
+                            self._append_log(f"🛑 전체맵핑 중 포탈 텔레포트 ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
+                        self._stop_event.set()
+                        break
+                    else:
+                        _jump_reject_coord = None
+                        _jump_reject_count = 0
 
-                # 구간 전환 후 첫 좌표 → 출발지(보라색) + 벽 등록 (되돌아가기 방지)
+                # 구간 전환 후 첫 좌표 → 출발지 + 벽 등록 (되돌아가기 방지)
+                # 즉시 등록하되, 좌표가 나중에 바뀌면 start_pos도 갱신됨
                 if mark_portal_entry and mapping_on and use_map:
                     mark_portal_entry = False
-                    self._game_map.start_pos = (current_x, current_y)
-                    self._game_map.mark_blocked(current_x, current_y)
-                    self.after(0, lambda cx=current_x, cy=current_y:
-                        self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
+                    # 맵핑테스트 + 출발좌표 없음 = 랜덤출발 → 출발지 벽 등록 안 함
+                    _mt_no_starts = _is_mapping_test and not (len(all_targets[target_idx]) > 8 and all_targets[target_idx][8])
+                    _pending_start_pos = (current_x, current_y)
+                    if _mt_no_starts:
+                        self._game_map.start_pos = None
+                        self._game_map.mark_passable(current_x, current_y)
+                        self.after(0, lambda cx=current_x, cy=current_y:
+                            self._append_log(f"🚪 출발지 등록 (벽 없음, 랜덤출발): ({cx},{cy})"))
+                    else:
+                        self._game_map.start_pos = _pending_start_pos
+                        self._game_map.mark_blocked(current_x, current_y)
+                        self.after(0, lambda cx=current_x, cy=current_y:
+                            self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
+                    # 맵핑테스트: 전체맵핑 설정 (start_pos 해제 + 도착지/출발지 벽)
+                    if full_mapping_exploring:
+                        # 현재 위치는 passable 복원 (위에서 mark_blocked됨)
+                        self._game_map.mark_passable(current_x, current_y)
+                        self._game_map.start_pos = None
+                        _pe_x, _pe_y = target_x, target_y
+                        if _pe_x is not None and _pe_y is not None and (_pe_x, _pe_y) != (current_x, current_y):
+                            self._game_map.mark_blocked(_pe_x, _pe_y)
+                            _portal_protected.add((_pe_x, _pe_y))
+                        _pe_routes = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                        for _pex, _pey in _pe_routes:
+                            if (_pex, _pey) != (current_x, current_y):
+                                self._game_map.mark_blocked(_pex, _pey)
+                                _portal_protected.add((_pex, _pey))
+                        # 출발좌표(출입구 포탈) 벽 등록 — 현재 위치여도 무조건 등록
+                        # (A*/BFS는 시작점이 blocked여도 정상 작동)
+                        _pe_starts = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
+                        for _psx, _psy in _pe_starts:
+                            self._game_map.mark_blocked(_psx, _psy)
+                            _portal_protected.add((_psx, _psy))
+                        self.after(0, lambda cx=current_x, cy=current_y:
+                            self._append_log(f"📍 전체맵핑 시작: ({cx},{cy})"))
+                    # 사용자 지정 벽좌표 등록
+                    _route_walls = all_targets[target_idx][10] if len(all_targets[target_idx]) > 10 else []
+                    for _wx, _wy in _route_walls:
+                        self._game_map.mark_blocked(_wx, _wy)
+                        _portal_protected.add((_wx, _wy))
+                    if _route_walls:
+                        self.after(0, lambda n=len(_route_walls): self._append_log(f"🧱 벽좌표 {n}개 등록"))
 
                 # 첫 반복: 시작 위치 등록 (1회만 실행)
                 if prev_x is None and mapping_on and use_map and not getattr(self, '_start_registered', False):
                     self._start_registered = True
+                    # 맵핑테스트 + 출발좌표 없음 = 랜덤출발 → 출발지 벽 등록 안 함
+                    _mt_no_starts_init = _is_mapping_test and not (len(all_targets[target_idx]) > 8 and all_targets[target_idx][8])
                     # 출발지 저장
-                    self._game_map.start_pos = (current_x, current_y)
-                    # 전체맵핑: 시작 위치는 항상 이동가능
-                    if full_mapping_exploring:
+                    if _mt_no_starts_init:
+                        self._game_map.start_pos = None
                         self._game_map.mark_passable(current_x, current_y)
+                    else:
+                        self._game_map.start_pos = (current_x, current_y)
+                    # 전체맵핑: 출발지(포탈 입구)는 벽으로 등록 (되돌아가기 방지)
+                    # start_pos 유지 → get_walkable_neighbors에서 제외 → A* 회피
+                    # start_pos = None으로 하면 맵 저장 시 출발지 정보 소실 → 맵 오염
+                    if full_mapping_exploring and not _mt_no_starts_init:
+                        self._game_map.mark_blocked(current_x, current_y)
+                        # 도착지(포탈 출구) 벽 등록 — 탐색 중 진입 방지
+                        _end_x, _end_y = target_x, target_y
+                        if _end_x is not None and _end_y is not None and (_end_x, _end_y) != (current_x, current_y):
+                            self._game_map.mark_blocked(_end_x, _end_y)
+                            _portal_protected.add((_end_x, _end_y))
+                            self.after(0, lambda ex=_end_x, ey=_end_y:
+                                self._append_log(f"🚫 도착지 벽 등록: ({ex},{ey}) — 탐색 중 진입 방지"))
+                        # 도착좌표가 여러 개면 전부 벽 등록
+                        _end_routes = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                        for _ex, _ey in _end_routes:
+                            if (_ex, _ey) != (current_x, current_y):
+                                self._game_map.mark_blocked(_ex, _ey)
+                                _portal_protected.add((_ex, _ey))
+                        # 출발좌표(출입구 포탈) 벽 등록 — 현재 위치여도 무조건 등록
+                        _start_routes = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
+                        for _sx, _sy in _start_routes:
+                            self._game_map.mark_blocked(_sx, _sy)
+                            _portal_protected.add((_sx, _sy))
                         # 4방향 모두 벽이면(갇힘) 인접 벽 해제, 아니면 기존 벽 유지
                         blocked_neighbors = sum(
                             1 for d, (ddx, ddy) in DIRECTIONS_4.items()
@@ -3683,6 +4319,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         if blocked_neighbors >= 4:
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 nx, ny = current_x + ddx, current_y + ddy
+                                if (nx, ny) in _portal_protected:
+                                    continue  # 포탈 좌표 보호
                                 if self._game_map.is_blocked(nx, ny):
                                     self._game_map.blocked.discard((nx, ny))
                                     unblocked += 1
@@ -3697,14 +4335,32 @@ class GameModeDialog(ctk.CTkToplevel):
                         self._game_map.mark_passable(current_x, current_y)
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"📍 시작 위치: ({cx},{cy})"))
+                    # 근처 전체맵핑 시작 위치 기록
+                    if _local_explore_phase and _local_explore_center is None:
+                        _local_explore_center = (current_x, current_y)
+                    # 사용자 지정 벽좌표 등록 (첫 구간)
+                    _route_walls_init = all_targets[target_idx][10] if len(all_targets[target_idx]) > 10 else []
+                    for _wx, _wy in _route_walls_init:
+                        self._game_map.mark_blocked(_wx, _wy)
+                        _portal_protected.add((_wx, _wy))
+                    if _route_walls_init:
+                        self.after(0, lambda n=len(_route_walls_init): self._append_log(f"🧱 벽좌표 {n}개 등록"))
 
                 # 보스 던전 경유지는 좌표 기반 도착 체크 건너뜀 (좌표가 0,0)
                 # 전체맵핑 프런티어 탐색 중이면 보스던전 핸들러 사용
-                is_boss_dungeon = all_targets[target_idx][3] or full_mapping_exploring
+                # 맵핑테스트: 맵 데이터 50타일+ 이면 최단경로 A* 모드 (캐릭터 위치 무관)
+                _mt_has_map = _is_mapping_test and len(self._game_map.passable) >= 50
+                is_boss_dungeon = all_targets[target_idx][3] or (full_mapping_exploring and not _mt_has_map)
+                self._boss_segment_active = all_targets[target_idx][3]  # 보스 경유지면 auto-save 차단
 
                 # 도착 체크 (정확한 좌표 일치 — 포탈은 정확 좌표에서만 작동)
-                arrival_dist = abs(current_x - target_x) + abs(current_y - target_y)
-                if arrival_dist == 0 and not is_boss_dungeon:
+                # 도착좌표가 여러 개면 어느 하나라도 밟으면 도착 처리
+                _cur_route_ends = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                if _cur_route_ends:
+                    _arrived = any(current_x == ex and current_y == ey for ex, ey in _cur_route_ends)
+                else:
+                    _arrived = (abs(current_x - target_x) + abs(current_y - target_y) == 0)
+                if _arrived and not is_boss_dungeon:
                     # 맵핑 모드: 목표 도달 시 처리
                     if getattr(self, '_is_mapping', False):
                         mapping_mode = getattr(self, '_mapping_mode', 'path')
@@ -3722,9 +4378,27 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 목표를 도달했으므로 탐색 모드로 전환 (is_boss_dungeon처럼 동작)
                             is_boss_dungeon = True  # 전체맵핑은 보스 던전처럼 프런티어 탐색
                             full_mapping_exploring = True  # 다음 반복에서도 보스던전 핸들러 진입
+                            # start_pos 해제 (A*가 출발지를 벽으로 취급하는 문제 방지)
+                            if use_map:
+                                self._game_map.start_pos = None
+                                # 도착지 벽 등록 — 탐색 중 포탈 진입 방지
+                                _et_x, _et_y = target_x, target_y
+                                if _et_x is not None and _et_y is not None and (_et_x, _et_y) != (current_x, current_y):
+                                    self._game_map.mark_blocked(_et_x, _et_y)
+                                _end_rts = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                                for _erx, _ery in _end_rts:
+                                    if (_erx, _ery) != (current_x, current_y):
+                                        self._game_map.mark_blocked(_erx, _ery)
                             prev_x, prev_y = current_x, current_y
                             time.sleep(0.05)
                             continue  # target_idx 증가 건너뛰고 프런티어 탐색 시작
+                    # 도착 키 입력
+                    _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                    if _arr_keys and not self._stop_event.is_set():
+                        self._exec_arrival_keys(_arr_keys)
+                        _kn = ",".join(kd.get("key","") for kd in _arr_keys)
+                        self.after(0, lambda k=_kn, cx=current_x, cy=current_y:
+                            self._append_log(f"🔑 도착 키 입력: {k} ({cx},{cy})"))
                     target_idx += 1
                     if target_idx >= len(all_targets):
                         self.after(0, lambda: self._append_log(f"🎯 도착! ({current_x},{current_y})"))
@@ -3735,18 +4409,19 @@ class GameModeDialog(ctk.CTkToplevel):
                         if self._stop_event.is_set():
                             break
                         # 포탈 도착 → 잠시 대기 (텔레포트 전 추가 이동 방지)
-                        time.sleep(0.5)
+                        self._stop_event.wait(0.5)
                         # 현재 맵 도착지 저장 (전환 전)
-                        if use_map:
+                        if use_map and not _no_save:
                             self._game_map.end_pos = (current_x, current_y)
-                        self._switch_segment_map(target_idx)
+                        if not self._switch_segment_map(target_idx, skip_save=_no_save):
+                            self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
-                        target_x, target_y = all_targets[target_idx][0], all_targets[target_idx][1]
+                        target_x, target_y = _pick_target(target_idx)
                         seg_name = all_targets[target_idx][2]
                         prev_seg = all_targets[target_idx - 1][2]
                         self.after(0, lambda tx=target_x, ty=target_y, sn=seg_name: self._append_log(f"▶ 다음: ({tx},{ty}) [{sn}]"))
-                        # 테스트 실행 모드: 경유지 도착 알림 (비블로킹)
-                        if not getattr(self, '_is_mapping', False):
+                        # 테스트 실행 모드: 경유지 도착 알림 (비블로킹) — 부분실행/재생에서는 표시 안 함
+                        if not getattr(self, '_is_mapping', False) and not getattr(self, '_auto_run', False):
                             self.after(0, lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
                                 self._show_notification(
                                     "경유지 도착",
@@ -3760,13 +4435,27 @@ class GameModeDialog(ctk.CTkToplevel):
                         explored_from = {}
                         unknown_path_fails = 0
                         last_dir = None
+                        recent_positions.clear()
+                        _portal_protected.clear()
                         # 보스 던전 상태 리셋
                         boss_mode = "exploring"
                         boss_patrol = None
                         explore_target = None
                         explore_target_tries = 0
                         explore_unreachable = set()
+                        frontier_cooldown.clear()
                         boss_no_frontier_count = 0
+                        boss_approach_steps = 0
+                        boss_appr_miss = 0
+                        _boss_chasing = False
+                        _boss_chase_miss = 0
+                        patrol_skip_count = 0
+                        _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
+                        full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)  # 구간 전환 → 출발좌표 있으면 전체맵핑
+                        _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts  # 출발좌표 없으면 근처맵핑
+                        _local_explore_center = (current_x, current_y) if _local_explore_phase else None
+                        if _local_explore_phase:
+                            full_mapping_exploring = True
                         # 보스 던전 전환: 텔레포트 전까지 맵 기록 중지
                         # (이전 맵 좌표가 보스 던전 맵에 오염되는 것 방지)
                         if all_targets[target_idx][3]:
@@ -3775,8 +4464,12 @@ class GameModeDialog(ctk.CTkToplevel):
                             mark_portal_entry = False
                             self.after(0, lambda: self._append_log("⏳ 보스 던전 포탈 대기..."))
                         else:
+                            mapping_on = not _no_save
                             mark_portal_entry = True
-                        portal_grace = 10  # 구간 전환 후 점프 필터 비활성
+                        _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                        if _segment_map_locked:
+                            mapping_on = False
+                        portal_grace = 30  # 구간 전환 후 점프 필터 비활성 (던전 로딩 대기)
                         prev_x, prev_y = current_x, current_y
                         time.sleep(0.05)
                         continue
@@ -3785,26 +4478,55 @@ class GameModeDialog(ctk.CTkToplevel):
                 # (정확 좌표 밟자마자 텔레포트 → 코드가 목표 좌표를 못 읽을 수 있음)
                 if prev_x is not None:
                     jump_dist = abs(current_x - prev_x) + abs(current_y - prev_y)
-                    was_near_target = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
+                    # 도착좌표가 여러 개면 어느 하나라도 근접하면 포탈 감지
+                    _portal_re = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                    if _portal_re:
+                        was_near_target = any(abs(prev_x - ex) + abs(prev_y - ey) <= 1 for ex, ey in _portal_re)
+                    else:
+                        was_near_target = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
                     portal_threshold = max(8, int(interval / 0.02) + 5) if smooth_move else 5
-                    if jump_dist >= portal_threshold and was_near_target and target_idx < len(all_targets) - 1:
+                    # 마지막 경유지에서 포탈 감지 → 도착 처리 (싱글 테스트 포함)
+                    if jump_dist >= portal_threshold and was_near_target and target_idx == len(all_targets) - 1:
+                        # 맵 도착지 저장 (포탈 직전 좌표)
+                        if use_map and not _no_save:
+                            self._game_map.end_pos = (prev_x, prev_y)
+                        # 도착 키 입력
+                        _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                        if _arr_keys and not self._stop_event.is_set():
+                            self._exec_arrival_keys(_arr_keys)
+                            _kn = ",".join(kd.get("key","") for kd in _arr_keys)
+                            self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                        self.after(0, lambda jd=jump_dist, px=prev_x, py=prev_y:
+                            self._append_log(f"🌀 포탈 감지 → 도착! (점프 {jd}칸, ({px},{py}))"))
+                        self.after(0, self._on_arrival)
+                        return
+                    elif jump_dist >= portal_threshold and was_near_target and target_idx < len(all_targets) - 1:
+                        # 도착 키 입력
+                        _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                        if _arr_keys and not self._stop_event.is_set():
+                            self._exec_arrival_keys(_arr_keys)
+                            _kn = ",".join(kd.get("key","") for kd in _arr_keys)
+                            self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
                         # 구간 맵 전환 (현재 맵 저장 → 다음 구간 맵 로드)
                         if self._stop_event.is_set():
                             break
                         # 현재 맵 도착지 저장 (전환 전) - 포탈 직전 좌표
-                        if use_map:
+                        _cur_is_boss_p = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
+                        if use_map and not _cur_is_boss_p and not _no_save:
                             self._game_map.end_pos = (prev_x, prev_y)
                         next_segment = target_idx + 1
-                        self._switch_segment_map(next_segment)
+                        self._boss_segment_active = False
+                        if not self._switch_segment_map(next_segment, skip_save=_cur_is_boss_p or _no_save):
+                            self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
                         target_idx += 1
-                        target_x, target_y = all_targets[target_idx][0], all_targets[target_idx][1]
+                        target_x, target_y = _pick_target(target_idx)
                         seg_name = all_targets[target_idx][2]
                         prev_seg = all_targets[target_idx - 1][2]
                         self.after(0, lambda jd=jump_dist, tx=target_x, ty=target_y, sn=seg_name:
                             self._append_log(f"🌀 포탈 감지! (점프 {jd}칸) → {sn} 목표: ({tx},{ty})"))
-                        # 테스트 실행 모드: 포탈 도착 알림 (비블로킹)
-                        if not getattr(self, '_is_mapping', False):
+                        # 테스트 실행 모드: 포탈 도착 알림 (비블로킹) — 부분실행/재생에서는 표시 안 함
+                        if not getattr(self, '_is_mapping', False) and not getattr(self, '_auto_run', False):
                             self.after(0, lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
                                 self._show_notification(
                                     "포탈 감지",
@@ -3818,16 +4540,44 @@ class GameModeDialog(ctk.CTkToplevel):
                         explored_from = {}
                         unknown_path_fails = 0
                         last_dir = None
+                        recent_positions.clear()
                         # 보스 던전 상태 리셋
                         boss_mode = "exploring"
                         boss_patrol = None
                         explore_target = None
                         explore_target_tries = 0
                         explore_unreachable = set()
+                        _portal_protected.clear()
+                        frontier_cooldown.clear()
                         boss_no_frontier_count = 0
-                        boss_pre_teleport = False  # 이미 텔레포트됨
-                        # 텔레포트 직후 안정화 대기 + 정확한 시작 좌표 재측정
-                        time.sleep(0.3)
+                        boss_approach_steps = 0
+                        boss_appr_miss = 0
+                        _boss_chasing = False
+                        _boss_chase_miss = 0
+                        patrol_skip_count = 0
+                        _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
+                        full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)  # 구간 전환 → 출발좌표 있으면 전체맵핑
+                        _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts  # 출발좌표 없으면 근처맵핑
+                        _local_explore_center = (current_x, current_y) if _local_explore_phase else None
+                        if _local_explore_phase:
+                            full_mapping_exploring = True
+                        # 보스 던전 전환: 포탈 점프로 이미 텔레포트된 상태
+                        _next_is_boss = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
+                        if _next_is_boss:
+                            # 포탈 점프 감지 = 이미 보스 던전에 도착 → 맵 기록 중지 (오염 방지)
+                            # 단, 맵핑테스트에서는 기록 유지 (탐색이 목적)
+                            boss_pre_teleport = False
+                            mapping_on = _is_mapping_test
+                            mark_portal_entry = False
+                        else:
+                            boss_pre_teleport = False
+                            mapping_on = not _no_save
+                            mark_portal_entry = True
+                        _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                        if _segment_map_locked:
+                            mapping_on = False
+                        # 던전 로딩 대기 후 좌표 재측정
+                        self._stop_event.wait(2.0)
                         start_x, start_y = matcher.read_both_coordinates(
                             self._config.coord_x_region,
                             self._config.coord_y_region,
@@ -3836,14 +4586,14 @@ class GameModeDialog(ctk.CTkToplevel):
                         if start_x is not None:
                             current_x, current_y = int(start_x), int(start_y)
                         # 도착 좌표 = 입구 포탈 → 출발지(보라색) + 벽 등록 (되돌아가기 방지)
-                        if mapping_on and use_map:
+                        if start_x is not None and mapping_on and use_map:
                             self._game_map.start_pos = (current_x, current_y)
                             self._game_map.mark_blocked(current_x, current_y)
+                            _pending_start_pos = (current_x, current_y)
                             self.after(0, lambda cx=current_x, cy=current_y:
                                 self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
-                        portal_grace = 10  # 구간 전환 후 점프 필터 비활성
+                        portal_grace = 30  # 구간 전환 후 점프 필터 비활성 (던전 로딩 대기)
                         prev_x, prev_y = current_x, current_y
-                        time.sleep(0.2)  # 던전 로딩 대기
                         continue
 
                 # 이동 성공/실패 판정
@@ -3852,7 +4602,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
                     if moved:
                         # 이동 성공 → 현재 위치 이동가능으로 기록
-                        if not self._stop_event.is_set():
+                        if not self._stop_event.is_set() and _ui_update_ok:
                             self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, d=last_dir:
                                 self._append_log(f"✅ ({px},{py})→({cx},{cy}) {d}"))
                         if mapping_on and use_map:
@@ -3865,14 +4615,14 @@ class GameModeDialog(ctk.CTkToplevel):
                                 tried = explored_from.get(new_pos, set())
                                 tried.add(opposite[last_dir])
                                 explored_from[new_pos] = tried
-                                # explored_from 메모리 제한 (500개 초과 시 오래된 250개 삭제)
+                                # explored_from 메모리 제한 (500개 초과 시 오래된 250개 삭제, 현재 위치 보호)
                                 if len(explored_from) > 500:
-                                    keys_to_remove = list(explored_from.keys())[:250]
+                                    keys_to_remove = [k for k in list(explored_from.keys())[:250] if k != new_pos]
                                     for k in keys_to_remove:
                                         del explored_from[k]
                             # 30칸마다 자동 저장 (디바운스, 중지 시 생략)
                             passable_count = len(self._game_map.passable)
-                            if passable_count % 30 == 0 and not self._map_save_lock.locked() and not self._stop_event.is_set():
+                            if not _no_save and passable_count % 30 == 0 and not self._map_save_lock.locked() and not self._stop_event.is_set():
                                 if _ui_update_ok:
                                     self.after(0, lambda pc=passable_count: self._append_log(f"💾 자동저장 ({pc}타일)"))
                                 threading.Thread(target=self._auto_save_map, daemon=True).start()
@@ -3882,9 +4632,12 @@ class GameModeDialog(ctk.CTkToplevel):
                     else:
                         # 이동 실패
                         stuck_count += 1
-                        total_stuck_count += 1
+                        # portal_grace 중에는 total_stuck 누적 안 함
+                        # (게임 로딩 중 키 입력 불가 → 거짓 정체 방지)
+                        if portal_grace <= 0:
+                            total_stuck_count += 1
                         unknown_path_fails += 1  # A* unknown 경로 불신 누적
-                        if not self._stop_event.is_set():
+                        if not self._stop_event.is_set() and _ui_update_ok:
                             self.after(0, lambda px=prev_x, py=prev_y, d=last_dir, sc=stuck_count:
                                 self._append_log(f"❌ ({px},{py}) {d} 실패 (정체:{sc})"))
                         # 실패한 방향을 즉시 explored_from에 기록 (스마트 탐색에서 회피)
@@ -3893,34 +4646,69 @@ class GameModeDialog(ctk.CTkToplevel):
                             tried = explored_from.get(fail_pos, set())
                             tried.add(last_dir)
                             explored_from[fail_pos] = tried
-                        if stuck_count >= 2 and last_dir:
-                            if mapping_on and use_map:
+                        if stuck_count >= 2 and last_dir and portal_grace <= 0:
+                            if use_map:
                                 ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 wall_x = prev_x + ddx
                                 wall_y = prev_y + ddy
 
-                                if boss_mode == "patrolling":
-                                    # 순찰 모드: 임시벽 등록 (몬스터 등 이동 장애물 고려)
-                                    # 5회 누적 시 자동으로 영구벽 승격됨
-                                    if not self._game_map.is_blocked(wall_x, wall_y):
-                                        self._game_map.mark_soft_blocked(wall_x, wall_y)
-                                        self.after(0, lambda wx=wall_x, wy=wall_y:
-                                            self._append_log(f"🚧 임시벽: x{wx}y{wy} (몬스터?)"))
-                                else:
-                                    # 탐색/일반 모드
-                                    if not self._game_map.is_blocked(wall_x, wall_y):
-                                        # 이미 이동가능으로 확인된 타일 → 임시벽 (몬스터 등 일시적 장애물)
-                                        if self._game_map.is_passable(wall_x, wall_y):
+                                if mapping_on:
+                                    # 맵 기록 모드: 벽 등록
+                                    if boss_mode == "patrolling":
+                                        if not self._game_map.is_blocked(wall_x, wall_y):
                                             self._game_map.mark_soft_blocked(wall_x, wall_y)
                                             self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                self._append_log(f"🚧 임시벽: x{wx}y{wy} (기존 경로)"))
-                                        else:
-                                            self._game_map.mark_blocked(wall_x, wall_y)
-                                            self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                self._append_log(f"🧱 벽 확정: x{wx}y{wy}"))
+                                                self._append_log(f"🚧 임시벽: x{wx}y{wy} (몬스터?)"))
+                                    else:
+                                        if not self._game_map.is_blocked(wall_x, wall_y):
+                                            if _is_mapping_test:
+                                                # 맵핑테스트: 단계적 벽 승격 (몬스터 오탐 방지)
+                                                if self._game_map.is_soft_blocked(wall_x, wall_y):
+                                                    # 재실패 → 영구벽 승격
+                                                    self._game_map.mark_blocked(wall_x, wall_y)
+                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                        self._append_log(f"🧱 벽 확정: x{wx}y{wy} (맵핑, 재실패)"))
+                                                elif self._game_map.is_passable(wall_x, wall_y):
+                                                    # 이동 가능 타일 → 임시벽 (몬스터?)
+                                                    self._game_map.mark_soft_blocked(wall_x, wall_y)
+                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                        self._append_log(f"🚧 임시벽: x{wx}y{wy} (맵핑, 몬스터?)"))
+                                                else:
+                                                    # 미탐색 타일 → 임시벽 (재실패 시 영구벽 승격)
+                                                    self._game_map.mark_soft_blocked(wall_x, wall_y)
+                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                        self._append_log(f"🚧 임시벽: x{wx}y{wy} (맵핑, 미탐색)"))
+                                            elif self._game_map.is_soft_blocked(wall_x, wall_y):
+                                                if full_mapping_exploring:
+                                                    # 전체맵핑: 재실패 → 영구벽 승격
+                                                    self._game_map.mark_blocked(wall_x, wall_y)
+                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                        self._append_log(f"🧱 벽 확정: x{wx}y{wy} (재실패)"))
+                                                else:
+                                                    # 일반 탐색: 재실패 → count +3 (몬스터 가능, tick으로 복구)
+                                                    for _ in range(3):
+                                                        self._game_map.mark_soft_blocked(wall_x, wall_y)
+                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                        self._append_log(f"🚧 임시벽 강화: x{wx}y{wy} (재실패)"))
+                                            elif self._game_map.is_passable(wall_x, wall_y):
+                                                self._game_map.mark_soft_blocked(wall_x, wall_y)
+                                                self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                    self._append_log(f"🚧 임시벽: x{wx}y{wy} (기존 경로)"))
+                                            else:
+                                                self._game_map.mark_blocked(wall_x, wall_y)
+                                                self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                    self._append_log(f"🧱 벽 확정: x{wx}y{wy}"))
+                                    # 벽 발견시 저장 (디바운스, 중지 시 생략)
+                                    if not _no_save and not self._map_save_lock.locked() and not self._stop_event.is_set():
+                                        threading.Thread(target=self._auto_save_map, daemon=True).start()
+                                else:
+                                    # 부분실행/전체테스트: 임시벽만 (디스크 저장 안 함, 영구벽 승격 안 함)
+                                    if not self._game_map.is_blocked(wall_x, wall_y):
+                                        self._game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
 
                                 # 벽이 현재 프런티어 목표이면 즉시 무효화
                                 if explore_target == (wall_x, wall_y):
+                                    frontier_cooldown.add(explore_target)
                                     explore_target = None
                                     explore_target_tries = 0
 
@@ -3928,18 +4716,67 @@ class GameModeDialog(ctk.CTkToplevel):
                                 current_path = []
                                 path_index = 0
                                 path_pos_index = {}
+                                pathfinder.invalidate_path()
+                                # 미지 영역 경로 신뢰도 감소 (벽 발견 = 미지 영역 경로 실패)
+                                # 3회 누적 시 2차(미지 영역) 탐색 비활성 → 로컬 탐색으로 전환
+                                unknown_path_fails = min(unknown_path_fails + 1, 3)
                                 if _ui_update_ok:
                                     self.after(0, lambda: self._append_log("🔄 벽 발견 → 경로 재계산"))
-                                # 벽 발견시 저장 (디바운스, 중지 시 생략)
-                                if not self._map_save_lock.locked() and not self._stop_event.is_set():
-                                    threading.Thread(target=self._auto_save_map, daemon=True).start()
                             stuck_count = 0
                             # ※ total_stuck_count는 리셋하지 않음 — 벽 등록 후에도
                             # 계속 정체되면 장기정체 복구(>=8)가 발동해야 함
                             prev_x, prev_y = current_x, current_y  # 현재 위치로 갱신 (출발지 재등록 방지)
                             last_dir = None
+                            # continue 제거: OCR 재읽기 건너뛰고 바로 경로 재계산 → 즉시 이동
+
+                        # 탈출 스킬 체크 (장기정체 복구보다 먼저 — total_stuck 리셋 전)
+                        # 좌표가 안 움직이면 발동 (total_stuck_count = 연속 이동실패 횟수)
+                        if (escape_skill_enabled and
+                            total_stuck_count >= escape_skill_stuck_threshold and
+                            time.time() - last_escape_time >= escape_skill_cooldown):
+
+                            self.after(0, lambda tc=total_stuck_count:
+                                self._append_log(f"🚀 탈출 스킬 발동! (연속 정체 {tc}회)"))
+
+                            try:
+                                pyautogui.keyDown(escape_skill_key)
+                                time.sleep(0.05)
+                                pyautogui.keyUp(escape_skill_key)
+                            except Exception as e:
+                                logger.error(f"[좌표모드] 탈출 스킬 키 입력 실패: {e}")
+                                last_escape_time = time.time()  # 실패해도 쿨다운 적용 (tight loop 방지)
+                                prev_x, prev_y = None, None  # 스킬 실패해도 위치 리셋 (stale position 방지)
+                                time.sleep(0.05)
+                                continue
+                            self._stop_event.wait(0.3)
+
+                            dx = target_x - current_x
+                            dy = target_y - current_y
+                            if dx == 0 and dy == 0:
+                                dir_name = last_dir or "right"
+                            elif abs(dx) >= abs(dy):
+                                dir_name = "right" if dx > 0 else "left"
+                            else:
+                                dir_name = "down" if dy > 0 else "up"
+                            direction_key = self._config.move_keys.get(dir_name, dir_name)
+
+                            for _ in range(escape_skill_direction_count):
+                                pyautogui.press(direction_key)
+                                time.sleep(0.05)
+
+                            self._stop_event.wait(escape_skill_wait_after)
+
+                            last_escape_time = time.time()
+                            prev_x, prev_y = None, None
+                            stuck_count = 0
+                            total_stuck_count = 0
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                            explored_from = {}
+                            unknown_path_fails = 0
                             time.sleep(0.05)
-                            continue  # 벽 등록 후 즉시 재탐색 (같은 방향 재시도 방지)
+                            continue
 
                         # 장기 정체 복구: 인접 벽 해제 (잘못된 벽 등록 자동 수정)
                         # 몬스터 등 임시 장애물이 영구벽으로 잘못 등록된 경우 복구
@@ -3948,14 +4785,18 @@ class GameModeDialog(ctk.CTkToplevel):
                             unblocked = 0
                             fail_wall = None
                             if last_dir:
-                                fd, fdd = DIRECTIONS_4.get(last_dir, (0, 0))
-                                fail_wall = (current_x + fd, current_y + fdd)
+                                fdx, fdy = DIRECTIONS_4.get(last_dir, (0, 0))
+                                fail_wall = (current_x + fdx, current_y + fdy)
+                            _tried_here = explored_from.get((current_x, current_y), set())
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 nx, ny = current_x + ddx, current_y + ddy
                                 if (nx, ny) == fail_wall:
                                     continue  # 직전 실패 방향 벽은 유지
+                                if d in _tried_here:
+                                    continue  # 이미 실패한 방향 벽도 유지
+                                if (nx, ny) in _portal_protected:
+                                    continue  # 포탈 좌표 보호
                                 if self._game_map.is_blocked(nx, ny):
-                                    self._game_map.blocked.discard((nx, ny))
                                     self._game_map.mark_passable(nx, ny)
                                     unblocked += 1
                             if unblocked > 0:
@@ -3965,59 +4806,59 @@ class GameModeDialog(ctk.CTkToplevel):
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
-                            explored_from.pop((current_x, current_y), None)
+                            pathfinder.invalidate_path()
+                            # explored_from 유지 (확인된 벽 방향 기억 — 해제 후 재실패 루프 방지)
 
-                # soft_blocked 자동 감소 (10회마다)
-                if mapping_on and use_map:
+                # soft_blocked 자동 감소 (10회마다) — 부분실행/전체테스트에서도 활성화
+                if use_map:
                     tick_counter += 1
                     if tick_counter >= 10:
                         self._game_map.tick()
                         tick_counter = 0
 
-                # 탈출 스킬 체크
-                if (escape_skill_enabled and
-                    total_stuck_count >= escape_skill_stuck_threshold and
-                    time.time() - last_escape_time >= escape_skill_cooldown):
-
-                    self.after(0, lambda tc=total_stuck_count:
-                        self._append_log(f"🚀 탈출 스킬 발동! (연속 정체 {tc}회)"))
-
-                    try:
-                        pyautogui.press(escape_skill_key)
-                    except Exception as e:
-                        logger.error(f"[좌표모드] 탈출 스킬 키 입력 실패: {e}")
-                        total_stuck_count = 0
-                        last_escape_time = time.time()
-                        time.sleep(0.05)
-                        continue
-                    time.sleep(0.3)
-
-                    dx = target_x - current_x
-                    dy = target_y - current_y
-                    if abs(dx) >= abs(dy):
-                        dir_name = "right" if dx > 0 else "left"
+                # 상시 스킬 체크
+                _t_skill = time.time()
+                if auto_skill_enabled and auto_skill_key and not self._stop_event.is_set():
+                    _use_skill = False
+                    if _auto_skill_cd_tmpl is not None:
+                        # 이미지 기반: OCR 스크린샷 재사용 (추가 스크린샷 불필요)
+                        try:
+                            import cv2 as _ascv
+                            import numpy as _asnp
+                            _as_pil = getattr(matcher, '_last_screenshot', None)
+                            if _as_pil is not None:
+                                if auto_skill_cd_region and len(auto_skill_cd_region) == 4:
+                                    _rx1, _ry1, _rx2, _ry2 = auto_skill_cd_region
+                                    _as_cropped = _as_pil.crop((_rx1, _ry1, _rx2, _ry2))
+                                    _as_scr = _ascv.cvtColor(_asnp.array(_as_cropped), _ascv.COLOR_RGB2BGR)
+                                else:
+                                    _as_scr = _ascv.cvtColor(_asnp.array(_as_pil), _ascv.COLOR_RGB2BGR)
+                                _as_res = _ascv.matchTemplate(_as_scr, _auto_skill_cd_tmpl, _ascv.TM_CCOEFF_NORMED)
+                                _, _as_max_val, _, _ = _ascv.minMaxLoc(_as_res)
+                                if _as_max_val < 0.8:
+                                    _use_skill = True
+                        except Exception:
+                            _use_skill = True
                     else:
-                        dir_name = "down" if dy > 0 else "up"
-                    direction_key = self._config.move_keys.get(dir_name, dir_name)
-
-                    for _ in range(escape_skill_direction_count):
-                        pyautogui.press(direction_key)
-                        time.sleep(0.05)
-
-                    pyautogui.press('enter')
-                    time.sleep(escape_skill_wait_after)
-
-                    last_escape_time = time.time()
-                    prev_x, prev_y = None, None
-                    stuck_count = 0
-                    total_stuck_count = 0
-                    current_path = []
-                    path_index = 0
-                    path_pos_index = {}
-                    explored_from = {}
-                    unknown_path_fails = 0
-                    time.sleep(0.05)
-                    continue
+                        # 이미지 미설정: 매 반복 사용
+                        _use_skill = True
+                    if _use_skill:
+                        try:
+                            _orig_pause = pyautogui.PAUSE
+                            pyautogui.PAUSE = 0
+                            try:
+                                pyautogui.keyDown(auto_skill_key)
+                                time.sleep(0.015)
+                                pyautogui.keyUp(auto_skill_key)
+                            finally:
+                                pyautogui.PAUSE = _orig_pause
+                            self._key_press_count += 1
+                        except Exception:
+                            pass
+                _t_skill_ms = int((time.time() - _t_skill) * 1000)
+                if _t_skill_ms > 10:
+                    logger.info(f"[타이밍] 상시스킬: {_t_skill_ms}ms")
+                    self.after(0, lambda ms=_t_skill_ms: self._append_log(f"⏱ 상시스킬: {ms}ms"))
 
                 # ── 보스 던전 핸들러 ──
                 if is_boss_dungeon:
@@ -4037,8 +4878,12 @@ class GameModeDialog(ctk.CTkToplevel):
                             if jump_dist >= teleport_threshold:
                                 # 텔레포트 완료! 맵 기록 재개
                                 boss_pre_teleport = False
-                                mapping_on = True
-                                self._game_map.mark_blocked(current_x, current_y)
+                                mapping_on = not _no_save
+                                _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                                if _segment_map_locked:
+                                    mapping_on = False
+                                else:
+                                    self._game_map.mark_blocked(current_x, current_y)
                                 self.after(0, lambda cx=current_x, cy=current_y:
                                     self._append_log(f"🚪 보스 던전 입장! 입구 벽 등록: ({cx},{cy})"))
                                 prev_x, prev_y = current_x, current_y
@@ -4046,7 +4891,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 continue
                         # 아직 텔레포트 안됨 → 이동 시도만 (맵 기록 없음)
                         prev_x, prev_y = current_x, current_y
-                        time.sleep(0.3)  # 이동 대기 (0.3초)
+                        self._stop_event.wait(0.3)  # 이동 대기 (0.3초)
                         continue
 
                     # 포탈 탈출 감지: 탐색 중 좌표 점프 → 포탈 타일 벽 등록 + 복귀
@@ -4064,7 +4909,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._game_map.mark_blocked(prev_x, prev_y)
                                 self.after(0, lambda px=prev_x, py=prev_y:
                                     self._append_log(f"🚪 포탈 탈출 감지! ({px},{py}) 벽 등록"))
-                                threading.Thread(target=self._auto_save_map, daemon=True).start()
+                                if not _no_save:
+                                    threading.Thread(target=self._auto_save_map, daemon=True).start()
                             # 맵핑 모드: 포탈 나감 → 중단
                             if getattr(self, '_is_mapping', False):
                                 self.after(0, lambda: self._append_log("⚠️ 포탈로 나감 → 맵핑 중단 (재시작하면 포탈 회피)"))
@@ -4087,6 +4933,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
                     # 순찰 좌표 등록됨 + 맵 충분히 탐색됨 → 순찰 모드
                     # 맵이 거의 비어있으면(passable < 50) 탐색 모드 유지 (먼저 맵 채우기)
+                    # 맵핑테스트 전체맵핑 중에는 순찰 전환 스킵
                     if boss_mode == "exploring" and boss_patrol is None:
                         if self._game_map.patrol_points and len(self._game_map.passable) >= 50:
                             from ..player.map_patroller import MapPatroller
@@ -4099,14 +4946,18 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_pos_index = {}
                             explored_from = {}
                             unknown_path_fails = 0
+                            explore_target = None
+                            explore_target_tries = 0
+                            patrol_skip_count = 0
                             # 순찰 시작 시 현재 위치 인접 벽 해제 (잘못된 벽 때문에 출발 못하는 문제 방지)
                             # 단, 포탈 입구(start_pos)는 유지
                             portal_pos = getattr(self._game_map, 'start_pos', None)
                             unblocked_start = 0
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 nx, ny = current_x + ddx, current_y + ddy
+                                if (nx, ny) in _portal_protected:
+                                    continue  # 포탈 좌표 보호
                                 if (nx, ny) != portal_pos and self._game_map.is_blocked(nx, ny):
-                                    self._game_map.blocked.discard((nx, ny))
                                     self._game_map.mark_passable(nx, ny)
                                     unblocked_start += 1
                             pc = len(self._game_map.patrol_points)
@@ -4117,34 +4968,55 @@ class GameModeDialog(ctk.CTkToplevel):
                             self.after(0, lambda: self._append_log(f"{'='*30}"))
 
                     if boss_mode == "exploring":
-                        # 인접 미탐색 타일이 있으면 직접 진입
-                        # 고정 순서 대신 매 반복마다 시작 방향을 회전 (같은 방향만 반복 방지)
-                        direction = None
-                        dir_list = list(DIRECTIONS_4.items())
-                        rotate_offset = iteration % len(dir_list)
-                        rotated_dirs = dir_list[rotate_offset:] + dir_list[:rotate_offset]
-                        unknown_candidates = []
-                        for d, (ddx, ddy) in rotated_dirs:
-                            nx, ny = current_x + ddx, current_y + ddy
-                            if not self._game_map.is_known(nx, ny):
-                                unknown_candidates.append(d)
-                        if unknown_candidates:
-                            # 직전 방향이 아닌 것 우선, 없으면 아무거나
+                        # Phase 2 경로맵핑: 프런티어 대신 실제 목표로 직행
+                        # 맵 데이터 있으면(passable>=50) 부분실행/전체테스트도 직행
+                        _has_mapped = len(self._game_map.passable) >= 50
+                        _phase2_direct = (not _local_explore_phase and not full_mapping_exploring
+                                          and (_is_mapping_test or _has_mapped))
+                        if _phase2_direct:
+                            direction = find_path_direction(current_x, current_y, target_x, target_y)
+                        else:
+                            # 인접 미탐색 타일이 있으면 직접 진입
+                            # 고정 순서 대신 매 반복마다 시작 방향을 회전 (같은 방향만 반복 방지)
                             direction = None
-                            for d in unknown_candidates:
-                                if d != last_dir:
-                                    direction = d
-                                    break
-                            if direction is None:
-                                direction = unknown_candidates[0]
-                            explore_target = None
-                            boss_no_frontier_count = 0
-                            if iteration % 5 == 0:
-                                self.after(0, lambda cx=current_x, cy=current_y, d=direction, uc=unknown_candidates:
-                                    self._append_log(f"🗺️ [탐색] ({cx},{cy}) → {d} (미탐색:{uc})"))
+                            dir_list = list(DIRECTIONS_4.items())
+                            rotate_offset = iteration % len(dir_list)
+                            rotated_dirs = dir_list[rotate_offset:] + dir_list[:rotate_offset]
+                            unknown_candidates = []
+                            _explored_here = explored_from.get((current_x, current_y), set())
+                            for d, (ddx, ddy) in rotated_dirs:
+                                if d in _explored_here:
+                                    continue  # 이미 시도+실패한 방향 스킵 (진동 방지)
+                                nx, ny = current_x + ddx, current_y + ddy
+                                if not self._game_map.is_known(nx, ny):
+                                    # 근처맵핑 모드: 반경 밖이면 미탐색이어도 무시
+                                    if _local_explore_phase and _local_explore_center:
+                                        _le_dist = abs(nx - _local_explore_center[0]) + abs(ny - _local_explore_center[1])
+                                        if _le_dist > _local_explore_radius:
+                                            continue
+                                    unknown_candidates.append(d)
+                            if unknown_candidates:
+                                # 직전 방향이 아닌 것 우선, 없으면 아무거나
+                                direction = None
+                                for d in unknown_candidates:
+                                    if d != last_dir:
+                                        direction = d
+                                        break
+                                if direction is None:
+                                    direction = unknown_candidates[0]
+                                explore_target = None
+                                boss_no_frontier_count = 0
+                                if iteration % 5 == 0:
+                                    self.after(0, lambda cx=current_x, cy=current_y, d=direction, uc=unknown_candidates:
+                                        self._append_log(f"🗺️ [탐색] ({cx},{cy}) → {d} (미탐색:{uc})"))
 
                         # 없으면 가장 가까운 frontier까지 기존 A* 알고리즘으로 이동
-                        if direction is None:
+                        if direction is None and not _phase2_direct:
+                            # 프런티어 쿨다운 주기 리셋 (20회마다)
+                            if iteration - frontier_cooldown_iter > 20:
+                                frontier_cooldown.clear()
+                                frontier_cooldown_iter = iteration
+
                             # 기존 목표 유효성 검증
                             if explore_target is not None:
                                 et = explore_target
@@ -4158,33 +5030,59 @@ class GameModeDialog(ctk.CTkToplevel):
                                         for ddx, ddy in [(0,-1),(0,1),(-1,0),(1,0)]
                                     )
                                 if not still_ok:
+                                    frontier_cooldown.add(explore_target)
                                     explore_target = None
                                     explore_target_tries = 0
 
                             if explore_target is None:
-                                explore_target = _find_nearest_frontier(current_x, current_y)
+                                _fr = _local_explore_radius if _local_explore_phase else 150
+                                explore_target = _find_nearest_frontier(current_x, current_y, max_radius=_fr)
+                                # 근처맵핑 모드: 반경 내 프런티어가 반경 밖이면 무시
+                                if explore_target and _local_explore_phase and _local_explore_center:
+                                    _et_dist = abs(explore_target[0] - _local_explore_center[0]) + abs(explore_target[1] - _local_explore_center[1])
+                                    if _et_dist > _local_explore_radius:
+                                        explore_target = None
                                 explore_target_tries = 0
                                 if explore_target:
                                     self.after(0, lambda et=explore_target, cx=current_x, cy=current_y:
                                         self._append_log(f"🗺️ [탐색] 프런티어 목표: {et} (현재:{cx},{cy})"))
 
                             if explore_target:
-                                explore_target_tries += 1
-                                # 10회 시도해도 도달 못하면 → 접근 불가로 마킹
-                                if explore_target_tries > 10:
+                                boss_no_frontier_count = 0
+                                direction = find_path_direction(
+                                    current_x, current_y,
+                                    explore_target[0], explore_target[1])
+                                if direction is None:
+                                    explore_target_tries += 3  # 방향 없음 = 빠르게 포기
+                                elif _is_backtrack_dir:
+                                    explore_target_tries += 1  # 백트래킹 = A* 실패
+                                else:
+                                    explore_target_tries = 0   # 정상 경로 = 리셋
+                                if explore_target_tries >= 15:
                                     explore_unreachable.add(explore_target)
-                                    self.after(0, lambda et=explore_target:
-                                        self._append_log(f"🚫 프런티어 {et} 도달 불가 → 스킵"))
+                                    self.after(0, lambda et=explore_target, t=explore_target_tries:
+                                        self._append_log(f"🚫 프런티어 {et} 도달 불가 ({t}회) → 스킵"))
                                     explore_target = None
                                     explore_target_tries = 0
-                                else:
-                                    boss_no_frontier_count = 0
-                                    direction = find_path_direction(
-                                        current_x, current_y,
-                                        explore_target[0], explore_target[1])
                             else:
                                 # 프런티어 없음 — 연속 미발견 카운트
                                 boss_no_frontier_count += 1
+
+                                # 근처맵핑 완료 → 2단계(경로맵핑)로 전환
+                                if _local_explore_phase and boss_no_frontier_count >= 3:
+                                    _local_explore_phase = False
+                                    full_mapping_exploring = False
+                                    boss_no_frontier_count = 0
+                                    explore_target = None
+                                    explore_unreachable.clear()
+                                    frontier_cooldown.clear()
+                                    current_path = []
+                                    path_index = 0
+                                    path_pos_index = {}
+                                    _tiles = len(self._game_map.passable)
+                                    self.after(0, lambda t=_tiles:
+                                        self._append_log(f"✅ 근처맵핑 완료 ({t}칸) → 경로맵핑 시작"))
+                                    continue
 
                                 # 30회 이상 프런티어 미발견 → 인접 벽 해제 (거짓 벽 복구)
                                 if boss_no_frontier_count >= 30:
@@ -4192,8 +5090,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                     for (px, py) in list(self._game_map.passable):
                                         for ddx, ddy in [(0,-1),(0,1),(-1,0),(1,0)]:
                                             nb = (px+ddx, py+ddy)
+                                            if nb in _portal_protected:
+                                                continue  # 포탈 좌표 보호
                                             if nb in self._game_map.blocked:
-                                                self._game_map.blocked.discard(nb)
                                                 self._game_map.mark_passable(nb[0], nb[1])
                                                 unblocked += 1
                                         if unblocked >= 5:
@@ -4203,6 +5102,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             self._append_log(f"🔓 프런티어 없음 → {u}개 인접벽 해제"))
                                         boss_no_frontier_count = 0
                                         explore_unreachable.clear()  # 벽 해제 후 재시도
+                                        frontier_cooldown.clear()
                                     else:
                                         # 해제할 벽도 없음 → 강제 탐색 완료
                                         boss_no_frontier_count = 10  # 아래 완료 체크로 fall-through
@@ -4218,8 +5118,16 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if boss_no_frontier_count >= 10 and (
                                         self._game_map.is_fully_explored()
                                         or _find_nearest_frontier(current_x, current_y) is None):
-                                    # 순찰 좌표가 있으면 순찰 모드 전환
-                                    if self._game_map.patrol_points:
+                                    # 프런티어 없지만 미탐색 남음 → explore_unreachable 클리어 후 재시도
+                                    if not self._game_map.is_fully_explored() and explore_unreachable:
+                                        self.after(0, lambda n=len(explore_unreachable):
+                                            self._append_log(f"🔄 미탐색 남음 → {n}개 unreachable 클리어 후 재탐색"))
+                                        explore_unreachable.clear()
+                                        frontier_cooldown.clear()
+                                        boss_no_frontier_count = 0
+                                        continue
+                                    # 순찰 좌표가 있으면 순찰 모드 전환 (맵핑테스트 전체맵핑 중에는 스킵)
+                                    if self._game_map.patrol_points and not full_mapping_exploring:
                                         from ..player.map_patroller import MapPatroller
                                         boss_patrol = MapPatroller(self._game_map)
                                         boss_patrol.start(current_pos_tuple)
@@ -4227,14 +5135,19 @@ class GameModeDialog(ctk.CTkToplevel):
                                         current_path = []
                                         path_index = 0
                                         path_pos_index = {}
+                                        explored_from = {}
+                                        unknown_path_fails = 0
+                                        explore_target = None
+                                        explore_target_tries = 0
+                                        patrol_skip_count = 0
                                         pc = len(self._game_map.patrol_points)
                                         self.after(0, lambda: self._append_log(f"{'='*30}"))
                                         self.after(0, lambda pc=pc: self._append_log(f"🔍 탐색 완료 → 순찰모드! {pc}개 좌표 순회"))
                                         self.after(0, lambda: self._append_log(f"{'='*30}"))
-                                    # 순찰 좌표 없으면 다음 경유지
-                                    if not self._game_map.patrol_points:
+                                    # 순찰 좌표 없거나, 맵핑테스트 전체맵핑 → 다음 경유지
+                                    if not self._game_map.patrol_points or full_mapping_exploring:
                                         # 맵핑 모드: 탐색 완료 시 즉시 종료
-                                        if getattr(self, '_is_mapping', False):
+                                        if getattr(self, '_is_mapping', False) and not _is_mapping_test:
                                             mapping_mode = getattr(self, '_mapping_mode', 'path')
                                             mode_label = "전체맵핑" if mapping_mode == "full" else "맵 탐색"
                                             stats = self._game_map.get_statistics()
@@ -4246,22 +5159,97 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     f"{ml}이 완료되었습니다.\n총 {tc}개 타일 탐색",
                                                     duration=10000))
                                             return
+                                        # 맵핑테스트: 전체맵핑 완료 → 경유지 이동 모드 전환
+                                        if _is_mapping_test and full_mapping_exploring:
+                                            _mt_stats = self._game_map.get_statistics()
+                                            self.after(0, lambda tc=_mt_stats.get('total_tiles', 0):
+                                                self._append_log(f"✅ 전체맵핑 완료 ({tc}타일) → 경유지 이동"))
+                                            full_mapping_exploring = False
+                                            _local_explore_phase = False  # 근처맵핑 상태도 리셋
+                                            # 전체맵핑 완료 → 도착지/출구 포탈 벽 해제 (경유지 이동 가능하도록)
+                                            # 단, 입구 포탈(start_routes)은 유지 (되돌아가면 맵 오염)
+                                            _start_routes_keep = set()
+                                            _sr_reblock = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
+                                            for _sx, _sy in _sr_reblock:
+                                                _start_routes_keep.add((_sx, _sy))
+                                            _pp_tiles = set(_portal_protected)
+                                            _portal_protected.clear()
+                                            for _pp in _pp_tiles:
+                                                if _pp in _start_routes_keep:
+                                                    _portal_protected.add(_pp)  # 입구는 보호 유지
+                                                    continue
+                                                self._game_map.mark_passable(_pp[0], _pp[1])
+                                            # 입구 포탈 start_pos 재설정 (A* 회피용)
+                                            if _sr_reblock:
+                                                self._game_map.start_pos = tuple(_sr_reblock[0])
+                                                self._game_map.mark_blocked(_sr_reblock[0][0], _sr_reblock[0][1])
+                                            # 도착지 벽 해제 (이동할 수 있도록)
+                                            if target_x is not None and target_y is not None:
+                                                self._game_map.mark_passable(target_x, target_y)
+                                            _cur_re = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                                            for _mte_x, _mte_y in _cur_re:
+                                                self._game_map.mark_passable(_mte_x, _mte_y)
+                                            # 도착좌표 여러 개면 최단거리 선택
+                                            if _cur_re:
+                                                _best_end = None
+                                                _best_cost = float('inf')
+                                                for _mte_x, _mte_y in _cur_re:
+                                                    _mt_r = pathfinder.find_path(
+                                                        (current_x, current_y), (_mte_x, _mte_y),
+                                                        allow_unknown=False, stop_event=self._stop_event)
+                                                    if _mt_r.found and _mt_r.cost < _best_cost:
+                                                        _best_cost = _mt_r.cost
+                                                        _best_end = (_mte_x, _mte_y)
+                                                if _best_end:
+                                                    target_x, target_y = _best_end
+                                                    self.after(0, lambda tx=target_x, ty=target_y, bc=_best_cost:
+                                                        self._append_log(f"🎯 최단 경유지: ({tx},{ty}) (거리:{bc})"))
+                                            # 맵 저장
+                                            if not self._map_save_lock.locked() and not self._stop_event.is_set():
+                                                threading.Thread(target=self._auto_save_map, daemon=True).start()
+                                            # 탐색 상태 리셋
+                                            boss_mode = "exploring"
+                                            boss_no_frontier_count = 0
+                                            explore_target = None
+                                            explore_target_tries = 0
+                                            explore_unreachable = set()
+                                            frontier_cooldown.clear()
+                                            current_path = []
+                                            path_index = 0
+                                            path_pos_index = {}
+                                            explored_from = {}
+                                            unknown_path_fails = 0
+                                            last_dir = None
+                                            recent_positions.clear()
+                                            _boss_chasing = False
+                                            _boss_chase_miss = 0
+                                            boss_approach_steps = 0
+                                            boss_appr_miss = 0
+                                            prev_x, prev_y = current_x, current_y
+                                            time.sleep(0.05)
+                                            continue
                                         self.after(0, lambda: self._append_log("✅ 맵 탐색 완료 → 다음 경유지"))
                                         # 다음 경유지로 전환
+                                        _prev_boss3 = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
                                         target_idx += 1
                                         if target_idx >= len(all_targets):
+                                            self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
                                             self.after(0, self._on_arrival)
                                             return
                                         if self._stop_event.is_set():
                                             break
-                                        self._switch_segment_map(target_idx)
+                                        self._boss_segment_active = False
+                                        if not self._switch_segment_map(target_idx, skip_save=_prev_boss3 or _no_save):
+                                            self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                                         pathfinder = SimplePathfinder(self._game_map)
-                                        target_x, target_y = all_targets[target_idx][0], all_targets[target_idx][1]
+                                        target_x, target_y = _pick_target(target_idx)
                                         boss_mode = "exploring"
                                         boss_patrol = None
                                         explore_target = None
                                         explore_target_tries = 0
                                         explore_unreachable = set()
+                                        _portal_protected.clear()
+                                        frontier_cooldown.clear()
                                         stuck_count = 0
                                         total_stuck_count = 0
                                         current_path = []
@@ -4270,25 +5258,209 @@ class GameModeDialog(ctk.CTkToplevel):
                                         explored_from = {}
                                         unknown_path_fails = 0
                                         last_dir = None
-                                        mark_portal_entry = True
-                                        portal_grace = 10  # 구간 전환 후 점프 필터 비활성
+                                        recent_positions.clear()
+                                        _boss_chasing = False
+                                        _boss_chase_miss = 0
+                                        boss_approach_steps = 0
+                                        boss_appr_miss = 0
+                                        patrol_skip_count = 0
+                                        _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
+                                        full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
+                                        _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
+                                        _local_explore_center = (current_x, current_y) if _local_explore_phase else None
+                                        if _local_explore_phase:
+                                            full_mapping_exploring = True
+                                        # 다음 구간 보스 여부에 따라 상태 설정
+                                        _next_is_boss3 = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
+                                        is_boss_dungeon = _next_is_boss3
+                                        if _next_is_boss3:
+                                            boss_pre_teleport = True
+                                            mapping_on = False
+                                            mark_portal_entry = False
+                                        else:
+                                            boss_pre_teleport = False
+                                            mapping_on = not _no_save
+                                            mark_portal_entry = True
+                                        _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                                        if _segment_map_locked:
+                                            mapping_on = False
+                                        portal_grace = 30  # 구간 전환 후 점프 필터 비활성 (던전 로딩 대기)
                                         prev_x, prev_y = current_x, current_y
                                         boss_no_frontier_count = 0
                                         time.sleep(0.05)
                                         continue
 
                     elif boss_mode == "approaching":
-                        # ── 보스 5칸 이내: 대기 (스킬 사용 예정) ──
-                        if boss_approach_steps % 10 == 1:  # 스팸 방지
+                        # ── 보스 근접: 스킬 사용 + 보스 이미지 추적 ──
+                        # 보스 스킬 사용 (쿨타임 체크)
+                        if boss_skill_enabled and boss_skill_key:
+                            _now = time.time()
+                            if _now - last_boss_skill_time >= boss_skill_cooldown:
+                                try:
+                                    pyautogui.keyDown(boss_skill_key)
+                                    time.sleep(0.05)
+                                    pyautogui.keyUp(boss_skill_key)
+                                    self._key_press_count += 1
+                                    last_boss_skill_time = _now
+                                    self.after(0, lambda cx=current_x, cy=current_y, k=boss_skill_key:
+                                        self._append_log(f"⚔️ 보스 스킬! ({cx},{cy}) 키={k}"))
+                                except Exception as _e:
+                                    logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
+
+                        # 보스 이미지 재확인 (매 반복)
+                        _appr_boss_visible = False
+                        if not self._stop_event.is_set():
+                            try:
+                                import numpy as _np3
+                                import cv2 as _cv23
+                                from ..analyzer.template_matcher import TemplateMatcher as _TM3
+                                _boss_ip3 = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
+                                _char_ip3 = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
+                                if _boss_ip3:
+                                    _ss3 = getattr(matcher, '_last_screenshot', None)
+                                    if _ss3 is None:
+                                        import pyautogui as _pag3
+                                        _ss3 = _pag3.screenshot()
+                                    _scr3 = _np3.array(_ss3)
+                                    _scr3 = _cv23.cvtColor(_scr3, _cv23.COLOR_RGB2BGR)
+                                    _m3 = _TM3()
+                                    _r3 = _m3.match_binary(_scr3, _boss_ip3, threshold=0.8)
+                                    if _r3.found:
+                                        _appr_boss_visible = True
+                                        # 거리 재계산 → 멀어졌으면 다시 추적
+                                        _sh3, _sw3 = _scr3.shape[:2]
+                                        _cpx3, _cpy3 = _sw3 // 2, _sh3 // 2
+                                        if _char_ip3:
+                                            try:
+                                                _cr3 = _m3.match_binary(_scr3, _char_ip3, threshold=0.8)
+                                                if _cr3.found:
+                                                    _cpx3, _cpy3 = _cr3.center_x, _cr3.center_y
+                                            except Exception:
+                                                pass
+                                        _dx3 = _r3.center_x - _cpx3
+                                        _dy3 = _r3.center_y - _cpy3
+                                        _td3 = abs(round(_dy3 / 44))  # X offset 무시 (UI NAME 고정)
+                                        if _td3 > 20:
+                                            # UI 오탐 (고정 UI 이름 요소) → 보스 사라진 것으로 처리
+                                            _appr_boss_visible = False
+                                            self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
+                                                self._append_log(f"✅ 보스 사라짐 ({cx},{cy}) 거리={td}타일 — UI 오탐"))
+                                        elif _td3 > 3:
+                                            # 보스가 멀어짐 → 다시 추적 (스킬은 계속 사용)
+                                            _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
+                                            _chase_ty = current_y + round(_dy3 / 44)
+                                            _boss_chasing = True
+                                            _boss_chase_miss = 0
+                                            boss_approach_steps = 0
+                                            boss_appr_miss = 0
+                                            stuck_count = 0
+                                            total_stuck_count = 0
+                                            boss_mode = "patrolling"
+                                            # 순찰 재시작 (stale is_completed 방지 → 거짓 구간전환 차단)
+                                            if boss_patrol is not None:
+                                                boss_patrol.start((current_x, current_y))
+                                            self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
+                                                self._append_log(f"🏃 보스 멀어짐 ({cx},{cy}) 거리={td}타일 → 재추적+스킬"))
+                                            continue
+                            except Exception:
+                                pass
+
+                        if _appr_boss_visible:
+                            boss_appr_miss = 0  # 감지 성공 → 미스 리셋
                             self.after(0, lambda cx=current_x, cy=current_y:
-                                self._append_log(f"🎯 보스 5칸 이내 대기중 ({cx},{cy})"))
-                        boss_approach_steps += 1
-                        self.after(0, lambda cx=current_x, cy=current_y:
-                            self._update_status("보스대기", f"({cx},{cy})", "", "스킬 대기", "🎯"))
-                        time.sleep(0.5)
-                        prev_x, prev_y = None, None  # 이동 판정 건너뛰기 (대기 중)
+                                self._update_status("보스스킬", f"({cx},{cy})", "", "전투중", "⚔️"))
+                        else:
+                            boss_appr_miss += 1
+                            if boss_appr_miss < 10:
+                                # 아직 미스 부족 → 계속 스킬 쓰면서 대기
+                                prev_x, prev_y = current_x, current_y
+                                stuck_count = 0
+                                total_stuck_count = 0
+                                self._stop_event.wait(0.1)
+                                continue
+                            boss_appr_miss = 0
+                            # 10회 연속 미감지 → 보스 처치 판정
+                            _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                            self.after(0, lambda cx=current_x, cy=current_y, nk=len(_arr_keys):
+                                self._append_log(f"✅ 보스 처치! ({cx},{cy}) → 다음 경유지 (키{nk}개)"))
+                            logger.info(f"[좌표모드] 보스 처치 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
+                            # 보스 사망 애니메이션 대기
+                            self._stop_event.wait(2.0)
+                            # 도착 키 입력
+                            if _arr_keys and not self._stop_event.is_set():
+                                self._exec_arrival_keys(_arr_keys)
+                                _kn = ",".join(kd.get("key","") for kd in _arr_keys)
+                                self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                            _prev_idx = target_idx
+                            target_idx += 1
+                            if target_idx >= len(all_targets):
+                                self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
+                                self.after(0, lambda: self._append_log(f"🎯 전체 완료!"))
+                                self.after(0, self._on_arrival)
+                                return
+                            if self._stop_event.is_set():
+                                break
+                            self._stop_event.wait(0.5)
+                            # 보스 경유지(0,0)에서 나갈 때는 맵 저장 안 함 (오염 방지)
+                            _prev_is_boss = all_targets[_prev_idx][3] if len(all_targets[_prev_idx]) > 3 else False
+                            if use_map and not _prev_is_boss and not _no_save:
+                                self._game_map.end_pos = (current_x, current_y)
+                            self._boss_segment_active = False
+                            if not self._switch_segment_map(target_idx, skip_save=_prev_is_boss or _no_save):
+                                self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                            pathfinder = SimplePathfinder(self._game_map)
+                            target_x, target_y = _pick_target(target_idx)
+                            seg_name = all_targets[target_idx][2]
+                            self.after(0, lambda sn=seg_name, ti=target_idx, total=len(all_targets):
+                                self._append_log(f"▶ 다음 경유지: [{sn}] ({ti}/{total})"))
+                            stuck_count = 0
+                            total_stuck_count = 0
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                            explored_from = {}
+                            unknown_path_fails = 0
+                            last_dir = None
+                            recent_positions.clear()
+                            boss_mode = "exploring"
+                            boss_patrol = None
+                            explore_target = None
+                            explore_target_tries = 0
+                            explore_unreachable = set()
+                            _portal_protected.clear()
+                            frontier_cooldown.clear()
+                            boss_no_frontier_count = 0
+                            boss_approach_steps = 0
+                            boss_appr_miss = 0
+                            _boss_chasing = False
+                            _boss_chase_miss = 0
+                            patrol_skip_count = 0
+                            _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
+                            full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
+                            _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
+                            _local_explore_center = (current_x, current_y) if _local_explore_phase else None
+                            if _local_explore_phase:
+                                full_mapping_exploring = True
+                            is_boss_dungeon = all_targets[target_idx][3]
+                            if is_boss_dungeon:
+                                boss_pre_teleport = True
+                                mapping_on = False
+                                mark_portal_entry = False
+                            else:
+                                mapping_on = not _no_save
+                                mark_portal_entry = True
+                            _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                            if _segment_map_locked:
+                                mapping_on = False
+                            portal_grace = 30
+                            prev_x, prev_y = current_x, current_y
+                            time.sleep(0.05)
+                            continue
+
+                        prev_x, prev_y = None, None
                         stuck_count = 0
                         total_stuck_count = 0
+                        self._stop_event.wait(0.1)
                         continue
 
                     elif boss_mode == "patrolling":
@@ -4296,17 +5468,20 @@ class GameModeDialog(ctk.CTkToplevel):
 
                         # ── 보스 이미지 검색 (3회마다) ──
                         _boss_found = False
-                        _boss_chasing = False
                         _check_boss_image = (iteration % 3 == 0)
                         if _check_boss_image:
                             boss_img_path = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
+                            char_img_path = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
                             if boss_img_path:
                                 try:
-                                    import pyautogui as _pag
                                     import numpy as _np
                                     import cv2 as _cv2
                                     from ..analyzer.template_matcher import TemplateMatcher as _TM
-                                    _ss = _pag.screenshot()
+                                    # 좌표 읽기 시 캡처한 스크린샷 재사용 (이중 캡처 방지)
+                                    _ss = getattr(matcher, '_last_screenshot', None)
+                                    if _ss is None:
+                                        import pyautogui as _pag
+                                        _ss = _pag.screenshot()
                                     _screen = _np.array(_ss)
                                     _screen = _cv2.cvtColor(_screen, _cv2.COLOR_RGB2BGR)
                                     _m = _TM()
@@ -4315,50 +5490,170 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _boss_found = True
                                         boss_approach_steps += 1
                                         scr_h, scr_w = _screen.shape[:2]
-                                        dy_pixel = _res.center_y - scr_h // 2
 
-                                        # Y 오프셋 작음 → 보스와 거의 같은 높이 → 접근 완료
-                                        if abs(dy_pixel) <= 80:
+                                        # 캐릭터 스프라이트 감지 (있으면), 없으면 화면 중앙 폴백
+                                        char_pixel_x, char_pixel_y = scr_w // 2, scr_h // 2
+                                        if char_img_path:
+                                            try:
+                                                _char_res = _m.match_binary(_screen, char_img_path, threshold=0.8)
+                                                if _char_res.found:
+                                                    char_pixel_x = _char_res.center_x
+                                                    char_pixel_y = _char_res.center_y
+                                            except Exception:
+                                                pass  # 캐릭터 미감지 시 화면 중앙 폴백
+
+                                        # X, Y 픽셀 차이 (보스 - 캐릭터)
+                                        dx_pixel = _res.center_x - char_pixel_x
+                                        dy_pixel = _res.center_y - char_pixel_y
+
+                                        # 타일 거리 계산 (Y만 사용 — X는 UI NAME 고정 위치로 항상 -947px)
+                                        TILE_PX = 44
+                                        TILE_PY = 44
+                                        est_dx_tiles = round(dx_pixel / TILE_PX)
+                                        est_dy_tiles = round(dy_pixel / TILE_PY)
+                                        tile_dist = abs(est_dy_tiles)  # X offset 무시 (UI 고정)
+
+                                        # 20타일 초과 → UI 요소 오탐, 무시
+                                        if tile_dist > 20:
+                                            self.after(0, lambda dx=dx_pixel, dy=dy_pixel, td=tile_dist:
+                                                self._append_log(f"⚠️ 보스 감지 무시 (거리={td}타일, dx={dx}px) — UI 오탐 추정"))
+                                            _boss_found = False  # UI 오탐 → 감지 아님 처리
+
+                                        # 1타일 이내 → approaching (3→1 축소: 3타일에서 진입 시 보스 미감지→거짓처치→테스트중지 방지)
+                                        elif tile_dist <= 1:
+                                            _boss_chase_miss = 0
+                                            _boss_chasing = False
                                             boss_mode = "approaching"
+                                            boss_appr_miss = 0
+                                            # 즉시 보스 스킬 사용
+                                            if boss_skill_enabled and boss_skill_key:
+                                                try:
+                                                    pyautogui.keyDown(boss_skill_key)
+                                                    time.sleep(0.05)
+                                                    pyautogui.keyUp(boss_skill_key)
+                                                    self._key_press_count += 1
+                                                    last_boss_skill_time = time.time()
+                                                except Exception:
+                                                    pass
                                             self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
-                                                       cx=current_x, cy=current_y, dy=dy_pixel:
-                                                self._append_log(f"🎯 보스 근접! ({cx},{cy}) dy={dy}px {s}회 → 접근 완료 (신뢰도={conf:.1%})"))
+                                                       cx=current_x, cy=current_y, dx=dx_pixel, dy=dy_pixel,
+                                                       td=tile_dist:
+                                                self._append_log(f"🎯 보스 근접! ({cx},{cy}) dx={dx}px dy={dy}px 거리={td}타일 {s}회 → 접근 완료 (신뢰도={conf:.1%})"))
                                             prev_x, prev_y = current_x, current_y
                                             time.sleep(0.05)
                                             continue
 
-                                        # ── 보스 추적: Y 오프셋으로 방향 계산, 즉시 돌진 ──
-                                        _boss_chasing = True
-                                        TILE_PY = 44
-                                        _est_boss_y = current_y + round(dy_pixel / TILE_PY)
-                                        # 최대 3칸씩 이동 (도착 후 재감지→재계산)
-                                        _step_y = max(-3, min(3, _est_boss_y - current_y))
-                                        _chase_tx = current_x
-                                        _chase_ty = current_y + _step_y
-                                        # 통과 가능 타일 찾기
-                                        if not self._game_map.is_passable(_chase_tx, _chase_ty):
-                                            _found_chase = False
-                                            for _r in range(1, 6):
-                                                for _ddx, _ddy in [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
-                                                    _cx = _chase_tx + _ddx * _r
-                                                    _cy = _chase_ty + _ddy * _r
-                                                    if self._game_map.is_passable(_cx, _cy):
-                                                        _chase_tx, _chase_ty = _cx, _cy
-                                                        _found_chase = True
+                                        else:
+                                            # ── 보스 추적: 추정 위치로 직행 (4~20타일) ──
+                                            _boss_chase_miss = 0
+                                            _boss_chasing = True
+                                            _chase_tx = current_x  # X offset 무시 (UI NAME 고정 위치)
+                                            _chase_ty = current_y + est_dy_tiles
+                                            # 통과 가능 타일 찾기
+                                            if not self._game_map.is_passable(_chase_tx, _chase_ty):
+                                                _found_chase = False
+                                                for _r in range(1, 6):
+                                                    for _ddx, _ddy in [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
+                                                        _cx = _chase_tx + _ddx * _r
+                                                        _cy = _chase_ty + _ddy * _r
+                                                        if self._game_map.is_passable(_cx, _cy):
+                                                            _chase_tx, _chase_ty = _cx, _cy
+                                                            _found_chase = True
+                                                            break
+                                                    if _found_chase:
                                                         break
-                                                if _found_chase:
-                                                    break
-                                        self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
-                                                   cx=current_x, cy=current_y, dy=dy_pixel,
-                                                   eby=_est_boss_y, tx=_chase_tx, ty=_chase_ty:
-                                            self._append_log(f"🎯 보스 추적! dy={dy}px 추정Y={eby} ({cx},{cy})→({tx},{ty}) ({s}회)"))
+                                            self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
+                                                       cx=current_x, cy=current_y,
+                                                       dx=dx_pixel, dy=dy_pixel,
+                                                       tx=_chase_tx, ty=_chase_ty,
+                                                       td=tile_dist:
+                                                self._append_log(f"🎯 보스 추적! dx={dx}px dy={dy}px ({cx},{cy})→({tx},{ty}) 거리={td}타일 ({s}회)"))
                                 except Exception as _e:
                                     logger.debug(f"[순찰] 보스 이미지 검색 오류: {_e}")
 
-                        # 보스 미감지 시 카운트 점진적 감소
+                        # 보스 미감지 시 카운트 감소
                         if not _boss_found:
                             if boss_approach_steps > 0 and iteration % 20 == 0:
                                 boss_approach_steps = max(0, boss_approach_steps - 1)
+
+                        # ── 순찰 1바퀴 완료 체크 → 다음 경유지 ──
+                        if not _boss_chasing and boss_patrol is not None and boss_patrol.is_completed:
+                            self.after(0, lambda cx=current_x, cy=current_y:
+                                self._append_log(f"🔄 순찰 1바퀴 완료 ({cx},{cy}) 보스 없음 → 다음 경유지"))
+                            # 이동 애니메이션 대기 후 도착 키 입력
+                            _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                            if _arr_keys and not self._stop_event.is_set():
+                                self._stop_event.wait(2.0)
+                                if not self._stop_event.is_set():
+                                    self._exec_arrival_keys(_arr_keys)
+                                    _kn = ",".join(kd.get("key","") for kd in _arr_keys)
+                                    self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                            _prev_idx2 = target_idx
+                            target_idx += 1
+                            if target_idx >= len(all_targets):
+                                self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
+                                self.after(0, lambda: self._append_log(f"🎯 전체 완료!"))
+                                self.after(0, self._on_arrival)
+                                return
+                            if self._stop_event.is_set():
+                                break
+                            self._stop_event.wait(0.5)
+                            # 보스 경유지(0,0)에서 나갈 때는 맵 저장 안 함 (오염 방지)
+                            _prev_is_boss2 = all_targets[_prev_idx2][3] if len(all_targets[_prev_idx2]) > 3 else False
+                            if use_map and not _prev_is_boss2 and not _no_save:
+                                self._game_map.end_pos = (current_x, current_y)
+                            self._boss_segment_active = False
+                            if not self._switch_segment_map(target_idx, skip_save=_prev_is_boss2 or _no_save):
+                                self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                            pathfinder = SimplePathfinder(self._game_map)
+                            target_x, target_y = _pick_target(target_idx)
+                            seg_name = all_targets[target_idx][2]
+                            prev_seg = all_targets[target_idx - 1][2]
+                            self.after(0, lambda sn=seg_name, ti=target_idx, total=len(all_targets):
+                                self._append_log(f"▶ 다음 경유지: [{sn}] ({ti}/{total})"))
+                            stuck_count = 0
+                            total_stuck_count = 0
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                            explored_from = {}
+                            unknown_path_fails = 0
+                            last_dir = None
+                            recent_positions.clear()
+                            boss_mode = "exploring"
+                            boss_patrol = None
+                            explore_target = None
+                            explore_target_tries = 0
+                            explore_unreachable = set()
+                            _portal_protected.clear()
+                            frontier_cooldown.clear()
+                            boss_no_frontier_count = 0
+                            boss_approach_steps = 0
+                            boss_appr_miss = 0
+                            _boss_chasing = False
+                            _boss_chase_miss = 0
+                            patrol_skip_count = 0
+                            _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
+                            full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
+                            _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
+                            _local_explore_center = (current_x, current_y) if _local_explore_phase else None
+                            if _local_explore_phase:
+                                full_mapping_exploring = True
+                            is_boss_dungeon = all_targets[target_idx][3]
+                            if is_boss_dungeon:
+                                boss_pre_teleport = True
+                                mapping_on = False
+                                mark_portal_entry = False
+                            else:
+                                mapping_on = not _no_save
+                                mark_portal_entry = True
+                            _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                            if _segment_map_locked:
+                                mapping_on = False
+                            portal_grace = 30
+                            prev_x, prev_y = current_x, current_y
+                            time.sleep(0.05)
+                            continue
 
                         # ── 목표 결정: 보스 추적 우선, 없으면 순찰 ──
                         if _boss_chasing:
@@ -4366,51 +5661,165 @@ class GameModeDialog(ctk.CTkToplevel):
                         else:
                             _move_target_raw = boss_patrol.get_next_target(current_pos_tuple)
                             if _move_target_raw is None:
-                                self.after(0, lambda: self._append_log("⚠️ 순찰 좌표 없음"))
-                                time.sleep(0.5)
+                                self.after(0, lambda: self._append_log("⚠️ 순찰 좌표 없음 → 탐색 복귀"))
+                                boss_mode = "exploring"
+                                boss_patrol = None
+                                patrol_skip_count = 0
+                                explore_target = None
+                                explore_target_tries = 0
                                 prev_x, prev_y = current_x, current_y
                                 continue
                             _move_target = (_move_target_raw[0], _move_target_raw[1])
 
-                        # A* 경로 계산
-                        _nav_result = pathfinder.find_path(
+                        # A* 경로 계산 (캐시 활용 — 목표/경로 변경 시에만 재계산)
+                        # 보스 추적 시 allow_unknown=True (미탐색 영역의 보스도 추적 가능)
+                        pathfinder.set_goal(_move_target)
+                        direction = pathfinder.get_next_direction(
                             current_pos_tuple,
-                            _move_target,
-                            allow_unknown=False,
+                            allow_unknown=_boss_chasing,
                             stop_event=self._stop_event,
                             max_iterations=5000)
+                        if direction and not _boss_chasing:
+                            patrol_skip_count = 0
 
-                        if _nav_result.found and len(_nav_result.directions) > 0:
-                            direction = _nav_result.directions[0]
-                            current_path = _nav_result.path
-                            path_index = 0
-                            path_pos_index = {pos: i for i, pos in enumerate(current_path)}
-                            if not _boss_chasing:
-                                self._patrol_skip_count = 0
-                        else:
-                            direction = None
-
-                        if direction and not self._stop_event.is_set():
+                        if direction and not self._stop_event.is_set() and _ui_update_ok:
+                            _remaining = len(pathfinder.get_remaining_path())
                             if _boss_chasing:
                                 self.after(0, lambda cx=current_x, cy=current_y, d=direction,
-                                           tx=_move_target[0], ty=_move_target[1],
-                                           pl=len(_nav_result.path) if _nav_result.found else 0:
+                                           tx=_move_target[0], ty=_move_target[1], pl=_remaining:
                                     self._append_log(f"🏃 추적 ({cx},{cy})→({tx},{ty}) {d} ({pl}칸)"))
                             else:
                                 self.after(0, lambda cx=current_x, cy=current_y, d=direction,
-                                           tx=_move_target[0], ty=_move_target[1],
-                                           pl=len(_nav_result.path) if _nav_result.found else 0:
+                                           tx=_move_target[0], ty=_move_target[1], pl=_remaining:
                                     self._append_log(f"🚶 순찰 ({cx},{cy})→({tx},{ty}) {d} ({pl}칸)"))
 
                         if direction is None:
-                            if _boss_chasing:
-                                # 추적 실패 → 다음 반복에서 재감지 후 재계산
-                                self.after(0, lambda tx=_move_target[0], ty=_move_target[1]:
-                                    self._append_log(f"⚠️ 추적 ({tx},{ty}) 실패 → 재감지 대기"))
+                            if _boss_chasing and not self._stop_event.is_set():
+                                # 추적 중 갇힘 → 주변 임시벽 자동 해제
+                                if use_map:
+                                    _cleared = 0
+                                    for _cd, (_cddx, _cddy) in DIRECTIONS_4.items():
+                                        _cnx, _cny = current_x + _cddx, current_y + _cddy
+                                        if self._game_map.is_soft_blocked(_cnx, _cny):
+                                            self._game_map.clear_soft_blocked(_cnx, _cny)
+                                            _cleared += 1
+                                    if _cleared > 0:
+                                        self.after(0, lambda cx=current_x, cy=current_y, c=_cleared:
+                                            self._append_log(f"🔓 추적 갇힘({cx},{cy}) → 임시벽 {c}개 해제"))
+                                        current_path = []
+                                        path_index = 0
+                                        path_pos_index = {}
+                                        pathfinder.invalidate_path()
+                                        prev_x, prev_y = current_x, current_y
+                                        time.sleep(0.05)
+                                        continue  # 임시벽 해제 후 이동 재시도 (재감지 전에)
+                                # 추적 목표 도달/실패 → 즉시 보스 재감지
+                                _rechk_found = False
+                                try:
+                                    import pyautogui as _pag2
+                                    import numpy as _np2
+                                    import cv2 as _cv22
+                                    from ..analyzer.template_matcher import TemplateMatcher as _TM2
+                                    _boss_ip = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
+                                    _char_ip = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
+                                    if _boss_ip and not self._stop_event.is_set():
+                                        _ss2 = _pag2.screenshot()
+                                        _scr2 = _np2.array(_ss2)
+                                        _scr2 = _cv22.cvtColor(_scr2, _cv22.COLOR_RGB2BGR)
+                                        _m2 = _TM2()
+                                        _r2 = _m2.match_binary(_scr2, _boss_ip, threshold=0.8)
+                                        if _r2.found:
+                                            _rechk_found = True
+                                            _sh2, _sw2 = _scr2.shape[:2]
+                                            _cpx2, _cpy2 = _sw2 // 2, _sh2 // 2
+                                            if _char_ip:
+                                                try:
+                                                    _cr2 = _m2.match_binary(_scr2, _char_ip, threshold=0.8)
+                                                    if _cr2.found:
+                                                        _cpx2, _cpy2 = _cr2.center_x, _cr2.center_y
+                                                except Exception:
+                                                    pass
+                                            _dx2 = _r2.center_x - _cpx2
+                                            _dy2 = _r2.center_y - _cpy2
+                                            _edx2 = round(_dx2 / 44)
+                                            _edy2 = round(_dy2 / 44)
+                                            _td2 = abs(_edy2)  # X offset 무시 (UI NAME 고정)
+                                            if _td2 > 20:
+                                                # UI 오탐 — 재감지 무시
+                                                _rechk_found = False
+                                            elif _td2 <= 1:
+                                                # 추적 목표 근처에 도착 → approaching 진입
+                                                _at_target = (abs(current_x - _move_target[0]) + abs(current_y - _move_target[1])) <= 2
+                                                if _at_target:
+                                                    _boss_chase_miss = 0
+                                                    _boss_chasing = False
+                                                    boss_mode = "approaching"
+                                                    boss_appr_miss = 0
+                                                    if boss_skill_enabled and boss_skill_key:
+                                                        try:
+                                                            pyautogui.keyDown(boss_skill_key)
+                                                            time.sleep(0.05)
+                                                            pyautogui.keyUp(boss_skill_key)
+                                                            self._key_press_count += 1
+                                                            last_boss_skill_time = time.time()
+                                                        except Exception:
+                                                            pass
+                                                    self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
+                                                        self._append_log(f"🎯 추적→접근! ({cx},{cy}) 거리={td}타일 → approaching"))
+                                                    prev_x, prev_y = current_x, current_y
+                                                    time.sleep(0.05)
+                                                    continue
+                                                else:
+                                                    # 갇힘 상태 (목표에서 멀음) → 벽 너머일 수 있음, 우회 경로 탐색
+                                                    _boss_dir_y = 1 if _edy2 >= 0 else -1
+                                                    _found_detour = False
+                                                    for _dr in range(1, 6):
+                                                        for _ddx, _ddy in [(1, _boss_dir_y), (-1, _boss_dir_y),
+                                                                           (1, 0), (-1, 0), (0, _boss_dir_y * 2)]:
+                                                            _dtx = current_x + _ddx * _dr
+                                                            _dty = current_y + _ddy * _dr
+                                                            if self._game_map.is_passable(_dtx, _dty) and (_dtx, _dty) != (current_x, current_y):
+                                                                _chase_tx, _chase_ty = _dtx, _dty
+                                                                _found_detour = True
+                                                                break
+                                                        if _found_detour:
+                                                            break
+                                                    if _found_detour:
+                                                        _boss_chase_miss = 0
+                                                        self.after(0, lambda cx=current_x, cy=current_y,
+                                                                   tx=_chase_tx, ty=_chase_ty, td=_td2, dy=_dy2:
+                                                            self._append_log(f"🔄 근접({td}타일,dy={dy}px) 갇힘 → ({tx},{ty}) 우회"))
+                                                    else:
+                                                        # 우회 불가 → 미감지 처리 (miss 누적 → 15회 시 순찰 복귀)
+                                                        _rechk_found = False
+                                                        self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
+                                                            self._append_log(f"⚠️ 근접({td}타일,dy={dy}px) 갇힘+우회불가"))
+                                            else:
+                                                _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
+                                                _chase_ty = current_y + _edy2
+                                                _boss_chase_miss = 0
+                                                self.after(0, lambda cx=current_x, cy=current_y,
+                                                       tx=_chase_tx, ty=_chase_ty, td=_td2:
+                                                self._append_log(f"🔄 재감지! ({cx},{cy})→({tx},{ty}) 거리={td}타일"))
+                                except Exception:
+                                    pass
+                                if not _rechk_found and not self._stop_event.is_set():
+                                    _boss_chase_miss += 1
+                                    if _boss_chase_miss >= 15:
+                                        _boss_chasing = False
+                                        _boss_chase_miss = 0
+                                        # 현재 위치에서 가장 가까운 순찰 포인트부터 재시작
+                                        if boss_patrol is not None:
+                                            boss_patrol.start((current_x, current_y))
+                                        self.after(0, lambda cx=current_x, cy=current_y:
+                                            self._append_log(f"🔍 보스 미감지 → 순찰 복귀 (({cx},{cy})부터)"))
+                                    else:
+                                        self.after(0, lambda tx=_move_target[0], ty=_move_target[1], m=_boss_chase_miss:
+                                            self._append_log(f"⚠️ 추적 ({tx},{ty}) 재감지 실패 ({m}/15)"))
+                                        self._stop_event.wait(0.05)
                             else:
                                 boss_patrol.skip_current_target()
-                                patrol_skip_count = getattr(self, '_patrol_skip_count', 0) + 1
-                                self._patrol_skip_count = patrol_skip_count
+                                patrol_skip_count += 1
                                 self.after(0, lambda tx=_move_target[0], ty=_move_target[1]:
                                     self._append_log(f"⚠️ 순찰 ({tx},{ty}) 도달 불가 → 스킵"))
                                 patrol_total = len(self._game_map.patrol_points)
@@ -4418,14 +5827,23 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if patrol_skip_count >= skip_threshold and patrol_total > 0:
                                     boss_mode = "exploring"
                                     boss_patrol = None
-                                    self._patrol_skip_count = 0
+                                    _boss_chasing = False
+                                    _boss_chase_miss = 0
+                                    patrol_skip_count = 0
+                                    explore_target = None
+                                    explore_target_tries = 0
+                                    explore_unreachable = set()
+                                    frontier_cooldown.clear()
+                                    explored_from = {}
+                                    unknown_path_fails = 0
+                                    boss_no_frontier_count = 0
                                     self.after(0, lambda ps=patrol_skip_count:
                                         self._append_log(f"🔄 순찰 {ps}개 연속 도달불가 → 탐색모드 복귀"))
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
-                            prev_x, prev_y = None, None
-                            time.sleep(0.05)
+                            pathfinder.invalidate_path()
+                            prev_x, prev_y = current_x, current_y
                             continue
 
                         if not self._stop_event.is_set() and _ui_update_ok:
@@ -4446,9 +5864,33 @@ class GameModeDialog(ctk.CTkToplevel):
                         if not self._stop_event.is_set():
                             self.after(0, lambda cx=current_x, cy=current_y, m=boss_mode:
                                 self._append_log(f"⏸ ({cx},{cy}) 보스던전 방향 없음 ({m})"))
-                        time.sleep(0.1)
-                        # prev를 None으로 → 다음 반복에서 이동 실패 오판 방지
-                        prev_x, prev_y = None, None
+                        # 방향 없음 연속 → 인접 벽 해제 복구 (exploring 모드 갇힘 방지)
+                        stuck_count += 1
+                        if stuck_count >= 10 and mapping_on and use_map:
+                            _unblocked = 0
+                            for _d, (_ddx, _ddy) in DIRECTIONS_4.items():
+                                _nx, _ny = current_x + _ddx, current_y + _ddy
+                                if (_nx, _ny) in _portal_protected:
+                                    continue  # 포탈 좌표 보호
+                                if self._game_map.is_blocked(_nx, _ny):
+                                    self._game_map.mark_passable(_nx, _ny)
+                                    _unblocked += 1
+                            if _unblocked > 0:
+                                self.after(0, lambda u=_unblocked, cx=current_x, cy=current_y:
+                                    self._append_log(f"🔓 방향없음 복구 ({cx},{cy}) → {u}개 인접벽 해제"))
+                            stuck_count = 0
+                            total_stuck_count = 0
+                            explored_from.pop((current_x, current_y), None)
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                        _t_iter_total = int((time.time() - _t_iter_start) * 1000)
+                        _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음[{boss_mode}]"
+                        logger.info(f"[타이밍] {_timing_msg}")
+                        self.after(0, lambda m=_timing_msg: self._append_log(m))
+                        self._stop_event.wait(0.1)
+                        # prev를 현재 위치로 → 다음 반복에서 이동 판정 정상 동작
+                        prev_x, prev_y = current_x, current_y
                         last_dir = None
                         continue
 
@@ -4460,30 +5902,47 @@ class GameModeDialog(ctk.CTkToplevel):
                         self.after(0, lambda cx=current_x, cy=current_y, d=direction, m=boss_mode:
                             self._append_log(f"🎮 [{m}] ({cx},{cy}) → {d}"))
 
+                    _t_path_ms = int((time.time() - _t_iter_start) * 1000) - _t_ocr_ms
+                    _t_key_start = time.time()
                     press_key(direction)
+                    _t_key_ms = int((time.time() - _t_key_start) * 1000)
+                    _t_iter_total = int((time.time() - _t_iter_start) * 1000)
+                    _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} A*:{_t_path_ms} key:{_t_key_ms} iv:{int(interval*1000)} 총:{_t_iter_total}ms ({current_x},{current_y})→{direction} [{boss_mode}]"
+                    logger.info(f"[타이밍] {_timing_msg}")
+                    self.after(0, lambda m=_timing_msg: self._append_log(m))
                     last_dir = direction
                     prev_x, prev_y = current_x, current_y
-                    time.sleep(0.05)
                     continue
                 # ── 보스 던전 핸들러 끝 ──
 
                 # A* 경로탐색으로 방향 결정
+                _t_path_start = time.time()
                 direction = find_path_direction(current_x, current_y, target_x, target_y)
+                _t_path_ms = int((time.time() - _t_path_start) * 1000)
 
                 # A* 중 중지 요청 발생 시 즉시 루프 탈출
                 if self._stop_event.is_set():
                     break
 
                 if direction is None:
-                    if not self._stop_event.is_set():
+                    _t_iter_total = int((time.time() - _t_iter_start) * 1000)
+                    _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} A*:{_t_path_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음"
+                    logger.info(f"[타이밍] {_timing_msg}")
+                    self.after(0, lambda m=_timing_msg: self._append_log(m))
+                    if not self._stop_event.is_set() and _ui_update_ok:
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"⏸ ({cx},{cy}) 방향 없음"))
-                    time.sleep(0.1)
+                    self._stop_event.wait(0.1)
                     prev_x, prev_y = current_x, current_y
                     continue
 
                 # UI 업데이트
-                dist = abs(target_x - current_x) + abs(target_y - current_y)
+                # 도착좌표가 여러 개면 가장 가까운 도착좌표 기준으로 거리 계산
+                _cur_re_dist = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                if _cur_re_dist:
+                    dist = min(abs(ex - current_x) + abs(ey - current_y) for ex, ey in _cur_re_dist)
+                else:
+                    dist = abs(target_x - current_x) + abs(target_y - current_y)
                 is_final = (target_idx == len(all_targets) - 1)
                 slow_approach_dist = 2  # 모든 경유지 N칸 전부터 감속 (포탈 감지용)
                 is_slow = dist <= slow_approach_dist
@@ -4501,55 +5960,75 @@ class GameModeDialog(ctk.CTkToplevel):
                     if not self._stop_event.is_set() and _ui_update_ok:
                         self.after(0, lambda cx=current_x, cy=current_y, d=dist:
                             self._append_log(f"🐢 감속접근 ({cx},{cy}) 거리:{d}칸"))
-                    time.sleep(0.3)
+                    self._stop_event.wait(0.05)
 
                 if self._stop_event.is_set():
                     break
 
                 # 방향키 입력 직전 도착 여부 재확인 (이동 중 도착 가능)
                 if dist <= 2:
+                    _t_recheck = time.time()
                     check_x, check_y = matcher.read_both_coordinates(
                         self._config.coord_x_region,
                         self._config.coord_y_region,
                         stop_event=self._stop_event
                     )
+                    _t_recheck_ms = int((time.time()-_t_recheck)*1000)
+                    logger.info(f"[타이밍] #{iteration} 도착재확인OCR: {_t_recheck_ms}ms")
+                    self.after(0, lambda m=_t_recheck_ms, i=iteration: self._append_log(f"⏱ #{i} 재확인OCR:{m}ms"))
                     if check_x is not None:
-                        check_dist = abs(int(check_x) - target_x) + abs(int(check_y) - target_y)
-                        if check_dist == 0:
+                        _cx, _cy = int(check_x), int(check_y)
+                        # 도착좌표가 여러 개면 어느 하나라도 일치하면 도착
+                        if _cur_re_dist:
+                            _check_arrived = any(_cx == ex and _cy == ey for ex, ey in _cur_re_dist)
+                        else:
+                            _check_arrived = (abs(_cx - target_x) + abs(_cy - target_y) == 0)
+                        if _check_arrived:
                             # 이미 도착! 방향키 누르지 않고 루프로
-                            current_x, current_y = int(check_x), int(check_y)
+                            current_x, current_y = _cx, _cy
                             time.sleep(0.05)
                             continue
 
                 # 이동 (포탈 근접 시 짧은 탭으로 오버슈트 방지)
+                _t_key_start = time.time()
                 if dist <= 1:
                     # 포탈 1칸 전: smooth_move 무시, 짧은 탭 1회만
                     key = self._config.move_keys.get(direction, direction)
-                    pyautogui.press(key)
+                    _orig_pause = pyautogui.PAUSE
+                    pyautogui.PAUSE = 0
+                    try:
+                        pyautogui.press(key)
+                    finally:
+                        pyautogui.PAUSE = _orig_pause
                     self._key_press_count += 1
                     self.after(0, lambda: self._key_count_label.configure(text=f"{self._key_press_count}회"))
-                    time.sleep(0.5)  # 포탈 전환 안정화 대기
+                    self._stop_event.wait(0.2)  # 포탈 전환 안정화 대기
                 else:
                     press_key(direction)
+                _t_key_ms = int((time.time() - _t_key_start) * 1000)
                 last_dir = direction
                 prev_x, prev_y = current_x, current_y
 
                 if is_slow and dist > 1:
-                    time.sleep(0.3)
+                    self._stop_event.wait(0.05)
+
+                # 타이밍 로그 (매 반복 — UI + 파일)
+                _t_iter_total = int((time.time() - _t_iter_start) * 1000)
+                _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} A*:{_t_path_ms} key:{_t_key_ms} iv:{int(interval*1000)} 총:{_t_iter_total}ms ({current_x},{current_y})→{direction} d={dist}"
+                logger.info(f"[타이밍] {_timing_msg}")
+                self.after(0, lambda m=_timing_msg: self._append_log(m))
 
         except Exception as e:
             logger.error(f"[좌표모드] 오류: {e}")
             self.after(0, lambda err=str(e): self._append_log(f"⚠️ 오류: {err}"))
         finally:
-            # keyboard.remove_hotkey를 별도 스레드에서 타임아웃으로 실행 (블로킹 방지)
+            # keyboard.remove_hotkey를 별도 스레드에서 실행 (join 없이 — 블로킹 방지)
             def _remove_hotkey():
                 try:
                     keyboard.remove_hotkey(_escape_hotkey_id)
                 except Exception:
                     pass
-            rh_thread = threading.Thread(target=_remove_hotkey, daemon=True)
-            rh_thread.start()
-            rh_thread.join(timeout=1.0)
+            threading.Thread(target=_remove_hotkey, daemon=True).start()
 
             try:
                 self.after(0, self._stop_execution)
@@ -4594,17 +6073,24 @@ class GameModeDialog(ctk.CTkToplevel):
             log_msg = f"[{status}] 캐릭터{char} → 목표{target} | dx={dx:+d} dy={dy:+d} | 거리={dist} | 방향={direction}"
             self._append_log(log_msg)
 
-    def _append_log(self, message: str):
+    _log_line_counter = 0
+
+    def _append_log(self, message: str, force: bool = False):
         """로그 텍스트에 메시지 추가 (최대 500줄 제한)"""
         try:
+            if not force and self._stop_event.is_set():
+                return
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
             self._log_text.configure(state="normal")
             self._log_text.insert("end", f"[{timestamp}] {message}\n")
-            # 로그 최대 500줄 제한 (오래된 로그 자동 삭제)
-            line_count = int(self._log_text.index("end-1c").split(".")[0])
-            if line_count > 500:
-                self._log_text.delete("1.0", f"{line_count - 500}.0")
+            # 줄 수 체크를 20회마다만 수행 (위젯 연산 절약)
+            self._log_line_counter += 1
+            if self._log_line_counter >= 20:
+                self._log_line_counter = 0
+                line_count = int(self._log_text.index("end-1c").split(".")[0])
+                if line_count > 500:
+                    self._log_text.delete("1.0", f"{line_count - 500}.0")
             self._log_text.see("end")
             self._log_text.configure(state="disabled")
         except Exception as e:
@@ -4643,26 +6129,31 @@ class GameModeDialog(ctk.CTkToplevel):
             pass
 
     def _on_arrival(self):
+        if not self._is_running:
+            return  # 중복 호출 방지
+        self._completed_normally = True  # 정상 도착 플래그
         self._is_running = False
         self._stop_event.set()
+
+        # --- 일반 완료 처리 ---
         self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
+        if hasattr(self, '_mapping_test_btn'):
+            self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
         self._status_label.configure(text="상태: 도달!", text_color="#a3be8c")
         self._append_log(f"🎯 목표 도달 완료! 총 키입력: {self._key_press_count}회")
         # 개별 테스트 카드 버튼 복원
         if getattr(self, '_single_waypoint_mode', False):
             single_idx = getattr(self, '_single_waypoint_idx', -1)
-            cards = getattr(self, '_wp_cards', [])
-            if 0 <= single_idx < len(cards):
-                btn = cards[single_idx].get('test_btn')
-                if btn:
-                    btn.configure(text="▶ 테스트", fg_color="#a3be8c", hover_color="#8fa97a",
-                                  text_color="#1a1a1a")
+            if getattr(self, '_is_mapping_test', False) and single_idx >= 0:
+                self._update_card_mapping_btn(single_idx, False)
             self._single_waypoint_mode = False
-        # 도착 시 맵 데이터 저장
-        if hasattr(self, '_game_map') and self._game_map:
-            stats = self._game_map.get_statistics()
-            if stats['total_tiles'] > 0:
-                threading.Thread(target=self._auto_save_map, daemon=True).start()
+        self._is_mapping_test = False
+        # 도착 시 맵 데이터 저장 (일반 테스트에서는 건너뜀)
+        if not getattr(self, '_no_save_mode', False):
+            if hasattr(self, '_game_map') and self._game_map:
+                stats = self._game_map.get_statistics()
+                if stats['total_tiles'] > 0:
+                    threading.Thread(target=self._auto_save_map, daemon=True).start()
         self._show_notification("완료", f"목표 도달!\n총 키 입력 횟수: {self._key_press_count}회", duration=10000)
 
     def _build_coordinate_ui(self):
@@ -4688,14 +6179,30 @@ class GameModeDialog(ctk.CTkToplevel):
         ctk.CTkButton(wp_add_row, text="+ 추가", width=70, height=32,
                       fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
                       font=ctk.CTkFont(size=12, weight="bold"),
-                      command=self._add_waypoint).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(wp_add_row, text="전체삭제", width=70, height=32,
-                      fg_color=COLORS["bg_card_hover"], hover_color=COLORS["accent_red"],
-                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"],
-                      command=self._clear_waypoints).pack(side="left", padx=(0, 8))
+                      command=self._add_waypoint).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(wp_add_row, text="📋 붙여넣기", width=90, height=32,
+                      fg_color="#3b4252", hover_color="#5e81ac",
+                      text_color="#88c0d0",
+                      border_width=1, border_color="#5e81ac",
+                      font=ctk.CTkFont(size=12),
+                      command=self._paste_waypoint).pack(side="left", padx=(0, 8))
         self._run_btn = ctk.CTkButton(wp_add_row, text="▶ 전체 테스트", width=100, height=32,
                                        fg_color="#a3be8c", command=self._toggle_execution)
         self._run_btn.pack(side="left")
+        self._mapping_test_btn = ctk.CTkButton(wp_add_row, text="▶ 맵핑테스트", width=100, height=32,
+                                                fg_color="#5e81ac", command=self._toggle_mapping_test)
+        self._mapping_test_btn.pack(side="left", padx=(4, 0))
+
+        # 모두 접기/펼치기 버튼
+        wp_collapse_row = ctk.CTkFrame(waypoint_inner, fg_color="transparent")
+        wp_collapse_row.pack(fill="x", pady=(0, 4))
+        self._wp_collapse_all_btn = ctk.CTkButton(wp_collapse_row, text="모두 펼치기", width=90, height=26,
+                      font=ctk.CTkFont(size=11),
+                      fg_color=COLORS["bg_card_hover"], hover_color=COLORS["bg_card"],
+                      text_color=COLORS["text_secondary"],
+                      command=self._toggle_all_cards)
+        self._wp_collapse_all_btn.pack(side="left")
+        self._wp_all_collapsed = True  # 기본 접힌 상태
 
         # 경유지 리스트 표시
         self._waypoint_list_frame = ctk.CTkFrame(waypoint_inner, fg_color="transparent")
@@ -4873,7 +6380,8 @@ class GameModeDialog(ctk.CTkToplevel):
         from ..player.map_explorer import MapExplorer
 
         self._current_segment_idx = 0
-        self._game_map = GameMap(name=self._config.name or "autosave")
+        _seg0_name = self._get_segment_display_name(0)
+        self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{_seg0_name}")
         self._map_pathfinder = SimplePathfinder(self._game_map)
         self._map_explorer = MapExplorer(self._game_map)
         self._is_mapping = False
@@ -4997,12 +6505,33 @@ class GameModeDialog(ctk.CTkToplevel):
         stats = self._game_map.get_statistics()
         logger.info(f"[맵핑] 맵핑 완료 - {stats['total_tiles']}개 타일")
 
+    def _is_segment_map_locked(self, segment_idx: int) -> bool:
+        """해당 구간의 맵 잠금 상태 확인"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= segment_idx < len(waypoints):
+            wp = waypoints[segment_idx]
+            if len(wp) >= 4 and isinstance(wp[3], dict):
+                return bool(wp[3].get('map_locked', False))
+        return False
+
     def _auto_save_map(self) -> str:
-        """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장)"""
-        import os
-        acquired = self._map_save_lock.acquire(timeout=2.0)
+        """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장, 롤링 백업 포함)"""
+        # 보스 경유지 중에는 맵 저장 차단 (오염 방지)
+        if getattr(self, '_boss_segment_active', False):
+            self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 보스 경유지 활성"))
+            return ""
+        # 맵 잠금 구간에서는 저장 차단
+        if self._is_segment_map_locked(getattr(self, '_current_segment_idx', 0)):
+            return ""
+        # 빈 맵 저장 방지 (구간 전환 직후 기존 파일 덮어쓰기 방지)
+        if not self._game_map.passable:
+            self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: passable 비어있음"))
+            return ""
+        import os, shutil
+        acquired = self._map_save_lock.acquire(timeout=0.5)
         if not acquired:
-            logger.warning("[맵핑] 맵 저장 락 획득 실패 (2초 타임아웃)")
+            self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 락 획득 실패"))
+            logger.warning("[맵핑] 맵 저장 락 획득 실패 (0.5초 타임아웃)")
             return ""
         try:
             segment_idx = getattr(self, '_current_segment_idx', 0)
@@ -5010,10 +6539,26 @@ class GameModeDialog(ctk.CTkToplevel):
             map_path = self._get_segment_map_name(segment_idx)
             from pathlib import Path
             Path(map_path).parent.mkdir(parents=True, exist_ok=True)
-            # ※ load_and_merge 제거 — lock이 동시 접근 차단하므로 병합 불필요
-            #    병합은 다른 세그먼트 데이터가 섞이는 오염의 원인이었음
+            # 롤링 백업: 기존 파일 → .bak1 → .bak2 → .bak3 (최대 3개 유지)
+            if os.path.exists(map_path):
+                try:
+                    bak3 = map_path + ".bak3"
+                    bak2 = map_path + ".bak2"
+                    bak1 = map_path + ".bak1"
+                    if os.path.exists(bak3):
+                        os.remove(bak3)
+                    if os.path.exists(bak2):
+                        shutil.move(bak2, bak3)
+                    if os.path.exists(bak1):
+                        shutil.move(bak1, bak2)
+                    shutil.copy2(map_path, bak1)
+                except Exception as _bk_e:
+                    logger.debug(f"[맵핑] 롤링 백업 실패 (무시): {_bk_e}")
+            _p_count = len(self._game_map.passable)
             self._game_map.save(map_path)
             logger.info(f"[맵핑] '{seg_name}' 맵 저장: {map_path}")
+            self.after(0, lambda sn=seg_name, pc=_p_count, mp=map_path:
+                self._append_log(f"💾 맵 저장: '{sn}' ({pc}타일) → {mp}"))
             return map_path
         finally:
             self._map_save_lock.release()
@@ -5069,7 +6614,7 @@ class GameModeDialog(ctk.CTkToplevel):
         else:
             messagebox.showerror("되돌리기", "백업 파일 로드 실패")
 
-    def _switch_segment_map(self, new_segment_idx: int) -> bool:
+    def _switch_segment_map(self, new_segment_idx: int, skip_save: bool = False) -> bool:
         """구간 맵 전환 (현재 맵 저장 → 새 구간 맵 로드 → pathfinder 갱신). 성공 시 True."""
         import os
         from ..player.game_map import GameMap
@@ -5086,20 +6631,39 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.error("[맵핑] 맵 전환 락 획득 실패 (1초 타임아웃)")
             return False
         try:
-            # 현재 맵 저장 (메모리 데이터를 직접 저장 — 오염 방지)
-            try:
-                segment_idx = getattr(self, '_current_segment_idx', 0)
-                map_path = self._get_segment_map_name(segment_idx)
-                from pathlib import Path
-                Path(map_path).parent.mkdir(parents=True, exist_ok=True)
-                self._game_map.save(map_path)
-                logger.info(f"[맵핑] '{self._get_segment_display_name(segment_idx)}' 맵 저장: {map_path}")
-            except Exception as e:
-                logger.error(f"[맵핑] 현재 맵 저장 실패: {e}")
+            # 현재 맵 저장 (skip_save=True면 건너뜀 — 보스 경유지 등 오염 방지)
+            # 맵 잠금 구간도 저장 건너뜀
+            if not skip_save and not self._is_segment_map_locked(getattr(self, '_current_segment_idx', 0)):
+                try:
+                    import shutil as _shutil_sw
+                    segment_idx = getattr(self, '_current_segment_idx', 0)
+                    map_path = self._get_segment_map_name(segment_idx)
+                    from pathlib import Path
+                    Path(map_path).parent.mkdir(parents=True, exist_ok=True)
+                    # 롤링 백업
+                    if os.path.exists(map_path):
+                        try:
+                            for _bi in range(3, 1, -1):
+                                _src = map_path + f".bak{_bi-1}"
+                                _dst = map_path + f".bak{_bi}"
+                                if os.path.exists(_src):
+                                    if os.path.exists(_dst):
+                                        os.remove(_dst)
+                                    _shutil_sw.move(_src, _dst)
+                            _shutil_sw.copy2(map_path, map_path + ".bak1")
+                        except Exception:
+                            pass
+                    self._game_map.save(map_path)
+                    logger.info(f"[맵핑] '{self._get_segment_display_name(segment_idx)}' 맵 저장: {map_path}")
+                except Exception as e:
+                    logger.error(f"[맵핑] 현재 맵 저장 실패: {e}")
+            else:
+                logger.info(f"[맵핑] 보스 경유지 → 맵 저장 건너뜀 (오염 방지)")
 
             # 새 구간으로 전환
             old_name = self._get_segment_display_name(getattr(self, '_current_segment_idx', 0))
             self._current_segment_idx = new_segment_idx
+            self._start_registered = False  # 새 구간에서 start_pos 재등록 필요
             new_name = self._get_segment_display_name(new_segment_idx)
             self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{new_name}")
             self._map_pathfinder = SimplePathfinder(self._game_map)
@@ -5116,7 +6680,6 @@ class GameModeDialog(ctk.CTkToplevel):
             return True
         finally:
             self._map_save_lock.release()
-        return False
 
     def _stop_mapping(self):
         """맵핑 중지 - 즉시 반환, 절대 블로킹 없음"""
@@ -5187,9 +6750,42 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception as e:
             logger.debug(f"무시된 예외: {e}")
 
+        # 경로 좌표 추출 (route_starts/route_ends에서 박스 리스트)
+        route_starts = []
+        route_ends = []
+        route_walls = []
+        try:
+            if seg_idx is not None and seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                if len(wp) >= 4 and isinstance(wp[3], dict):
+                    for s in wp[3].get("route_starts", []):
+                        sx, sy = s.get("x"), s.get("y")
+                        if sx is not None and sy is not None:
+                            route_starts.append((int(sx), int(sy)))
+                    for e in wp[3].get("route_ends", []):
+                        ex, ey = e.get("x"), e.get("y")
+                        if ex is not None and ey is not None and (int(ex) != 0 or int(ey) != 0):
+                            if e.get("enabled", True):
+                                route_ends.append((int(ex), int(ey)))
+                            else:
+                                route_walls.append((int(ex), int(ey)))
+                    for w in wp[3].get("route_walls", []):
+                        wx, wy = w.get("x"), w.get("y")
+                        if wx is not None and wy is not None and (int(wx) != 0 or int(wy) != 0):
+                            route_walls.append((int(wx), int(wy)))
+        except Exception:
+            pass
+
+        # 사용자 지정 좌표가 있으면 기존 자동 출발/도착 제거
+        if route_starts:
+            start_pos = None
+        if route_ends:
+            target_pos = None
+
         # 그래픽 맵 창 열기
         try:
-            map_name = getattr(game_map, 'name', '맵')
+            # 항상 경유지 표시 이름 사용 (파일 내부 이름 대신)
+            map_name = self._get_segment_display_name(seg_idx) if seg_idx is not None else getattr(game_map, 'name', '맵')
             # 벽 편집 시 자동 저장 콜백
             _seg = seg_idx if seg_idx is not None else getattr(self, '_current_segment_idx', 0)
             _map_ref = game_map
@@ -5199,10 +6795,44 @@ class GameModeDialog(ctk.CTkToplevel):
                     _map_ref.save(_path)
                 except Exception as _e:
                     logger.error(f"[맵핑] 벽 편집 저장 실패: {_e}")
+            # 초기화 콜백: 잠금맵이 아닐 때만 제공
+            _clear_cb = None
+            if not self._is_segment_map_locked(_seg):
+                def _clear_map(_s=_seg, _mr=_map_ref):
+                    import os as _os
+                    from ..player.game_map import GameMap as _GM
+                    from ..player.simple_pathfinder import SimplePathfinder as _SP
+                    from ..player.map_explorer import MapExplorer as _ME
+                    _sn = self._get_segment_display_name(_s)
+                    # map_file 공유 경로 먼저 해제 (원본 파일 보호)
+                    _wps = getattr(self._config, 'waypoints', []) or []
+                    if _s < len(_wps):
+                        _wp = _wps[_s]
+                        if isinstance(_wp, (list, tuple)) and len(_wp) >= 4 and isinstance(_wp[3], dict):
+                            _wp[3].pop('map_file', None)
+                    # map_file 해제 후 호출 → 경유지 자체 경로 반환 (원본 아님)
+                    _mp = self._get_segment_map_name(_s)
+                    if _os.path.exists(_mp):
+                        _os.remove(_mp)
+                    _bk = _mp.replace("_map.json", "_map.backup.json")
+                    if _os.path.exists(_bk):
+                        _os.remove(_bk)
+                    new_map = _GM(name=f"{self._config.name or 'autosave'}_{_sn}")
+                    if _s == getattr(self, '_current_segment_idx', -1):
+                        self._game_map = new_map
+                        self._map_pathfinder = _SP(new_map)
+                        self._map_explorer = _ME(new_map)
+                    self._update_card_map_badge(_s)
+                    self._append_log(f"🗑️ '{_sn}' 맵 초기화 완료", force=True)
+                    logger.info(f"[맵핑] '{_sn}' 맵 초기화 완료")
+                _clear_cb = _clear_map
             map_window = MapWindow(self, game_map, title=map_name,
                                   restore_callback=self._restore_map,
-                                  save_callback=_save_edited_map)
-            map_window.update_positions(target=target_pos, start=start_pos)
+                                  save_callback=_save_edited_map,
+                                  clear_callback=_clear_cb)
+            map_window.update_positions(target=target_pos, start=start_pos,
+                                        route_starts=route_starts, route_ends=route_ends,
+                                        route_walls=route_walls)
             self._append_log(f"🗺️ 맵 창 열림 ({map_name})")
         except Exception as e:
             self._append_log(f"❌ 맵 창 열기 실패: {e}")
@@ -5252,7 +6882,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 pass
             self._wp_empty_label = None
 
-        wp = [0, 0, name]
+        wp = [0, 0, name, {}]
         self._config.waypoints.append(wp)
         self._wp_name_var.set("")
 
@@ -5268,8 +6898,21 @@ class GameModeDialog(ctk.CTkToplevel):
         if not (0 <= index < len(self._config.waypoints)):
             return
 
-        removed = self._config.waypoints.pop(index)
+        waypoints = self._config.waypoints
+        removed_wp = waypoints[index]
+        removed_name = removed_wp[2] if len(removed_wp) >= 3 else ""
         cards = getattr(self, '_wp_cards', [])
+
+        # 부모 카드 삭제 → 자식들 ungroup
+        if removed_name:
+            for wp in waypoints:
+                cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+                if cfg and cfg.get('group_parent') == removed_name:
+                    cfg.pop('group_parent', None)
+
+        # 자식 카드 삭제 → 부모의 group_ui 갱신은 reindex 후 처리
+
+        removed = waypoints.pop(index)
 
         # 카드 프레임 제거
         if 0 <= index < len(cards):
@@ -5278,6 +6921,9 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 나머지 카드 번호 + command 갱신
         self._reindex_cards(index)
+
+        # 그룹 UI 갱신 (부모 삭제 시 자식 다시 표시, 자식 삭제 시 부모 배지 갱신)
+        self._apply_grouping()
 
         # 최종 인덱스 보정
         final_idx = self._get_final_idx()
@@ -5308,6 +6954,281 @@ class GameModeDialog(ctk.CTkToplevel):
                          font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(pady=12)
 
         logger.info(f"[좌표모드] 경유지 삭제: {removed}")
+
+    def _copy_waypoint(self, index: int):
+        """경유지를 클립보드에 복사 (자식 포함)"""
+        try:
+            import copy
+            waypoints = getattr(self._config, 'waypoints', []) or []
+            if not (0 <= index < len(waypoints)):
+                logger.warning(f"[좌표모드] 복사 실패: index={index}, len={len(waypoints)}")
+                return
+
+            src_wp = waypoints[index]
+            src_name = src_wp[2] if len(src_wp) >= 3 and src_wp[2] else f"경유지{index+1}"
+
+            # 부모 + 자식 모두 deep copy해서 클립보드에 저장
+            clipboard_data = [copy.deepcopy(src_wp)]
+            # 맵 파일 경로도 수집 (붙여넣기 시 복사용)
+            map_paths = [self._get_segment_map_name(index)]
+            # 자식 인덱스 수집 (group_parent == 부모 이름)
+            child_indices = []
+            if src_name:
+                for ci, wp in enumerate(waypoints):
+                    if ci == index:
+                        continue
+                    cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+                    if cfg and cfg.get('group_parent') == src_name:
+                        child_indices.append(ci)
+            for ci in child_indices:
+                clipboard_data.append(copy.deepcopy(waypoints[ci]))
+                map_paths.append(self._get_segment_map_name(ci))
+
+            set_waypoint_clipboard({"waypoints": clipboard_data, "map_paths": map_paths})
+
+            # 저장 확인
+            verify = get_waypoint_clipboard()
+            logger.info(f"[좌표모드] 클립보드 확인: {len(verify) if verify else 0}개")
+
+            # 복사 성공 피드백: 버튼 색상 변경
+            cards = getattr(self, '_wp_cards', [])
+            if 0 <= index < len(cards):
+                btn = cards[index].get('copy_btn')
+                if btn:
+                    btn.configure(text="복사됨!", fg_color="#a3be8c", text_color="#1a1a1a")
+                    self.after(1500, lambda b=btn: b.configure(
+                        text="복사", fg_color="#3b4252", text_color="#a3be8c"))
+
+            child_msg = f" + 자식 {len(child_indices)}개" if child_indices else ""
+            logger.info(f"[좌표모드] 경유지 클립보드 복사: {src_name}{child_msg} ({len(clipboard_data)}개)")
+            self.after(0, lambda n=src_name, cm=child_msg: self._append_log(f"📋 복사완료: {n}{cm}", force=True))
+        except Exception as e:
+            logger.error(f"[좌표모드] 복사 에러: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.after(0, lambda err=str(e): self._append_log(f"❌ 복사 실패: {err}", force=True))
+
+    def _paste_waypoint(self):
+        """클립보드의 경유지를 붙여넣기 (끝에 추가, 맵 파일도 복사)"""
+        import copy, os, shutil
+        raw = get_waypoint_clipboard()
+        if not raw:
+            from tkinter import messagebox
+            messagebox.showinfo("붙여넣기", "복사된 경유지가 없습니다.\n경유지 카드의 [복사] 버튼으로 먼저 복사하세요.")
+            return
+
+        # 클립보드 형식: {"waypoints": [...], "map_paths": [...]}
+        if isinstance(raw, dict):
+            clipboard_data = raw.get("waypoints", [])
+            src_map_paths = raw.get("map_paths", [])
+        else:
+            clipboard_data = raw  # 하위호환 (리스트 직접)
+            src_map_paths = []
+
+        if not clipboard_data:
+            return
+
+        if not hasattr(self._config, 'waypoints') or self._config.waypoints is None:
+            self._config.waypoints = []
+        waypoints = self._config.waypoints
+
+        # 빈 안내 라벨 제거
+        if hasattr(self, '_wp_empty_label') and self._wp_empty_label:
+            try:
+                self._wp_empty_label.destroy()
+            except Exception:
+                pass
+            self._wp_empty_label = None
+
+        # 기존 이름 세트 (중복 방지용)
+        def _unique_name(base):
+            existing = {wp[2] for wp in waypoints if len(wp) >= 3 and wp[2]}
+            if base not in existing:
+                return base
+            candidate = f"{base}(복사)"
+            n = 2
+            while candidate in existing:
+                candidate = f"{base}(복사{n})"
+                n += 1
+            return candidate
+
+        # 부모 (첫 번째) 처리
+        new_parent = copy.deepcopy(clipboard_data[0])
+        old_parent_name = new_parent[2] if len(new_parent) >= 3 else ""
+        new_parent_name = _unique_name(old_parent_name or "경유지")
+        if len(new_parent) >= 3:
+            new_parent[2] = new_parent_name
+        else:
+            new_parent.append(new_parent_name)
+        if len(new_parent) >= 4 and isinstance(new_parent[3], dict):
+            new_parent[3].pop('group_parent', None)
+
+        all_new = [new_parent]
+
+        # 자식 처리 (그룹 해제 — 독립 경유지로 붙여넣기)
+        for child_data in clipboard_data[1:]:
+            new_child = copy.deepcopy(child_data)
+            child_old_name = new_child[2] if len(new_child) >= 3 else ""
+            new_child_name = _unique_name(child_old_name or "경유지")
+            if len(new_child) >= 3:
+                new_child[2] = new_child_name
+            else:
+                new_child.append(new_child_name)
+            if len(new_child) < 4:
+                new_child.append({})
+            if not isinstance(new_child[3], dict):
+                new_child[3] = {}
+            new_child[3].pop('group_parent', None)
+            all_new.append(new_child)
+
+        # 끝에 추가
+        insert_idx = len(waypoints)
+        for wp in all_new:
+            waypoints.append(wp)
+            self._build_single_card(len(waypoints) - 1, wp)
+
+        # 맵 파일 처리: map_file 공유면 스킵, 아니면 복사
+        map_copied = 0
+        for offset, wp in enumerate(all_new):
+            # map_file 설정된 경유지는 이미 공유 참조 → 파일 복사 불필요
+            cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+            if cfg and cfg.get('map_file'):
+                map_copied += 1  # 공유 맵 카운트
+                logger.info(f"[좌표모드] 맵 공유 유지: {os.path.basename(cfg['map_file'])}")
+                continue
+            new_idx = insert_idx + offset
+            dst_path = self._get_segment_map_name(new_idx)
+            if offset < len(src_map_paths):
+                src_path = src_map_paths[offset]
+                if src_path and os.path.exists(src_path) and not os.path.exists(dst_path):
+                    try:
+                        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                        shutil.copy2(src_path, dst_path)
+                        map_copied += 1
+                        # 맵 복사 시 자동 잠금 (오염 방지)
+                        if len(wp) < 4:
+                            wp.append({})
+                        if not isinstance(wp[3], dict):
+                            wp[3] = {}
+                        wp[3]['map_locked'] = True
+                        logger.info(f"[좌표모드] 맵 복사+잠금: {os.path.basename(src_path)} → {os.path.basename(dst_path)}")
+                    except Exception as e:
+                        logger.error(f"[좌표모드] 맵 복사 실패: {e}")
+
+        self._reindex_cards(insert_idx)
+        self._apply_grouping()
+
+        # 맵 배지 갱신
+        for offset in range(len(all_new)):
+            self._update_card_map_badge(insert_idx + offset)
+
+        child_msg = f" + 자식 {len(clipboard_data) - 1}개" if len(clipboard_data) > 1 else ""
+        map_msg = f" (맵 {map_copied}개 복사)" if map_copied else ""
+        logger.info(f"[좌표모드] 경유지 붙여넣기: {new_parent_name}{child_msg}{map_msg}")
+        self.after(0, lambda n=new_parent_name, cm=child_msg, mm=map_msg:
+            self._append_log(f"📋 붙여넣기: {n}{cm}{mm}", force=True))
+
+    def _rename_waypoint(self, index: int):
+        """경유지 이름 변경 (인라인 입력)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= index < len(waypoints)) or not (0 <= index < len(cards)):
+            return
+
+        wp = waypoints[index]
+        old_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{index+1}"
+        name_label = cards[index]['name_label']
+
+        # 라벨을 엔트리로 교체
+        entry = ctk.CTkEntry(cards[index]['row1'], width=120, height=24,
+                             font=ctk.CTkFont(size=13, weight="bold"))
+        entry.insert(0, old_name)
+        entry.select_range(0, "end")
+        name_label.pack_forget()
+        entry.pack(side="left", padx=(4, 0), after=cards[index]['num_label'])
+        entry.focus_set()
+
+        def _confirm(event=None):
+            new_name = entry.get().strip()
+            if not new_name:
+                new_name = old_name
+
+            # 중복 검사
+            reserved = {"시작", "최종"}
+            existing = {w[2] for j, w in enumerate(waypoints) if j != index and len(w) >= 3 and w[2]}
+            if new_name in reserved or new_name in existing:
+                from tkinter import messagebox
+                messagebox.showwarning("이름 중복", f"'{new_name}'은(는) 이미 사용 중입니다.")
+                entry.focus_set()
+                return
+
+            # 자식들의 group_parent도 갱신
+            if new_name != old_name:
+                for w in waypoints:
+                    cfg = w[3] if len(w) >= 4 and isinstance(w[3], dict) else None
+                    if cfg and cfg.get('group_parent') == old_name:
+                        cfg['group_parent'] = new_name
+
+            # 데이터 업데이트
+            if len(wp) >= 3:
+                wp[2] = new_name
+            else:
+                wp.append(new_name)
+
+            # UI 복원
+            entry.destroy()
+            name_label.configure(text=new_name)
+            name_label.pack(side="left", padx=(4, 0), after=cards[index]['num_label'])
+            logger.info(f"[좌표모드] 이름 변경: {old_name} → {new_name}")
+
+        def _cancel(event=None):
+            entry.destroy()
+            name_label.pack(side="left", padx=(4, 0), after=cards[index]['num_label'])
+
+        entry.bind("<Return>", _confirm)
+        entry.bind("<Escape>", _cancel)
+        entry.bind("<FocusOut>", _confirm)
+
+    def _move_waypoint(self, index: int, direction: int):
+        """경유지 순서 이동 (direction: -1=위, +1=아래)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        new_idx = index + direction
+        if not (0 <= index < len(waypoints)) or not (0 <= new_idx < len(waypoints)):
+            return
+
+        # 데이터 스왑
+        waypoints[index], waypoints[new_idx] = waypoints[new_idx], waypoints[index]
+
+        # 카드 스왑
+        cards = self._wp_cards
+        cards[index], cards[new_idx] = cards[new_idx], cards[index]
+
+        # pack 순서 재정렬
+        for c in cards:
+            c['card'].pack_forget()
+        for c in cards:
+            c['card'].pack(fill="x", pady=(0, 3))
+
+        # 번호 + command 갱신
+        start = min(index, new_idx)
+        self._reindex_cards(start)
+        self._apply_grouping()
+
+        # 최종 인덱스 표시 갱신
+        final_idx = self._get_final_idx()
+        for i, c in enumerate(cards):
+            is_f = (i == final_idx)
+            c['card'].configure(
+                border_width=2 if is_f else 1,
+                border_color=COLORS["accent_orange"] if is_f else COLORS["border"])
+            if 'final_btn' in c:
+                c['final_btn'].configure(
+                    text="★ 최종" if is_f else "☆ 최종",
+                    font=ctk.CTkFont(size=11, weight="bold") if is_f else ctk.CTkFont(size=11),
+                    fg_color=COLORS["accent_orange"] if is_f else "transparent",
+                    text_color="#ffffff" if is_f else COLORS["text_secondary"],
+                    border_width=0 if is_f else 1,
+                    border_color=COLORS["accent_orange"] if is_f else COLORS["border"])
 
     def _clear_waypoints(self):
         """모든 경유지 삭제 (각 카드 프레임만 제거)"""
@@ -5359,12 +7280,64 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.error(f"[미니맵] 키 입력 오류: {e}")
 
     def _get_segment_map_name(self, segment_idx: int) -> str:
-        """구간별 맵 파일명 생성 (경유지 이름 기반)"""
-        import os
+        """구간별 맵 파일명 생성 — map_file 설정 시 공유 경로 우선 반환"""
+        import os, shutil
+        # 공유 맵 파일이 설정되어 있으면 해당 경로 직접 반환
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if segment_idx < len(waypoints):
+            wp = waypoints[segment_idx]
+            if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                shared = wp[3].get('map_file')
+                if shared and os.path.exists(shared):
+                    return shared
         base = self._config.name or "autosave"
         seg_name = self._get_segment_display_name(segment_idx)
         map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
-        return os.path.join(map_dir, f"{base}_{seg_name}_map.json")
+        # 보스 경유지(0,0) 판별
+        is_boss = False
+        if segment_idx < len(waypoints):
+            wp = waypoints[segment_idx]
+            if isinstance(wp, (list, tuple)) and len(wp) >= 2:
+                if int(wp[0]) == 0 and int(wp[1]) == 0:
+                    is_boss = True
+        # 파일명 = {번호}_{경유지이름}_map.json (제로패딩 → 정렬 순서 보장)
+        if is_boss:
+            new_path = os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_boss_map.json")
+        else:
+            new_path = os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json")
+        # 같은 이름의 다른 경유지가 있는지 확인
+        has_dup = False
+        for i, w in enumerate(waypoints):
+            if i != segment_idx:
+                other = w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2] else f"경유지{i+1}"
+                if other == seg_name:
+                    has_dup = True
+                    break
+        # 마이그레이션: 새 파일 없고, 이름 중복 아닐 때만 (중복이면 오염된 파일이므로 복사 금지)
+        if not os.path.exists(new_path) and not has_dup:
+            # 이전 형식 마이그레이션 (플랜명 접두사 포함 → 없음)
+            if is_boss:
+                old_candidates = [
+                    os.path.join(map_dir, f"{base}_{segment_idx:02d}_{seg_name}_boss_map.json"),
+                    os.path.join(map_dir, f"{base}_{segment_idx}_{seg_name}_boss_map.json"),
+                    os.path.join(map_dir, f"{base}_{seg_name}_boss{segment_idx}_map.json"),
+                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+                ]
+            else:
+                old_candidates = [
+                    os.path.join(map_dir, f"{base}_{segment_idx:02d}_{seg_name}_map.json"),
+                    os.path.join(map_dir, f"{base}_{segment_idx}_{seg_name}_map.json"),
+                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+                ]
+            for old_path in old_candidates:
+                if os.path.exists(old_path):
+                    try:
+                        shutil.copy2(old_path, new_path)
+                        logger.info(f"[맵] 마이그레이션: {os.path.basename(old_path)} → {os.path.basename(new_path)}")
+                    except Exception as e:
+                        logger.error(f"[맵] 마이그레이션 실패: {e}")
+                    break
+        return new_path
 
     def _get_segment_display_name(self, segment_idx: int) -> str:
         """구간 인덱스에 해당하는 표시 이름 반환 (경유지 인덱스와 1:1 대응)"""
@@ -5403,6 +7376,8 @@ class GameModeDialog(ctk.CTkToplevel):
 
         for i, wp in enumerate(waypoints):
             self._build_single_card(i, wp)
+        # 저장된 그룹 상태 적용 (자식 카드 숨김)
+        self._apply_grouping()
 
     def _get_final_idx(self) -> int:
         """최종 목표 인덱스 반환"""
@@ -5417,6 +7392,7 @@ class GameModeDialog(ctk.CTkToplevel):
         wp_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{i+1}"
         wp_x = wp[0] if len(wp) >= 1 else 0
         wp_y = wp[1] if len(wp) >= 2 else 0
+        _wp_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
         tiles = self._get_segment_map_tiles(i)
         has_map = tiles >= 0
         map_tag = f"{tiles}칸" if has_map else "미탐색"
@@ -5427,19 +7403,30 @@ class GameModeDialog(ctk.CTkToplevel):
         card = ctk.CTkFrame(self._waypoint_list_frame,
                             fg_color=COLORS["bg_card_hover"], corner_radius=8,
                             border_width=1, border_color=COLORS["border"])
-        card.pack(fill="x", pady=(0, 4))
+        card.pack(fill="x", pady=(0, 3))
 
         # 1행
         row1 = ctk.CTkFrame(card, fg_color="transparent")
-        row1.pack(fill="x", padx=10, pady=(8, 0))
+        row1.pack(fill="x", padx=8, pady=(6, 0))
+
+        # 드래그 핸들 (≡)
+        drag_handle = ctk.CTkLabel(row1, text="≡", width=16, height=22,
+                     font=ctk.CTkFont(size=14),
+                     text_color=COLORS["text_muted"], cursor="fleur")
+        drag_handle.pack(side="left", padx=(0, 2))
+        drag_handle.bind("<ButtonPress-1>", lambda e, idx=i: self._on_drag_start(e, idx))
+        drag_handle.bind("<B1-Motion>", self._on_drag_motion)
+        drag_handle.bind("<ButtonRelease-1>", lambda e, idx=i: self._on_drag_end(e, idx))
 
         num_label = ctk.CTkLabel(row1, text=f"{i+1}.",
                      font=ctk.CTkFont(size=13, weight="bold"),
                      text_color=COLORS["accent_blue"], width=22)
         num_label.pack(side="left")
         name_label = ctk.CTkLabel(row1, text=wp_name,
-                     font=ctk.CTkFont(size=13, weight="bold"))
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     cursor="hand2")
         name_label.pack(side="left", padx=(4, 0))
+        name_label.bind("<Button-1>", lambda e, idx=i: self._rename_waypoint(idx))
 
         # 맵 상태 배지
         map_badge = ctk.CTkFrame(row1, fg_color=badge_color, corner_radius=4)
@@ -5448,13 +7435,37 @@ class GameModeDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=10), text_color=badge_text_color)
         map_badge_label.pack(padx=4, pady=1)
 
-        # 개별 테스트 버튼 (배지 옆)
-        test_btn = ctk.CTkButton(row1, text="▶ 테스트", width=65, height=24,
-                      font=ctk.CTkFont(size=11),
-                      fg_color="#a3be8c", hover_color="#8fa97a",
-                      text_color="#1a1a1a",
-                      command=lambda idx=i: self._run_single_waypoint(idx))
-        test_btn.pack(side="left", padx=(6, 0))
+        # 맵 잠금 토글 버튼
+        _is_locked = bool(_wp_cfg.get('map_locked')) if _wp_cfg else False
+        map_lock_btn = ctk.CTkButton(row1, text="🔒" if _is_locked else "🔓",
+                      width=28, height=24, font=ctk.CTkFont(size=13),
+                      fg_color="#d08770" if _is_locked else "transparent",
+                      hover_color="#bf616a" if _is_locked else "#4c566a",
+                      text_color="#ffffff" if _is_locked else COLORS["text_muted"],
+                      border_width=1, border_color="#d08770" if _is_locked else COLORS["border"],
+                      command=lambda idx=i: self._toggle_map_lock(idx))
+        map_lock_btn.pack(side="left", padx=(4, 0))
+
+        # 그룹 펼치기/접기 버튼 (자식 있을 때만 표시) — 테스트 버튼 옆
+        group_btn = ctk.CTkButton(row1, text="▶ 펼치기", width=80, height=24,
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      fg_color="#4c566a", hover_color="#5e6a82",
+                      text_color="#d8dee9", corner_radius=6,
+                      command=lambda idx=i: self._toggle_group(idx))
+        # 초기에는 pack 안 함 (자식 생기면 _apply_grouping에서 pack)
+        child_count_label = ctk.CTkLabel(row1, text="",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="#ebcb8b", width=30)
+        # 초기에는 pack 안 함
+
+        # 해체 버튼 (자식일 때만 표시) — 그룹에서 빼기
+        ungroup_btn = ctk.CTkButton(row1, text="↩ 해체", width=55, height=24,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="#3b3024", hover_color="#5a4838",
+                      text_color="#ebcb8b", corner_radius=6,
+                      border_width=1, border_color="#5a4838",
+                      command=lambda idx=i: self._ungroup_card(idx))
+        # 초기에는 pack 안 함 (자식이면 _apply_grouping에서 pack)
 
         # 삭제 버튼
         del_btn = ctk.CTkButton(row1, text="✕", width=26, height=24,
@@ -5464,127 +7475,528 @@ class GameModeDialog(ctk.CTkToplevel):
                       command=lambda idx=i: self._remove_waypoint(idx))
         del_btn.pack(side="right")
 
-        # 2행: 좌표
-        row2 = ctk.CTkFrame(card, fg_color="transparent")
-        row2.pack(fill="x", padx=10, pady=(4, 8))
+        # 순서 이동 버튼
+        move_down_btn = ctk.CTkButton(row1, text="▼", width=24, height=24,
+                      font=ctk.CTkFont(size=11),
+                      fg_color="transparent", hover_color="#5e81ac",
+                      text_color=COLORS["text_muted"],
+                      command=lambda idx=i: self._move_waypoint(idx, 1))
+        move_down_btn.pack(side="right")
+        move_up_btn = ctk.CTkButton(row1, text="▲", width=24, height=24,
+                      font=ctk.CTkFont(size=11),
+                      fg_color="transparent", hover_color="#5e81ac",
+                      text_color=COLORS["text_muted"],
+                      command=lambda idx=i: self._move_waypoint(idx, -1))
+        move_up_btn.pack(side="right")
 
-        ctk.CTkLabel(row2, text="X", font=ctk.CTkFont(size=11),
-                     text_color=COLORS["text_muted"], width=16).pack(side="left")
-        x_var = ctk.StringVar(value=str(wp_x) if has_coord else "")
-        x_entry = ctk.CTkEntry(row2, textvariable=x_var, width=70, height=28,
-                               font=ctk.CTkFont(size=12), placeholder_text="미설정",
-                               fg_color=COLORS["bg_card"], border_color=COLORS["border"])
-        x_entry.pack(side="left", padx=(4, 12))
-        x_entry.bind("<FocusOut>", lambda e, idx=i, var=x_var: self._update_waypoint_coord(idx, 0, var.get()))
+        # 붙여넣기 버튼
+        paste_btn = ctk.CTkButton(row1, text="붙여넣기", width=60, height=24,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="#3b4252", hover_color="#5e81ac",
+                      text_color="#88c0d0",
+                      border_width=1, border_color="#5e81ac",
+                      command=self._paste_waypoint)
+        paste_btn.pack(side="right", padx=(0, 2))
 
-        ctk.CTkLabel(row2, text="Y", font=ctk.CTkFont(size=11),
-                     text_color=COLORS["text_muted"], width=16).pack(side="left")
-        y_var = ctk.StringVar(value=str(wp_y) if has_coord else "")
-        y_entry = ctk.CTkEntry(row2, textvariable=y_var, width=70, height=28,
-                               font=ctk.CTkFont(size=12), placeholder_text="미설정",
-                               fg_color=COLORS["bg_card"], border_color=COLORS["border"])
-        y_entry.pack(side="left", padx=(4, 0))
-        y_entry.bind("<FocusOut>", lambda e, idx=i, var=y_var: self._update_waypoint_coord(idx, 1, var.get()))
+        # 복사 버튼
+        copy_btn = ctk.CTkButton(row1, text="복사", width=45, height=24,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="#3b4252", hover_color="#a3be8c",
+                      text_color="#a3be8c",
+                      border_width=1, border_color="#a3be8c",
+                      command=lambda idx=i: self._copy_waypoint(idx))
+        copy_btn.pack(side="right", padx=(0, 2))
+
+        # 2행: 경로 좌표 (출발/도착 각각 독립 추가)
+        route_frame = ctk.CTkFrame(card, fg_color="transparent")
+        route_frame.pack(fill="x", padx=8, pady=(2, 2))
+        self._build_route_rows(route_frame, i, wp)
+        # wp_idx 저장 (경로추가 버튼에서 사용)
+        route_frame._wp_idx = i
 
         # 3행: 맵핑 버튼들
-        row3 = ctk.CTkFrame(card, fg_color="transparent")
-        row3.pack(fill="x", padx=10, pady=(2, 2))
+        _btn_w = 72
+        _btn_h = 26
+        _btn_font = ctk.CTkFont(size=11)
+        _btn_pad = (0, 3)
 
-        path_mapping_btn = ctk.CTkButton(row3, text="경로맵핑", width=60, height=28,
+        row3 = ctk.CTkFrame(card, fg_color="transparent")
+        row3.pack(fill="x", padx=8, pady=(0, 2))
+
+        single_mapping_btn = ctk.CTkButton(row3, text="맵핑테스트", width=_btn_w, height=_btn_h,
                           font=ctk.CTkFont(size=11, weight="bold"),
                           fg_color="#1a3526", hover_color=COLORS["accent"],
                           text_color="#4ae168", border_width=1, border_color="#2d5a3d",
-                          command=lambda idx=i: self._start_path_mapping_for(idx))
-        path_mapping_btn.pack(side="left", padx=(0, 2))
+                          command=lambda idx=i: self._run_single_mapping_test(idx))
+        single_mapping_btn.pack(side="left", padx=_btn_pad)
 
-        full_mapping_btn = ctk.CTkButton(row3, text="전체맵핑", width=60, height=28,
-                          font=ctk.CTkFont(size=11, weight="bold"),
-                          fg_color="#1a2633", hover_color="#2a4a6b",
-                          text_color="#7ec8ff", border_width=1, border_color="#2a4a6b",
-                          command=lambda idx=i: self._start_full_mapping_for(idx))
-        full_mapping_btn.pack(side="left", padx=(0, 2))
-
-        show_btn = ctk.CTkButton(row3, text="미리보기", width=55, height=28,
-                      font=ctk.CTkFont(size=11),
+        show_btn = ctk.CTkButton(row3, text="미리보기", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
                       fg_color="#1a2b3d", hover_color="#2a4a6b",
                       text_color="#7ec8ff", border_width=1, border_color="#2a4a6b",
                       command=lambda idx=i: self._show_map_for(idx))
-        show_btn.pack(side="left", padx=(0, 2))
+        show_btn.pack(side="left", padx=_btn_pad)
 
-        clear_btn = ctk.CTkButton(row3, text="초기화", width=45, height=28,
-                      font=ctk.CTkFont(size=11),
-                      fg_color="#2d1a1a", hover_color="#4a2020",
-                      text_color="#ff7b72", border_width=1, border_color="#4a2020",
-                      command=lambda idx=i: self._clear_map_for(idx))
-        clear_btn.pack(side="left")
+        clear_btn = None  # 초기화 버튼 제거됨
 
-        # 4행: 맵 저장/불러오기
+        add_route_start_btn = ctk.CTkButton(row3, text="+출발", width=48, height=_btn_h,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="#2d1a3d", hover_color="#4a2060",
+                      text_color="#c8a0e8", border_width=1, border_color="#4a2060",
+                      command=lambda idx=i: self._add_route_start(idx))
+        add_route_start_btn.pack(side="left", padx=(6, 2))
+        add_route_end_btn = ctk.CTkButton(row3, text="+도착", width=48, height=_btn_h,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="#1a2d1a", hover_color="#204a20",
+                      text_color="#a0e8a0", border_width=1, border_color="#204a20",
+                      command=lambda idx=i: self._add_route_end(idx))
+        add_route_end_btn.pack(side="left", padx=(0, 2))
+        add_route_wall_btn = ctk.CTkButton(row3, text="+벽", width=38, height=_btn_h,
+                      font=ctk.CTkFont(size=10),
+                      fg_color="#3d1a1a", hover_color="#602020",
+                      text_color="#e8a0a0", border_width=1, border_color="#602020",
+                      command=lambda idx=i: self._add_route_wall(idx))
+        add_route_wall_btn.pack(side="left", padx=(0, 3))
+
+        # 4행: 맵 저장/불러오기 + 이미지 버튼
         row4 = ctk.CTkFrame(card, fg_color="transparent")
-        row4.pack(fill="x", padx=10, pady=(0, 6))
+        row4.pack(fill="x", padx=8, pady=(0, 1))
 
-        save_map_btn = ctk.CTkButton(row4, text="맵 저장", width=60, height=28,
-                      font=ctk.CTkFont(size=11),
+        save_map_btn = ctk.CTkButton(row4, text="맵저장", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
                       fg_color="#1a2535", hover_color="#2a3d55",
                       text_color="#a8c8e8", border_width=1, border_color="#2a3d55",
                       command=lambda idx=i: self._save_map_for(idx))
-        save_map_btn.pack(side="left", padx=(0, 2))
+        save_map_btn.pack(side="left", padx=_btn_pad)
 
-        load_map_btn = ctk.CTkButton(row4, text="맵 불러오기", width=60, height=28,
-                      font=ctk.CTkFont(size=11),
+        load_map_btn = ctk.CTkButton(row4, text="맵불러오기", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
                       fg_color="#251a35", hover_color="#3d2a55",
                       text_color="#c8a8e8", border_width=1, border_color="#3d2a55",
                       command=lambda idx=i: self._load_map_for(idx))
-        load_map_btn.pack(side="left")
+        load_map_btn.pack(side="left", padx=_btn_pad)
 
-        # 이미지 추가 버튼
-        add_img_btn = ctk.CTkButton(row4, text="이미지", width=50, height=28,
-                      font=ctk.CTkFont(size=11),
+        add_char_img_btn = ctk.CTkButton(row4, text="캐릭터", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
+                      fg_color="#1a2535", hover_color="#2a4555",
+                      text_color="#a0c8e8", border_width=1, border_color="#2a4555",
+                      command=lambda idx=i: self._add_character_image(idx))
+        add_char_img_btn.pack(side="left", padx=_btn_pad)
+
+        add_boss_img_btn = ctk.CTkButton(row4, text="보스", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
                       fg_color="#1a3525", hover_color="#2a5540",
                       text_color="#90e8a0", border_width=1, border_color="#2a5540",
-                      command=lambda idx=i: self._add_waypoint_image(idx))
-        add_img_btn.pack(side="left", padx=(2, 0))
+                      command=lambda idx=i: self._add_boss_image(idx))
+        add_boss_img_btn.pack(side="left", padx=_btn_pad)
 
-        # 이미지 상태 라벨 (설정되면 파일명 표시, 클릭으로 편집)
+        _arr_keys = _wp_cfg.get("arrival_keys", []) if _wp_cfg else []
+        if not _arr_keys and _wp_cfg and _wp_cfg.get("arrival_key"):
+            _arr_keys = [{"key": k.strip()} for k in _wp_cfg["arrival_key"].split(",") if k.strip()]
+        arr_key_btn = ctk.CTkButton(row4, text="키", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
+                      fg_color="#2a2518", hover_color="#4a3828",
+                      text_color="#e8d090", border_width=1, border_color="#4a3828",
+                      command=lambda idx=i: self._edit_arrival_key(idx))
+        arr_key_btn.pack(side="left", padx=_btn_pad)
+
+        # 5행: 이미지 상태 표시 (설정된 이미지가 있을 때만)
         wp_img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
-        img_name = ""
+        char_img_name = ""
+        if wp_img_cfg and wp_img_cfg.get("character_image"):
+            char_img_name = Path(wp_img_cfg["character_image"]).stem[:10]
+        boss_img_name = ""
         if wp_img_cfg and wp_img_cfg.get("target_image"):
-            img_name = Path(wp_img_cfg["target_image"]).stem[:10]
-        img_status = ctk.CTkLabel(row4,
-                     text=f" {img_name}" if img_name else "",
-                     font=ctk.CTkFont(size=10), text_color="#90e8a0",
-                     cursor="hand2" if img_name else "")
-        img_status.pack(side="left", padx=(2, 0))
-        if img_name:
-            img_status.bind("<Button-1>", lambda e, idx=i: self._edit_waypoint_image(idx))
+            boss_img_name = Path(wp_img_cfg["target_image"]).stem[:10]
 
-        # 이미지 삭제 버튼 (이미지가 설정된 경우에만 표시)
-        del_img_btn = ctk.CTkButton(row4, text="X", width=24, height=24,
-                      font=ctk.CTkFont(size=10),
+        row5 = ctk.CTkFrame(card, fg_color="transparent")
+        if char_img_name or boss_img_name or _arr_keys:
+            row5.pack(fill="x", padx=8, pady=(0, 2))
+
+        char_img_status = ctk.CTkLabel(row5,
+                     text=f"캐릭터: {char_img_name}" if char_img_name else "",
+                     font=ctk.CTkFont(size=10), text_color="#a0c8e8",
+                     cursor="hand2" if char_img_name else "")
+        if char_img_name:
+            char_img_status.pack(side="left", padx=(0, 2))
+            char_img_status.bind("<Button-1>", lambda e, idx=i: self._edit_character_image(idx))
+
+        del_char_img_btn = ctk.CTkButton(row5, text="✕", width=20, height=20,
+                      font=ctk.CTkFont(size=9),
+                      fg_color="transparent", hover_color="#5a2020",
+                      text_color="#e06060", border_width=0,
+                      command=lambda idx=i: self._delete_character_image(idx))
+        if char_img_name:
+            del_char_img_btn.pack(side="left", padx=(0, 8))
+
+        boss_img_status = ctk.CTkLabel(row5,
+                     text=f"보스: {boss_img_name}" if boss_img_name else "",
+                     font=ctk.CTkFont(size=10), text_color="#90e8a0",
+                     cursor="hand2" if boss_img_name else "")
+        if boss_img_name:
+            boss_img_status.pack(side="left", padx=(0, 2))
+            boss_img_status.bind("<Button-1>", lambda e, idx=i: self._edit_waypoint_image(idx))
+
+        del_boss_img_btn = ctk.CTkButton(row5, text="✕", width=20, height=20,
+                      font=ctk.CTkFont(size=9),
                       fg_color="transparent", hover_color="#5a2020",
                       text_color="#e06060", border_width=0,
                       command=lambda idx=i: self._delete_waypoint_image(idx))
-        if img_name:
-            del_img_btn.pack(side="left", padx=(1, 0))
+        if boss_img_name:
+            del_boss_img_btn.pack(side="left")
+
+        if _arr_keys:
+            _kn = ",".join(kd.get("key", "?") for kd in _arr_keys)
+            ctk.CTkLabel(row5, text=f"키: {_kn}",
+                         font=ctk.CTkFont(size=10), text_color="#e8d090").pack(side="left", padx=(8, 0))
 
         # 위젯 참조 저장 (모든 버튼 포함)
         self._wp_cards.append({
             'card': card,
+            'row1': row1,
             'num_label': num_label,
             'name_label': name_label,
             'map_badge': map_badge,
             'map_badge_label': map_badge_label,
-            'path_mapping_btn': path_mapping_btn,
-            'full_mapping_btn': full_mapping_btn,
+            'map_lock_btn': map_lock_btn,
+            'drag_handle': drag_handle,
+            'group_btn': group_btn,
+            'child_count_label': child_count_label,
+            'ungroup_btn': ungroup_btn,
+            'group_expanded': False,
+            'route_frame': route_frame,
+            'single_mapping_btn': single_mapping_btn,
             'del_btn': del_btn,
-            'test_btn': test_btn,
+            'move_up_btn': move_up_btn,
+            'move_down_btn': move_down_btn,
+            'copy_btn': copy_btn,
+            'paste_btn': paste_btn,
+            'test_btn': None,
             'show_btn': show_btn,
             'clear_btn': clear_btn,
             'save_map_btn': save_map_btn,
             'load_map_btn': load_map_btn,
-            'add_img_btn': add_img_btn,
-            'img_status': img_status,
-            'del_img_btn': del_img_btn,
+            'add_char_img_btn': add_char_img_btn,
+            'char_img_status': char_img_status,
+            'del_char_img_btn': del_char_img_btn,
+            'add_boss_img_btn': add_boss_img_btn,
+            'boss_img_status': boss_img_status,
+            'del_boss_img_btn': del_boss_img_btn,
+            'arr_key_btn': arr_key_btn,
+            'add_route_start_btn': add_route_start_btn,
+            'add_route_end_btn': add_route_end_btn,
+            'add_route_wall_btn': add_route_wall_btn,
         })
+
+    # ── 드래그&드롭 그룹핑 ──
+
+    def _on_drag_start(self, event, idx):
+        """드래그 시작"""
+        self._drag_idx = idx
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+        self._drag_active = False
+        self._drag_target_idx = None
+
+    def _on_drag_motion(self, event):
+        """드래그 중 — 드롭 대상 하이라이트"""
+        if not hasattr(self, '_drag_idx') or self._drag_idx is None:
+            return
+        # 최소 10px 이동해야 드래그 활성화
+        if not self._drag_active:
+            dx = abs(event.x_root - self._drag_start_x)
+            dy = abs(event.y_root - self._drag_start_y)
+            if dx + dy < 10:
+                return
+            self._drag_active = True
+            # 드래그 중인 카드 시각적 표시
+            cards = getattr(self, '_wp_cards', [])
+            if 0 <= self._drag_idx < len(cards):
+                cards[self._drag_idx]['card'].configure(border_color="#88ccff", border_width=2)
+
+        # 이전 하이라이트 해제
+        cards = getattr(self, '_wp_cards', [])
+        if self._drag_target_idx is not None and 0 <= self._drag_target_idx < len(cards):
+            _prev = cards[self._drag_target_idx]
+            _prev['card'].configure(border_color=COLORS["border"], border_width=1)
+            self._drag_target_idx = None
+
+        # 마우스 아래 카드 찾기
+        target = self._find_card_at_pos(event.x_root, event.y_root)
+        if target is not None and target != self._drag_idx and 0 <= target < len(cards):
+            self._drag_target_idx = target
+            cards[target]['card'].configure(border_color="#ebcb8b", border_width=2)
+
+    def _on_drag_end(self, event, idx):
+        """드래그 종료 — 그룹핑 실행"""
+        cards = getattr(self, '_wp_cards', [])
+        drag_idx = getattr(self, '_drag_idx', None)
+        was_active = getattr(self, '_drag_active', False)
+
+        # 시각적 표시 복원
+        if drag_idx is not None and 0 <= drag_idx < len(cards):
+            final_idx = self._get_final_idx()
+            is_f = (drag_idx == final_idx)
+            cards[drag_idx]['card'].configure(
+                border_color=COLORS["accent_orange"] if is_f else COLORS["border"],
+                border_width=2 if is_f else 1)
+        if self._drag_target_idx is not None and 0 <= self._drag_target_idx < len(cards):
+            t_final = (self._drag_target_idx == self._get_final_idx())
+            cards[self._drag_target_idx]['card'].configure(
+                border_color=COLORS["accent_orange"] if t_final else COLORS["border"],
+                border_width=2 if t_final else 1)
+
+        # 유효한 드롭이면 그룹핑
+        if was_active and self._drag_target_idx is not None and drag_idx is not None:
+            if self._drag_target_idx != drag_idx:
+                self._group_card(drag_idx, self._drag_target_idx)
+
+        self._drag_idx = None
+        self._drag_active = False
+        self._drag_target_idx = None
+
+    def _find_card_at_pos(self, x_root, y_root):
+        """마우스 위치에 있는 카드 인덱스 반환 (보이는 카드만)"""
+        cards = getattr(self, '_wp_cards', [])
+        for i, cd in enumerate(cards):
+            card = cd['card']
+            try:
+                if not card.winfo_ismapped():
+                    continue
+                cx = card.winfo_rootx()
+                cy = card.winfo_rooty()
+                cw = card.winfo_width()
+                ch = card.winfo_height()
+                if cx <= x_root <= cx + cw and cy <= y_root <= cy + ch:
+                    return i
+            except Exception:
+                continue
+        return None
+
+    # ── 그룹 관리 ──
+
+    def _get_children(self, parent_idx):
+        """parent_idx의 자식 인덱스 리스트 반환 (인덱스 순)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not (0 <= parent_idx < len(waypoints)):
+            return []
+        parent_wp = waypoints[parent_idx]
+        parent_name = parent_wp[2] if len(parent_wp) >= 3 else ""
+        if not parent_name:
+            return []
+        children = []
+        for i, wp in enumerate(waypoints):
+            if i == parent_idx:
+                continue
+            cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+            if cfg and cfg.get('group_parent') == parent_name:
+                children.append(i)
+        return sorted(children)
+
+    def _group_card(self, child_idx, parent_idx):
+        """child_idx 카드를 parent_idx 그룹에 넣기"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= child_idx < len(waypoints) and 0 <= parent_idx < len(waypoints)):
+            return
+        if child_idx == parent_idx:
+            return
+        # 순환 방지: parent가 child의 자식이면 불가
+        child_wp = waypoints[child_idx]
+        parent_wp = waypoints[parent_idx]
+        child_name = child_wp[2] if len(child_wp) >= 3 else ""
+        parent_name = parent_wp[2] if len(parent_wp) >= 3 else ""
+        if not parent_name:
+            return
+        # 이미 같은 부모에 속해 있으면 무시
+        child_cfg_chk = child_wp[3] if len(child_wp) >= 4 and isinstance(child_wp[3], dict) else None
+        if child_cfg_chk and child_cfg_chk.get('group_parent') == parent_name:
+            return
+        # parent가 이미 다른 그룹의 자식인지 체크 (2단 그룹 방지)
+        parent_cfg = parent_wp[3] if len(parent_wp) >= 4 and isinstance(parent_wp[3], dict) else None
+        if parent_cfg and parent_cfg.get('group_parent'):
+            return  # 자식 카드 안에 넣기 불가
+        # child에 group_parent 설정
+        if len(child_wp) < 4:
+            child_wp.append({})
+        if not isinstance(child_wp[3], dict):
+            child_wp[3] = {}
+        # 이미 다른 부모가 있으면 이전 부모 갱신
+        old_parent_name = child_wp[3].get('group_parent')
+        child_wp[3]['group_parent'] = parent_name
+        # child 카드 숨김
+        if 0 <= child_idx < len(cards):
+            cards[child_idx]['card'].pack_forget()
+        # 부모 그룹 버튼/배지 갱신
+        self._update_group_ui(parent_idx)
+        # 이전 부모가 있었으면 갱신
+        if old_parent_name and old_parent_name != parent_name:
+            old_parent_idx = self._find_wp_by_name(old_parent_name)
+            if old_parent_idx is not None:
+                self._update_group_ui(old_parent_idx)
+
+    def _ungroup_card(self, child_idx):
+        """child_idx 카드를 그룹에서 빼기"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= child_idx < len(waypoints)):
+            return
+        child_wp = waypoints[child_idx]
+        cfg = child_wp[3] if len(child_wp) >= 4 and isinstance(child_wp[3], dict) else None
+        if not cfg or not cfg.get('group_parent'):
+            return
+        parent_name = cfg.pop('group_parent', None)
+        # 전체 카드를 올바른 순서로 재정렬 (pack 순서 보장)
+        if 0 <= child_idx < len(cards):
+            for j in range(len(cards)):
+                cards[j]['card'].pack_forget()
+            for j in range(len(cards)):
+                cards[j]['card'].pack(fill="x", pady=(0, 3))
+            self._apply_grouping()
+        # 이전 부모 갱신
+        if parent_name:
+            parent_idx = self._find_wp_by_name(parent_name)
+            if parent_idx is not None:
+                self._update_group_ui(parent_idx)
+
+    def _toggle_map_lock(self, idx):
+        """경유지 맵 잠금 토글"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not (0 <= idx < len(waypoints)):
+            return
+        wp = waypoints[idx]
+        cfg = self._ensure_wp_config(wp)
+        locked = not cfg.get('map_locked', False)
+        cfg['map_locked'] = locked
+        cards = getattr(self, '_wp_cards', [])
+        if 0 <= idx < len(cards):
+            btn = cards[idx].get('map_lock_btn')
+            if btn:
+                btn.configure(
+                    text="🔒" if locked else "🔓",
+                    fg_color="#d08770" if locked else "transparent",
+                    hover_color="#bf616a" if locked else "#4c566a",
+                    text_color="#ffffff" if locked else COLORS["text_muted"],
+                    border_color="#d08770" if locked else COLORS["border"])
+        self._save_config()
+        seg_name = wp[2] if len(wp) >= 3 else f"경유지{idx+1}"
+        self._append_log(f"{'🔒 맵 잠금' if locked else '🔓 맵 잠금 해제'}: {seg_name}")
+
+    def _toggle_group(self, parent_idx):
+        """부모 카드의 자식 그룹 펼치기/접기"""
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= parent_idx < len(cards)):
+            return
+        children = self._get_children(parent_idx)
+        if not children:
+            return
+        n = len(children)
+        card_data = cards[parent_idx]
+        if card_data.get('group_expanded', False):
+            # 접기
+            for ci in children:
+                if 0 <= ci < len(cards):
+                    cards[ci]['card'].pack_forget()
+            card_data['group_btn'].configure(text=f"▶ 펼치기 ({n})")
+            card_data['group_expanded'] = False
+        else:
+            # 펼치기: 부모 바로 뒤에 인덱스 순으로 pack
+            after_w = card_data['card']
+            for ci in children:
+                if 0 <= ci < len(cards):
+                    cards[ci]['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=after_w)
+                    after_w = cards[ci]['card']
+            card_data['group_btn'].configure(text=f"▼ 접기 ({n})")
+            card_data['group_expanded'] = True
+
+    def _update_group_ui(self, parent_idx):
+        """부모 카드의 그룹 버튼/배지 갱신"""
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= parent_idx < len(cards)):
+            return
+        children = self._get_children(parent_idx)
+        cd = cards[parent_idx]
+        if children:
+            n = len(children)
+            is_expanded = cd.get('group_expanded', False)
+            btn_text = f"▼ 접기 ({n})" if is_expanded else f"▶ 펼치기 ({n})"
+            # 그룹 버튼 표시 (test_btn 옆)
+            if not cd['group_btn'].winfo_ismapped():
+                cd['group_btn'].pack(side="left", padx=(6, 0))
+            cd['group_btn'].configure(text=btn_text)
+            # child_count_label은 사용 안 함 (버튼 텍스트에 포함)
+            cd['child_count_label'].pack_forget()
+        else:
+            # 그룹 버튼 숨김
+            cd['group_btn'].pack_forget()
+            cd['child_count_label'].pack_forget()
+            cd['child_count_label'].configure(text="")
+            cd['group_expanded'] = False
+
+    def _find_wp_by_name(self, name):
+        """경유지 이름으로 인덱스 찾기"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        for i, wp in enumerate(waypoints):
+            wp_name = wp[2] if len(wp) >= 3 else ""
+            if wp_name == name:
+                return i
+        return None
+
+    def _apply_grouping(self):
+        """그룹 상태 적용 (자식 숨김/해체버튼, 부모 버튼 표시)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        cards = getattr(self, '_wp_cards', [])
+        # 모든 카드의 해체 버튼 초기화
+        for j in range(len(cards)):
+            cards[j]['ungroup_btn'].pack_forget()
+        # 자식 카드 숨기기 + 해체 버튼 준비
+        for i, wp in enumerate(waypoints):
+            cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+            if cfg and cfg.get('group_parent'):
+                if 0 <= i < len(cards):
+                    cards[i]['card'].pack_forget()
+                    if not cards[i]['ungroup_btn'].winfo_ismapped():
+                        cards[i]['ungroup_btn'].pack(side="left", padx=(6, 0))
+        # 부모 카드에 그룹 버튼 표시
+        for i in range(len(waypoints)):
+            children = self._get_children(i)
+            if children:
+                self._update_group_ui(i)
+
+    def _toggle_all_cards(self):
+        """모든 그룹 펼치기/접기"""
+        cards = getattr(self, '_wp_cards', [])
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not cards:
+            return
+        if self._wp_all_collapsed:
+            # 모두 펼치기: 모든 자식 카드 표시
+            for i in range(len(waypoints)):
+                children = self._get_children(i)
+                if children and 0 <= i < len(cards):
+                    after_w = cards[i]['card']
+                    for ci in children:
+                        if 0 <= ci < len(cards):
+                            cards[ci]['card'].pack(fill="x", pady=(0, 3), padx=(16, 0),
+                                                   after=after_w)
+                            after_w = cards[ci]['card']
+                    cards[i]['group_btn'].configure(text="▼")
+                    cards[i]['group_expanded'] = True
+            self._wp_all_collapsed = False
+            self._wp_collapse_all_btn.configure(text="모두 접기")
+        else:
+            # 모두 접기: 모든 자식 카드 숨김
+            for i, wp in enumerate(waypoints):
+                cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+                if cfg and cfg.get('group_parent'):
+                    if 0 <= i < len(cards):
+                        cards[i]['card'].pack_forget()
+            for i in range(len(cards)):
+                cards[i]['group_expanded'] = False
+                if cards[i]['group_btn'].winfo_ismapped():
+                    cards[i]['group_btn'].configure(text="▶")
+            self._wp_all_collapsed = True
+            self._wp_collapse_all_btn.configure(text="모두 펼치기")
 
     # ── 개별 위젯 업데이트 (새로고침 없음) ──
 
@@ -5600,8 +8012,8 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[idx]['map_badge'].configure(fg_color=badge_color)
             cards[idx]['map_badge_label'].configure(text=f" {map_tag} ", text_color=badge_text_color)
 
-    def _add_waypoint_image(self, idx: int):
-        """경유지에 이미지 추가 (파일 선택 → templates 복사 → wp[3] 저장)"""
+    def _add_boss_image(self, idx: int):
+        """경유지에 보스 이미지 추가 (파일 선택 → templates 복사 → wp[3] 저장)"""
         from tkinter import filedialog
         import shutil
         import uuid
@@ -5611,7 +8023,7 @@ class GameModeDialog(ctk.CTkToplevel):
             return
 
         image_path = filedialog.askopenfilename(
-            title="경유지 이미지 선택",
+            title="보스 이미지 선택",
             filetypes=[
                 ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
                 ("모든 파일", "*.*"),
@@ -5629,53 +8041,94 @@ class GameModeDialog(ctk.CTkToplevel):
             dest_path = templates_dir / new_filename
             shutil.copy2(image_path, dest_path)
 
-            # 자동 이진화 마스크 생성 (배경 무관 매칭용)
-            try:
-                import cv2
-                import numpy as np
-                img_arr = np.fromfile(str(dest_path), np.uint8)
-                img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                if img is not None:
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                    # 글씨 영역을 마스크로 (글씨=255, 배경=0)
-                    # 배경이 밝으면 반전
-                    if np.mean(binary) > 127:
-                        binary = cv2.bitwise_not(binary)
-                    # 모폴로지로 노이즈 제거 + 글씨 영역 확장
-                    kernel = np.ones((2, 2), np.uint8)
-                    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-                    binary = cv2.dilate(binary, kernel, iterations=1)
-                    mask_path = dest_path.parent / f"{dest_path.stem}_mask{dest_path.suffix}"
-                    cv2.imencode(dest_path.suffix, binary)[1].tofile(str(mask_path))
-                    logger.info(f"[좌표모드] 이진화 마스크 생성: {mask_path}")
-            except Exception as me:
-                logger.warning(f"[좌표모드] 마스크 자동생성 실패: {me}")
-
-            # wp[3]에 이미지 설정 저장
-            img_cfg = {
-                "target_image": str(dest_path),
-                "target_images": [],
-                "confidence": 0.65,
-                "search_radius": 0,
-                "action_x": None,
-                "action_y": None,
-                "move_mouse_before_search": False,
-            }
+            # wp[3]에 보스 이미지 설정 저장
             wp = waypoints[idx]
             if len(wp) < 4:
+                img_cfg = {
+                    "target_image": str(dest_path),
+                    "target_images": [],
+                    "confidence": 0.65,
+                    "search_radius": 0,
+                    "action_x": None,
+                    "action_y": None,
+                    "move_mouse_before_search": False,
+                }
                 wp.append(img_cfg)
-            else:
+            elif not isinstance(wp[3], dict):
+                img_cfg = {
+                    "target_image": str(dest_path),
+                    "target_images": [],
+                    "confidence": 0.65,
+                    "search_radius": 0,
+                    "action_x": None,
+                    "action_y": None,
+                    "move_mouse_before_search": False,
+                }
                 wp[3] = img_cfg
+            else:
+                wp[3]["target_image"] = str(dest_path)
+                wp[3].setdefault("target_images", [])
+                wp[3].setdefault("confidence", 0.65)
+                wp[3].setdefault("search_radius", 0)
+                wp[3].setdefault("action_x", None)
+                wp[3].setdefault("action_y", None)
+                wp[3].setdefault("move_mouse_before_search", False)
 
             self._save_config()
             self._update_card_image_status(idx)
-            logger.info(f"[좌표모드] 경유지{idx+1} 이미지 추가: {dest_path}")
+            logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 추가: {dest_path}")
 
             # ImageCropDialog 열기 (편집 가능)
             self._edit_waypoint_image(idx)
         except Exception as e:
-            logger.error(f"[좌표모드] 이미지 추가 실패: {e}")
+            logger.error(f"[좌표모드] 보스 이미지 추가 실패: {e}")
+
+    def _add_character_image(self, idx: int):
+        """경유지에 캐릭터 이미지 추가 (파일 선택 → templates 복사 → wp[3]["character_image"] 저장)"""
+        from tkinter import filedialog
+        import shutil
+        import uuid
+
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+
+        image_path = filedialog.askopenfilename(
+            title="캐릭터 이미지 선택",
+            filetypes=[
+                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                ("모든 파일", "*.*"),
+            ],
+            initialdir=str(DATA_DIR / "templates"),
+        )
+        if not image_path:
+            return
+
+        try:
+            templates_dir = DATA_DIR / "templates"
+            templates_dir.mkdir(parents=True, exist_ok=True)
+            new_ext = Path(image_path).suffix
+            new_filename = f"wp_char_{uuid.uuid4().hex[:8]}{new_ext}"
+            dest_path = templates_dir / new_filename
+            shutil.copy2(image_path, dest_path)
+
+            # wp[3]에 캐릭터 이미지 저장
+            wp = waypoints[idx]
+            if len(wp) < 4:
+                wp.append({"character_image": str(dest_path)})
+            elif not isinstance(wp[3], dict):
+                wp[3] = {"character_image": str(dest_path)}
+            else:
+                wp[3]["character_image"] = str(dest_path)
+
+            self._save_config()
+            self._update_card_image_status(idx)
+            logger.info(f"[좌표모드] 경유지{idx+1} 캐릭터 이미지 추가: {dest_path}")
+
+            # ImageCropDialog 열기 (편집 가능)
+            self._edit_character_image(idx)
+        except Exception as e:
+            logger.error(f"[좌표모드] 캐릭터 이미지 추가 실패: {e}")
 
     def _edit_waypoint_image(self, idx: int):
         """경유지 이미지 편집 — ImageCropDialog 열기"""
@@ -5709,11 +8162,15 @@ class GameModeDialog(ctk.CTkToplevel):
             self._update_card_image_status(idx)
 
         def on_delete():
-            if len(wp) >= 4:
-                wp[3] = None
-                # 리스트 끝의 None 정리
-                while len(wp) > 3 and wp[-1] is None:
-                    wp.pop()
+            if len(wp) >= 4 and isinstance(wp[3], dict):
+                for key in ["target_image", "target_images", "confidence",
+                            "search_radius", "action_x", "action_y",
+                            "move_mouse_before_search"]:
+                    wp[3].pop(key, None)
+                if not wp[3]:
+                    wp[3] = None
+                    while len(wp) > 3 and wp[-1] is None:
+                        wp.pop()
             self._save_config()
             self._update_card_image_status(idx)
 
@@ -5757,22 +8214,101 @@ class GameModeDialog(ctk.CTkToplevel):
         cfg["move_mouse_before_search"] = rule.move_mouse_before_search
         self._save_config()
 
+    def _edit_character_image(self, idx: int):
+        """캐릭터 이미지 편집 — ImageCropDialog 열기"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return
+        img_cfg = wp[3]
+        img_path = img_cfg.get("character_image", "")
+        if not img_path or not Path(img_path).exists():
+            return
+
+        # 임시 AutomationRule 생성 (ImageCropDialog용)
+        temp_rule = AutomationRule(
+            rule_id=f"wp_char_{idx}",
+            action_type="click",
+            target_image=img_path,
+            confidence=0.65,
+        )
+
+        def on_crop(new_path):
+            img_cfg["character_image"] = new_path
+            self._save_config()
+            self._update_card_image_status(idx)
+
+        def on_delete():
+            img_cfg.pop("character_image", None)
+            if not img_cfg:
+                wp[3] = None
+                while len(wp) > 3 and wp[-1] is None:
+                    wp.pop()
+            self._save_config()
+            self._update_card_image_status(idx)
+
+        def on_change(new_path):
+            img_cfg["character_image"] = new_path
+            temp_rule.target_image = new_path
+            self._save_config()
+            self._update_card_image_status(idx)
+
+        dialog = ImageCropDialog(
+            self,
+            img_path,
+            on_crop=on_crop,
+            on_delete=on_delete,
+            on_change=on_change,
+            rule=temp_rule,
+        )
+        dialog.wait_window()
+        # 최종 동기화: character_image 경로 업데이트
+        if len(wp) >= 4 and isinstance(wp[3], dict):
+            wp[3]["character_image"] = temp_rule.target_image
+            self._save_config()
+
     def _delete_waypoint_image(self, idx: int):
-        """경유지 이미지 삭제"""
+        """경유지 보스 이미지 삭제"""
         waypoints = getattr(self._config, 'waypoints', []) or []
         if idx >= len(waypoints):
             return
         wp = waypoints[idx]
         if len(wp) >= 4 and isinstance(wp[3], dict):
-            wp[3] = None
-            while len(wp) > 3 and wp[-1] is None:
-                wp.pop()
+            # 보스 이미지 관련 필드만 삭제
+            for key in ["target_image", "target_images", "confidence",
+                        "search_radius", "action_x", "action_y",
+                        "move_mouse_before_search"]:
+                wp[3].pop(key, None)
+            # dict가 비었으면 wp[3] 제거
+            if not wp[3]:
+                wp[3] = None
+                while len(wp) > 3 and wp[-1] is None:
+                    wp.pop()
             self._save_config()
             self._update_card_image_status(idx)
-            logger.info(f"[좌표모드] 경유지{idx+1} 이미지 삭제")
+            logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 삭제")
+
+    def _delete_character_image(self, idx: int):
+        """경유지 캐릭터 이미지 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) >= 4 and isinstance(wp[3], dict):
+            wp[3].pop("character_image", None)
+            # dict가 비었으면 wp[3] 제거
+            if not wp[3]:
+                wp[3] = None
+                while len(wp) > 3 and wp[-1] is None:
+                    wp.pop()
+            self._save_config()
+            self._update_card_image_status(idx)
+            logger.info(f"[좌표모드] 경유지{idx+1} 캐릭터 이미지 삭제")
 
     def _update_card_image_status(self, idx: int):
-        """카드 이미지 상태 라벨 + 삭제 버튼 갱신"""
+        """카드 이미지 상태 라벨 + 삭제 버튼 갱신 (캐릭터/보스 이미지 각각)"""
         cards = getattr(self, '_wp_cards', [])
         if not (0 <= idx < len(cards)):
             return
@@ -5781,21 +8317,38 @@ class GameModeDialog(ctk.CTkToplevel):
             return
         wp = waypoints[idx]
         img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
-        img_name = ""
-        if img_cfg and img_cfg.get("target_image"):
-            img_name = Path(img_cfg["target_image"]).stem[:10]
 
-        label = cards[idx]['img_status']
-        del_btn = cards[idx]['del_img_btn']
-        if img_name:
-            label.configure(text=f" {img_name}", cursor="hand2")
-            label.unbind("<Button-1>")
-            label.bind("<Button-1>", lambda e, i=idx: self._edit_waypoint_image(i))
-            del_btn.pack(side="left", padx=(1, 0))
+        # 캐릭터 이미지 상태 갱신
+        char_img_name = ""
+        if img_cfg and img_cfg.get("character_image"):
+            char_img_name = Path(img_cfg["character_image"]).stem[:10]
+        char_label = cards[idx]['char_img_status']
+        del_char_btn = cards[idx]['del_char_img_btn']
+        if char_img_name:
+            char_label.configure(text=f" {char_img_name}", cursor="hand2")
+            char_label.unbind("<Button-1>")
+            char_label.bind("<Button-1>", lambda e, i=idx: self._edit_character_image(i))
+            del_char_btn.pack(side="left", padx=(1, 0))
         else:
-            label.configure(text="", cursor="")
-            label.unbind("<Button-1>")
-            del_btn.pack_forget()
+            char_label.configure(text="", cursor="")
+            char_label.unbind("<Button-1>")
+            del_char_btn.pack_forget()
+
+        # 보스 이미지 상태 갱신
+        boss_img_name = ""
+        if img_cfg and img_cfg.get("target_image"):
+            boss_img_name = Path(img_cfg["target_image"]).stem[:10]
+        boss_label = cards[idx]['boss_img_status']
+        del_boss_btn = cards[idx]['del_boss_img_btn']
+        if boss_img_name:
+            boss_label.configure(text=f" {boss_img_name}", cursor="hand2")
+            boss_label.unbind("<Button-1>")
+            boss_label.bind("<Button-1>", lambda e, i=idx: self._edit_waypoint_image(i))
+            del_boss_btn.pack(side="left", padx=(1, 0))
+        else:
+            boss_label.configure(text="", cursor="")
+            boss_label.unbind("<Button-1>")
+            del_boss_btn.pack_forget()
 
     def _refresh_badges_async(self):
         """배지 갱신 (파일 I/O는 현재 스레드, UI 업데이트만 메인스레드로)
@@ -5825,33 +8378,18 @@ class GameModeDialog(ctk.CTkToplevel):
             pass
 
     def _update_card_mapping_btn(self, idx: int, is_mapping: bool, mapping_type: str = "path"):
-        """맵핑 버튼 상태만 업데이트 (1개 카드)
-        mapping_type: 'path' (경로맵핑) 또는 'full' (전체맵핑)
-        """
+        """맵핑 버튼 상태만 업데이트 (1개 카드)"""
         cards = getattr(self, '_wp_cards', [])
         if 0 <= idx < len(cards):
-            path_btn = cards[idx]['path_mapping_btn']
-            full_btn = cards[idx]['full_mapping_btn']
+            btn = cards[idx]['single_mapping_btn']
             if is_mapping:
-                # 맵핑 중 - 해당 버튼만 중지 버튼으로
-                if mapping_type == "path":
-                    path_btn.configure(text="⏹ 중지",
-                        fg_color=COLORS["accent_red"], hover_color="#d63a31",
-                        text_color="#ffffff", border_width=0)
-                    full_btn.configure(state="disabled")
-                else:
-                    full_btn.configure(text="⏹ 중지",
-                        fg_color=COLORS["accent_red"], hover_color="#d63a31",
-                        text_color="#ffffff", border_width=0)
-                    path_btn.configure(state="disabled")
+                btn.configure(text="⏹ 중지",
+                    fg_color=COLORS["accent_red"], hover_color="#d63a31",
+                    text_color="#ffffff", border_width=0)
             else:
-                # 맵핑 종료 - 둘 다 원래 상태로
-                path_btn.configure(text="경로맵핑", state="normal",
+                btn.configure(text="맵핑테스트", state="normal",
                     fg_color="#1a3526", hover_color=COLORS["accent"],
                     text_color="#4ae168", border_width=1, border_color="#2d5a3d")
-                full_btn.configure(text="전체맵핑", state="normal",
-                    fg_color="#1a2633", hover_color="#2a4a6b",
-                    text_color="#7ec8ff", border_width=1, border_color="#2a4a6b")
 
     def _reindex_cards(self, from_idx: int = 0):
         """카드 번호 + 모든 버튼 command 갱신 (구조 변경 후)"""
@@ -5859,14 +8397,32 @@ class GameModeDialog(ctk.CTkToplevel):
         for i in range(from_idx, len(cards)):
             cards[i]['num_label'].configure(text=f"{i+1}.")
             cards[i]['del_btn'].configure(command=lambda idx=i: self._remove_waypoint(idx))
-            cards[i]['path_mapping_btn'].configure(command=lambda idx=i: self._start_path_mapping_for(idx))
-            cards[i]['full_mapping_btn'].configure(command=lambda idx=i: self._start_full_mapping_for(idx))
+            cards[i]['move_up_btn'].configure(command=lambda idx=i: self._move_waypoint(idx, -1))
+            cards[i]['move_down_btn'].configure(command=lambda idx=i: self._move_waypoint(idx, 1))
+            cards[i]['copy_btn'].configure(command=lambda idx=i: self._copy_waypoint(idx))
+            cards[i]['single_mapping_btn'].configure(command=lambda idx=i: self._run_single_mapping_test(idx))
             cards[i]['show_btn'].configure(command=lambda idx=i: self._show_map_for(idx))
-            cards[i]['clear_btn'].configure(command=lambda idx=i: self._clear_map_for(idx))
             cards[i]['save_map_btn'].configure(command=lambda idx=i: self._save_map_for(idx))
             cards[i]['load_map_btn'].configure(command=lambda idx=i: self._load_map_for(idx))
-            cards[i]['add_img_btn'].configure(command=lambda idx=i: self._add_waypoint_image(idx))
-            cards[i]['del_img_btn'].configure(command=lambda idx=i: self._delete_waypoint_image(idx))
+            cards[i]['add_char_img_btn'].configure(command=lambda idx=i: self._add_character_image(idx))
+            cards[i]['del_char_img_btn'].configure(command=lambda idx=i: self._delete_character_image(idx))
+            cards[i]['add_boss_img_btn'].configure(command=lambda idx=i: self._add_boss_image(idx))
+            cards[i]['del_boss_img_btn'].configure(command=lambda idx=i: self._delete_waypoint_image(idx))
+            cards[i]['group_btn'].configure(command=lambda idx=i: self._toggle_group(idx))
+            cards[i]['ungroup_btn'].configure(command=lambda idx=i: self._ungroup_card(idx))
+            # test_btn 제거됨 — 맵핑테스트만 사용
+            cards[i]['arr_key_btn'].configure(command=lambda idx=i: self._edit_arrival_key(idx))
+            cards[i]['add_route_start_btn'].configure(command=lambda idx=i: self._add_route_start(idx))
+            cards[i]['add_route_end_btn'].configure(command=lambda idx=i: self._add_route_end(idx))
+            cards[i]['add_route_wall_btn'].configure(command=lambda idx=i: self._add_route_wall(idx))
+            cards[i]['map_lock_btn'].configure(command=lambda idx=i: self._toggle_map_lock(idx))
+            # 이름 클릭 바인딩 갱신
+            cards[i]['name_label'].bind("<Button-1>", lambda e, idx=i: self._rename_waypoint(idx))
+            # 드래그 핸들 바인딩 갱신
+            dh = cards[i]['drag_handle']
+            dh.bind("<ButtonPress-1>", lambda e, idx=i: self._on_drag_start(e, idx))
+            dh.bind("<B1-Motion>", self._on_drag_motion)
+            dh.bind("<ButtonRelease-1>", lambda e, idx=i: self._on_drag_end(e, idx))
 
     def _start_path_mapping_for(self, idx: int):
         """특정 경유지 경로맵핑 시작/중지 (출발→목표 직선 경로)"""
@@ -5940,7 +8496,9 @@ class GameModeDialog(ctk.CTkToplevel):
             self._append_log("⚠️ 실행 중에는 맵 되돌리기 불가")
             return
         if idx != getattr(self, '_current_segment_idx', -1):
-            self._switch_segment_map(idx)
+            if not self._switch_segment_map(idx):
+                self._append_log("⚠️ 맵 구간 전환 실패")
+                return
         self._restore_map()
         self._update_card_map_badge(idx)
 
@@ -5955,13 +8513,40 @@ class GameModeDialog(ctk.CTkToplevel):
         from ..player.simple_pathfinder import SimplePathfinder
         from ..player.map_explorer import MapExplorer
 
+        # 잠금된 맵이면 경고
+        if self._is_segment_map_locked(idx):
+            seg_name = self._get_segment_display_name(idx)
+            if not messagebox.askyesno("잠금된 맵", f"'{seg_name}' 맵이 잠금 상태입니다.\n잠금을 해제하고 초기화하시겠습니까?"):
+                return
+            # 잠금 해제
+            waypoints = getattr(self._config, 'waypoints', []) or []
+            if idx < len(waypoints) and len(waypoints[idx]) >= 4 and isinstance(waypoints[idx][3], dict):
+                waypoints[idx][3]['map_locked'] = False
+            cards = getattr(self, '_wp_cards', [])
+            if 0 <= idx < len(cards):
+                btn = cards[idx].get('map_lock_btn')
+                if btn:
+                    btn.configure(text="🔓", fg_color="transparent",
+                                  hover_color="#4c566a", text_color=COLORS["text_muted"],
+                                  border_color=COLORS["border"])
+
         seg_name = self._get_segment_display_name(idx)
         if not messagebox.askyesno("맵 초기화", f"'{seg_name}' 맵 데이터를 모두 삭제하시겠습니까?\n되돌릴 수 없습니다."):
             return
 
         if idx != getattr(self, '_current_segment_idx', -1):
-            self._switch_segment_map(idx)
+            if not self._switch_segment_map(idx):
+                self._append_log("⚠️ 맵 구간 전환 실패")
+                return
 
+        # map_file 공유 경로 먼저 해제 (원본 파일 보호)
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx < len(waypoints):
+            wp = waypoints[idx]
+            if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                wp[3].pop('map_file', None)
+
+        # map_file 해제 후 호출 → 경유지 자체 경로 반환 (원본 아님)
         map_path = self._get_segment_map_name(idx)
         if os.path.exists(map_path):
             os.remove(map_path)
@@ -5974,6 +8559,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._map_explorer = MapExplorer(self._game_map)
 
         self._update_card_map_badge(idx)
+        self._append_log(f"🗑️ '{seg_name}' 맵 초기화 완료", force=True)
         logger.info(f"[맵핑] '{seg_name}' 맵 초기화 완료")
 
     def _save_map_for(self, idx: int):
@@ -5985,7 +8571,9 @@ class GameModeDialog(ctk.CTkToplevel):
         from tkinter import filedialog
 
         if idx != getattr(self, '_current_segment_idx', -1):
-            self._switch_segment_map(idx)
+            if not self._switch_segment_map(idx):
+                self._append_log("⚠️ 맵 구간 전환 실패")
+                return
 
         seg_name = self._get_segment_display_name(idx)
         map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
@@ -6016,7 +8604,9 @@ class GameModeDialog(ctk.CTkToplevel):
             self._append_log(f"📂 '{seg_name}' 맵 불러오기 시작")
 
             if idx != getattr(self, '_current_segment_idx', -1):
-                self._switch_segment_map(idx)
+                if not self._switch_segment_map(idx):
+                    self._append_log("⚠️ 맵 구간 전환 실패")
+                    return
 
             map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
             os.makedirs(map_dir, exist_ok=True)
@@ -6030,16 +8620,21 @@ class GameModeDialog(ctk.CTkToplevel):
                 return
 
             self._append_log(f"📂 파일 선택: {os.path.basename(filepath)}")
-            before_count = self._game_map.get_statistics()['total_tiles']
-            if self._game_map.load_and_merge(filepath):
-                after_count = self._game_map.get_statistics()['total_tiles']
-                new_tiles = after_count - before_count
+            # 기존 맵 병합이 아닌 교체 (선택 파일로 완전 교체)
+            from ..player.game_map import GameMap
+            from ..player.simple_pathfinder import SimplePathfinder
+            from ..player.map_explorer import MapExplorer
+            self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{seg_name}")
+            self._map_pathfinder = SimplePathfinder(self._game_map)
+            self._map_explorer = MapExplorer(self._game_map)
+            if self._game_map.load(filepath):
                 passable_count = len(self._game_map.passable)
                 blocked_count = len(self._game_map.blocked)
+                total_tiles = passable_count + blocked_count
 
-                self._append_log(f"📂 병합 결과: 이동={passable_count}, 벽={blocked_count}, 신규={new_tiles}")
+                self._append_log(f"📂 로드 완료: 이동={passable_count}, 벽={blocked_count}, 합계={total_tiles}")
 
-                if after_count == 0:
+                if total_tiles == 0:
                     self._append_log(f"⚠️ 선택한 파일에 맵 데이터 없음")
                     messagebox.showwarning(
                         "맵 데이터 없음",
@@ -6049,16 +8644,22 @@ class GameModeDialog(ctk.CTkToplevel):
                     )
                     return
 
-                # 병합 결과를 구간 맵 파일로 저장 (배지가 파일에서 읽으므로 필수)
-                map_path = self._get_segment_map_name(idx)
-                self._game_map.save(map_path)
+                # 공유 맵 파일 경로 저장 (복사 안 함 — 원본 직접 참조)
+                waypoints = getattr(self._config, 'waypoints', []) or []
+                wp = waypoints[idx] if idx < len(waypoints) else None
+                if wp:
+                    if len(wp) < 4:
+                        wp.append({})
+                    if not isinstance(wp[3], dict):
+                        wp[3] = {}
+                    wp[3]['map_file'] = filepath
                 self._update_card_map_badge(idx)
-                logger.info(f"[맵핑] '{seg_name}' 맵 병합 로드: {filepath} "
-                           f"(이동가능={passable_count}, 벽={blocked_count}, 신규={new_tiles})")
+                logger.info(f"[맵핑] '{seg_name}' 맵 공유 로드: {filepath} "
+                           f"(이동가능={passable_count}, 벽={blocked_count})")
                 # 맵 미리보기 자동 표시
                 self._show_map_preview()
             else:
-                self._append_log(f"❌ 맵 파일 로드 실패 (load_and_merge=False)")
+                self._append_log(f"❌ 맵 파일 로드 실패")
                 messagebox.showerror("오류", "맵 파일을 불러올 수 없습니다.")
         except Exception as e:
             self._append_log(f"❌ 맵 불러오기 오류: {e}")
@@ -6087,6 +8688,598 @@ class GameModeDialog(ctk.CTkToplevel):
             except ValueError:
                 pass
 
+    # ── 경로 좌표 (출발/도착 독립 관리) ──────────────────────
+
+    def _ensure_wp_config(self, wp):
+        """wp[3] config dict가 없으면 생성"""
+        if len(wp) < 4:
+            wp.append({})
+        if not isinstance(wp[3], dict):
+            wp[3] = {}
+        return wp[3]
+
+    def _get_route_starts(self, wp) -> list:
+        """출발좌표 리스트 반환"""
+        cfg = self._ensure_wp_config(wp)
+        if "route_starts" not in cfg:
+            cfg["route_starts"] = []
+        return cfg["route_starts"]
+
+    def _get_route_ends(self, wp) -> list:
+        """도착좌표 리스트 반환 (하위호환: 기존 wp[0],wp[1]에서 마이그레이션)"""
+        cfg = self._ensure_wp_config(wp)
+        if "route_ends" not in cfg:
+            end_x = wp[0] if len(wp) >= 1 else 0
+            end_y = wp[1] if len(wp) >= 2 else 0
+            has = not (end_x == 0 and end_y == 0)
+            if has:
+                cfg["route_ends"] = [{"x": end_x, "y": end_y}]
+            else:
+                cfg["route_ends"] = []
+        return cfg["route_ends"]
+
+    def _get_route_walls(self, wp) -> list:
+        """벽좌표 리스트 반환"""
+        cfg = self._ensure_wp_config(wp)
+        if "route_walls" not in cfg:
+            cfg["route_walls"] = []
+        return cfg["route_walls"]
+
+    def _sync_wp_from_route_ends(self, wp_idx):
+        """route_ends[0] → wp[0], wp[1] 동기화"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            wp = waypoints[wp_idx]
+            ends = self._get_route_ends(wp)
+            if ends:
+                wp[0] = ends[0].get("x", 0) or 0
+                wp[1] = ends[0].get("y", 0) or 0
+            else:
+                wp[0] = 0
+                wp[1] = 0
+
+    def _build_route_rows(self, parent, wp_idx, wp):
+        """경로 좌표 전체 빌드 (출발 리스트 + 도착 리스트 + 벽 리스트)"""
+        starts = self._get_route_starts(wp)
+        ends = self._get_route_ends(wp)
+        walls = self._get_route_walls(wp)
+
+        _ew = 55
+        _eh = 24
+        _font = ctk.CTkFont(size=11)
+        _lbl_font = ctk.CTkFont(size=12, weight="bold")
+
+        # 출발 좌표들
+        for s_idx, coord in enumerate(starts):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=(1, 0))
+            ctk.CTkLabel(row, text="출발", font=_lbl_font,
+                         text_color="#9b59b6", width=30).pack(side="left")
+            x_var = ctk.StringVar(value=str(coord.get("x", "")) if coord.get("x") is not None else "")
+            x_e = ctk.CTkEntry(row, textvariable=x_var, width=_ew, height=_eh,
+                               font=_font, placeholder_text="X",
+                               fg_color=COLORS["bg_card"], border_color=COLORS["border"])
+            x_e.pack(side="left", padx=(2, 0))
+            x_e.bind("<FocusOut>", lambda e, wi=wp_idx, si=s_idx, v=x_var:
+                     self._update_route_start(wi, si, "x", v.get()))
+            y_var = ctk.StringVar(value=str(coord.get("y", "")) if coord.get("y") is not None else "")
+            y_e = ctk.CTkEntry(row, textvariable=y_var, width=_ew, height=_eh,
+                               font=_font, placeholder_text="Y",
+                               fg_color=COLORS["bg_card"], border_color=COLORS["border"])
+            y_e.pack(side="left", padx=(2, 0))
+            y_e.bind("<FocusOut>", lambda e, wi=wp_idx, si=s_idx, v=y_var:
+                     self._update_route_start(wi, si, "y", v.get()))
+            ctk.CTkButton(row, text="✕", width=22, height=_eh,
+                          font=ctk.CTkFont(size=10),
+                          fg_color="transparent", hover_color=COLORS["accent_red"],
+                          text_color=COLORS["text_muted"],
+                          command=lambda wi=wp_idx, si=s_idx: self._remove_route_start(wi, si)
+                          ).pack(side="left", padx=(2, 0))
+
+        # 도착 좌표들
+        for e_idx, coord in enumerate(ends):
+            _is_enabled = coord.get("enabled", True)
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=(1, 0))
+            ctk.CTkLabel(row, text="도착", font=_lbl_font,
+                         text_color="#50c878" if _is_enabled else "#666666",
+                         width=30).pack(side="left")
+            x_var = ctk.StringVar(value=str(coord.get("x", "")) if coord.get("x") is not None else "")
+            x_e = ctk.CTkEntry(row, textvariable=x_var, width=_ew, height=_eh,
+                               font=_font, placeholder_text="X",
+                               fg_color=COLORS["bg_card"], border_color=COLORS["border"],
+                               state="normal" if _is_enabled else "disabled")
+            x_e.pack(side="left", padx=(2, 0))
+            x_e.bind("<FocusOut>", lambda e, wi=wp_idx, ei=e_idx, v=x_var:
+                     self._update_route_end(wi, ei, "x", v.get()))
+            y_var = ctk.StringVar(value=str(coord.get("y", "")) if coord.get("y") is not None else "")
+            y_e = ctk.CTkEntry(row, textvariable=y_var, width=_ew, height=_eh,
+                               font=_font, placeholder_text="Y",
+                               fg_color=COLORS["bg_card"], border_color=COLORS["border"],
+                               state="normal" if _is_enabled else "disabled")
+            y_e.pack(side="left", padx=(2, 0))
+            y_e.bind("<FocusOut>", lambda e, wi=wp_idx, ei=e_idx, v=y_var:
+                     self._update_route_end(wi, ei, "y", v.get()))
+            # ON/OFF 토글 버튼
+            ctk.CTkButton(row, text="ON" if _is_enabled else "OFF", width=30, height=_eh,
+                          font=ctk.CTkFont(size=9, weight="bold"),
+                          fg_color="#1a3526" if _is_enabled else "#3a1a1a",
+                          hover_color="#2d5a3d" if _is_enabled else "#5a2d2d",
+                          text_color="#4ae168" if _is_enabled else "#e05050",
+                          command=lambda wi=wp_idx, ei=e_idx: self._toggle_route_end_enabled(wi, ei)
+                          ).pack(side="left", padx=(2, 0))
+            ctk.CTkButton(row, text="✕", width=22, height=_eh,
+                          font=ctk.CTkFont(size=10),
+                          fg_color="transparent", hover_color=COLORS["accent_red"],
+                          text_color=COLORS["text_muted"],
+                          command=lambda wi=wp_idx, ei=e_idx: self._remove_route_end(wi, ei)
+                          ).pack(side="left", padx=(2, 0))
+
+        # 벽 좌표들
+        for w_idx, coord in enumerate(walls):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=(1, 0))
+            ctk.CTkLabel(row, text="벽", font=_lbl_font,
+                         text_color="#e05050", width=30).pack(side="left")
+            x_var = ctk.StringVar(value=str(coord.get("x", "")) if coord.get("x") is not None else "")
+            x_e = ctk.CTkEntry(row, textvariable=x_var, width=_ew, height=_eh,
+                               font=_font, placeholder_text="X",
+                               fg_color=COLORS["bg_card"], border_color=COLORS["border"])
+            x_e.pack(side="left", padx=(2, 0))
+            x_e.bind("<FocusOut>", lambda e, wi=wp_idx, wi2=w_idx, v=x_var:
+                     self._update_route_wall(wi, wi2, "x", v.get()))
+            y_var = ctk.StringVar(value=str(coord.get("y", "")) if coord.get("y") is not None else "")
+            y_e = ctk.CTkEntry(row, textvariable=y_var, width=_ew, height=_eh,
+                               font=_font, placeholder_text="Y",
+                               fg_color=COLORS["bg_card"], border_color=COLORS["border"])
+            y_e.pack(side="left", padx=(2, 0))
+            y_e.bind("<FocusOut>", lambda e, wi=wp_idx, wi2=w_idx, v=y_var:
+                     self._update_route_wall(wi, wi2, "y", v.get()))
+            ctk.CTkButton(row, text="✕", width=22, height=_eh,
+                          font=ctk.CTkFont(size=10),
+                          fg_color="transparent", hover_color=COLORS["accent_red"],
+                          text_color=COLORS["text_muted"],
+                          command=lambda wi=wp_idx, wi2=w_idx: self._remove_route_wall(wi, wi2)
+                          ).pack(side="left", padx=(2, 0))
+
+    def _add_route_start(self, wp_idx):
+        """출발좌표 추가"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            starts = self._get_route_starts(waypoints[wp_idx])
+            starts.append({"x": 0, "y": 0})
+            self._save_config()
+            self._rebuild_card(wp_idx)
+
+    def _add_route_end(self, wp_idx):
+        """도착좌표 추가"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            ends = self._get_route_ends(waypoints[wp_idx])
+            ends.append({"x": 0, "y": 0})
+            self._save_config()
+            self._rebuild_card(wp_idx)
+
+    def _remove_route_start(self, wp_idx, s_idx):
+        """출발좌표 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            starts = self._get_route_starts(waypoints[wp_idx])
+            if 0 <= s_idx < len(starts):
+                starts.pop(s_idx)
+                self._save_config()
+                self._rebuild_card(wp_idx)
+
+    def _remove_route_end(self, wp_idx, e_idx):
+        """도착좌표 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            ends = self._get_route_ends(waypoints[wp_idx])
+            if 0 <= e_idx < len(ends):
+                ends.pop(e_idx)
+                self._sync_wp_from_route_ends(wp_idx)
+                self._save_config()
+                self._rebuild_card(wp_idx)
+
+    def _update_route_start(self, wp_idx, s_idx, field, value):
+        """출발좌표 업데이트 (field: x/y)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            starts = self._get_route_starts(waypoints[wp_idx])
+            if 0 <= s_idx < len(starts):
+                try:
+                    starts[s_idx][field] = int(value) if value.strip() else 0
+                    self._save_config()
+                except ValueError:
+                    pass
+
+    def _update_route_end(self, wp_idx, e_idx, field, value):
+        """도착좌표 업데이트 (field: x/y)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            ends = self._get_route_ends(waypoints[wp_idx])
+            if 0 <= e_idx < len(ends):
+                try:
+                    ends[e_idx][field] = int(value) if value.strip() else 0
+                    self._save_config()
+                except ValueError:
+                    pass
+                if e_idx == 0:
+                    self._sync_wp_from_route_ends(wp_idx)
+
+    def _toggle_route_end_enabled(self, wp_idx, e_idx):
+        """도착좌표 ON/OFF 토글 (OFF 시 이동/맵핑에서 제외, 벽으로 처리)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            ends = self._get_route_ends(waypoints[wp_idx])
+            if 0 <= e_idx < len(ends):
+                ends[e_idx]["enabled"] = not ends[e_idx].get("enabled", True)
+                self._save_config()
+                self._rebuild_card(wp_idx)
+
+    def _add_route_wall(self, wp_idx):
+        """벽좌표 추가"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            walls = self._get_route_walls(waypoints[wp_idx])
+            walls.append({"x": 0, "y": 0})
+            self._save_config()
+            self._rebuild_card(wp_idx)
+
+    def _remove_route_wall(self, wp_idx, w_idx):
+        """벽좌표 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            walls = self._get_route_walls(waypoints[wp_idx])
+            if 0 <= w_idx < len(walls):
+                walls.pop(w_idx)
+                self._save_config()
+                self._rebuild_card(wp_idx)
+
+    def _update_route_wall(self, wp_idx, w_idx, field, value):
+        """벽좌표 업데이트 (field: x/y)"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if 0 <= wp_idx < len(waypoints):
+            walls = self._get_route_walls(waypoints[wp_idx])
+            if 0 <= w_idx < len(walls):
+                try:
+                    walls[w_idx][field] = int(value) if value.strip() else 0
+                    self._save_config()
+                except ValueError:
+                    pass
+
+    def _rebuild_card(self, wp_idx):
+        """특정 경유지 카드의 경로 섹션만 재빌드"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= wp_idx < len(waypoints)) or not (0 <= wp_idx < len(cards)):
+            return
+        route_frame = cards[wp_idx].get('route_frame')
+        if route_frame is None:
+            return
+        # 기존 경로 행 전부 삭제
+        for child in route_frame.winfo_children():
+            child.destroy()
+        # 경로 행 재빌드
+        wp = waypoints[wp_idx]
+        self._build_route_rows(route_frame, wp_idx, wp)
+
+    def _exec_arrival_keys(self, keys_list: list):
+        """도착 키 리스트 실행 (반복, 대기시간, 랜덤 지원)"""
+        import pyautogui
+        import random as _rnd
+        # 키 입력 전 0.5초 대기 (도착 직후 안정화)
+        self._stop_event.wait(0.5)
+        if self._stop_event.is_set():
+            return
+        for kd in keys_list:
+            if self._stop_event.is_set():
+                break
+            key_name = kd.get("key", "")
+            if not key_name:
+                continue
+            repeat_count = max(1, kd.get("repeat_count", 1))
+            wait_after = kd.get("wait_after", 0.3)
+            wait_random = kd.get("wait_random", False)
+            wait_random_range = kd.get("wait_random_range", 0.3)
+            repeat_delay = kd.get("repeat_delay", 0.5)
+            repeat_delay_random = kd.get("repeat_delay_random", False)
+            repeat_delay_random_range = kd.get("repeat_delay_random_range", 0.3)
+            for rep in range(repeat_count):
+                if self._stop_event.is_set():
+                    break
+                try:
+                    # keyDown + hold + keyUp (게임이 즉시 press를 씹는 경우 방지)
+                    pyautogui.keyDown(key_name)
+                    time.sleep(0.05)
+                    pyautogui.keyUp(key_name)
+                    self._key_press_count += 1
+                except Exception as _ke:
+                    logger.error(f"[도착키] '{key_name}' 입력 오류: {_ke}")
+                # 반복 사이 대기
+                if rep < repeat_count - 1:
+                    d = repeat_delay
+                    if repeat_delay_random:
+                        d += _rnd.uniform(-repeat_delay_random_range, repeat_delay_random_range)
+                        d = max(0, d)
+                    if d > 0:
+                        self._stop_event.wait(d)
+            # 키 사이 대기
+            w = wait_after
+            if wait_random:
+                w += _rnd.uniform(-wait_random_range, wait_random_range)
+                w = max(0, w)
+            if w > 0:
+                self._stop_event.wait(w)
+
+    def _edit_arrival_key(self, index: int):
+        """도착 키 설정 팝업 — 액션 추가 키입력과 동일한 옵션"""
+        try:
+            self.__edit_arrival_key_impl(index)
+        except Exception as e:
+            logger.error(f"[도착키] 팝업 오류: {e}", exc_info=True)
+            from tkinter import messagebox
+            messagebox.showerror("오류", f"도착 키 설정 오류:\n{e}")
+
+    def __edit_arrival_key_impl(self, index: int):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if index < 0 or index >= len(waypoints):
+            return
+        wp = waypoints[index]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            while len(wp) < 3:
+                wp.append(None)
+            if len(wp) < 4:
+                wp.append({})
+            elif not isinstance(wp[3], dict):
+                wp[3] = {}
+        wp_cfg = wp[3]
+        # 기존 단일 키 문자열 → 리스트 마이그레이션
+        if "arrival_key" in wp_cfg and "arrival_keys" not in wp_cfg:
+            old = wp_cfg.pop("arrival_key", "")
+            if old:
+                wp_cfg["arrival_keys"] = [{"key": k.strip(), "wait_after": 0.3,
+                    "wait_random": False, "wait_random_range": 0.3,
+                    "repeat_count": 1, "repeat_delay": 0.5,
+                    "repeat_delay_random": False, "repeat_delay_random_range": 0.3}
+                    for k in old.split(",") if k.strip()]
+        keys_list = wp_cfg.get("arrival_keys", [])
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(f"도착 키 설정 — 경유지 {index + 1}")
+        dlg.geometry("380x450")
+        dlg.resizable(False, True)
+        dlg.configure(fg_color=COLORS["bg_dark"])
+        dlg.transient(self)
+        dlg.after(100, lambda: dlg.grab_set())
+        dlg.update_idletasks()
+        _dx = (dlg.winfo_screenwidth() - 380) // 2
+        _dy = (dlg.winfo_screenheight() - 450) // 2
+        dlg.geometry(f"+{_dx}+{_dy}")
+        dlg.lift()
+        dlg.focus_force()
+
+        # 로컬 복사본
+        local_keys = [dict(k) for k in keys_list]
+
+        # 스크롤 영역
+        list_frame = ctk.CTkScrollableFrame(dlg, fg_color=COLORS["bg_dark"],
+                                            height=300)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+
+        def refresh_list():
+            for w in list_frame.winfo_children():
+                w.destroy()
+            if not local_keys:
+                ctk.CTkLabel(list_frame, text="키가 없습니다. 아래에서 추가하세요.",
+                             font=ctk.CTkFont(size=11),
+                             text_color=COLORS["text_secondary"]).pack(pady=20)
+                return
+            for ki, kd in enumerate(local_keys):
+                row = ctk.CTkFrame(list_frame, fg_color=COLORS["bg_card"],
+                                   corner_radius=6, height=36)
+                row.pack(fill="x", padx=4, pady=2)
+                row.pack_propagate(False)
+                # 키 이름
+                ctk.CTkLabel(row, text=kd.get("key", "?").upper(),
+                             font=ctk.CTkFont(size=12, weight="bold"),
+                             text_color=COLORS["accent"], width=60).pack(side="left", padx=(8, 4))
+                # 대기시간
+                _wr = kd.get("wait_random", False)
+                _wt = kd.get("wait_after", 0.3)
+                ctk.CTkButton(row, text=f"{_wt:.1f}s{'*' if _wr else ''}",
+                    width=46, height=24, font=ctk.CTkFont(size=10),
+                    fg_color=COLORS["success"] if _wr else "#0d1f17",
+                    hover_color="#27ae60",
+                    text_color="white" if _wr else COLORS["text_secondary"],
+                    corner_radius=4,
+                    command=lambda k=ki: edit_wait(k)).pack(side="left", padx=2)
+                # 반복횟수
+                _rc = kd.get("repeat_count", 1)
+                ctk.CTkButton(row, text=f"x{_rc}",
+                    width=34, height=24, font=ctk.CTkFont(size=10),
+                    fg_color=COLORS["accent_blue"] if _rc > 1 else "#0d1f17",
+                    hover_color="#2563eb",
+                    text_color="white" if _rc > 1 else COLORS["text_secondary"],
+                    corner_radius=4,
+                    command=lambda k=ki: edit_repeat(k)).pack(side="left", padx=2)
+                # 삭제
+                ctk.CTkButton(row, text="✕", width=24, height=24,
+                    font=ctk.CTkFont(size=10),
+                    fg_color="transparent", hover_color="#5a2020",
+                    text_color="#e06060",
+                    command=lambda k=ki: del_key(k)).pack(side="right", padx=(0, 6))
+                # 순서 이동
+                if ki > 0:
+                    ctk.CTkButton(row, text="▲", width=22, height=24,
+                        font=ctk.CTkFont(size=9), fg_color="transparent",
+                        hover_color=COLORS["bg_card_hover"],
+                        text_color=COLORS["text_secondary"],
+                        command=lambda k=ki: move_key(k, -1)).pack(side="right")
+                if ki < len(local_keys) - 1:
+                    ctk.CTkButton(row, text="▼", width=22, height=24,
+                        font=ctk.CTkFont(size=9), fg_color="transparent",
+                        hover_color=COLORS["bg_card_hover"],
+                        text_color=COLORS["text_secondary"],
+                        command=lambda k=ki: move_key(k, 1)).pack(side="right")
+
+        def add_key():
+            kid = KeyInputDialog(dlg)
+            captured = kid.get_key()
+            if captured:
+                local_keys.append({"key": captured.lower().strip(),
+                    "wait_after": 0.3, "wait_random": False,
+                    "wait_random_range": 0.3, "repeat_count": 1,
+                    "repeat_delay": 0.5, "repeat_delay_random": False,
+                    "repeat_delay_random_range": 0.3})
+                refresh_list()
+
+        def del_key(ki):
+            if 0 <= ki < len(local_keys):
+                local_keys.pop(ki)
+                refresh_list()
+
+        def move_key(ki, direction):
+            ni = ki + direction
+            if 0 <= ni < len(local_keys):
+                local_keys[ki], local_keys[ni] = local_keys[ni], local_keys[ki]
+                refresh_list()
+
+        def edit_wait(ki):
+            kd = local_keys[ki]
+            wd = ctk.CTkToplevel(dlg)
+            wd.title("대기시간 설정")
+            wd.geometry("300x280")
+            wd.transient(dlg); wd.grab_set()
+            wd.configure(fg_color=COLORS["bg_dark"])
+
+            ctk.CTkLabel(wd, text="대기시간 (초):", font=ctk.CTkFont(size=12)).pack(pady=(15, 5))
+            we = ctk.CTkEntry(wd, width=100)
+            we.insert(0, str(kd.get("wait_after", 0.3)))
+            we.pack()
+
+            rv = ctk.BooleanVar(value=kd.get("wait_random", False))
+            ctk.CTkCheckBox(wd, text="랜덤 적용", variable=rv).pack(pady=10)
+
+            ctk.CTkLabel(wd, text="랜덤 범위 (±초):", font=ctk.CTkFont(size=12)).pack(pady=(5, 5))
+            re = ctk.CTkEntry(wd, width=100)
+            re.insert(0, str(kd.get("wait_random_range", 0.3)))
+            re.pack()
+
+            def sw():
+                try:
+                    kd["wait_after"] = float(we.get())
+                    kd["wait_random"] = rv.get()
+                    kd["wait_random_range"] = float(re.get())
+                    wd.destroy()
+                    refresh_list()
+                except ValueError:
+                    pass
+
+            bf = ctk.CTkFrame(wd, fg_color="transparent")
+            bf.pack(pady=20)
+            ctk.CTkButton(bf, text="저장", width=100, height=36,
+                          command=sw).pack(side="left", padx=10)
+            ctk.CTkButton(bf, text="취소", width=100, height=36,
+                          fg_color=COLORS["bg_card"],
+                          command=wd.destroy).pack(side="left", padx=10)
+
+        def edit_repeat(ki):
+            kd = local_keys[ki]
+            rd = ctk.CTkToplevel(dlg)
+            rd.title("반복 설정")
+            rd.geometry("350x420")
+            rd.resizable(False, False)
+            rd.configure(fg_color=COLORS["bg_dark"])
+            rd.transient(dlg); rd.grab_set()
+
+            mf = ctk.CTkFrame(rd, fg_color="transparent")
+            mf.pack(fill="both", expand=True, padx=20, pady=15)
+
+            ctk.CTkLabel(mf, text="반복 횟수",
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
+            ce = ctk.CTkEntry(mf, width=200, height=38, font=ctk.CTkFont(size=14))
+            ce.insert(0, str(kd.get("repeat_count", 1)))
+            ce.pack(anchor="w")
+            ctk.CTkLabel(mf, text="1 = 1회 실행, 2 = 2회 반복...",
+                         font=ctk.CTkFont(size=11),
+                         text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
+
+            ctk.CTkLabel(mf, text="반복 대기시간 (초)",
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(15, 5))
+            de = ctk.CTkEntry(mf, width=200, height=38, font=ctk.CTkFont(size=14))
+            de.insert(0, f"{kd.get('repeat_delay', 0.5):.2f}")
+            de.pack(anchor="w")
+            ctk.CTkLabel(mf, text="반복 사이의 대기시간",
+                         font=ctk.CTkFont(size=11),
+                         text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
+
+            drv = ctk.BooleanVar(value=kd.get("repeat_delay_random", False))
+            ctk.CTkCheckBox(mf, text="랜덤시간 활성화", variable=drv,
+                            font=ctk.CTkFont(size=13)).pack(anchor="w", pady=(10, 5))
+
+            drf = ctk.CTkFrame(mf, fg_color="transparent")
+            drf.pack(anchor="w", pady=5)
+            ctk.CTkLabel(drf, text="±범위:", font=ctk.CTkFont(size=12)).pack(side="left")
+            dre = ctk.CTkEntry(drf, width=100, height=32, font=ctk.CTkFont(size=13))
+            dre.insert(0, f"{kd.get('repeat_delay_random_range', 0.3):.2f}")
+            dre.pack(side="left", padx=(5, 10))
+            ctk.CTkLabel(drf, text="초", font=ctk.CTkFont(size=12),
+                         text_color=COLORS["text_secondary"]).pack(side="left")
+
+            def sr():
+                try:
+                    c = int(ce.get().strip())
+                    d = float(de.get().strip().replace(',', '.'))
+                    dr = float(dre.get().strip().replace(',', '.'))
+                    if c < 1 or d < 0 or dr < 0:
+                        return
+                    kd["repeat_count"] = c
+                    kd["repeat_delay"] = d
+                    kd["repeat_delay_random"] = drv.get()
+                    kd["repeat_delay_random_range"] = dr
+                    rd.destroy()
+                    refresh_list()
+                except ValueError:
+                    pass
+
+            bf = ctk.CTkFrame(rd, fg_color="transparent")
+            bf.pack(pady=10)
+            ctk.CTkButton(bf, text="저장", width=100, height=36,
+                          font=ctk.CTkFont(size=13, weight="bold"),
+                          command=sr).pack(side="left", padx=8)
+            ctk.CTkButton(bf, text="취소", width=100, height=36,
+                          font=ctk.CTkFont(size=13, weight="bold"),
+                          fg_color=COLORS["bg_card"],
+                          command=rd.destroy).pack(side="left", padx=8)
+
+        refresh_list()
+
+        # 하단 버튼
+        bot = ctk.CTkFrame(dlg, fg_color="transparent")
+        bot.pack(fill="x", padx=10, pady=(5, 10))
+
+        ctk.CTkButton(bot, text="+ 키 추가", width=100, height=32,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      fg_color="#2a2518", hover_color="#4a3828",
+                      text_color="#e8d090",
+                      command=add_key).pack(side="left", padx=4)
+
+        def save_all():
+            wp_cfg["arrival_keys"] = local_keys
+            wp_cfg.pop("arrival_key", None)  # 구버전 키 제거
+            self._save_config()
+            dlg.destroy()
+
+        ctk.CTkButton(bot, text="저장", width=80, height=32,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      fg_color=COLORS["accent_blue"],
+                      command=save_all).pack(side="right", padx=4)
+        ctk.CTkButton(bot, text="취소", width=80, height=32,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      fg_color=COLORS["bg_card"],
+                      command=dlg.destroy).pack(side="right", padx=4)
+
     def _format_coord_region(self, region) -> str:
         """좌표 영역을 텍스트로 포맷"""
         if region and len(region) == 4:
@@ -6108,6 +9301,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._config.coord_y_region = region
                 self._coord_y_label.configure(text=self._format_coord_region(region))
             logger.info(f"[좌표모드] {coord_type.upper()} 영역 설정: {region}")
+            self._save_config()
 
         def on_cancel():
             pass
@@ -6561,17 +9755,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 result = matcher.match_binary(screen, self._imgtest_image_path, threshold=0.8)
 
                 if result.found:
-                    text = f"발견! 신뢰도={result.confidence:.1%} 위치=({result.center_x},{result.center_y})"
+                    text = f"발견! 인식률={result.confidence:.1%} 위치=({result.center_x},{result.center_y})"
                     color = "#50c878"
                 else:
-                    # 일반 매칭도 시도
-                    result2 = matcher.match(screen, self._imgtest_image_path, threshold=0.5)
-                    if result2.found:
-                        text = f"일반매칭 발견 신뢰도={result2.confidence:.1%} (이진화={result.confidence:.1%})"
-                        color = "#e8a040"
-                    else:
-                        text = f"미발견 (이진화={result.confidence:.1%}, 일반={result2.confidence:.1%})"
-                        color = "#e05050"
+                    text = f"미발견 (인식률={result.confidence:.1%})"
+                    color = "#e05050"
 
                 self.after(0, lambda t=text, c=color: self._imgtest_result_label.configure(text=t, text_color=c))
 
@@ -6648,7 +9836,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 logger.error(f"[좌표모니터] 오류: {e}")
                 self.after(0, lambda err=str(e): self._append_log(f"오류: {err}"))
 
-            time.sleep(0.5)
+            # 0.1초씩 5회 대기 (중지 시 즉시 반응)
+            for _ in range(5):
+                if not self._monitoring:
+                    break
+                time.sleep(0.1)
 
         self.after(0, lambda: self._append_log("모니터링 중지"))
 
@@ -6704,7 +9896,6 @@ class GameModeDialog(ctk.CTkToplevel):
         _save_start = _time.time()
         self._config.enabled = True
         self._apply_settings()
-        self._plan.game_mode = self._config
 
         # 맵 데이터도 저장
         if hasattr(self, '_game_map') and self._game_map:
@@ -6717,14 +9908,21 @@ class GameModeDialog(ctk.CTkToplevel):
         # 액션 목록에 게임모드 규칙 추가/업데이트
         display_name = self._config.name if self._config.name else "특화모드"
 
-        # 기존 game_mode 액션 찾기 (action_type으로만 검색 - 이름 변경 시 중복 방지)
-        game_rule = None
-        for rule in self._plan.initial_rules:
-            if rule.action_type == "game_mode":
-                game_rule = rule
-                break
-
-        if not game_rule:
+        if self._config_rule_id:
+            # 기존 특화모드 편집: 해당 rule 찾아서 업데이트
+            game_rule = None
+            for rule in self._plan.initial_rules:
+                if rule.rule_id == self._config_rule_id:
+                    game_rule = rule
+                    break
+            if game_rule:
+                game_rule.target_image = self._config.character_image
+                game_rule.confidence = self._config.confidence
+                if display_name:
+                    game_rule.description = display_name
+            self._plan.game_modes[self._config_rule_id] = self._config
+        else:
+            # 새 특화모드: 새 rule 생성
             game_rule = AutomationRule(
                 rule_type="fixed_sequence",
                 action_type="game_mode",
@@ -6733,11 +9931,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 confidence=self._config.confidence,
             )
             self._plan.initial_rules.append(game_rule)
-        else:
-            game_rule.target_image = self._config.character_image
-            game_rule.confidence = self._config.confidence
-            if display_name:
-                game_rule.description = display_name
+            self._config_rule_id = game_rule.rule_id
+            self._plan.game_modes[game_rule.rule_id] = self._config
 
         # JSON 파일에 직접 저장 (messagebox 없이)
         try:
@@ -6749,9 +9944,26 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.info(f"[특화모드] 설정 저장: {plan_file}")
         except Exception as e:
             logger.error(f"[특화모드] 설정 저장 실패: {e}")
+        # 경유지 제외한 설정을 기본값으로 저장 (새 플랜에서 자동 적용)
+        self._save_game_mode_defaults()
+
         _save_elapsed = _time.time() - _save_start
         if _save_elapsed > 0.5:
             logger.warning(f"[특화모드] 설정 저장 느림: {_save_elapsed:.1f}초")
+
+    def _save_game_mode_defaults(self):
+        """경유지 제외한 특화모드 설정을 기본값 파일로 저장"""
+        try:
+            defaults = self._config.to_dict()
+            # 플랜별 고유 필드 제거 (경유지는 직접 설정)
+            for key in ("name", "enabled", "waypoints", "target_x", "target_y",
+                        "final_waypoint_idx"):
+                defaults.pop(key, None)
+            defaults_file = DATA_DIR / "game_mode_defaults.json"
+            with open(defaults_file, 'w', encoding='utf-8') as f:
+                json.dump(defaults, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[특화모드] 기본값 저장 실패: {e}")
 
     def _save_config_with_msg(self):
         """저장 버튼 클릭 시: 설정 저장 + messagebox 표시"""
@@ -6839,9 +10051,10 @@ class GameModeDialog(ctk.CTkToplevel):
         if self._is_running:
             self._stop_execution()
 
-        # 워커/모니터 스레드 종료 대기
-        import time
-        time.sleep(0.05)
+        # 워커 스레드 종료 대기 (최대 2초)
+        _rt = getattr(self, '_run_thread', None)
+        if _rt is not None and _rt.is_alive():
+            _rt.join(timeout=2.0)
 
         # 맵 데이터 저장 (변경된 경우)
         if hasattr(self, '_game_map') and self._game_map:
@@ -7646,9 +10859,13 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             logger.info(f"이미지 삭제됨: {action.action_id}")
 
         def on_change(new_path: str):
+            old_path = action.target_image
             action.target_image = new_path
             self._modified = True
             needs_refresh[0] = True
+            if old_path:
+                invalidate_thumbnail_cache(old_path)
+            invalidate_thumbnail_cache(new_path)
             logger.info(f"이미지 변경 완료: {new_path}")
 
         dialog = ImageCropDialog(
@@ -8702,8 +11919,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 현재 위치에서 제거
         if dragged in self._sequence.actions:
-            # 최상위에서 제거하지만 리스트에는 유지 (parent_id로 관리)
-            pass
+            self._sequence.actions.remove(dragged)
         else:
             parent = self._find_parent_action(dragged)
             if parent and dragged in parent.children:

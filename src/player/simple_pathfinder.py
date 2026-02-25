@@ -68,7 +68,9 @@ class SimplePathfinder:
 
     def find_path(self, start: Tuple[int, int], goal: Tuple[int, int],
                   allow_unknown: bool = False, stop_event=None,
-                  max_iterations: int = 0) -> PathResult:
+                  max_iterations: int = 0,
+                  allow_soft_blocked: bool = True,
+                  unknown_cost: int = 1) -> PathResult:
         """
         A* 알고리즘으로 경로 탐색 (came_from 역추적 방식)
 
@@ -142,11 +144,21 @@ class SimplePathfinder:
 
             # 인접 타일 탐색
             neighbors = self.game_map.get_walkable_neighbors(
-                current[0], current[1], allow_unknown=allow_unknown
+                current[0], current[1], allow_unknown=allow_unknown,
+                allow_soft_blocked=allow_soft_blocked
             )
 
+            # 목표가 인접하면 벽이어도 마지막 단계로 도달 허용
+            # (전체맵핑에서 포탈 벽 등록된 경우 → 일반 모드에서 도달 가능해야 함)
+            if abs(current[0] - goal[0]) + abs(current[1] - goal[1]) == 1:
+                if not any(nx == goal[0] and ny == goal[1] for nx, ny, _ in neighbors):
+                    for d_name, (dx, dy) in DIRECTIONS_4.items():
+                        if current[0] + dx == goal[0] and current[1] + dy == goal[1]:
+                            neighbors.append((goal[0], goal[1], d_name))
+                            break
+
             for nx, ny, direction in neighbors:
-                move_cost = self.game_map.get_soft_blocked_cost(nx, ny)
+                move_cost = self.game_map.get_soft_blocked_cost(nx, ny, unknown_cost=unknown_cost)
                 new_cost = g_cost + move_cost
                 next_pos = (nx, ny)
 
@@ -172,21 +184,32 @@ class SimplePathfinder:
         )
 
     def set_goal(self, goal: Tuple[int, int]):
-        """목표 설정"""
-        self._goal = goal
+        """목표 설정 (변경 시에만 경로 초기화)"""
+        if goal != self._goal:
+            self._goal = goal
+            self._current_path = None
+            self._path_index = 0
+
+    def invalidate_path(self):
+        """경로 무효화 (벽 발견 시 재계산 유도)"""
         self._current_path = None
         self._path_index = 0
 
     def get_next_direction(self, current: Tuple[int, int],
-                           allow_unknown: bool = False) -> Optional[str]:
+                           allow_unknown: bool = False,
+                           stop_event=None,
+                           max_iterations: int = 5000) -> Optional[str]:
         """
         현재 위치에서 다음 이동 방향 반환
 
         경로가 없거나 현재 위치가 경로에서 벗어나면 재계산합니다.
+        캐시된 경로가 유효하면 재사용합니다.
 
         Args:
             current: 현재 좌표
             allow_unknown: 미탐색 영역 통과 허용 여부
+            stop_event: threading.Event — set 시 즉시 중단
+            max_iterations: 최대 A* 반복 횟수
 
         Returns:
             방향 문자열 또는 None (도착/경로 없음)
@@ -235,7 +258,9 @@ class SimplePathfinder:
                     need_recalculate = True
 
         if need_recalculate:
-            self._current_path = self.find_path(current, self._goal, allow_unknown)
+            self._current_path = self.find_path(
+                current, self._goal, allow_unknown,
+                stop_event=stop_event, max_iterations=max_iterations)
             self._path_index = 0
 
             if not self._current_path.found:

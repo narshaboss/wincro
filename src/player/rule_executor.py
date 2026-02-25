@@ -1400,9 +1400,11 @@ class RuleExecutor:
                 return self._make_result(rule, True, f"스크롤 완료", start_time)
 
             elif action_type == "game_mode":
-                # game_mode는 plan.game_mode 설정을 사용하여 실행
-                if hasattr(self, '_current_plan') and self._current_plan and self._current_plan.game_mode:
-                    config = self._current_plan.game_mode
+                # game_mode는 rule_id로 해당 config를 조회하여 실행
+                config = None
+                if hasattr(self, '_current_plan') and self._current_plan:
+                    config = self._current_plan.game_modes.get(rule.rule_id)
+                if config:
                     logger.info(f"{_GREEN}{self._step_prefix}🎮 특화모드 실행: {config.name or '특화모드'}{_RESET}")
                     success = self.execute_game_mode(config)
                     return self._make_result(rule, success, "특화모드 완료" if success else "특화모드 실패", start_time)
@@ -2168,7 +2170,6 @@ class RuleExecutor:
                     condition_search_region = watch.get('condition_search_region')
                     condition_confidence = watch.get('condition_confidence', 0.80)
                     condition_met = True  # 조건 없으면 항상 충족
-                    logger.info(f"  [점프판정] condition_image={repr(condition_image)}, goto_index={goto_index}, condition_met={condition_met}")
                     if condition_image and Path(condition_image).exists():
                         condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
                         if condition_result:
@@ -2178,6 +2179,8 @@ class RuleExecutor:
                         else:
                             logger.info(f"{_GREEN}  ✓ 조건 충족: {Path(condition_image).name} 해소 → 점프 실행{_RESET}")
                             condition_met = True
+
+                    logger.debug(f"  [점프판정] condition_image={Path(condition_image).name if condition_image else '없음'}, goto_index={goto_index}, condition_met={condition_met}")
 
                     # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
                     if not condition_met:
@@ -2689,7 +2692,7 @@ class RuleExecutor:
 
         # ESC 키로 중지할 수 있도록 키보드 훅 설정
         import keyboard
-        keyboard.add_hotkey('escape', self._stop_event.set)
+        _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
         logger.info(f"[특화모드] ESC 키로 중지 가능")
 
         current_key = None  # 현재 누르고 있는 키 (finally에서 접근 필요)
@@ -2797,7 +2800,8 @@ class RuleExecutor:
             # 루프 종료 시 키 해제
             if current_key:
                 pyautogui.keyUp(current_key)
-                logger.info(f"[특화모드] 루프 종료 - 키 해제: {current_key}")
+                current_key = None
+                logger.info(f"[특화모드] 루프 종료 - 키 해제")
 
             return False  # 중지됨 또는 타임아웃
 
@@ -2814,9 +2818,9 @@ class RuleExecutor:
                     logger.info(f"[특화모드] finally - 키 해제: {current_key}")
                 except Exception as e:
                     logger.warning(f"[특화모드] 키 해제 실패: {e}")
-            # ESC 핫키 제거
+            # ESC 핫키 제거 (ID 기반 — 다른 ESC 핫키 보호)
             try:
-                keyboard.remove_hotkey('escape')
+                keyboard.remove_hotkey(_escape_hotkey_id)
             except Exception:
                 pass
             logger.info(f"{_GREEN}[특화모드] ========== 실행 종료 =========={_RESET}")
@@ -2847,16 +2851,67 @@ class RuleExecutor:
         mapping_enabled = getattr(config, 'mapping_enabled', True)
         current_segment_idx = 0
 
-        # 구간별 맵 파일명 헬퍼 (경유지 이름 기반)
+        # 구간별 맵 파일명 헬퍼 (UI의 _get_segment_map_name과 동일 형식)
         def get_segment_map_path(seg_idx):
             """경유지 인덱스에 해당하는 맵 파일 경로 (경유지와 1:1 대응)"""
+            import shutil
             waypoints = getattr(config, 'waypoints', []) or []
             if seg_idx < len(waypoints):
                 wp = waypoints[seg_idx]
                 seg_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{seg_idx+1}"
             else:
                 seg_name = f"경유지{seg_idx+1}"
-            return os.path.join(map_dir, f"{map_name}_{seg_name}_map.json")
+            # 공유 맵 파일이 설정되어 있으면 해당 경로 직접 반환
+            if seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                    shared = wp[3].get('map_file')
+                    if shared and os.path.exists(shared):
+                        return shared
+            # 보스 경유지(0,0) 판별
+            is_boss = False
+            if seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 2:
+                    if int(wp[0]) == 0 and int(wp[1]) == 0:
+                        is_boss = True
+            # UI와 동일 형식: {seg_idx:02d}_{seg_name}_map.json
+            if is_boss:
+                new_path = os.path.join(map_dir, f"{seg_idx:02d}_{seg_name}_boss_map.json")
+            else:
+                new_path = os.path.join(map_dir, f"{seg_idx:02d}_{seg_name}_map.json")
+            # 같은 이름의 다른 경유지가 있는지 확인
+            has_dup = False
+            for i, w in enumerate(waypoints):
+                if i != seg_idx:
+                    other = w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2] else f"경유지{i+1}"
+                    if other == seg_name:
+                        has_dup = True
+                        break
+            # 마이그레이션: 새 파일 없고, 이름 중복 아닐 때만
+            if not os.path.exists(new_path) and not has_dup:
+                if is_boss:
+                    old_candidates = [
+                        os.path.join(map_dir, f"{map_name}_{seg_idx:02d}_{seg_name}_boss_map.json"),
+                        os.path.join(map_dir, f"{map_name}_{seg_idx}_{seg_name}_boss_map.json"),
+                        os.path.join(map_dir, f"{map_name}_{seg_name}_boss{seg_idx}_map.json"),
+                        os.path.join(map_dir, f"{map_name}_{seg_name}_map.json"),
+                    ]
+                else:
+                    old_candidates = [
+                        os.path.join(map_dir, f"{map_name}_{seg_idx:02d}_{seg_name}_map.json"),
+                        os.path.join(map_dir, f"{map_name}_{seg_idx}_{seg_name}_map.json"),
+                        os.path.join(map_dir, f"{map_name}_{seg_name}_map.json"),
+                    ]
+                for old_path in old_candidates:
+                    if os.path.exists(old_path):
+                        try:
+                            shutil.copy2(old_path, new_path)
+                            logger.info(f"[좌표모드] 맵 마이그레이션: {os.path.basename(old_path)} → {os.path.basename(new_path)}")
+                        except Exception:
+                            pass
+                        break
+            return new_path
 
         # 첫 번째 경유지 맵 로드
         game_map = GameMap(name=map_name)
@@ -3369,6 +3424,12 @@ class RuleExecutor:
                     pyautogui.keyUp(key)
                 time.sleep(0.005)  # 5ms 간격
         finally:
+            # 예외 시에도 키 해제 보장
+            for key in keys:
+                try:
+                    pyautogui.keyUp(key)
+                except Exception:
+                    pass
             with self._pyautogui_lock:
                 pyautogui.PAUSE = original_pause
 

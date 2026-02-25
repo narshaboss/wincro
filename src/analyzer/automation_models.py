@@ -371,6 +371,7 @@ class GameModeConfig:
     move_skill_distance: int = 150  # 이동 스킬 사용 거리 (픽셀, 이 거리 이상이면 스킬 사용)
     auto_skill_key: str = ""  # 상시 사용 스킬 키
     auto_skill_cooldown_image: str = ""  # 스킬 쿨타임 이미지 (이 이미지가 없으면 스킬 사용)
+    auto_skill_cd_region: Optional[List[int]] = None  # 쿨타임 이미지 검색 영역 [x1, y1, x2, y2]
 
     # === 좌표 기반 탐색 모드 ===
     navigation_mode: str = "coordinate"  # "coordinate" (좌표 기반)
@@ -412,6 +413,10 @@ class GameModeConfig:
     move_skill_enabled: bool = False   # 이동 스킬 사용 여부
     auto_skill_enabled: bool = False   # 상시 스킬 사용 여부
 
+    # === 스킬 쿨타임 ===
+    move_skill_cooldown: float = 5.0   # 이동 스킬 쿨타임 (초)
+    auto_skill_cooldown: float = 5.0   # 상시 스킬 쿨타임 (초)
+
     def _serialize_waypoints(self):
         """waypoints 직렬화 (이미지 경로 → 상대경로)"""
         result = []
@@ -423,6 +428,8 @@ class GameModeConfig:
                     cfg["target_image"] = _to_relative_path(cfg["target_image"])
                 if cfg.get("target_images"):
                     cfg["target_images"] = [_to_relative_path(p) for p in cfg["target_images"] if p]
+                if cfg.get("character_image"):
+                    cfg["character_image"] = _to_relative_path(cfg["character_image"])
                 wp_copy[3] = cfg
             result.append(wp_copy)
         return result
@@ -439,6 +446,8 @@ class GameModeConfig:
                     cfg["target_image"] = _to_absolute_path(cfg["target_image"], templates_dir)
                 if cfg.get("target_images"):
                     cfg["target_images"] = [_to_absolute_path(p, templates_dir) for p in cfg["target_images"] if p]
+                if cfg.get("character_image"):
+                    cfg["character_image"] = _to_absolute_path(cfg["character_image"], templates_dir)
                 wp_copy[3] = cfg
             result.append(wp_copy)
         return result
@@ -463,6 +472,7 @@ class GameModeConfig:
             "move_skill_distance": self.move_skill_distance,
             "auto_skill_key": self.auto_skill_key,
             "auto_skill_cooldown_image": _to_relative_path(self.auto_skill_cooldown_image),
+            "auto_skill_cd_region": self.auto_skill_cd_region,
             # 좌표 기반 탐색 모드
             "navigation_mode": self.navigation_mode,
             "coord_x_region": self.coord_x_region,
@@ -496,6 +506,9 @@ class GameModeConfig:
             # 스킬 활성화 플래그
             "move_skill_enabled": self.move_skill_enabled,
             "auto_skill_enabled": self.auto_skill_enabled,
+            # 스킬 쿨타임
+            "move_skill_cooldown": self.move_skill_cooldown,
+            "auto_skill_cooldown": self.auto_skill_cooldown,
         }
 
     @classmethod
@@ -532,6 +545,7 @@ class GameModeConfig:
             move_skill_distance=data.get("move_skill_distance", 150),
             auto_skill_key=data.get("auto_skill_key", ""),
             auto_skill_cooldown_image=_to_absolute_path(data.get("auto_skill_cooldown_image"), templates_dir) or "",
+            auto_skill_cd_region=data.get("auto_skill_cd_region"),
             # 좌표 기반 탐색 모드
             navigation_mode=data.get("navigation_mode", "coordinate"),
             coord_x_region=data.get("coord_x_region"),
@@ -565,6 +579,9 @@ class GameModeConfig:
             # 스킬 활성화 플래그
             move_skill_enabled=data.get("move_skill_enabled", False),
             auto_skill_enabled=data.get("auto_skill_enabled", False),
+            # 스킬 쿨타임
+            move_skill_cooldown=data.get("move_skill_cooldown", 5.0),
+            auto_skill_cooldown=data.get("auto_skill_cooldown", 5.0),
         )
 
 
@@ -595,8 +612,13 @@ class AutomationPlan:
     # 재생 설정
     total_repeat_count: int = 1  # 전체 재생 반복 횟수
 
-    # 게임 특화 모드
-    game_mode: Optional[GameModeConfig] = None
+    # 게임 특화 모드 (다중 지원: key = game_mode rule의 rule_id)
+    game_modes: Dict[str, GameModeConfig] = field(default_factory=dict)
+
+    @property
+    def game_mode(self) -> Optional[GameModeConfig]:
+        """하위호환: 첫 번째 특화모드 반환"""
+        return next(iter(self.game_modes.values()), None) if self.game_modes else None
 
     def __post_init__(self):
         """초기화 후 처리"""
@@ -630,8 +652,10 @@ class AutomationPlan:
             "modified": self.modified,
             "total_repeat_count": self.total_repeat_count,
         }
-        if self.game_mode:
-            result["game_mode"] = self.game_mode.to_dict()
+        if self.game_modes:
+            result["game_modes"] = {
+                rule_id: cfg.to_dict() for rule_id, cfg in self.game_modes.items()
+            }
         return result
 
     @classmethod
@@ -652,10 +676,21 @@ class AutomationPlan:
             AutomationRule.from_dict(r, templates_dir) for r in data.get("monitoring_rules", [])
         ]
 
-        # 게임 모드 설정 복원
-        game_mode = None
-        if "game_mode" in data and data["game_mode"]:
-            game_mode = GameModeConfig.from_dict(data["game_mode"], templates_dir)
+        # 게임 모드 설정 복원 (다중 지원 + 구버전 마이그레이션)
+        game_modes: Dict[str, GameModeConfig] = {}
+        if "game_modes" in data and data["game_modes"]:
+            # 신버전: {rule_id: config_dict}
+            for rule_id, cfg_data in data["game_modes"].items():
+                game_modes[rule_id] = GameModeConfig.from_dict(cfg_data, templates_dir)
+        elif "game_mode" in data and data["game_mode"]:
+            # 구버전 마이그레이션: 단일 game_mode → game_modes dict
+            config = GameModeConfig.from_dict(data["game_mode"], templates_dir)
+            gm_rule_id = None
+            for r in data.get("initial_rules", []):
+                if r.get("action_type") == "game_mode":
+                    gm_rule_id = r.get("rule_id")
+                    break
+            game_modes[gm_rule_id or "_default"] = config
 
         return cls(
             plan_id=data.get("plan_id", ""),
@@ -669,5 +704,5 @@ class AutomationPlan:
             user_verified=data.get("user_verified", False),
             modified=data.get("modified", False),
             total_repeat_count=data.get("total_repeat_count", 1),
-            game_mode=game_mode,
+            game_modes=game_modes,
         )

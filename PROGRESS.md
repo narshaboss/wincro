@@ -99,6 +99,69 @@
 
 ## 버그 수정 이력
 
+### 2026-02-25: 다중 특화모드 + 맵/경로 시스템 대규모 개선 (v1.0.137)
+
+**다중 특화모드 지원:**
+- `automation_models.py`: `game_mode` 단일 → `game_modes: Dict[str, GameModeConfig]` 다중 지원
+- 구버전 `game_mode` JSON 자동 마이그레이션 (하위 호환)
+- `rule_executor.py`: rule_id 기반 config 조회로 변경
+
+**GameModeConfig 신규 필드:**
+- `auto_skill_cd_region`: 쿨타임 이미지 검색 영역
+- `move_skill_cooldown`, `auto_skill_cooldown`: 스킬 쿨타임 (초)
+- 경유지별 `character_image` 직렬화/역직렬화 추가
+
+**맵 시스템 개선:**
+- `game_map.py`: start_pos 보호 강화 (mark_passable에서 출발지 등록 차단)
+- `game_map.py`: `allow_promote` 파라미터 (부분실행/전체테스트에서 영구벽 승격 방지)
+- `game_map.py`: soft_blocked 비용 50→20 조정, 미탐색 타일 unknown_cost 파라미터 추가
+- `game_map.py`: `get_walkable_neighbors`에 `allow_soft_blocked` 파라미터 추가
+- `game_map.py`: `is_fully_explored`에서 soft_blocked 제외 (임시 장애물은 탐색 완료 판정에서 제외)
+- `game_map.py`: `load_and_merge`에서 start_pos → blocked 보장
+- `game_map.py`: `_find_main_cluster` 빈 리스트 방어
+
+**경로탐색 개선:**
+- `simple_pathfinder.py`: `allow_soft_blocked`, `unknown_cost` 파라미터 전파
+- `simple_pathfinder.py`: 인접 목표 벽 도달 허용 (포탈 벽 등록된 경우 대응)
+- `simple_pathfinder.py`: `set_goal` 변경 시에만 경로 초기화, `invalidate_path()` 메서드 추가
+- `simple_pathfinder.py`: `get_next_direction`에 `stop_event`, `max_iterations` 전달
+
+**맵 캔버스 개선:**
+- `map_canvas.py`: 경로 출발/도착/벽 좌표 렌더링 (route_starts, route_ends, route_walls)
+- `map_canvas.py`: 좌클릭 드래그 편집 모드, delete 모드, start/end 토글
+- `map_canvas.py`: 우클릭 드래그 제거 (좌클릭 드래그로 통일)
+
+**순찰 시스템 개선:**
+- `map_patroller.py`: reset 시 현재 위치 기준 가장 가까운 포인트부터 재순찰
+- `map_patroller.py`: 목표 도달 판정 ±1타일 허용
+- `map_patroller.py`: 래핑 탐색 (끝까지 간 후 처음부터도 탐색)
+
+**rule_executor 개선:**
+- 맵 파일명 `{seg_idx:02d}_{seg_name}_map.json` 형식 통일 + 구버전 마이그레이션
+- 공유 맵 파일 지원 (`map_file` 경유지 설정)
+- ESC 핫키 ID 기반 제거 (다른 핫키 보호)
+- `_smooth_key_input` 예외 시 키 해제 보장
+
+**기타:**
+- `constants.py`: 경유지 클립보드 (복사/붙여넣기)
+- `analyzer_view.py`: 마스크 자동 생성 제거
+- `digit_templates.py`: 겹침 판정 80%→50%로 완화, 스크린샷 캐시 추가
+- `player_view.py`: 대규모 UI/로직 개선 (+4694/-839줄)
+
+**수정된 파일 (10개):**
+- `src/analyzer/automation_models.py`
+- `src/player/game_map.py`
+- `src/player/map_canvas.py`
+- `src/player/map_patroller.py`
+- `src/player/rule_executor.py`
+- `src/player/simple_pathfinder.py`
+- `src/ui/analyzer_view.py`
+- `src/ui/constants.py`
+- `src/ui/player_view.py`
+- `src/utils/digit_templates.py`
+
+---
+
 ### 2026-02-10: 모니터링 액션 로그 강화 (v1.0.136)
 
 **모니터링 액션 실행 추적 로그 개선**
@@ -1548,7 +1611,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-10 (모니터링 액션 로그 강화)
+- 마지막 업데이트: 2026-02-25 (다중 특화모드 + 맵/경로 시스템 대규모 개선)
 
 ## 업데이트 규칙
 

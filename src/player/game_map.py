@@ -57,12 +57,15 @@ class GameMap:
         self.end_pos: Optional[Tuple[int, int]] = None    # 도착지
 
     def mark_passable(self, x: int, y: int):
-        """이동 가능한 좌표로 등록"""
+        """이동 가능한 좌표로 등록 (start_pos는 보호 — 포탈 입구 되돌아가기 방지)"""
         pos = (int(x), int(y))
         if not self._is_valid_coord(pos[0], pos[1]):
             logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
             return
         with self._lock:
+            # 출발지(포탈 입구)는 절대 passable 등록 금지
+            if self.start_pos is not None and pos == self.start_pos:
+                return
             self.passable.add(pos)
             # 장애물에서 제거 (혹시 잘못 등록됐으면)
             self.blocked.discard(pos)
@@ -84,8 +87,12 @@ class GameMap:
             self.soft_blocked.pop(pos, None)
         logger.debug(f"[Map] {pos} 장애물!")
 
-    def mark_soft_blocked(self, x: int, y: int):
-        """임시 장애물로 등록 (몬스터 등). fail_count 누적, 임계값 초과 시 영구벽 승격"""
+    def mark_soft_blocked(self, x: int, y: int, allow_promote: bool = True):
+        """임시 장애물로 등록 (몬스터 등). fail_count 누적, 임계값 초과 시 영구벽 승격
+
+        Args:
+            allow_promote: False면 영구벽 승격 없이 count만 증가 (부분실행/전체테스트용)
+        """
         pos = (int(x), int(y))
         if not self._is_valid_coord(pos[0], pos[1]):
             return
@@ -94,14 +101,13 @@ class GameMap:
             if pos in self.blocked:
                 return
             count = self.soft_blocked.get(pos, 0) + 1
-            if count >= self.SOFT_BLOCKED_PROMOTE_THRESHOLD:
+            if allow_promote and count >= self.SOFT_BLOCKED_PROMOTE_THRESHOLD:
                 # 영구벽으로 승격 (mark_blocked 내부에서도 _lock 재진입 - RLock이므로 안전)
                 self.mark_blocked(x, y)
                 logger.info(f"[Map] {pos} 임시→영구벽 승격 (실패 {count}회)")
             else:
-                self.soft_blocked[pos] = count
-                # passable에서 제거하지 않음 — soft_blocked은 임시이므로
-                # 만료 시 passable 상태가 자동 복원됨 (A*는 soft_blocked을 별도 처리)
+                # count 상한: THRESHOLD로 제한 (무한 누적 방지)
+                self.soft_blocked[pos] = min(count, self.SOFT_BLOCKED_PROMOTE_THRESHOLD)
                 logger.debug(f"[Map] {pos} 임시 장애물 (실패 {count}회)")
 
     def clear_soft_blocked(self, x: int, y: int):
@@ -116,10 +122,13 @@ class GameMap:
         """임시 장애물인지 확인"""
         return (int(x), int(y)) in self.soft_blocked
 
-    def get_soft_blocked_cost(self, x: int, y: int) -> int:
-        """이동 비용 반환 (soft_blocked이면 50, 아니면 1)"""
-        if (int(x), int(y)) in self.soft_blocked:
-            return 50
+    def get_soft_blocked_cost(self, x: int, y: int, unknown_cost: int = 1) -> int:
+        """이동 비용 반환 (soft_blocked=20, unknown=unknown_cost, passable=1)"""
+        pos = (int(x), int(y))
+        if pos in self.soft_blocked:
+            return 20
+        if unknown_cost > 1 and pos not in self.passable and pos not in self.blocked:
+            return unknown_cost  # 미탐색 타일 비용 (알려진 경로 우선)
         return 1
 
     # --- 스레드 안전 스냅샷 접근자 (iteration용) ---
@@ -242,15 +251,15 @@ class GameMap:
         return neighbors
 
     def get_walkable_neighbors(self, x: int, y: int,
-                               allow_unknown: bool = False) -> List[Tuple[int, int, str]]:
+                               allow_unknown: bool = False,
+                               allow_soft_blocked: bool = True) -> List[Tuple[int, int, str]]:
         """
         이동 가능한 인접 좌표 (A* 경로탐색용)
-
-        soft_blocked 타일은 통과 가능 (높은 비용으로 A*가 회피 시도)
 
         Args:
             x, y: 현재 좌표
             allow_unknown: True면 미탐색 영역도 이동 가능으로 간주
+            allow_soft_blocked: False면 soft_blocked 타일 제외 (깨끗한 우회 경로용)
 
         Returns:
             [(nx, ny, direction), ...]
@@ -264,12 +273,13 @@ class GameMap:
                 continue
 
             # 출발 좌표(포탈 입구)는 벽 취급 (되돌아가기 방지)
-            if self.start_pos and (nx, ny) == self.start_pos:
+            if self.start_pos is not None and (nx, ny) == self.start_pos:
                 continue
 
-            # 임시 장애물은 통과 허용 (비용이 높을 뿐)
+            # 임시 장애물 처리
             if self.is_soft_blocked(nx, ny):
-                neighbors.append((nx, ny, direction))
+                if allow_soft_blocked:
+                    neighbors.append((nx, ny, direction))
                 continue
 
             # 미탐색 영역 처리
@@ -318,19 +328,18 @@ class GameMap:
 
     def is_fully_explored(self) -> bool:
         """맵 경계가 완전히 폐쇄되었는지 확인.
-        모든 passable 타일의 4방향 이웃이 known(passable/blocked/soft_blocked)이면 True."""
+        모든 passable 타일의 4방향 이웃이 passable 또는 blocked이면 True.
+        soft_blocked는 임시 장애물이므로 탐색 완료 판정에서 제외."""
         with self._lock:
             passable_snap = set(self.passable)
             blocked_snap = set(self.blocked)
-            soft_blocked_keys = set(self.soft_blocked.keys())
         if len(passable_snap) < 10:
             return False
         for (x, y) in passable_snap:
             for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                 neighbor = (x + dx, y + dy)
                 if neighbor not in passable_snap and \
-                   neighbor not in blocked_snap and \
-                   neighbor not in soft_blocked_keys:
+                   neighbor not in blocked_snap:
                     return False
         return True
 
@@ -460,6 +469,11 @@ class GameMap:
                 if loaded_end and not self.end_pos:
                     self.end_pos = loaded_end
 
+                # 출발지가 설정되면 반드시 blocked에 포함 (포탈 되돌아가기 방지)
+                if self.start_pos is not None:
+                    self.passable.discard(self.start_pos)
+                    self.blocked.add(self.start_pos)
+
                 after = len(self.passable) + len(self.blocked)
 
             logger.info(f"[Map] 병합: {before}개 → {after}개")
@@ -513,6 +527,8 @@ class GameMap:
     @staticmethod
     def _find_main_cluster(sorted_vals):
         """정렬된 좌표에서 가장 큰 클러스터 범위 반환"""
+        if not sorted_vals:
+            return 0, 0
         if len(sorted_vals) <= 1:
             return sorted_vals[0], sorted_vals[0]
 

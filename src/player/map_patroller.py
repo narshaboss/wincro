@@ -52,12 +52,23 @@ class MapPatroller:
         logger.info(f"[Patroller] 순찰 시작: {count}개 순찰 좌표 (인덱스 {self._current_index}부터, 현재위치={current_pos})")
 
     def reset(self, current_pos: Tuple[int, int]):
-        """방문 기록 리셋 후 재순찰"""
+        """방문 기록 리셋 후 재순찰 (현재 위치 기준 가장 가까운 포인트부터)"""
         self._visited.clear()
         self._current_target = None
-        self._current_index = 0
         self._is_completed = False
-        logger.info("[Patroller] 순찰 리셋 (재순찰)")
+        patrol_points = self.game_map.patrol_points
+        if patrol_points:
+            min_dist = float('inf')
+            nearest_idx = 0
+            for i, pos in enumerate(patrol_points):
+                dist = abs(pos[0] - current_pos[0]) + abs(pos[1] - current_pos[1])
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_idx = i
+            self._current_index = nearest_idx
+        else:
+            self._current_index = 0
+        logger.info(f"[Patroller] 순찰 리셋 (재순찰, 인덱스 {self._current_index}부터)")
 
     def get_next_target(self, current_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
         """
@@ -70,9 +81,10 @@ class MapPatroller:
         if not patrol_points:
             return None
 
-        # 현재 목표 도달 확인 (정확히 일치)
+        # 현재 목표 도달 확인 (±1타일 허용)
         if self._current_target is not None:
-            if current_pos == self._current_target:
+            _dist = abs(current_pos[0] - self._current_target[0]) + abs(current_pos[1] - self._current_target[1])
+            if _dist <= 1:
                 self._visited.add(self._current_target)
                 logger.info(f"[Patroller] 순찰 좌표 도달: {self._current_target} ({len(self._visited)}/{len(patrol_points)})")
                 self._current_target = None
@@ -86,11 +98,22 @@ class MapPatroller:
         next_target = self._find_next_in_order()
 
         if next_target is None:
-            # 모든 좌표 방문 완료 → 리셋
+            # 모든 좌표 방문 완료 → 리셋 (현재 위치 기준 가장 가까운 포인트부터)
             if self._visited:
+                self._is_completed = True
                 logger.info(f"[Patroller] 전체 순찰 완료 ({len(self._visited)}개) → 재순찰")
                 self._visited.clear()
-                self._current_index = 0
+                if patrol_points:
+                    min_dist = float('inf')
+                    nearest_idx = 0
+                    for i, pos in enumerate(patrol_points):
+                        dist = abs(pos[0] - current_pos[0]) + abs(pos[1] - current_pos[1])
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest_idx = i
+                    self._current_index = nearest_idx
+                else:
+                    self._current_index = 0
                 next_target = self._find_next_in_order()
             if next_target is None:
                 return None
@@ -105,6 +128,13 @@ class MapPatroller:
 
         # 현재 인덱스부터 끝까지 순서대로 탐색
         for i in range(self._current_index, total):
+            pos = patrol_points[i]
+            if pos not in self._visited:
+                self._current_index = i
+                return pos
+
+        # 래핑: 처음부터 현재 인덱스까지 탐색 (미방문 포인트 놓치지 않도록)
+        for i in range(0, self._current_index):
             pos = patrol_points[i]
             if pos not in self._visited:
                 self._current_index = i

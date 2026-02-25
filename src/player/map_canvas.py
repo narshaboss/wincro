@@ -69,6 +69,9 @@ class MapCanvas(tk.Canvas):
         self.target_pos: Optional[Tuple[int, int]] = None
         self.start_pos: Optional[Tuple[int, int]] = None
         self.path: List[Tuple[int, int]] = []
+        self.route_starts: List[Tuple[int, int]] = []  # 경로 출발좌표 리스트
+        self.route_ends: List[Tuple[int, int]] = []    # 경로 도착좌표 리스트
+        self.route_walls: List[Tuple[int, int]] = []   # 사용자 지정 벽좌표 리스트
 
         # 편집 모드: None / "blocked" / "patrol" / "passable" / "soft_blocked" / "start" / "end"
         self.edit_tile_type = None
@@ -80,8 +83,7 @@ class MapCanvas(tk.Canvas):
         self.bind("<ButtonPress-1>", self._on_drag_start)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_click)
-        self.bind("<ButtonPress-3>", self._on_right_press)    # 우클릭: 타일 배치/삭제
-        self.bind("<B3-Motion>", self._on_right_drag)          # 우클릭 드래그: 연속 배치/삭제
+        self.bind("<ButtonPress-3>", self._on_right_press)      # 우클릭: 타일 배치
         self._right_drag_last = None  # 드래그 중 마지막 타일 좌표
         self.bind("<MouseWheel>", self._on_zoom)  # Windows
         self.bind("<Button-4>", self._on_zoom)    # Linux scroll up
@@ -93,12 +95,18 @@ class MapCanvas(tk.Canvas):
     def set_positions(self, player: Optional[Tuple[int, int]] = None,
                       target: Optional[Tuple[int, int]] = None,
                       path: Optional[List[Tuple[int, int]]] = None,
-                      start: Optional[Tuple[int, int]] = None):
+                      start: Optional[Tuple[int, int]] = None,
+                      route_starts: Optional[List[Tuple[int, int]]] = None,
+                      route_ends: Optional[List[Tuple[int, int]]] = None,
+                      route_walls: Optional[List[Tuple[int, int]]] = None):
         """위치 설정"""
         self.player_pos = player
         self.target_pos = target
         self.start_pos = start
         self.path = path or []
+        self.route_starts = route_starts or []
+        self.route_ends = route_ends or []
+        self.route_walls = route_walls or []
 
     def center_on(self, x: int, y: int):
         """특정 좌표를 중앙에"""
@@ -288,6 +296,57 @@ class MapCanvas(tk.Canvas):
                 self.create_text(cx, cy, text=str(idx + 1),
                                fill="white", font=("맑은 고딕", max(7, ts // 3), "bold"))
 
+        # 2.8. 경로 출발좌표 그리기 (보라색 박스 + "출N")
+        for idx, (tx, ty) in enumerate(self.route_starts):
+            if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
+                continue
+            x1 = self.offset_x + tx * ts
+            y1 = self.offset_y + ty * ts
+            x2 = x1 + ts
+            y2 = y1 + ts
+            self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["start_tile"],
+                                outline=self.COLORS["start_tile_border"], width=2)
+            if ts >= 14:
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                label = f"출{idx + 1}" if len(self.route_starts) > 1 else "출"
+                self.create_text(cx, cy, text=label,
+                               fill="white", font=("맑은 고딕", max(7, ts // 3), "bold"))
+
+        # 2.9. 경로 도착좌표 그리기 (초록색 박스 + "착N")
+        for idx, (tx, ty) in enumerate(self.route_ends):
+            if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
+                continue
+            x1 = self.offset_x + tx * ts
+            y1 = self.offset_y + ty * ts
+            x2 = x1 + ts
+            y2 = y1 + ts
+            self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["target_tile"],
+                                outline=self.COLORS["target_tile_border"], width=2)
+            if ts >= 14:
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                label = f"착{idx + 1}" if len(self.route_ends) > 1 else "착"
+                self.create_text(cx, cy, text=label,
+                               fill="white", font=("맑은 고딕", max(7, ts // 3), "bold"))
+
+        # 2.10. 사용자 지정 벽좌표 그리기 (빨간색 X 표시 + "벽N")
+        for idx, (tx, ty) in enumerate(self.route_walls):
+            if not (min_tile_x <= tx <= max_tile_x and min_tile_y <= ty <= max_tile_y):
+                continue
+            x1 = self.offset_x + tx * ts
+            y1 = self.offset_y + ty * ts
+            x2 = x1 + ts
+            y2 = y1 + ts
+            self.create_rectangle(x1, y1, x2, y2, fill="#8b0000",
+                                outline="#ff4444", width=2)
+            if ts >= 14:
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                label = f"벽{idx + 1}" if len(self.route_walls) > 1 else "벽"
+                self.create_text(cx, cy, text=label,
+                               fill="white", font=("맑은 고딕", max(7, ts // 3), "bold"))
+
         # 3. 경로 그리기
         if self.path and len(self.path) > 1:
             points = []
@@ -299,8 +358,8 @@ class MapCanvas(tk.Canvas):
                 self.create_line(points, fill=self.COLORS["path"],
                                width=max(2, int(3 * self.zoom)), smooth=True)
 
-        # 4. 출발 좌표 타일 (보라색) - 외부 설정 또는 맵 저장값
-        start = self.start_pos or self.game_map.start_pos
+        # 4. 출발 좌표 타일 (보라색) - 사용자 경로좌표가 있으면 기존 것 표시 안 함
+        start = self.start_pos or (self.game_map.start_pos if not self.route_starts else None)
         if start:
             sx, sy = start
             x1 = self.offset_x + sx * ts
@@ -310,8 +369,8 @@ class MapCanvas(tk.Canvas):
             self.create_rectangle(x1, y1, x2, y2, fill=self.COLORS["start_tile"],
                                 outline=self.COLORS["start_tile_border"], width=2)
 
-        # 5. 도착 좌표 타일 (초록색) - 외부 설정 또는 맵 저장값
-        target = self.target_pos or self.game_map.end_pos
+        # 5. 도착 좌표 타일 (초록색) - 사용자 경로좌표가 있으면 기존 것 표시 안 함
+        target = self.target_pos or (self.game_map.end_pos if not self.route_ends else None)
         if target:
             tx, ty = target
             x1 = self.offset_x + tx * ts
@@ -464,9 +523,29 @@ class MapCanvas(tk.Canvas):
         """드래그 시작"""
         self._drag_start = (event.x, event.y)
         self._drag_moved = False
+        # 편집모드면 첫 타일 즉시 배치
+        if self.edit_tile_type:
+            pos = self._get_tile_pos(event)
+            self._left_drag_last = pos
+            self._place_tile(pos, self.edit_tile_type)
+            self.render()
+            if self._on_tile_changed:
+                self._on_tile_changed()
 
     def _on_drag(self, event):
         """드래그 중"""
+        # 편집모드: 연속 배치
+        if self.edit_tile_type:
+            pos = self._get_tile_pos(event)
+            if pos != getattr(self, '_left_drag_last', None):
+                self._left_drag_last = pos
+                self._place_tile(pos, self.edit_tile_type)
+                self.render()
+                if self._on_tile_changed:
+                    self._on_tile_changed()
+            self._drag_moved = True
+            return
+        # 일반모드: 맵 이동
         if self._drag_start:
             dx = event.x - self._drag_start[0]
             dy = event.y - self._drag_start[1]
@@ -492,7 +571,7 @@ class MapCanvas(tk.Canvas):
 
         pos = (tile_x, tile_y)
 
-        # 편집 모드
+        # 편집 모드 (드래그 없이 클릭만)
         if self.edit_tile_type:
             self._place_tile(pos, self.edit_tile_type)
             self.render()
@@ -526,11 +605,22 @@ class MapCanvas(tk.Canvas):
             return
 
         if tile_type == "start":
-            self.game_map.start_pos = pos
+            if self.game_map.start_pos == pos:
+                self.game_map.start_pos = None
+            else:
+                self.game_map.start_pos = pos
             return
 
         if tile_type == "end":
-            self.game_map.end_pos = pos
+            if self.game_map.end_pos == pos:
+                self.game_map.end_pos = None
+            else:
+                self.game_map.end_pos = pos
+            return
+
+        # 삭제 모드: 모든 타입에서 제거 (unknown으로)
+        if tile_type == "delete":
+            self._delete_tile(pos)
             return
 
         # 일반 타일: 기존 제거 후 새 타입
@@ -581,34 +671,15 @@ class MapCanvas(tk.Canvas):
         return removed
 
     def _on_right_press(self, event):
-        """우클릭 - 박스 활성화 시에만 배치"""
+        """우클릭 - 편집모드에서 배치"""
         if not self.edit_tile_type:
             return
         pos = self._get_tile_pos(event)
-        self._right_drag_last = pos
         self._place_tile(pos, self.edit_tile_type)
         self.render()
         self._show_coord_popup(event.x, event.y, pos[0], pos[1], f"→ {self.edit_tile_type}")
         if self._on_tile_changed:
             self._on_tile_changed()
-
-    def _on_right_drag(self, event):
-        """우클릭 드래그 - 박스 활성화 시에만 연속 배치"""
-        if not self.edit_tile_type:
-            return
-        pos = self._get_tile_pos(event)
-        if pos == self._right_drag_last:
-            return
-        self._right_drag_last = pos
-        self._place_tile(pos, self.edit_tile_type)
-        self.render()
-        if self._on_tile_changed:
-            self._on_tile_changed()
-        else:
-            if self._delete_tile(pos):
-                self.render()
-                if self._on_tile_changed:
-                    self._on_tile_changed()
 
     def _show_coord_popup(self, screen_x: int, screen_y: int,
                           tile_x: int, tile_y: int, tile_type: str):
@@ -671,7 +742,8 @@ class MapWindow(tk.Toplevel):
     """맵 전용 창"""
 
     def __init__(self, master, game_map: GameMap, title: str = "맵 보기",
-                 restore_callback=None, save_callback=None):
+                 restore_callback=None, save_callback=None,
+                 clear_callback=None):
         super().__init__(master)
         self.title(f"🗺️ {title}")
         self.configure(bg="#f0f4f8")
@@ -679,6 +751,7 @@ class MapWindow(tk.Toplevel):
         self.game_map = game_map
         self._restore_callback = restore_callback
         self._save_callback = save_callback
+        self._clear_callback = clear_callback
 
         # 맵 크기에 맞게 창 크기 자동 조절
         win_w, win_h = self._calc_window_size(game_map)
@@ -707,6 +780,11 @@ class MapWindow(tk.Toplevel):
             tk.Button(toolbar, text="되돌리기", command=self._on_restore,
                      bg="#d08770", fg="white", relief="flat", padx=8).pack(side="left", padx=2)
 
+        # 초기화 버튼 (콜백이 있을 때만 — 잠금맵은 콜백 전달 안 함)
+        if clear_callback:
+            tk.Button(toolbar, text="초기화", command=self._on_clear,
+                     bg="#bf616a", fg="white", relief="flat", padx=8).pack(side="left", padx=2)
+
         # 범례 (모두 클릭하면 해당 타일 편집 모드)
         legend = tk.Frame(self, bg="#f0f4f8")
         legend.pack(fill="x", padx=10)
@@ -716,6 +794,7 @@ class MapWindow(tk.Toplevel):
             ("passable",     "#a8d4f0", "이동"),
             ("blocked",      "#e05050", "벽"),
             ("soft_blocked", "#e8a040", "임시"),
+            ("delete",       "#888888", "삭제"),
             ("patrol",       "#1a1a1a", "순찰"),
             ("start",        "#9b59b6", "출발"),
             ("end",          "#50c878", "도착"),
@@ -844,10 +923,29 @@ class MapWindow(tk.Toplevel):
             self.map_canvas.auto_fit()
             self.map_canvas.render()
 
+    def _on_clear(self):
+        """맵 초기화 실행"""
+        from tkinter import messagebox
+        if not messagebox.askyesno("맵 초기화",
+                "맵 데이터를 모두 삭제하시겠습니까?\n되돌릴 수 없습니다.",
+                parent=self):
+            return
+        if self._clear_callback:
+            self._clear_callback()
+            self.map_canvas.auto_fit()
+            self.map_canvas.render()
+            messagebox.showinfo("초기화 완료", "맵이 초기화되었습니다.", parent=self)
+            self.destroy()
+
     def update_positions(self, player: Optional[Tuple[int, int]] = None,
                         target: Optional[Tuple[int, int]] = None,
                         path: Optional[List[Tuple[int, int]]] = None,
-                        start: Optional[Tuple[int, int]] = None):
+                        start: Optional[Tuple[int, int]] = None,
+                        route_starts: Optional[List[Tuple[int, int]]] = None,
+                        route_ends: Optional[List[Tuple[int, int]]] = None,
+                        route_walls: Optional[List[Tuple[int, int]]] = None):
         """위치 업데이트"""
-        self.map_canvas.set_positions(player, target, path, start)
+        self.map_canvas.set_positions(player, target, path, start,
+                                      route_starts=route_starts, route_ends=route_ends,
+                                      route_walls=route_walls)
         self.map_canvas.render()

@@ -29,6 +29,23 @@ def set_action_clipboard(action):
         _action_clipboard = action
 
 
+# 경유지 클립보드 (복사/붙여넣기용) - 특화모드 다이얼로그 간 공유
+_waypoint_clipboard = None
+
+
+def get_waypoint_clipboard():
+    """경유지 클립보드에서 가져오기 (스레드 안전)"""
+    with _clipboard_lock:
+        return _waypoint_clipboard
+
+
+def set_waypoint_clipboard(waypoints):
+    """경유지 클립보드에 저장 (스레드 안전)"""
+    global _waypoint_clipboard
+    with _clipboard_lock:
+        _waypoint_clipboard = waypoints
+
+
 # 액션 타입별 한국어 이름 (전체)
 ACTION_NAMES = {
     "click": "왼쪽 클릭",
