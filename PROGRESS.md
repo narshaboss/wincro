@@ -99,6 +99,60 @@
 
 ## 버그 수정 이력
 
+### 2026-03-03: v1.0.137 정밀분석 + 맵핑테스트 버그 수정 (v1.0.138)
+
+**v1.0.137 정밀분석 수정 (8파일 36건):**
+- **[CRITICAL] 붙여넣기 AttributeError**: Action vs AutomationRule isinstance 분기 (player_view.py)
+- **보스방 GIL 누락 6곳**: match_binary 직후 `time.sleep(0)` 추가
+- **approaching→patrolling 상태 누수**: 6개 변수 초기화
+- **self.after 무가드 14곳**: `_ui_update_ok` 가드 적용
+- **모니터 스레드 TclError**: try/except 래핑
+- **배치렌더 타이머 미취소**: _on_close에서 after_cancel
+- **pyautogui.PAUSE 경쟁조건**: 전체 try 블록을 락 안으로 (rule_executor.py)
+- **rule_executor GIL/sleep/path_pos_index/stop_event/벽등록/탈출스킬** 6건 수정
+- **game_map falsy-zero 3곳**: save/load/merge에서 `is not None`
+- **enhanced_matcher 좌표역산 오류**: bottom/right -offset
+- **main_window GUILogHandler 누수**: _on_close에서 핸들러 제거
+- **analyzer_view 진행콜백 큐폭주**: 200ms 쓰로틀링
+- **action_player match_binary 미통일**: TM_CCOEFF_NORMED 직접 매칭
+- **is_fully_explored soft_blocked 미포함**: soft_blocked도 탐색완료 판정에 포함
+- **continue 전 sleep 추가 3곳** + **self.after 가드 7곳 추가** (player_view.py)
+
+**맵핑테스트 버그 수정:**
+- **포탈 감지 시 실행중지 → 탐색계속**: 벽 등록 후 continue (2곳)
+- **포탈 continue 후 prev_x/prev_y 미갱신 → 무한 재감지**: prev 갱신 추가
+- **_local_explore_phase: full_mapping_exploring = True 잔존 3곳**: 제거 (근처맵핑≠전체맵핑)
+- **_mt_has_map 조건으로 is_boss_dungeon=False → 프론티어 탐색 건너뜀**: full_mapping_exploring 직접 사용
+- **프론티어 반경 불일치 → 진동**: _find_nearest_frontier에 explore_center/explore_radius 필터 추가
+- **max_iterations 5000 제한**: 맵핑테스트 50000으로 증가
+- **보스구간 is_boss_dungeon 영구 True → 도착 불가**: _mt_explore_done 플래그 추가
+- **보스구간 (0,0) 도착지 착각**: 전체맵핑 완료 후 보스구간 즉시 다음 경유지/완료 처리
+- **Phase 1→2 전환 시 last_dir/stuck_count 미리셋**: 추가
+
+**부분실행 game_mode RuleExecutor 라우팅 수정:**
+- game_mode 규칙 포함 시 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends 지원)
+
+**UI 개선:**
+- GameModeDialog 창 깜빡임 방지 (화면 밖 배치 후 이동)
+- 붙여넣기 시 하위 규칙 자동 접기
+- 특화모드 이름 수정 시 GameModeConfig.name 동기화
+
+**수정된 파일:**
+- `src/ui/player_view.py` - 맵핑테스트 + 정밀분석 수정
+- `src/player/rule_executor.py` - GIL/sleep/경쟁조건 수정
+- `src/player/game_map.py` - falsy-zero 수정
+- `src/player/simple_pathfinder.py` - A* GIL 해제
+- `src/player/map_patroller.py` - nearest 순서 수정
+- `src/player/action_player.py` - match_binary 통일
+- `src/player/obstacle_avoidance.py` - pathfind_mode 누수 수정
+- `src/player/minimap_pathfinder.py` - max_iterations 전달
+- `src/player/map_explorer.py` - soft_blocked 탐색완료 포함
+- `src/analyzer/enhanced_matcher.py` - 좌표역산 수정
+- `src/ui/main_window.py` - GUILogHandler 누수 수정
+- `src/ui/analyzer_view.py` - 진행콜백 쓰로틀링
+
+---
+
 ### 2026-02-25: 다중 특화모드 + 맵/경로 시스템 대규모 개선 (v1.0.137)
 
 **다중 특화모드 지원:**
@@ -1611,7 +1665,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-02-25 (다중 특화모드 + 맵/경로 시스템 대규모 개선)
+- 마지막 업데이트: 2026-03-03 (v1.0.137 정밀분석 + 맵핑테스트 버그 수정)
 
 ## 업데이트 규칙
 

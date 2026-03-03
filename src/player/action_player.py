@@ -888,31 +888,36 @@ class ActionPlayer:
             try:
                 screen = self._screen_recorder.capture_screenshot()
                 if screen is not None:
-                    result = self._template_matcher.match_binary(
-                        screen,
-                        action.wait_for_image,
-                        threshold=action.confidence
-                    )
-                    if not result.found:
-                        # 폴백: 기존 일반 매칭
-                        result = self._template_matcher.match(
-                            screen,
-                            action.wait_for_image,
-                            threshold=action.confidence
-                        )
+                    # TM_CCOEFF_NORMED 직접 매칭 (rule_executor 방식 통일)
+                    img_array = np.fromfile(action.wait_for_image, np.uint8)
+                    template = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
+                    if template is not None:
+                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY) if len(screen.shape) == 3 else screen
+                        th, tw = template.shape[:2]
+                        sh, sw = screen_gray.shape[:2]
+                        found = False
+                        center_x, center_y = 0, 0
+                        if tw <= sw and th <= sh:
+                            match_result = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+                            time.sleep(0)  # GIL 해제
+                            _, max_val, _, max_loc = cv2.minMaxLoc(match_result)
+                            if max_val >= action.confidence:
+                                found = True
+                                center_x = max_loc[0] + tw // 2
+                                center_y = max_loc[1] + th // 2
 
-                    elapsed = time.time() - start_time
+                        elapsed = time.time() - start_time
 
-                    if disappear:
-                        # 이미지가 사라질 때까지 대기
-                        if not result.found:
-                            logger.info(f"이미지 사라짐 감지 (대기 시간: {elapsed:.1f}초)")
-                            return True, ""
-                    else:
-                        # 이미지가 나타날 때까지 대기
-                        if result.found:
-                            logger.info(f"이미지 나타남 감지: ({result.center_x}, {result.center_y}) (대기 시간: {elapsed:.1f}초)")
-                            return True, ""
+                        if disappear:
+                            # 이미지가 사라질 때까지 대기
+                            if not found:
+                                logger.info(f"이미지 사라짐 감지 (대기 시간: {elapsed:.1f}초)")
+                                return True, ""
+                        else:
+                            # 이미지가 나타날 때까지 대기
+                            if found:
+                                logger.info(f"이미지 나타남 감지: ({center_x}, {center_y}) (대기 시간: {elapsed:.1f}초)")
+                                return True, ""
             finally:
                 # 메모리 해제 (저사양 PC 지원)
                 del screen

@@ -328,18 +328,20 @@ class GameMap:
 
     def is_fully_explored(self) -> bool:
         """맵 경계가 완전히 폐쇄되었는지 확인.
-        모든 passable 타일의 4방향 이웃이 passable 또는 blocked이면 True.
-        soft_blocked는 임시 장애물이므로 탐색 완료 판정에서 제외."""
+        모든 passable 타일의 4방향 이웃이 passable, blocked, 또는 soft_blocked이면 True.
+        soft_blocked도 탐색된 타일이므로 탐색 완료 판정에 포함."""
         with self._lock:
             passable_snap = set(self.passable)
             blocked_snap = set(self.blocked)
+            soft_blocked_snap = set(self.soft_blocked)
         if len(passable_snap) < 10:
             return False
         for (x, y) in passable_snap:
             for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                 neighbor = (x + dx, y + dy)
                 if neighbor not in passable_snap and \
-                   neighbor not in blocked_snap:
+                   neighbor not in blocked_snap and \
+                   neighbor not in soft_blocked_snap:
                     return False
         return True
 
@@ -360,8 +362,8 @@ class GameMap:
             "blocked": [list(p) for p in blocked_snapshot],
             "soft_blocked": {f"{p[0]},{p[1]}": c for p, c in soft_blocked_snapshot.items()},
             "patrol_points": [list(p) for p in patrol_snapshot],
-            "start_pos": list(start_snap) if start_snap else None,
-            "end_pos": list(end_snap) if end_snap else None,
+            "start_pos": list(start_snap) if start_snap is not None else None,
+            "end_pos": list(end_snap) if end_snap is not None else None,
         }
 
         path = Path(filepath)
@@ -394,9 +396,9 @@ class GameMap:
                 new_soft_blocked[pos] = count
             new_patrol = [tuple(p) for p in data.get("patrol_points", [])]
             sp = data.get("start_pos")
-            new_start = tuple(sp) if sp else None
+            new_start = tuple(sp) if sp is not None else None
             ep = data.get("end_pos")
-            new_end = tuple(ep) if ep else None
+            new_end = tuple(ep) if ep is not None else None
 
             # 데이터 할당은 lock 안에서 원자적으로
             with self._lock:
@@ -435,9 +437,9 @@ class GameMap:
                 loaded_soft_blocked[pos] = count
             loaded_patrol = [tuple(p) for p in data.get("patrol_points", [])]
             sp = data.get("start_pos")
-            loaded_start = tuple(sp) if sp else None
+            loaded_start = tuple(sp) if sp is not None else None
             ep = data.get("end_pos")
-            loaded_end = tuple(ep) if ep else None
+            loaded_end = tuple(ep) if ep is not None else None
             loaded_name = data.get("name", "Unknown")
 
             # 병합은 lock 안에서 원자적으로
@@ -464,15 +466,16 @@ class GameMap:
                 if loaded_patrol and not self.patrol_points:
                     self.patrol_points = loaded_patrol
                 # 출발지/도착지 병합 (없으면 가져옴)
-                if loaded_start and not self.start_pos:
+                if loaded_start is not None and self.start_pos is None:
                     self.start_pos = loaded_start
-                if loaded_end and not self.end_pos:
+                if loaded_end is not None and self.end_pos is None:
                     self.end_pos = loaded_end
 
                 # 출발지가 설정되면 반드시 blocked에 포함 (포탈 되돌아가기 방지)
                 if self.start_pos is not None:
                     self.passable.discard(self.start_pos)
                     self.blocked.add(self.start_pos)
+                    self.soft_blocked.pop(self.start_pos, None)  # soft_blocked 충돌 해결
 
                 after = len(self.passable) + len(self.blocked)
 
@@ -519,6 +522,11 @@ class GameMap:
                 if not (min_x <= pos[0] <= max_x and min_y <= pos[1] <= max_y):
                     del self.soft_blocked[pos]
                     removed += 1
+            # 순찰 좌표도 범위 밖이면 제거
+            self.patrol_points = [
+                p for p in self.patrol_points
+                if min_x <= p[0] <= max_x and min_y <= p[1] <= max_y
+            ]
 
         if removed > 0:
             logger.info(f"[Map] 이상치 정리: {removed}개 타일 제거 (범위: X[{min_x}~{max_x}] Y[{min_y}~{max_y}])")
@@ -561,6 +569,9 @@ class GameMap:
             self.blocked.clear()
             self.soft_blocked.clear()
             self.patrol_points.clear()
+            self.start_pos = None
+            self.end_pos = None
+            self.name = "Unknown"
         logger.info("[Map] 초기화")
 
 

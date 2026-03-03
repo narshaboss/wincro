@@ -7,6 +7,7 @@
 
 import heapq
 import math
+import time
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
@@ -100,6 +101,8 @@ class AStarPathfinder:
         iterations = 0
         while open_set:
             iterations += 1
+            if iterations % 200 == 0:
+                time.sleep(0)  # GIL 해제
             if iterations > max_iterations:
                 logger.warning(f"[A*] 최대 반복 초과 ({max_iterations}): {start} → {goal}")
                 return []
@@ -231,7 +234,8 @@ class MinimapPathfinder:
             로드 성공 여부
         """
         try:
-            self._minimap_image = cv2.imread(image_path)
+            img_array = np.fromfile(image_path, np.uint8)
+            self._minimap_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if self._minimap_image is None:
                 logger.error(f"[미니맵] 이미지 로드 실패: {image_path}")
                 return False
@@ -651,7 +655,8 @@ class MinimapNavigator:
             return None
 
         try:
-            dest_template = cv2.imread(dest_image_path)
+            img_array = np.fromfile(dest_image_path, np.uint8)
+            dest_template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if dest_template is None:
                 logger.error(f"[네비] 목적지 이미지 로드 실패: {dest_image_path}")
                 return None

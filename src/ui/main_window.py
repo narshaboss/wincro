@@ -802,7 +802,10 @@ class MainWindow(ctk.CTk):
 
         def _load_and_update():
             self._refresh_mini_plans_sync()
-            self.after(0, self._update_mini_plan_dropdown)
+            try:
+                self.after(0, self._update_mini_plan_dropdown)
+            except (tk.TclError, RuntimeError):
+                pass
 
         threading.Thread(target=_load_and_update, daemon=True).start()
 
@@ -924,10 +927,10 @@ class MainWindow(ctk.CTk):
             except (tk.TclError, RuntimeError):
                 pass
 
-        handler = GUILogHandler(add_log, max_lines=100)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', '%H:%M:%S'))
-        handler.setLevel(logging.DEBUG)
-        logging.getLogger().addHandler(handler)
+        self._mini_log_handler = GUILogHandler(add_log, max_lines=100)
+        self._mini_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', '%H:%M:%S'))
+        self._mini_log_handler.setLevel(logging.DEBUG)
+        logging.getLogger().addHandler(self._mini_log_handler)
 
     def _show_mode_menu(self):
         """창 모드 변경 메뉴"""
@@ -1174,7 +1177,10 @@ class MainWindow(ctk.CTk):
                         break
 
                 if not cached_plan:
-                    self.after(0, lambda: self._mini_on_load_failed("⚠ 플랜을 찾을 수 없음"))
+                    try:
+                        self.after(0, lambda: self._mini_on_load_failed("⚠ 플랜을 찾을 수 없음"))
+                    except (tk.TclError, RuntimeError):
+                        pass
                     return
 
                 # JSON에서 최신 플랜 로드 (원래 파일 경로 사용)
@@ -1210,11 +1216,17 @@ class MainWindow(ctk.CTk):
                 selected_plan.total_repeat_count = repeat_count
 
                 # 메인 스레드에서 실행 시작
-                self.after(0, lambda: self._mini_start_execution(selected_plan, repeat_count))
+                try:
+                    self.after(0, lambda: self._mini_start_execution(selected_plan, repeat_count))
+                except (tk.TclError, RuntimeError):
+                    pass
 
             except Exception as e:
                 logger.error(f"[미니플레이어] 플랜 로드 오류: {e}")
-                self.after(0, lambda: self._mini_on_load_failed(f"✗ 로드 오류: {e}"))
+                try:
+                    self.after(0, lambda: self._mini_on_load_failed(f"✗ 로드 오류: {e}"))
+                except (tk.TclError, RuntimeError):
+                    pass
 
         threading.Thread(target=load_and_start, daemon=True).start()
 
@@ -1257,7 +1269,10 @@ class MainWindow(ctk.CTk):
                 plan_file = Path(plan_path)
                 if not plan_file.exists():
                     logger.error(f"[시퀀스] 플랜 파일 없음: {plan_path}")
-                    self.after(0, lambda: self._mini_on_complete(False, f"플랜 파일 없음: {plan_path}"))
+                    try:
+                        self.after(0, lambda: self._mini_on_complete(False, f"플랜 파일 없음: {plan_path}"))
+                    except (tk.TclError, RuntimeError):
+                        pass
                     self._sequence_mode = False
                     return
 
@@ -1286,11 +1301,17 @@ class MainWindow(ctk.CTk):
                     )
                     self._mini_start_execution(plan, repeat_count)
 
-                self.after(0, start_on_main)
+                try:
+                    self.after(0, start_on_main)
+                except (tk.TclError, RuntimeError):
+                    pass
 
             except Exception as e:
                 logger.error(f"[시퀀스] 플랜 로드 오류: {e}")
-                self.after(0, lambda: self._mini_on_complete(False, f"시퀀스 로드 오류: {e}"))
+                try:
+                    self.after(0, lambda: self._mini_on_complete(False, f"시퀀스 로드 오류: {e}"))
+                except (tk.TclError, RuntimeError):
+                    pass
                 self._sequence_mode = False
 
         threading.Thread(target=load_and_start, daemon=True).start()
@@ -1338,7 +1359,10 @@ class MainWindow(ctk.CTk):
             self._rule_executor.execute_plan(plan)
         except Exception as e:
             logger.error(f"[미니플레이어] 플랜 실행 오류: {e}")
-            self.after(0, lambda: self._mini_on_complete(False, str(e)))
+            try:
+                self.after(0, lambda: self._mini_on_complete(False, str(e)))
+            except (tk.TclError, RuntimeError):
+                pass
 
     def auto_run_sequence(self, plan_paths: list, repeats: list = None) -> bool:
         """시작 시 자동 실행 - 플랜 순서 모드 (플레이 모드 전용)"""
@@ -1491,7 +1515,10 @@ class MainWindow(ctk.CTk):
                     self._mini_execute_plan(plan)
                 except Exception as e:
                     logger.error(f"[시퀀스] 반복 재로드 오류: {e}")
-                    self.after(0, lambda: self._mini_on_complete(False, str(e)))
+                    try:
+                        self.after(0, lambda: self._mini_on_complete(False, str(e)))
+                    except (tk.TclError, RuntimeError):
+                        pass
             threading.Thread(target=reload_and_execute, daemon=True).start()
         else:
             # 일반 모드: 캐시에서 찾기
@@ -1659,7 +1686,10 @@ class MainWindow(ctk.CTk):
                         return
                     # UI 스레드에서 캡쳐 실행
                     logger.info("F8 전체화면 캡쳐 시작...")
-                    self.after(0, self._capture_full_screen)
+                    try:
+                        self.after(0, self._capture_full_screen)
+                    except (tk.TclError, RuntimeError):
+                        pass
             except Exception as e:
                 logger.error(f"F8 키 처리 오류: {e}")
 
@@ -1704,7 +1734,10 @@ class MainWindow(ctk.CTk):
                 success = cv2.imwrite(str(filepath), screenshot_bgr)
                 if success:
                     logger.info(f"F8 전체화면 캡쳐 저장: {filepath}")
-                    self.after(0, lambda: self._open_crop_dialog(str(filepath)))
+                    try:
+                        self.after(0, lambda: self._open_crop_dialog(str(filepath)))
+                    except (tk.TclError, RuntimeError):
+                        pass
                 else:
                     logger.error(f"이미지 저장 실패: {filepath}")
 
@@ -1887,6 +1920,11 @@ class MainWindow(ctk.CTk):
                 self._keyboard_listener = None
             except (OSError, RuntimeError):
                 pass
+
+        # 미니 로그 핸들러 정리
+        if hasattr(self, '_mini_log_handler') and self._mini_log_handler:
+            logging.getLogger().removeHandler(self._mini_log_handler)
+            self._mini_log_handler = None
 
         # 로그 패널 정리
         if hasattr(self, '_log_panel'):

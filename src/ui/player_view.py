@@ -1591,6 +1591,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         if result is not None:  # 빈 문자열도 허용 (이름 삭제)
             rule.description = result.strip()
+            # 특화모드인 경우 GameModeConfig.name도 동기화
+            if rule.action_type == "game_mode" and hasattr(self, '_plan'):
+                _gm_cfg = self._plan.game_modes.get(rule.rule_id)
+                if _gm_cfg is not None:
+                    _gm_cfg.name = result.strip()
             self._modified = True
             self._refresh_action_list()
             logger.info(f"규칙 이름 수정: {rule.description}")
@@ -1937,6 +1942,25 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if rules_to_run:
             final_first = rules_to_run[0]
             logger.info(f"[부분실행] 최종 실행 첫번째: rule_id={final_first.rule_id}, type={final_first.action_type}, desc={final_first.description}")
+
+        # game_mode 규칙 포함 여부 확인
+        # → 있으면 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends/보스 지원)
+        # → RuleExecutor.execute_game_mode_coordinate는 간소화 버전이라 route_ends 미지원 → 조기 도착 판정 버그
+        _has_game_mode = any(
+            r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id)
+            for r in rules_to_run
+        )
+        if _has_game_mode:
+            logger.info(f"[부분실행] game_mode 포함 → _run_remaining_rules 경유 (GameModeDialog 사용)")
+            self._is_running = True
+            self.title("▶ 실행 중... (아무 ▶ 버튼 클릭시 중지)")
+            self.configure(fg_color="#1a3a1a")
+            try:
+                self.grab_release()
+            except tk.TclError:
+                pass
+            self._run_remaining_rules(rules_to_run)
+            return
 
         # 부분 plan 생성
         partial_plan = AutomationPlan(
@@ -2436,6 +2460,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 대상 규칙의 자식으로 추가
         target_rule.children.append(new_rule)
+        # 붙여넣은 규칙 + 모든 하위 규칙을 접힌 상태로 등록
+        def _collapse_all(r):
+            if r.children:
+                self._collapsed_items.add(r.rule_id)
+            for c in r.children:
+                _collapse_all(c)
+        _collapse_all(new_rule)
+        # 부모도 자식이 생겼으면 접기
+        if target_rule.rule_id not in self._collapsed_items and target_rule.children:
+            self._collapsed_items.add(target_rule.rule_id)
         self._modified = True
         self._refresh_action_list()
         logger.info(f"규칙 붙여넣기: {new_rule.rule_id} -> {target_rule.rule_id}")
@@ -2468,6 +2502,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 최상위에 추가
         self._plan.initial_rules.append(new_rule)
+        # 붙여넣은 규칙 + 모든 하위 규칙을 접힌 상태로 등록
+        def _collapse_all(r):
+            if r.children:
+                self._collapsed_items.add(r.rule_id)
+            for c in r.children:
+                _collapse_all(c)
+        _collapse_all(new_rule)
         self._modified = True
         self._refresh_action_list()
         logger.info(f"규칙 최상위에 붙여넣기: {new_rule.rule_id}")
@@ -3054,17 +3095,15 @@ class GameModeDialog(ctk.CTkToplevel):
         self.resizable(True, True)
         self.minsize(1200, 800)
 
-        self.lift()
-        self.focus_force()
-        self.attributes('-topmost', True)
-        self.after(100, lambda: self.attributes('-topmost', False))
+        # 화면 밖에 배치 (UI 구성 중 깜빡임 방지)
+        self.geometry("+32000+32000")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_ui()
         self._update_previews()
 
-        # UI 구성 후 저장된 창 위치/크기 불러오기 (위젯 레이아웃 후 적용해야 덮어쓰기 방지)
-        self.after(150, self._load_window_geometry)
+        # UI 구성 완료 → 저장된 위치로 이동 + 포커스
+        self.after(50, self._restore_and_focus)
 
         # 자동 실행 모드: UI 구축 후 바로 실행 시작
         if self._auto_run:
@@ -3327,7 +3366,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._stop_event.set()
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
                 if hasattr(self, '_mapping_test_btn'):
-                    self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+                    self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
                 self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
@@ -3347,7 +3386,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._is_running = False
                 self._stop_event.set()
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
-                self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+                self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
                 self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
@@ -3371,7 +3410,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     self._update_card_mapping_btn(prev_idx, False)
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
                 if hasattr(self, '_mapping_test_btn'):
-                    self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+                    self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
             elif getattr(self, '_is_mapping_test', False) and prev_idx == idx:
                 # 같은 카드 클릭 → 토글 (중지만)
                 self._stop_execution()
@@ -3451,7 +3490,7 @@ class GameModeDialog(ctk.CTkToplevel):
         try:
             self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
             if hasattr(self, '_mapping_test_btn'):
-                self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+                self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
             self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
             self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회")
             # 맵핑 카드 버튼 복원
@@ -3683,11 +3722,8 @@ class GameModeDialog(ctk.CTkToplevel):
         full_mapping_exploring = (getattr(self, '_is_mapping', False) and mapping_mode == "full") or (_is_mapping_test and _mt_has_starts)
         # 출발좌표 없는 맵핑테스트: 근처 전체맵핑 후 경로맵핑 (2단계)
         _local_explore_phase = _is_mapping_test and not _mt_has_starts  # 1단계: 근처 전체맵핑
-        _local_explore_radius = 20  # 반경 제한 (맨해튼 거리)
+        _local_explore_radius = 10  # 반경 제한 (상하좌우 각 10칸 정사각형)
         _local_explore_center = None  # 시작 위치 (첫 좌표 읽기 시 설정)
-        if _local_explore_phase:
-            full_mapping_exploring = True  # 프런티어 탐색 활성화
-
         # 보스 던전 상태 변수
         boss_mode = "exploring"       # "exploring" | "patrolling" | "approaching"
         boss_patrol = None             # MapPatroller 인스턴스 (순찰 좌표 기반)
@@ -3867,6 +3903,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                               stop_event=self._stop_event, allow_soft_blocked=False)
                 if self._stop_event.is_set():
                     return None
+                time.sleep(0)  # GIL 해제 (Stage1 후)
 
                 _max_clean = max(int(_manhattan * 5), 100)
                 # 알려진 경로가 맨해튼 대비 과도하게 길면 미탐색 직선 경로가 나을 수 있음
@@ -3878,9 +3915,11 @@ class GameModeDialog(ctk.CTkToplevel):
                     path_index = 0
                     _rebuild_path_index()
                     unknown_path_fails = 0
-                    self.after(0, lambda l=len(result_clean.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
+                    if _ui_update_ok:
+                        self.after(0, lambda l=len(result_clean.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
                     return result_clean.directions[0]
 
+                time.sleep(0)  # GIL 해제 (Stage1.5 전)
                 # 1.5차: soft_blocked 포함 (우회로 없거나 1차 경로가 너무 길 때)
                 result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False,
                                               stop_event=self._stop_event, allow_soft_blocked=True)
@@ -3903,6 +3942,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 (_best_known is None or len(_best_known.path) > max(_manhattan * 3, 30)))
                 _result_unknown = None
                 if _try_unknown:
+                    time.sleep(0)  # GIL 해제 (Stage2 전)
                     _result_unknown = pathfinder.find_path(current_pos, target_pos, allow_unknown=True,
                                                            stop_event=self._stop_event,
                                                            max_iterations=max(_manhattan * 30, 20000),
@@ -3912,8 +3952,9 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _result_unknown.found and len(_result_unknown.directions) > 0:
                         _max_path = max(int(_manhattan * 5), 100)
                         if len(_result_unknown.path) > _max_path:
-                            self.after(0, lambda l=len(_result_unknown.path), m=_max_path:
-                                self._append_log(f"⚠️ 우회 {l}칸 > 최대 {m}칸 → 스킵"))
+                            if _ui_update_ok:
+                                self.after(0, lambda l=len(_result_unknown.path), m=_max_path:
+                                    self._append_log(f"⚠️ 우회 {l}칸 > 최대 {m}칸 → 스킵"))
                             unknown_path_fails += 1
                             _result_unknown = None
                     else:
@@ -3926,8 +3967,9 @@ class GameModeDialog(ctk.CTkToplevel):
                         current_path = _result_unknown.path
                         path_index = 0
                         _rebuild_path_index()
-                        self.after(0, lambda l=len(_result_unknown.path), kl=len(_best_known.path):
-                            self._append_log(f"🔍 직선 경로: {l}칸 (기존 우회 {kl}칸)"))
+                        if _ui_update_ok:
+                            self.after(0, lambda l=len(_result_unknown.path), kl=len(_best_known.path):
+                                self._append_log(f"🔍 직선 경로: {l}칸 (기존 우회 {kl}칸)"))
                         return _result_unknown.directions[0]
                     else:
                         # 알려진 경로가 더 짧거나 같음
@@ -3936,20 +3978,23 @@ class GameModeDialog(ctk.CTkToplevel):
                         _rebuild_path_index()
                         unknown_path_fails = 0
                         _label = "임시벽 통과" if _best_known is result else "경로"
-                        self.after(0, lambda l=len(_best_known.path), lb=_label: self._append_log(f"🛤️ {lb} 발견: {l}칸"))
+                        if _ui_update_ok:
+                            self.after(0, lambda l=len(_best_known.path), lb=_label: self._append_log(f"🛤️ {lb} 발견: {l}칸"))
                         return _best_known.directions[0]
                 elif _best_known:
                     current_path = _best_known.path
                     path_index = 0
                     _rebuild_path_index()
                     unknown_path_fails = 0
-                    self.after(0, lambda l=len(_best_known.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
+                    if _ui_update_ok:
+                        self.after(0, lambda l=len(_best_known.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
                     return _best_known.directions[0]
                 elif _result_unknown:
                     current_path = _result_unknown.path
                     path_index = 0
                     _rebuild_path_index()
-                    self.after(0, lambda l=len(_result_unknown.path): self._append_log(f"🔍 탐색 경로: {l}칸 (미지 영역 포함)"))
+                    if _ui_update_ok:
+                        self.after(0, lambda l=len(_result_unknown.path): self._append_log(f"🔍 탐색 경로: {l}칸 (미지 영역 포함)"))
                     return _result_unknown.directions[0]
 
             # 3차: 스마트 탐색 — 현재 위치에서 아직 안 가본 방향 시도
@@ -3969,7 +4014,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 chosen = candidates[0][1]
                 tried.add(chosen)
                 explored_from[current_pos] = tried
-                self.after(0, lambda d=chosen: self._append_log(f"🔍 탐색: {d}"))
+                if _ui_update_ok:
+                    self.after(0, lambda d=chosen: self._append_log(f"🔍 탐색: {d}"))
                 return chosen
 
             # 4차: 이미 시도했지만 벽이 아닌 방향 재시도 (백트래킹)
@@ -4045,7 +4091,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 return backtrack_candidates[0][0]
 
             # 5차: 사방이 벽 (진짜 막다른 길) — 방향 순환 시도
-            self.after(0, lambda: self._append_log("⚠️ 막다른 길!"))
+            if _ui_update_ok:
+                self.after(0, lambda: self._append_log("⚠️ 막다른 길!"))
             dirs = list(DIRECTIONS_4.keys())  # [up, down, left, right]
             # 직전 실패 방향 회피
             for offset in range(1, 5):
@@ -4057,14 +4104,20 @@ class GameModeDialog(ctk.CTkToplevel):
         frontier_cooldown = set()  # 최근 도달/무효화된 프런티어 (재선택 방지)
         frontier_cooldown_iter = 0  # 쿨다운 리셋 기준 반복
 
-        def _find_nearest_frontier(cx, cy, max_radius=150):
-            """가장 가까운 frontier 찾기 (BFS - 가까운 것부터 탐색)"""
+        def _find_nearest_frontier(cx, cy, max_radius=150, explore_center=None, explore_radius=0):
+            """가장 가까운 frontier 찾기 (BFS - 가까운 것부터 탐색)
+            explore_center/explore_radius: 근처맵핑 시 미탐색 이웃도 반경 내여야 프론티어 판정
+            """
             from collections import deque
             _delta_to_dir = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}
             _start_pos = self._game_map.start_pos
             visited = {(cx, cy)}
             queue = deque([(cx, cy, 0)])
+            _fnf_iter = 0
             while queue:
+                _fnf_iter += 1
+                if _fnf_iter % 100 == 0:
+                    time.sleep(0)  # GIL 해제
                 px, py, dist = queue.popleft()
                 if dist > max_radius:  # 최대 탐색 거리
                     break
@@ -4074,7 +4127,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         if (px, py) not in frontier_cooldown:
                             _ef = explored_from.get((px, py), set())
                             for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
-                                if not self._game_map.is_known(px + ddx, py + ddy):
+                                nx, ny = px + ddx, py + ddy
+                                if not self._game_map.is_known(nx, ny):
+                                    # 근처맵핑: 미탐색 이웃이 반경 밖이면 프론티어 판정 제외
+                                    if explore_center:
+                                        _ed = max(abs(nx - explore_center[0]), abs(ny - explore_center[1]))
+                                        if _ed > explore_radius:
+                                            continue
                                     # 이미 시도+실패한 방향은 frontier 판정에서 제외
                                     if _delta_to_dir.get((ddx, ddy)) in _ef:
                                         continue
@@ -4089,7 +4148,7 @@ class GameModeDialog(ctk.CTkToplevel):
             # 쿨다운 때문에 못 찾았으면 쿨다운 무시하고 재시도
             if frontier_cooldown:
                 frontier_cooldown.clear()
-                return _find_nearest_frontier(cx, cy)
+                return _find_nearest_frontier(cx, cy, max_radius=max_radius, explore_center=explore_center, explore_radius=explore_radius)
             return None
 
         try:
@@ -4104,7 +4163,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 return
 
             iteration = 0
-            max_iterations = 5000
+            max_iterations = 50000 if _is_mapping_test else 5000
             coord_fail_count = 0
             max_coord_fails = 50  # 연속 50회 실패 시 중단
             while not self._stop_event.is_set() and iteration < max_iterations:
@@ -4138,7 +4197,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         return
                     if coord_fail_count % 5 == 1:
                         self.after(0, lambda c=coord_fail_count: self._append_log(f"⚠️ 좌표 읽기 실패 ({c}/{max_coord_fails})"))
-                    self.after(0, lambda: self._status_label.configure(text="좌표 읽기 실패"))
+                    if _ui_update_ok:
+                        self.after(0, lambda: self._status_label.configure(text="좌표 읽기 실패"))
                     self._stop_event.wait(0.1)
                     continue
 
@@ -4165,11 +4225,12 @@ class GameModeDialog(ctk.CTkToplevel):
                         dist_from_pending = abs(current_x - _pending_start_pos[0]) + abs(current_y - _pending_start_pos[1])
                         if dist_from_pending >= 5:
                             old_sp = _pending_start_pos
-                            if old_sp not in _portal_protected:
-                                self._game_map.blocked.discard(old_sp)
                             _pending_start_pos = (current_x, current_y)
                             self._game_map.start_pos = _pending_start_pos
                             self._game_map.mark_blocked(current_x, current_y)
+                            # start_pos 업데이트 후 이전 위치를 passable로 변경 (미탐색 상태 방지)
+                            if old_sp not in _portal_protected:
+                                self._game_map.mark_passable(old_sp[0], old_sp[1])
                             self.after(0, lambda ox=old_sp[0], oy=old_sp[1], cx=current_x, cy=current_y:
                                 self._append_log(f"🔄 출발지 교정: ({ox},{oy})→({cx},{cy})"))
                     # portal_grace 만료 → 교정 종료
@@ -4179,7 +4240,12 @@ class GameModeDialog(ctk.CTkToplevel):
                     jump = abs(current_x - prev_x) + abs(current_y - prev_y)
                     if jump >= 30:
                         # 목표 근접(1칸 이내)에서 점프 → 포탈 전환, 차단 안 함
+                        # 도착좌표가 여러 개면 어느 하나라도 근접하면 허용 (포탈 감지와 동일 로직)
                         was_near = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
+                        if not was_near:
+                            _jf_re = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                            if _jf_re:
+                                was_near = any(abs(prev_x - ex) + abs(prev_y - ey) <= 1 for ex, ey in _jf_re)
                         # 포탈 전환 중이면 허용 (mark_portal_entry, boss_pre_teleport, 목표 근접)
                         if not mark_portal_entry and not boss_pre_teleport and not was_near:
                             # 맵핑테스트/전체맵핑: 30칸+ 점프도 포탈로 처리 (벽 등록 + 중지)
@@ -4191,10 +4257,14 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _portal_protected.add(_portal_tile)
                                     self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
                                         self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
-                                self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
-                                    self._append_log(f"🛑 맵핑 중 포탈 텔레포트 ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
-                                self._stop_event.set()
-                                break
+                                # 맵핑 중 포탈: 벽 등록 후 탐색 계속 (중지 안 함)
+                                self._game_map.mark_passable(current_x, current_y)
+                                current_path = []
+                                stuck_count = 0
+                                last_dir = None
+                                prev_x, prev_y = current_x, current_y  # 포탈 후 prev 갱신 (재감지 방지)
+                                self._stop_event.wait(0.05)
+                                continue
                             # 비정상 좌표 점프: portal_grace/mark_portal_entry로 처리 안 된 점프
                             if (current_x, current_y) == _jump_reject_coord:
                                 _jump_reject_count += 1
@@ -4212,20 +4282,23 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._append_log(f"⚠️ 좌표 점프 무시: ({px},{py})→({cx},{cy}) 거리={j}"))
                             self._stop_event.wait(0.1)
                             continue
-                    elif full_mapping_exploring and jump >= 5:
-                        # 전체맵핑 중 5칸+ 점프 = 입구 포탈 밟음 → 맵 오염 방지
-                        # 이동 방향의 타일을 벽으로 등록 (포탈 위치)
+                    elif (full_mapping_exploring or _local_explore_phase) and jump >= 5:
+                        # 맵핑 중 5칸+ 점프 = 포탈 밟음 → 포탈 타일 벽 등록 후 탐색 계속
                         if last_dir and mapping_on and use_map:
                             _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
                             _portal_tile = (prev_x + _pdx, prev_y + _pdy)
                             self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
                             _portal_protected.add(_portal_tile)
                             self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
-                                self._append_log(f"🚪 전체맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
-                        self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
-                            self._append_log(f"🛑 전체맵핑 중 포탈 텔레포트 ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
-                        self._stop_event.set()
-                        break
+                                self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                        # 맵핑 중 포탈: 벽 등록 후 탐색 계속 (중지 안 함)
+                        self._game_map.mark_passable(current_x, current_y)
+                        current_path = []
+                        stuck_count = 0
+                        last_dir = None
+                        prev_x, prev_y = current_x, current_y  # 포탈 후 prev 갱신 (재감지 방지)
+                        self._stop_event.wait(0.05)
+                        continue
                     else:
                         _jump_reject_coord = None
                         _jump_reject_count = 0
@@ -4322,7 +4395,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if (nx, ny) in _portal_protected:
                                     continue  # 포탈 좌표 보호
                                 if self._game_map.is_blocked(nx, ny):
-                                    self._game_map.blocked.discard((nx, ny))
+                                    self._game_map.mark_passable(nx, ny)
                                     unblocked += 1
                         self.after(0, lambda cx=current_x, cy=current_y, ub=unblocked:
                             self._append_log(f"📍 전체맵핑 시작: ({cx},{cy})" + (f" [갇힘→인접벽 {ub}개 해제]" if ub else "")))
@@ -4350,7 +4423,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 전체맵핑 프런티어 탐색 중이면 보스던전 핸들러 사용
                 # 맵핑테스트: 맵 데이터 50타일+ 이면 최단경로 A* 모드 (캐릭터 위치 무관)
                 _mt_has_map = _is_mapping_test and len(self._game_map.passable) >= 50
-                is_boss_dungeon = all_targets[target_idx][3] or (full_mapping_exploring and not _mt_has_map)
+                # 맵핑테스트: 탐색 완료 후(full_mapping/local_explore 둘 다 False)에는
+                # 보스 구간이어도 is_boss_dungeon=False → 도착 체크 활성화
+                _mt_explore_done = _is_mapping_test and not full_mapping_exploring and not _local_explore_phase
+                is_boss_dungeon = (all_targets[target_idx][3] and not _mt_explore_done) or _local_explore_phase or full_mapping_exploring
                 self._boss_segment_active = all_targets[target_idx][3]  # 보스 경유지면 auto-save 차단
 
                 # 도착 체크 (정확한 좌표 일치 — 포탈은 정확 좌표에서만 작동)
@@ -4416,6 +4492,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         if not self._switch_segment_map(target_idx, skip_save=_no_save):
                             self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
+                        self._map_pathfinder = pathfinder
                         target_x, target_y = _pick_target(target_idx)
                         seg_name = all_targets[target_idx][2]
                         prev_seg = all_targets[target_idx - 1][2]
@@ -4450,12 +4527,12 @@ class GameModeDialog(ctk.CTkToplevel):
                         _boss_chasing = False
                         _boss_chase_miss = 0
                         patrol_skip_count = 0
+                        explored_from = {}  # 구간 전환 → 이전 구간 방향 기록 클리어
                         _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                         full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)  # 구간 전환 → 출발좌표 있으면 전체맵핑
                         _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts  # 출발좌표 없으면 근처맵핑
-                        _local_explore_center = (current_x, current_y) if _local_explore_phase else None
-                        if _local_explore_phase:
-                            full_mapping_exploring = True
+                        _local_explore_center = None
+                        # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
                         # 보스 던전 전환: 텔레포트 전까지 맵 기록 중지
                         # (이전 맵 좌표가 보스 던전 맵에 오염되는 것 방지)
                         if all_targets[target_idx][3]:
@@ -4485,6 +4562,10 @@ class GameModeDialog(ctk.CTkToplevel):
                     else:
                         was_near_target = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
                     portal_threshold = max(8, int(interval / 0.02) + 5) if smooth_move else 5
+                    # 포탈 인접(was_near_target) 시 threshold를 3으로 낮춤
+                    # (복사-2 입구(6,2)→1굴(9,3) 점프거리=4 < 8 → 미감지 버그 수정)
+                    if was_near_target:
+                        portal_threshold = 3
                     # 마지막 경유지에서 포탈 감지 → 도착 처리 (싱글 테스트 포함)
                     if jump_dist >= portal_threshold and was_near_target and target_idx == len(all_targets) - 1:
                         # 맵 도착지 저장 (포탈 직전 좌표)
@@ -4519,6 +4600,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         if not self._switch_segment_map(next_segment, skip_save=_cur_is_boss_p or _no_save):
                             self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
+                        self._map_pathfinder = pathfinder
                         target_idx += 1
                         target_x, target_y = _pick_target(target_idx)
                         seg_name = all_targets[target_idx][2]
@@ -4555,12 +4637,12 @@ class GameModeDialog(ctk.CTkToplevel):
                         _boss_chasing = False
                         _boss_chase_miss = 0
                         patrol_skip_count = 0
+                        explored_from = {}  # 구간 전환 → 이전 구간 방향 기록 클리어
                         _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                         full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)  # 구간 전환 → 출발좌표 있으면 전체맵핑
                         _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts  # 출발좌표 없으면 근처맵핑
-                        _local_explore_center = (current_x, current_y) if _local_explore_phase else None
-                        if _local_explore_phase:
-                            full_mapping_exploring = True
+                        _local_explore_center = None
+                        # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
                         # 보스 던전 전환: 포탈 점프로 이미 텔레포트된 상태
                         _next_is_boss = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
                         if _next_is_boss:
@@ -4592,6 +4674,16 @@ class GameModeDialog(ctk.CTkToplevel):
                             _pending_start_pos = (current_x, current_y)
                             self.after(0, lambda cx=current_x, cy=current_y:
                                 self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
+                        # 보스 던전: 출구/입구 포탈 벽 등록 + 보호 (A* 경유 방지)
+                        if _next_is_boss:
+                            _jp_starts = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
+                            for _sx, _sy in _jp_starts:
+                                self._game_map.mark_blocked(_sx, _sy)
+                                _portal_protected.add((_sx, _sy))
+                            _jp_ends = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                            for _ex, _ey in _jp_ends:
+                                self._game_map.mark_blocked(_ex, _ey)
+                                _portal_protected.add((_ex, _ey))
                         portal_grace = 30  # 구간 전환 후 점프 필터 비활성 (던전 로딩 대기)
                         prev_x, prev_y = current_x, current_y
                         continue
@@ -4607,6 +4699,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._append_log(f"✅ ({px},{py})→({cx},{cy}) {d}"))
                         if mapping_on and use_map:
                             self._game_map.mark_passable(current_x, current_y)
+                        if use_map:
                             self._game_map.clear_soft_blocked(current_x, current_y)
                             # 왔던 방향의 반대를 explored_from에 기록 (뒤로가기는 마지막에 시도)
                             if last_dir:
@@ -4640,13 +4733,15 @@ class GameModeDialog(ctk.CTkToplevel):
                         if not self._stop_event.is_set() and _ui_update_ok:
                             self.after(0, lambda px=prev_x, py=prev_y, d=last_dir, sc=stuck_count:
                                 self._append_log(f"❌ ({px},{py}) {d} 실패 (정체:{sc})"))
-                        # 실패한 방향을 즉시 explored_from에 기록 (스마트 탐색에서 회피)
-                        if last_dir and prev_x is not None:
+                        # 실패한 방향 기록: 벽 확정 전에는 기록하지 않음 (재시도로 stuck_count 2 도달 보장)
+                        # 벽 확정(stuck_count>=2) 후 아래에서 기록
+                        if not _is_mapping_test and last_dir and prev_x is not None:
                             fail_pos = (prev_x, prev_y)
                             tried = explored_from.get(fail_pos, set())
                             tried.add(last_dir)
                             explored_from[fail_pos] = tried
-                        if stuck_count >= 2 and last_dir and portal_grace <= 0:
+                        _wall_threshold = 3 if _is_mapping_test else 2
+                        if stuck_count >= _wall_threshold and last_dir and portal_grace <= 0:
                             if use_map:
                                 ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 wall_x = prev_x + ddx
@@ -4662,22 +4757,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                     else:
                                         if not self._game_map.is_blocked(wall_x, wall_y):
                                             if _is_mapping_test:
-                                                # 맵핑테스트: 단계적 벽 승격 (몬스터 오탐 방지)
-                                                if self._game_map.is_soft_blocked(wall_x, wall_y):
-                                                    # 재실패 → 영구벽 승격
-                                                    self._game_map.mark_blocked(wall_x, wall_y)
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🧱 벽 확정: x{wx}y{wy} (맵핑, 재실패)"))
-                                                elif self._game_map.is_passable(wall_x, wall_y):
-                                                    # 이동 가능 타일 → 임시벽 (몬스터?)
-                                                    self._game_map.mark_soft_blocked(wall_x, wall_y)
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🚧 임시벽: x{wx}y{wy} (맵핑, 몬스터?)"))
-                                                else:
-                                                    # 미탐색 타일 → 임시벽 (재실패 시 영구벽 승격)
-                                                    self._game_map.mark_soft_blocked(wall_x, wall_y)
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🚧 임시벽: x{wx}y{wy} (맵핑, 미탐색)"))
+                                                # 맵핑테스트: 임시벽 없이 전부 영구벽
+                                                self._game_map.mark_blocked(wall_x, wall_y)
+                                                self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                    self._append_log(f"🧱 벽: x{wx}y{wy}"))
                                             elif self._game_map.is_soft_blocked(wall_x, wall_y):
                                                 if full_mapping_exploring:
                                                     # 전체맵핑: 재실패 → 영구벽 승격
@@ -4722,6 +4805,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                 unknown_path_fails = min(unknown_path_fails + 1, 3)
                                 if _ui_update_ok:
                                     self.after(0, lambda: self._append_log("🔄 벽 발견 → 경로 재계산"))
+                                # 맵핑테스트: 벽 확정 후 explored_from 기록 (재시도 보장 후)
+                                if _is_mapping_test and last_dir and prev_x is not None:
+                                    fail_pos = (prev_x, prev_y)
+                                    tried = explored_from.get(fail_pos, set())
+                                    tried.add(last_dir)
+                                    explored_from[fail_pos] = tried
                             stuck_count = 0
                             # ※ total_stuck_count는 리셋하지 않음 — 벽 등록 후에도
                             # 계속 정체되면 장기정체 복구(>=8)가 발동해야 함
@@ -4781,7 +4870,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 장기 정체 복구: 인접 벽 해제 (잘못된 벽 등록 자동 수정)
                         # 몬스터 등 임시 장애물이 영구벽으로 잘못 등록된 경우 복구
                         # ※ 직전에 실패한 방향의 벽은 해제하지 않음 (진짜 벽 보호)
-                        if total_stuck_count >= 8 and mapping_on and use_map:
+                        if total_stuck_count >= 8 and use_map:
                             unblocked = 0
                             fail_wall = None
                             if last_dir:
@@ -4809,8 +4898,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             pathfinder.invalidate_path()
                             # explored_from 유지 (확인된 벽 방향 기억 — 해제 후 재실패 루프 방지)
 
-                # soft_blocked 자동 감소 (10회마다) — 부분실행/전체테스트에서도 활성화
-                if use_map:
+                # soft_blocked 자동 감소 (10회마다) — 맵핑테스트에서는 비활성 (벽 유지 필수)
+                if use_map and not _is_mapping_test:
                     tick_counter += 1
                     if tick_counter >= 10:
                         self._game_map.tick()
@@ -4858,7 +4947,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 _t_skill_ms = int((time.time() - _t_skill) * 1000)
                 if _t_skill_ms > 10:
                     logger.info(f"[타이밍] 상시스킬: {_t_skill_ms}ms")
-                    self.after(0, lambda ms=_t_skill_ms: self._append_log(f"⏱ 상시스킬: {ms}ms"))
+                    if _ui_update_ok:
+                        self.after(0, lambda ms=_t_skill_ms: self._append_log(f"⏱ 상시스킬: {ms}ms"))
 
                 # ── 보스 던전 핸들러 ──
                 if is_boss_dungeon:
@@ -4884,8 +4974,19 @@ class GameModeDialog(ctk.CTkToplevel):
                                     mapping_on = False
                                 else:
                                     self._game_map.mark_blocked(current_x, current_y)
-                                self.after(0, lambda cx=current_x, cy=current_y:
-                                    self._append_log(f"🚪 보스 던전 입장! 입구 벽 등록: ({cx},{cy})"))
+                                # 출구 포탈(route_starts) 벽 등록 + 보호 (A* 경유 방지)
+                                _boss_starts = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
+                                for _sx, _sy in _boss_starts:
+                                    self._game_map.mark_blocked(_sx, _sy)
+                                    _portal_protected.add((_sx, _sy))
+                                # 도착 포탈(route_ends) 벽 등록 + 보호
+                                _boss_ends = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                                for _ex, _ey in _boss_ends:
+                                    self._game_map.mark_blocked(_ex, _ey)
+                                    _portal_protected.add((_ex, _ey))
+                                self.after(0, lambda cx=current_x, cy=current_y, ns=len(_boss_starts), ne=len(_boss_ends):
+                                    self._append_log(f"🚪 보스 던전 입장! 입구 벽 등록: ({cx},{cy})" +
+                                                     (f" [포탈보호: 출구{ns}+입구{ne}]" if ns or ne else "")))
                                 prev_x, prev_y = current_x, current_y
                                 time.sleep(0.05)
                                 continue
@@ -4928,7 +5029,9 @@ class GameModeDialog(ctk.CTkToplevel):
 
                     # 맵 이미 탐색 완료 → 즉시 순찰/완료 (테스트 모드에서 재탐색 방지)
                     if boss_mode == "exploring" and boss_patrol is None and len(self._game_map.passable) >= 50:
-                        if self._game_map.is_fully_explored() or _find_nearest_frontier(current_x, current_y) is None:
+                        _fnf_ec = _local_explore_center if _local_explore_phase else None
+                        _fnf_er = _local_explore_radius if _local_explore_phase else 0
+                        if self._game_map.is_fully_explored() or _find_nearest_frontier(current_x, current_y, explore_center=_fnf_ec, explore_radius=_fnf_er) is None:
                             boss_no_frontier_count = 10  # 아래 완료 체크로 즉시 진입
 
                     # 순찰 좌표 등록됨 + 맵 충분히 탐색됨 → 순찰 모드
@@ -4940,6 +5043,10 @@ class GameModeDialog(ctk.CTkToplevel):
                             boss_patrol = MapPatroller(self._game_map)
                             boss_patrol.start(current_pos_tuple)
                             boss_mode = "patrolling"
+                            last_dir = None
+                            stuck_count = 0
+                            total_stuck_count = 0
+                            boss_no_frontier_count = 0
                             # 이전 탐색 경로/상태 초기화 (잘못된 방향 방지)
                             current_path = []
                             path_index = 0
@@ -4991,7 +5098,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if not self._game_map.is_known(nx, ny):
                                     # 근처맵핑 모드: 반경 밖이면 미탐색이어도 무시
                                     if _local_explore_phase and _local_explore_center:
-                                        _le_dist = abs(nx - _local_explore_center[0]) + abs(ny - _local_explore_center[1])
+                                        _le_dist = max(abs(nx - _local_explore_center[0]), abs(ny - _local_explore_center[1]))
                                         if _le_dist > _local_explore_radius:
                                             continue
                                     unknown_candidates.append(d)
@@ -5036,10 +5143,12 @@ class GameModeDialog(ctk.CTkToplevel):
 
                             if explore_target is None:
                                 _fr = _local_explore_radius if _local_explore_phase else 150
-                                explore_target = _find_nearest_frontier(current_x, current_y, max_radius=_fr)
+                                _ec = _local_explore_center if _local_explore_phase else None
+                                _er = _local_explore_radius if _local_explore_phase else 0
+                                explore_target = _find_nearest_frontier(current_x, current_y, max_radius=_fr, explore_center=_ec, explore_radius=_er)
                                 # 근처맵핑 모드: 반경 내 프런티어가 반경 밖이면 무시
                                 if explore_target and _local_explore_phase and _local_explore_center:
-                                    _et_dist = abs(explore_target[0] - _local_explore_center[0]) + abs(explore_target[1] - _local_explore_center[1])
+                                    _et_dist = max(abs(explore_target[0] - _local_explore_center[0]), abs(explore_target[1] - _local_explore_center[1]))
                                     if _et_dist > _local_explore_radius:
                                         explore_target = None
                                 explore_target_tries = 0
@@ -5068,7 +5177,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 # 프런티어 없음 — 연속 미발견 카운트
                                 boss_no_frontier_count += 1
 
-                                # 근처맵핑 완료 → 2단계(경로맵핑)로 전환
+                                # 근처맵핑 완료 → 최단 경유지 선택 후 경로맵핑
                                 if _local_explore_phase and boss_no_frontier_count >= 3:
                                     _local_explore_phase = False
                                     full_mapping_exploring = False
@@ -5079,9 +5188,34 @@ class GameModeDialog(ctk.CTkToplevel):
                                     current_path = []
                                     path_index = 0
                                     path_pos_index = {}
+                                    explored_from = {}
+                                    last_dir = None
+                                    stuck_count = 0
                                     _tiles = len(self._game_map.passable)
-                                    self.after(0, lambda t=_tiles:
-                                        self._append_log(f"✅ 근처맵핑 완료 ({t}칸) → 경로맵핑 시작"))
+                                    # 도착좌표 passable 등록 (A* 도달 가능하도록)
+                                    if target_x is not None and target_y is not None:
+                                        self._game_map.mark_passable(target_x, target_y)
+                                    _cur_re = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                                    for _mte_x, _mte_y in _cur_re:
+                                        self._game_map.mark_passable(_mte_x, _mte_y)
+                                    # 도착좌표 여러 개면 최단거리 선택
+                                    if _cur_re:
+                                        pathfinder.clear()
+                                        _best_end = None
+                                        _best_cost = float('inf')
+                                        for _mte_x, _mte_y in _cur_re:
+                                            _mt_r = pathfinder.find_path(
+                                                (current_x, current_y), (_mte_x, _mte_y),
+                                                allow_unknown=True, stop_event=self._stop_event)
+                                            time.sleep(0)  # GIL 해제
+                                            if _mt_r.found and _mt_r.cost < _best_cost:
+                                                _best_cost = _mt_r.cost
+                                                _best_end = (_mte_x, _mte_y)
+                                        if _best_end:
+                                            target_x, target_y = _best_end
+                                    self.after(0, lambda t=_tiles, tx=target_x, ty=target_y:
+                                        self._append_log(f"✅ 근처맵핑 완료 ({t}칸) → ({tx},{ty}) 최단경로"))
+                                    self._stop_event.wait(0.05)
                                     continue
 
                                 # 30회 이상 프런티어 미발견 → 인접 벽 해제 (거짓 벽 복구)
@@ -5115,9 +5249,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                             direction = d
                                             break
 
+                                _fnf_ec2 = _local_explore_center if _local_explore_phase else None
+                                _fnf_er2 = _local_explore_radius if _local_explore_phase else 0
                                 if boss_no_frontier_count >= 10 and (
                                         self._game_map.is_fully_explored()
-                                        or _find_nearest_frontier(current_x, current_y) is None):
+                                        or _find_nearest_frontier(current_x, current_y, explore_center=_fnf_ec2, explore_radius=_fnf_er2) is None):
                                     # 프런티어 없지만 미탐색 남음 → explore_unreachable 클리어 후 재시도
                                     if not self._game_map.is_fully_explored() and explore_unreachable:
                                         self.after(0, lambda n=len(explore_unreachable):
@@ -5125,13 +5261,18 @@ class GameModeDialog(ctk.CTkToplevel):
                                         explore_unreachable.clear()
                                         frontier_cooldown.clear()
                                         boss_no_frontier_count = 0
+                                        self._stop_event.wait(0.05)
                                         continue
                                     # 순찰 좌표가 있으면 순찰 모드 전환 (맵핑테스트 전체맵핑 중에는 스킵)
-                                    if self._game_map.patrol_points and not full_mapping_exploring:
+                                    if self._game_map.patrol_points and not full_mapping_exploring and not _local_explore_phase:
                                         from ..player.map_patroller import MapPatroller
                                         boss_patrol = MapPatroller(self._game_map)
                                         boss_patrol.start(current_pos_tuple)
                                         boss_mode = "patrolling"
+                                        last_dir = None
+                                        stuck_count = 0
+                                        total_stuck_count = 0
+                                        boss_no_frontier_count = 0
                                         current_path = []
                                         path_index = 0
                                         path_pos_index = {}
@@ -5145,7 +5286,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         self.after(0, lambda pc=pc: self._append_log(f"🔍 탐색 완료 → 순찰모드! {pc}개 좌표 순회"))
                                         self.after(0, lambda: self._append_log(f"{'='*30}"))
                                     # 순찰 좌표 없거나, 맵핑테스트 전체맵핑 → 다음 경유지
-                                    if not self._game_map.patrol_points or full_mapping_exploring:
+                                    if not self._game_map.patrol_points or full_mapping_exploring or _local_explore_phase:
                                         # 맵핑 모드: 탐색 완료 시 즉시 종료
                                         if getattr(self, '_is_mapping', False) and not _is_mapping_test:
                                             mapping_mode = getattr(self, '_mapping_mode', 'path')
@@ -5197,6 +5338,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     _mt_r = pathfinder.find_path(
                                                         (current_x, current_y), (_mte_x, _mte_y),
                                                         allow_unknown=False, stop_event=self._stop_event)
+                                                    time.sleep(0)  # GIL 해제
                                                     if _mt_r.found and _mt_r.cost < _best_cost:
                                                         _best_cost = _mt_r.cost
                                                         _best_end = (_mte_x, _mte_y)
@@ -5207,7 +5349,72 @@ class GameModeDialog(ctk.CTkToplevel):
                                             # 맵 저장
                                             if not self._map_save_lock.locked() and not self._stop_event.is_set():
                                                 threading.Thread(target=self._auto_save_map, daemon=True).start()
-                                            # 탐색 상태 리셋
+                                            # 보스 던전 구간: 도착지 없음 → 맵핑 완료 즉시 다음 경유지 또는 테스트 완료
+                                            if all_targets[target_idx][3]:
+                                                _prev_boss3 = True
+                                                target_idx += 1
+                                                if target_idx >= len(all_targets):
+                                                    self._boss_segment_active = False
+                                                    self.after(0, lambda cx=current_x, cy=current_y:
+                                                        self._append_log(f"🎯 맵핑테스트 완료! ({cx},{cy})"))
+                                                    self.after(0, self._on_arrival)
+                                                    return
+                                                if self._stop_event.is_set():
+                                                    break
+                                                self._boss_segment_active = False
+                                                if not self._switch_segment_map(target_idx, skip_save=_prev_boss3 or _no_save):
+                                                    self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                                pathfinder = SimplePathfinder(self._game_map)
+                                                self._map_pathfinder = pathfinder
+                                                target_x, target_y = _pick_target(target_idx)
+                                                _seg_name = all_targets[target_idx][2]
+                                                self.after(0, lambda sn=_seg_name, tx=target_x, ty=target_y:
+                                                    self._append_log(f"▶ 다음: ({tx},{ty}) [{sn}]"))
+                                                # 다음 구간 상태 초기화
+                                                boss_mode = "exploring"
+                                                boss_patrol = None
+                                                boss_no_frontier_count = 0
+                                                explore_target = None
+                                                explore_target_tries = 0
+                                                explore_unreachable = set()
+                                                _portal_protected.clear()
+                                                frontier_cooldown.clear()
+                                                stuck_count = 0
+                                                total_stuck_count = 0
+                                                current_path = []
+                                                path_index = 0
+                                                path_pos_index = {}
+                                                explored_from = {}
+                                                unknown_path_fails = 0
+                                                last_dir = None
+                                                recent_positions.clear()
+                                                _boss_chasing = False
+                                                _boss_chase_miss = 0
+                                                boss_approach_steps = 0
+                                                boss_appr_miss = 0
+                                                patrol_skip_count = 0
+                                                _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
+                                                full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
+                                                _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
+                                                _local_explore_center = None
+                                                _next_is_boss3 = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
+                                                is_boss_dungeon = _next_is_boss3 or _local_explore_phase or full_mapping_exploring
+                                                if _next_is_boss3:
+                                                    boss_pre_teleport = True
+                                                    mapping_on = False
+                                                    mark_portal_entry = False
+                                                else:
+                                                    boss_pre_teleport = False
+                                                    mapping_on = not _no_save
+                                                    mark_portal_entry = True
+                                                _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
+                                                if _segment_map_locked:
+                                                    mapping_on = False
+                                                portal_grace = 30
+                                                prev_x, prev_y = current_x, current_y
+                                                time.sleep(0.05)
+                                                continue
+                                            # 비보스 구간: 도착지로 이동 모드 전환
                                             boss_mode = "exploring"
                                             boss_no_frontier_count = 0
                                             explore_target = None
@@ -5242,6 +5449,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         if not self._switch_segment_map(target_idx, skip_save=_prev_boss3 or _no_save):
                                             self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                                         pathfinder = SimplePathfinder(self._game_map)
+                                        self._map_pathfinder = pathfinder
                                         target_x, target_y = _pick_target(target_idx)
                                         boss_mode = "exploring"
                                         boss_patrol = None
@@ -5267,9 +5475,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                                         full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
                                         _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
-                                        _local_explore_center = (current_x, current_y) if _local_explore_phase else None
-                                        if _local_explore_phase:
-                                            full_mapping_exploring = True
+                                        _local_explore_center = None
+                                        # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
                                         # 다음 구간 보스 여부에 따라 상태 설정
                                         _next_is_boss3 = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
                                         is_boss_dungeon = _next_is_boss3
@@ -5307,9 +5514,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                 except Exception as _e:
                                     logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
 
-                        # 보스 이미지 재확인 (매 반복)
+                        # 보스 이미지 재확인 (2회당 1번 — 홀수 반복은 스킵)
                         _appr_boss_visible = False
-                        if not self._stop_event.is_set():
+                        _appr_detection_attempted = False
+                        if iteration % 2 == 0 and not self._stop_event.is_set():
+                            _appr_detection_attempted = True
                             try:
                                 import numpy as _np3
                                 import cv2 as _cv23
@@ -5325,52 +5534,119 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _scr3 = _cv23.cvtColor(_scr3, _cv23.COLOR_RGB2BGR)
                                     _m3 = _TM3()
                                     _r3 = _m3.match_binary(_scr3, _boss_ip3, threshold=0.8)
+                                    time.sleep(0)  # GIL 해제
                                     if _r3.found:
                                         _appr_boss_visible = True
                                         # 거리 재계산 → 멀어졌으면 다시 추적
                                         _sh3, _sw3 = _scr3.shape[:2]
                                         _cpx3, _cpy3 = _sw3 // 2, _sh3 // 2
+                                        _char_det3 = False
                                         if _char_ip3:
                                             try:
                                                 _cr3 = _m3.match_binary(_scr3, _char_ip3, threshold=0.8)
+                                                time.sleep(0)  # GIL 해제
                                                 if _cr3.found:
                                                     _cpx3, _cpy3 = _cr3.center_x, _cr3.center_y
+                                                    _char_det3 = True
                                             except Exception:
                                                 pass
                                         _dx3 = _r3.center_x - _cpx3
                                         _dy3 = _r3.center_y - _cpy3
                                         _td3 = abs(round(_dy3 / 44))  # X offset 무시 (UI NAME 고정)
+                                        # approaching 중 보스 방향으로 이동하기 위해 저장
+                                        self._appr_dy3 = round(_dy3 / 44) if _char_det3 else None
+                                        # 캐릭터 미감지 시 거리 신뢰 불가 → 거리 판정 건너뜀 (보스 감지만 유지)
+                                        if not _char_det3:
+                                            _td3 = 0  # 거리 판정 안 함 (approaching 유지)
                                         if _td3 > 20:
                                             # UI 오탐 (고정 UI 이름 요소) → 보스 사라진 것으로 처리
                                             _appr_boss_visible = False
                                             self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
                                                 self._append_log(f"✅ 보스 사라짐 ({cx},{cy}) 거리={td}타일 — UI 오탐"))
-                                        elif _td3 > 3:
-                                            # 보스가 멀어짐 → 다시 추적 (스킬은 계속 사용)
+                                        elif _td3 > 2:
+                                            # 보스가 멀어짐 (2타일 초과) → 다시 추적
                                             _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
                                             _chase_ty = current_y + round(_dy3 / 44)
+                                            # start_pos 밟지 않도록 확인
+                                            _td3_sp = self._game_map.start_pos
+                                            if _td3_sp is not None and (_chase_tx, _chase_ty) == _td3_sp:
+                                                _td3_dy_sign = 1 if round(_dy3 / 44) >= 0 else -1
+                                                _chase_ty += _td3_dy_sign
                                             _boss_chasing = True
                                             _boss_chase_miss = 0
                                             boss_approach_steps = 0
                                             boss_appr_miss = 0
                                             stuck_count = 0
                                             total_stuck_count = 0
+                                            last_dir = None
+                                            prev_x, prev_y = current_x, current_y
+                                            current_path = []
+                                            path_index = 0
+                                            path_pos_index = {}
+                                            pathfinder.invalidate_path()
+                                            self._appr_dy3 = None  # approaching 상태 정리
                                             boss_mode = "patrolling"
                                             # 순찰 재시작 (stale is_completed 방지 → 거짓 구간전환 차단)
                                             if boss_patrol is not None:
                                                 boss_patrol.start((current_x, current_y))
                                             self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
                                                 self._append_log(f"🏃 보스 멀어짐 ({cx},{cy}) 거리={td}타일 → 재추적+스킬"))
+                                            self._stop_event.wait(0.05)
                                             continue
                             except Exception:
                                 pass
 
                         if _appr_boss_visible:
                             boss_appr_miss = 0  # 감지 성공 → 미스 리셋
+                            # 보스 방향 이동: Y 미정렬이면 Y방향, Y 정렬이면 X축 지그재그 스캔
+                            # ※ 이동 전 반드시 맵(is_passable) + start_pos 확인
+                            _appr_dy_val = getattr(self, '_appr_dy3', None)
+                            _appr_start = self._game_map.start_pos
+                            if _appr_dy_val is not None and abs(_appr_dy_val) > 0:
+                                # Y 미정렬 → Y방향 이동
+                                _appr_move_dir = "down" if _appr_dy_val > 0 else "up"
+                                _appr_ndy = 1 if _appr_dy_val > 0 else -1
+                                _appr_nx, _appr_ny = current_x, current_y + _appr_ndy
+                                # 맵 확인: passable이고 start_pos가 아닌 경우만 이동
+                                if self._game_map.is_passable(_appr_nx, _appr_ny) and (_appr_start is None or (_appr_nx, _appr_ny) != _appr_start):
+                                    self._appr_x_step = 0
+                                    try:
+                                        _mk = self._config.move_keys.get(_appr_move_dir, _appr_move_dir)
+                                        pyautogui.press(_mk)
+                                        self._key_press_count += 1
+                                    except Exception:
+                                        pass
+                                # else: 벽 또는 출발지 → 이동 안 함 (스킬만 유지)
+                            else:
+                                # Y 정렬됨 (dy==0) or 거리 불명 → X축 좌우 지그재그 스캔
+                                if not hasattr(self, '_appr_x_step'):
+                                    self._appr_x_step = 0
+                                    self._appr_x_dir = 1
+                                    self._appr_x_max = 2
+                                self._appr_x_step += 1
+                                if self._appr_x_step > self._appr_x_max:
+                                    self._appr_x_dir *= -1  # 방향 전환
+                                    self._appr_x_step = 1
+                                    self._appr_x_max = min(self._appr_x_max + 1, 6)  # 범위 확대 (최대 6)
+                                _appr_ndx = self._appr_x_dir
+                                _appr_nx, _appr_ny = current_x + _appr_ndx, current_y
+                                # 맵 확인: passable이고 start_pos가 아닌 경우만 이동
+                                if self._game_map.is_passable(_appr_nx, _appr_ny) and (_appr_start is None or (_appr_nx, _appr_ny) != _appr_start):
+                                    _appr_move_dir = "right" if self._appr_x_dir > 0 else "left"
+                                    try:
+                                        _mk = self._config.move_keys.get(_appr_move_dir, _appr_move_dir)
+                                        pyautogui.press(_mk)
+                                        self._key_press_count += 1
+                                    except Exception:
+                                        pass
+                                else:
+                                    # 벽 또는 출발지 → 즉시 방향 전환
+                                    self._appr_x_dir *= -1
                             self.after(0, lambda cx=current_x, cy=current_y:
                                 self._update_status("보스스킬", f"({cx},{cy})", "", "전투중", "⚔️"))
                         else:
-                            boss_appr_miss += 1
+                            if _appr_detection_attempted:
+                                boss_appr_miss += 1
                             if boss_appr_miss < 10:
                                 # 아직 미스 부족 → 계속 스킬 쓰면서 대기
                                 prev_x, prev_y = current_x, current_y
@@ -5409,6 +5685,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             if not self._switch_segment_map(target_idx, skip_save=_prev_is_boss or _no_save):
                                 self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                             pathfinder = SimplePathfinder(self._game_map)
+                            self._map_pathfinder = pathfinder
                             target_x, target_y = _pick_target(target_idx)
                             seg_name = all_targets[target_idx][2]
                             self.after(0, lambda sn=seg_name, ti=target_idx, total=len(all_targets):
@@ -5438,9 +5715,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                             full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
                             _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
-                            _local_explore_center = (current_x, current_y) if _local_explore_phase else None
-                            if _local_explore_phase:
-                                full_mapping_exploring = True
+                            _local_explore_center = None
+                            # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
                             is_boss_dungeon = all_targets[target_idx][3]
                             if is_boss_dungeon:
                                 boss_pre_teleport = True
@@ -5466,9 +5742,9 @@ class GameModeDialog(ctk.CTkToplevel):
                     elif boss_mode == "patrolling":
                         # ── 순찰: 등록된 순찰좌표를 순서대로 A* 이동 ──
 
-                        # ── 보스 이미지 검색 (3회마다) ──
+                        # ── 보스 이미지 검색 (5회마다) ──
                         _boss_found = False
-                        _check_boss_image = (iteration % 3 == 0)
+                        _check_boss_image = (iteration % 5 == 0)
                         if _check_boss_image:
                             boss_img_path = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
                             char_img_path = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
@@ -5486,6 +5762,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _screen = _cv2.cvtColor(_screen, _cv2.COLOR_RGB2BGR)
                                     _m = _TM()
                                     _res = _m.match_binary(_screen, boss_img_path, threshold=0.8)
+                                    time.sleep(0)  # GIL 해제
                                     if _res.found:
                                         _boss_found = True
                                         boss_approach_steps += 1
@@ -5493,12 +5770,15 @@ class GameModeDialog(ctk.CTkToplevel):
 
                                         # 캐릭터 스프라이트 감지 (있으면), 없으면 화면 중앙 폴백
                                         char_pixel_x, char_pixel_y = scr_w // 2, scr_h // 2
+                                        _char_detected = False
                                         if char_img_path:
                                             try:
                                                 _char_res = _m.match_binary(_screen, char_img_path, threshold=0.8)
+                                                time.sleep(0)  # GIL 해제
                                                 if _char_res.found:
                                                     char_pixel_x = _char_res.center_x
                                                     char_pixel_y = _char_res.center_y
+                                                    _char_detected = True
                                             except Exception:
                                                 pass  # 캐릭터 미감지 시 화면 중앙 폴백
 
@@ -5519,12 +5799,23 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 self._append_log(f"⚠️ 보스 감지 무시 (거리={td}타일, dx={dx}px) — UI 오탐 추정"))
                                             _boss_found = False  # UI 오탐 → 감지 아님 처리
 
-                                        # 1타일 이내 → approaching (3→1 축소: 3타일에서 진입 시 보스 미감지→거짓처치→테스트중지 방지)
-                                        elif tile_dist <= 1:
+                                        # 1타일 이내 → approaching (캐릭터 미감지 시 화면중앙 폴백으로 거리 오차 → chasing으로만 전환)
+                                        elif tile_dist <= 1 and _char_detected:
                                             _boss_chase_miss = 0
                                             _boss_chasing = False
                                             boss_mode = "approaching"
                                             boss_appr_miss = 0
+                                            stuck_count = 0
+                                            total_stuck_count = 0
+                                            last_dir = None
+                                            current_path = []
+                                            path_index = 0
+                                            path_pos_index = {}
+                                            pathfinder.invalidate_path()
+                                            # X축 스캔 상태 초기화 (좌우 교대 탐색용)
+                                            self._appr_x_step = 0
+                                            self._appr_x_dir = 1  # 1=right, -1=left
+                                            self._appr_x_max = 2  # 한 방향 최대 스텝
                                             # 즉시 보스 스킬 사용
                                             if boss_skill_enabled and boss_skill_key:
                                                 try:
@@ -5544,30 +5835,38 @@ class GameModeDialog(ctk.CTkToplevel):
                                             continue
 
                                         else:
-                                            # ── 보스 추적: 추정 위치로 직행 (4~20타일) ──
+                                            # ── 보스 추적: 추정 위치로 직행 (Y축 + X축 스캔) ──
                                             _boss_chase_miss = 0
                                             _boss_chasing = True
-                                            _chase_tx = current_x  # X offset 무시 (UI NAME 고정 위치)
+                                            stuck_count = 0
+                                            total_stuck_count = 0
                                             _chase_ty = current_y + est_dy_tiles
-                                            # 통과 가능 타일 찾기
-                                            if not self._game_map.is_passable(_chase_tx, _chase_ty):
+                                            # X는 UI NAME 고정이라 오프셋 못 씀 → 현재 X 유지
+                                            # (Y 도달 후 recheck에서 X 탐색)
+                                            _chase_tx = current_x
+                                            # 통과 가능 타일 찾기 (start_pos 제외)
+                                            _chase_sp = self._game_map.start_pos
+                                            _chase_is_sp = (_chase_sp is not None and (_chase_tx, _chase_ty) == _chase_sp)
+                                            if not self._game_map.is_passable(_chase_tx, _chase_ty) or _chase_is_sp:
                                                 _found_chase = False
                                                 for _r in range(1, 6):
                                                     for _ddx, _ddy in [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
                                                         _cx = _chase_tx + _ddx * _r
                                                         _cy = _chase_ty + _ddy * _r
-                                                        if self._game_map.is_passable(_cx, _cy):
+                                                        if (self._game_map.is_passable(_cx, _cy)
+                                                                and (_chase_sp is None or (_cx, _cy) != _chase_sp)):
                                                             _chase_tx, _chase_ty = _cx, _cy
                                                             _found_chase = True
                                                             break
                                                     if _found_chase:
                                                         break
-                                            self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
-                                                       cx=current_x, cy=current_y,
-                                                       dx=dx_pixel, dy=dy_pixel,
-                                                       tx=_chase_tx, ty=_chase_ty,
-                                                       td=tile_dist:
-                                                self._append_log(f"🎯 보스 추적! dx={dx}px dy={dy}px ({cx},{cy})→({tx},{ty}) 거리={td}타일 ({s}회)"))
+                                            if _ui_update_ok:
+                                                self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
+                                                           cx=current_x, cy=current_y,
+                                                           dx=dx_pixel, dy=dy_pixel,
+                                                           tx=_chase_tx, ty=_chase_ty,
+                                                           td=tile_dist:
+                                                    self._append_log(f"🎯 보스 추적! dx={dx}px dy={dy}px ({cx},{cy})→({tx},{ty}) 거리={td}타일 ({s}회)"))
                                 except Exception as _e:
                                     logger.debug(f"[순찰] 보스 이미지 검색 오류: {_e}")
 
@@ -5606,6 +5905,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             if not self._switch_segment_map(target_idx, skip_save=_prev_is_boss2 or _no_save):
                                 self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                             pathfinder = SimplePathfinder(self._game_map)
+                            self._map_pathfinder = pathfinder
                             target_x, target_y = _pick_target(target_idx)
                             seg_name = all_targets[target_idx][2]
                             prev_seg = all_targets[target_idx - 1][2]
@@ -5636,9 +5936,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                             full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts)
                             _local_explore_phase = _is_mapping_test and not _mt_seg_has_starts
-                            _local_explore_center = (current_x, current_y) if _local_explore_phase else None
-                            if _local_explore_phase:
-                                full_mapping_exploring = True
+                            _local_explore_center = None
+                            # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
                             is_boss_dungeon = all_targets[target_idx][3]
                             if is_boss_dungeon:
                                 boss_pre_teleport = True
@@ -5664,10 +5963,26 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda: self._append_log("⚠️ 순찰 좌표 없음 → 탐색 복귀"))
                                 boss_mode = "exploring"
                                 boss_patrol = None
+                                _boss_chasing = False
+                                _boss_chase_miss = 0
+                                stuck_count = 0
+                                total_stuck_count = 0
+                                last_dir = None
+                                current_path = []
+                                path_index = 0
+                                path_pos_index = {}
+                                explored_from = {}
+                                unknown_path_fails = 0
+                                boss_no_frontier_count = 0
+                                frontier_cooldown.clear()
+                                explore_unreachable = set()
+                                boss_approach_steps = 0
+                                boss_appr_miss = 0
                                 patrol_skip_count = 0
                                 explore_target = None
                                 explore_target_tries = 0
                                 prev_x, prev_y = current_x, current_y
+                                self._stop_event.wait(0.05)
                                 continue
                             _move_target = (_move_target_raw[0], _move_target_raw[1])
 
@@ -5728,15 +6043,19 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _scr2 = _cv22.cvtColor(_scr2, _cv22.COLOR_RGB2BGR)
                                         _m2 = _TM2()
                                         _r2 = _m2.match_binary(_scr2, _boss_ip, threshold=0.8)
+                                        time.sleep(0)  # GIL 해제
                                         if _r2.found:
                                             _rechk_found = True
                                             _sh2, _sw2 = _scr2.shape[:2]
                                             _cpx2, _cpy2 = _sw2 // 2, _sh2 // 2
+                                            _char_det2 = False
                                             if _char_ip:
                                                 try:
                                                     _cr2 = _m2.match_binary(_scr2, _char_ip, threshold=0.8)
+                                                    time.sleep(0)  # GIL 해제
                                                     if _cr2.found:
                                                         _cpx2, _cpy2 = _cr2.center_x, _cr2.center_y
+                                                        _char_det2 = True
                                                 except Exception:
                                                     pass
                                             _dx2 = _r2.center_x - _cpx2
@@ -5747,14 +6066,18 @@ class GameModeDialog(ctk.CTkToplevel):
                                             if _td2 > 20:
                                                 # UI 오탐 — 재감지 무시
                                                 _rechk_found = False
-                                            elif _td2 <= 1:
-                                                # 추적 목표 근처에 도착 → approaching 진입
+                                            elif _td2 <= 1 and _char_det2:
+                                                # 추적 목표 근처에 도착 + 캐릭터 감지 확인 → approaching 진입
                                                 _at_target = (abs(current_x - _move_target[0]) + abs(current_y - _move_target[1])) <= 2
                                                 if _at_target:
                                                     _boss_chase_miss = 0
                                                     _boss_chasing = False
                                                     boss_mode = "approaching"
                                                     boss_appr_miss = 0
+                                                    # X축 스캔 상태 초기화 (좌우 교대 탐색용)
+                                                    self._appr_x_step = 0
+                                                    self._appr_x_dir = 1  # 1=right, -1=left
+                                                    self._appr_x_max = 2  # 한 방향 최대 스텝
                                                     if boss_skill_enabled and boss_skill_key:
                                                         try:
                                                             pyautogui.keyDown(boss_skill_key)
@@ -5770,15 +6093,25 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     time.sleep(0.05)
                                                     continue
                                                 else:
-                                                    # 갇힘 상태 (목표에서 멀음) → 벽 너머일 수 있음, 우회 경로 탐색
-                                                    _boss_dir_y = 1 if _edy2 >= 0 else -1
+                                                    # Y 근접이지만 보스가 X축으로 떨어져 있음 → 좌우 스캔
+                                                    # X offset을 모르므로 좌/우 교대 탐색
+                                                    if not hasattr(self, '_boss_x_scan_dir'):
+                                                        self._boss_x_scan_dir = 1  # 초기: 오른쪽
                                                     _found_detour = False
-                                                    for _dr in range(1, 6):
-                                                        for _ddx, _ddy in [(1, _boss_dir_y), (-1, _boss_dir_y),
-                                                                           (1, 0), (-1, 0), (0, _boss_dir_y * 2)]:
+                                                    _scan_dx = self._boss_x_scan_dir  # 현재 스캔 방향
+                                                    _boss_dir_y = 1 if _edy2 >= 0 else -1
+                                                    # 좌우 우선 탐색 (X축 스캔이 핵심)
+                                                    _scan_start = self._game_map.start_pos
+                                                    for _dr in range(1, 8):
+                                                        for _ddx, _ddy in [(_scan_dx, 0), (-_scan_dx, 0),
+                                                                           (_scan_dx, _boss_dir_y), (-_scan_dx, _boss_dir_y),
+                                                                           (0, _boss_dir_y)]:
                                                             _dtx = current_x + _ddx * _dr
-                                                            _dty = current_y + _ddy * _dr
-                                                            if self._game_map.is_passable(_dtx, _dty) and (_dtx, _dty) != (current_x, current_y):
+                                                            _dty = current_y + _ddy * (_dr if _ddy != 0 else 0)
+                                                            # passable + 현재위치 아님 + start_pos(출발지) 아님
+                                                            if (self._game_map.is_passable(_dtx, _dty)
+                                                                    and (_dtx, _dty) != (current_x, current_y)
+                                                                    and (_scan_start is None or (_dtx, _dty) != _scan_start)):
                                                                 _chase_tx, _chase_ty = _dtx, _dty
                                                                 _found_detour = True
                                                                 break
@@ -5786,17 +6119,26 @@ class GameModeDialog(ctk.CTkToplevel):
                                                             break
                                                     if _found_detour:
                                                         _boss_chase_miss = 0
+                                                        # 다음번엔 반대 방향 스캔
+                                                        self._boss_x_scan_dir *= -1
                                                         self.after(0, lambda cx=current_x, cy=current_y,
                                                                    tx=_chase_tx, ty=_chase_ty, td=_td2, dy=_dy2:
-                                                            self._append_log(f"🔄 근접({td}타일,dy={dy}px) 갇힘 → ({tx},{ty}) 우회"))
+                                                            self._append_log(f"🔄 Y근접({td}타일) X탐색 → ({tx},{ty})"))
                                                     else:
                                                         # 우회 불가 → 미감지 처리 (miss 누적 → 15회 시 순찰 복귀)
                                                         _rechk_found = False
+                                                        self._boss_x_scan_dir *= -1  # 방향 전환
                                                         self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
-                                                            self._append_log(f"⚠️ 근접({td}타일,dy={dy}px) 갇힘+우회불가"))
+                                                            self._append_log(f"⚠️ Y근접({td}타일) X탐색 실패+우회불가"))
                                             else:
                                                 _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
                                                 _chase_ty = current_y + _edy2
+                                                # start_pos 밟지 않도록 확인
+                                                _rchk_sp = self._game_map.start_pos
+                                                if _rchk_sp is not None and (_chase_tx, _chase_ty) == _rchk_sp:
+                                                    # start_pos면 Y방향으로 1타일 더 이동
+                                                    _rchk_dy_sign = 1 if _edy2 >= 0 else -1
+                                                    _chase_ty += _rchk_dy_sign
                                                 _boss_chase_miss = 0
                                                 self.after(0, lambda cx=current_x, cy=current_y,
                                                        tx=_chase_tx, ty=_chase_ty, td=_td2:
@@ -5829,6 +6171,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                     boss_patrol = None
                                     _boss_chasing = False
                                     _boss_chase_miss = 0
+                                    last_dir = None
+                                    stuck_count = 0
+                                    total_stuck_count = 0
                                     patrol_skip_count = 0
                                     explore_target = None
                                     explore_target_tries = 0
@@ -5837,6 +6182,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                     explored_from = {}
                                     unknown_path_fails = 0
                                     boss_no_frontier_count = 0
+                                    boss_approach_steps = 0
+                                    boss_appr_miss = 0
                                     self.after(0, lambda ps=patrol_skip_count:
                                         self._append_log(f"🔄 순찰 {ps}개 연속 도달불가 → 탐색모드 복귀"))
                             current_path = []
@@ -5844,6 +6191,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_pos_index = {}
                             pathfinder.invalidate_path()
                             prev_x, prev_y = current_x, current_y
+                            self._stop_event.wait(0.05)
                             continue
 
                         if not self._stop_event.is_set() and _ui_update_ok:
@@ -5887,7 +6235,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                         _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음[{boss_mode}]"
                         logger.info(f"[타이밍] {_timing_msg}")
-                        self.after(0, lambda m=_timing_msg: self._append_log(m))
+                        if _ui_update_ok:
+                            self.after(0, lambda m=_timing_msg: self._append_log(m))
                         self._stop_event.wait(0.1)
                         # prev를 현재 위치로 → 다음 반복에서 이동 판정 정상 동작
                         prev_x, prev_y = current_x, current_y
@@ -5909,7 +6258,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                     _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} A*:{_t_path_ms} key:{_t_key_ms} iv:{int(interval*1000)} 총:{_t_iter_total}ms ({current_x},{current_y})→{direction} [{boss_mode}]"
                     logger.info(f"[타이밍] {_timing_msg}")
-                    self.after(0, lambda m=_timing_msg: self._append_log(m))
+                    if _ui_update_ok:
+                        self.after(0, lambda m=_timing_msg: self._append_log(m))
                     last_dir = direction
                     prev_x, prev_y = current_x, current_y
                     continue
@@ -5928,7 +6278,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                     _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} A*:{_t_path_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음"
                     logger.info(f"[타이밍] {_timing_msg}")
-                    self.after(0, lambda m=_timing_msg: self._append_log(m))
+                    if _ui_update_ok:
+                        self.after(0, lambda m=_timing_msg: self._append_log(m))
                     if not self._stop_event.is_set() and _ui_update_ok:
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"⏸ ({cx},{cy}) 방향 없음"))
@@ -5975,7 +6326,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     )
                     _t_recheck_ms = int((time.time()-_t_recheck)*1000)
                     logger.info(f"[타이밍] #{iteration} 도착재확인OCR: {_t_recheck_ms}ms")
-                    self.after(0, lambda m=_t_recheck_ms, i=iteration: self._append_log(f"⏱ #{i} 재확인OCR:{m}ms"))
+                    if _ui_update_ok:
+                        self.after(0, lambda m=_t_recheck_ms, i=iteration: self._append_log(f"⏱ #{i} 재확인OCR:{m}ms"))
                     if check_x is not None:
                         _cx, _cy = int(check_x), int(check_y)
                         # 도착좌표가 여러 개면 어느 하나라도 일치하면 도착
@@ -6016,7 +6368,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                 _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} A*:{_t_path_ms} key:{_t_key_ms} iv:{int(interval*1000)} 총:{_t_iter_total}ms ({current_x},{current_y})→{direction} d={dist}"
                 logger.info(f"[타이밍] {_timing_msg}")
-                self.after(0, lambda m=_timing_msg: self._append_log(m))
+                if _ui_update_ok:
+                    self.after(0, lambda m=_timing_msg: self._append_log(m))
 
         except Exception as e:
             logger.error(f"[좌표모드] 오류: {e}")
@@ -6138,7 +6491,7 @@ class GameModeDialog(ctk.CTkToplevel):
         # --- 일반 완료 처리 ---
         self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
         if hasattr(self, '_mapping_test_btn'):
-            self._mapping_test_btn.configure(text="▶ 맵핑테스트", fg_color="#5e81ac")
+            self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
         self._status_label.configure(text="상태: 도달!", text_color="#a3be8c")
         self._append_log(f"🎯 목표 도달 완료! 총 키입력: {self._key_press_count}회")
         # 개별 테스트 카드 버튼 복원
@@ -6189,9 +6542,13 @@ class GameModeDialog(ctk.CTkToplevel):
         self._run_btn = ctk.CTkButton(wp_add_row, text="▶ 전체 테스트", width=100, height=32,
                                        fg_color="#a3be8c", command=self._toggle_execution)
         self._run_btn.pack(side="left")
-        self._mapping_test_btn = ctk.CTkButton(wp_add_row, text="▶ 맵핑테스트", width=100, height=32,
+        self._mapping_test_btn = ctk.CTkButton(wp_add_row, text="▶ 전체맵핑테스트", width=120, height=32,
                                                 fg_color="#5e81ac", command=self._toggle_mapping_test)
         self._mapping_test_btn.pack(side="left", padx=(4, 0))
+        ctk.CTkButton(wp_add_row, text="전체 맵 초기화", width=100, height=32,
+                      fg_color="#4c566a", hover_color="#bf616a",
+                      font=ctk.CTkFont(size=12),
+                      command=self._clear_all_maps).pack(side="left", padx=(4, 0))
 
         # 모두 접기/펼치기 버튼
         wp_collapse_row = ctk.CTkFrame(waypoint_inner, fg_color="transparent")
@@ -6518,20 +6875,32 @@ class GameModeDialog(ctk.CTkToplevel):
         """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장, 롤링 백업 포함)"""
         # 보스 경유지 중에는 맵 저장 차단 (오염 방지)
         if getattr(self, '_boss_segment_active', False):
-            self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 보스 경유지 활성"))
+            try:
+                self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 보스 경유지 활성"))
+            except (tk.TclError, RuntimeError):
+                pass
             return ""
         # 맵 잠금 구간에서는 저장 차단
         if self._is_segment_map_locked(getattr(self, '_current_segment_idx', 0)):
             return ""
         # 빈 맵 저장 방지 (구간 전환 직후 기존 파일 덮어쓰기 방지)
         if not self._game_map.passable:
-            self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: passable 비어있음"))
+            try:
+                self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: passable 비어있음"))
+            except (tk.TclError, RuntimeError):
+                pass
             return ""
         import os, shutil
         acquired = self._map_save_lock.acquire(timeout=0.5)
         if not acquired:
-            self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 락 획득 실패"))
+            try:
+                self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 락 획득 실패"))
+            except (tk.TclError, RuntimeError):
+                pass
             logger.warning("[맵핑] 맵 저장 락 획득 실패 (0.5초 타임아웃)")
+            return ""
+        if not self._game_map.passable:
+            self._map_save_lock.release()
             return ""
         try:
             segment_idx = getattr(self, '_current_segment_idx', 0)
@@ -6557,8 +6926,11 @@ class GameModeDialog(ctk.CTkToplevel):
             _p_count = len(self._game_map.passable)
             self._game_map.save(map_path)
             logger.info(f"[맵핑] '{seg_name}' 맵 저장: {map_path}")
-            self.after(0, lambda sn=seg_name, pc=_p_count, mp=map_path:
-                self._append_log(f"💾 맵 저장: '{sn}' ({pc}타일) → {mp}"))
+            try:
+                self.after(0, lambda sn=seg_name, pc=_p_count, mp=map_path:
+                    self._append_log(f"💾 맵 저장: '{sn}' ({pc}타일) → {mp}"))
+            except (tk.TclError, RuntimeError):
+                pass
             return map_path
         finally:
             self._map_save_lock.release()
@@ -7280,19 +7652,20 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.error(f"[미니맵] 키 입력 오류: {e}")
 
     def _get_segment_map_name(self, segment_idx: int) -> str:
-        """구간별 맵 파일명 생성 — map_file 설정 시 공유 경로 우선 반환"""
+        """구간별 맵 파일명 생성 — rule_id 기반 독립 경로.
+
+        원칙: 항상 자기 rule_id prefix 경로만 반환.
+        map_file은 초기 복사 소스로만 사용하고 직접 반환하지 않음.
+        → 삭제/저장이 다른 특화모드 파일에 절대 영향 안 감.
+        """
         import os, shutil
-        # 공유 맵 파일이 설정되어 있으면 해당 경로 직접 반환
         waypoints = getattr(self._config, 'waypoints', []) or []
-        if segment_idx < len(waypoints):
-            wp = waypoints[segment_idx]
-            if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
-                shared = wp[3].get('map_file')
-                if shared and os.path.exists(shared):
-                    return shared
         base = self._config.name or "autosave"
         seg_name = self._get_segment_display_name(segment_idx)
         map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
+        # rule_id 접두사 (rule_abc12345 → abc12345)
+        _rid = getattr(self, '_config_rule_id', None) or ""
+        _rid_prefix = _rid.replace("rule_", "")[:8] + "_" if _rid else ""
         # 보스 경유지(0,0) 판별
         is_boss = False
         if segment_idx < len(waypoints):
@@ -7300,44 +7673,52 @@ class GameModeDialog(ctk.CTkToplevel):
             if isinstance(wp, (list, tuple)) and len(wp) >= 2:
                 if int(wp[0]) == 0 and int(wp[1]) == 0:
                     is_boss = True
-        # 파일명 = {번호}_{경유지이름}_map.json (제로패딩 → 정렬 순서 보장)
+        # 파일명 = {rule_id}_{번호}_{경유지이름}_map.json
         if is_boss:
-            new_path = os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_boss_map.json")
+            own_path = os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_boss_map.json")
         else:
-            new_path = os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json")
-        # 같은 이름의 다른 경유지가 있는지 확인
-        has_dup = False
-        for i, w in enumerate(waypoints):
-            if i != segment_idx:
-                other = w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2] else f"경유지{i+1}"
-                if other == seg_name:
-                    has_dup = True
-                    break
-        # 마이그레이션: 새 파일 없고, 이름 중복 아닐 때만 (중복이면 오염된 파일이므로 복사 금지)
-        if not os.path.exists(new_path) and not has_dup:
-            # 이전 형식 마이그레이션 (플랜명 접두사 포함 → 없음)
-            if is_boss:
-                old_candidates = [
-                    os.path.join(map_dir, f"{base}_{segment_idx:02d}_{seg_name}_boss_map.json"),
-                    os.path.join(map_dir, f"{base}_{segment_idx}_{seg_name}_boss_map.json"),
-                    os.path.join(map_dir, f"{base}_{seg_name}_boss{segment_idx}_map.json"),
-                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
-                ]
-            else:
-                old_candidates = [
-                    os.path.join(map_dir, f"{base}_{segment_idx:02d}_{seg_name}_map.json"),
-                    os.path.join(map_dir, f"{base}_{segment_idx}_{seg_name}_map.json"),
-                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
-                ]
-            for old_path in old_candidates:
-                if os.path.exists(old_path):
-                    try:
-                        shutil.copy2(old_path, new_path)
-                        logger.info(f"[맵] 마이그레이션: {os.path.basename(old_path)} → {os.path.basename(new_path)}")
-                    except Exception as e:
-                        logger.error(f"[맵] 마이그레이션 실패: {e}")
-                    break
-        return new_path
+            own_path = os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json")
+        # 자기 파일이 없으면 → 소스에서 복사 (원본 절대 건드리지 않음)
+        if not os.path.exists(own_path):
+            # 1순위: map_file (다른 특화모드에서 복사해온 소스)
+            source = None
+            if segment_idx < len(waypoints):
+                wp = waypoints[segment_idx]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                    mf = wp[3].get('map_file')
+                    if mf and os.path.exists(mf):
+                        source = mf
+            # 2순위: 이전 형식 파일 마이그레이션
+            if not source:
+                has_dup = False
+                for i, w in enumerate(waypoints):
+                    if i != segment_idx:
+                        other = w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2] else f"경유지{i+1}"
+                        if other == seg_name:
+                            has_dup = True
+                            break
+                if not has_dup:
+                    if is_boss:
+                        old_candidates = [
+                            os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_boss_map.json"),
+                            os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+                        ]
+                    else:
+                        old_candidates = [
+                            os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json"),
+                            os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+                        ]
+                    for old_path in old_candidates:
+                        if os.path.exists(old_path):
+                            source = old_path
+                            break
+            if source:
+                try:
+                    shutil.copy2(source, own_path)
+                    logger.info(f"[맵] 복사: {os.path.basename(source)} → {os.path.basename(own_path)}")
+                except Exception as e:
+                    logger.error(f"[맵] 복사 실패: {e}")
+        return own_path
 
     def _get_segment_display_name(self, segment_idx: int) -> str:
         """구간 인덱스에 해당하는 표시 이름 반환 (경유지 인덱스와 1:1 대응)"""
@@ -7562,13 +7943,6 @@ class GameModeDialog(ctk.CTkToplevel):
         row4 = ctk.CTkFrame(card, fg_color="transparent")
         row4.pack(fill="x", padx=8, pady=(0, 1))
 
-        save_map_btn = ctk.CTkButton(row4, text="맵저장", width=_btn_w, height=_btn_h,
-                      font=_btn_font,
-                      fg_color="#1a2535", hover_color="#2a3d55",
-                      text_color="#a8c8e8", border_width=1, border_color="#2a3d55",
-                      command=lambda idx=i: self._save_map_for(idx))
-        save_map_btn.pack(side="left", padx=_btn_pad)
-
         load_map_btn = ctk.CTkButton(row4, text="맵불러오기", width=_btn_w, height=_btn_h,
                       font=_btn_font,
                       fg_color="#251a35", hover_color="#3d2a55",
@@ -7674,7 +8048,6 @@ class GameModeDialog(ctk.CTkToplevel):
             'test_btn': None,
             'show_btn': show_btn,
             'clear_btn': clear_btn,
-            'save_map_btn': save_map_btn,
             'load_map_btn': load_map_btn,
             'add_char_img_btn': add_char_img_btn,
             'char_img_status': char_img_status,
@@ -7957,11 +8330,17 @@ class GameModeDialog(ctk.CTkToplevel):
                     cards[i]['card'].pack_forget()
                     if not cards[i]['ungroup_btn'].winfo_ismapped():
                         cards[i]['ungroup_btn'].pack(side="left", padx=(6, 0))
-        # 부모 카드에 그룹 버튼 표시
+        # 부모 카드에 그룹 버튼 표시 + 펼쳐진 그룹은 자식 다시 pack
         for i in range(len(waypoints)):
             children = self._get_children(i)
             if children:
                 self._update_group_ui(i)
+                if 0 <= i < len(cards) and cards[i].get('group_expanded', False):
+                    after_w = cards[i]['card']
+                    for ci in children:
+                        if 0 <= ci < len(cards):
+                            cards[ci]['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=after_w)
+                            after_w = cards[ci]['card']
 
     def _toggle_all_cards(self):
         """모든 그룹 펼치기/접기"""
@@ -8402,7 +8781,6 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[i]['copy_btn'].configure(command=lambda idx=i: self._copy_waypoint(idx))
             cards[i]['single_mapping_btn'].configure(command=lambda idx=i: self._run_single_mapping_test(idx))
             cards[i]['show_btn'].configure(command=lambda idx=i: self._show_map_for(idx))
-            cards[i]['save_map_btn'].configure(command=lambda idx=i: self._save_map_for(idx))
             cards[i]['load_map_btn'].configure(command=lambda idx=i: self._load_map_for(idx))
             cards[i]['add_char_img_btn'].configure(command=lambda idx=i: self._add_character_image(idx))
             cards[i]['del_char_img_btn'].configure(command=lambda idx=i: self._delete_character_image(idx))
@@ -8501,6 +8879,95 @@ class GameModeDialog(ctk.CTkToplevel):
                 return
         self._restore_map()
         self._update_card_map_badge(idx)
+
+    def _clear_all_maps(self):
+        """모든 경유지 맵 한번에 초기화 (잠금 해제 포함)"""
+        if getattr(self, '_is_mapping', False) or self._is_running:
+            self._append_log("⚠️ 실행 중에는 맵 초기화 불가")
+            return
+        import os
+        from tkinter import messagebox
+        from ..player.game_map import GameMap
+        from ..player.simple_pathfinder import SimplePathfinder
+        from ..player.map_explorer import MapExplorer
+
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not waypoints:
+            self._append_log("⚠️ 경유지가 없습니다")
+            return
+
+        # 잠금된 경유지 목록 확인
+        locked_names = []
+        for i in range(len(waypoints)):
+            if self._is_segment_map_locked(i):
+                locked_names.append(self._get_segment_display_name(i))
+
+        msg = f"전체 {len(waypoints)}개 경유지의 맵 데이터를 모두 삭제합니다.\n되돌릴 수 없습니다."
+        if locked_names:
+            msg += f"\n\n잠금된 맵 {len(locked_names)}개도 잠금 해제 후 초기화됩니다:\n" + ", ".join(locked_names[:5])
+            if len(locked_names) > 5:
+                msg += f" 외 {len(locked_names) - 5}개"
+        if not messagebox.askyesno("전체 맵 초기화", msg):
+            return
+
+        cleared = 0
+        for i in range(len(waypoints)):
+            seg_name = self._get_segment_display_name(i)
+            # 잠금 해제
+            if self._is_segment_map_locked(i):
+                wp = waypoints[i]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                    wp[3]['map_locked'] = False
+                cards = getattr(self, '_wp_cards', [])
+                if 0 <= i < len(cards):
+                    btn = cards[i].get('map_lock_btn')
+                    if btn:
+                        btn.configure(text="🔓", fg_color="transparent",
+                                      hover_color="#4c566a", text_color=COLORS["text_muted"],
+                                      border_color=COLORS["border"])
+
+            # map_file 공유 경로 해제 (원본 파일 보호)
+            wp = waypoints[i]
+            if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                wp[3].pop('map_file', None)
+
+            # 자체 맵 파일 삭제 — 모든 경로 패턴 검색
+            map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
+            _rid = getattr(self, '_config_rule_id', None) or ""
+            _rid_short = _rid.replace("rule_", "")[:8]
+            base = self._config.name or "autosave"
+            # 가능한 모든 파일명 패턴
+            _patterns = [
+                f"{_rid_short + '_' if _rid_short else ''}{i:02d}_{seg_name}_map.json",
+                f"{_rid_short + '_' if _rid_short else ''}{i:02d}_{seg_name}_boss_map.json",
+                f"{i:02d}_{seg_name}_map.json",
+                f"{i:02d}_{seg_name}_boss_map.json",
+                f"{base}_{seg_name}_map.json",
+                f"{base}_{i:02d}_{seg_name}_map.json",
+                f"{base}_{i}_{seg_name}_map.json",
+            ]
+            for pat in _patterns:
+                for suffix in ["", ".backup.json", ".bak1", ".bak2", ".bak3"]:
+                    if suffix in (".bak1", ".bak2", ".bak3"):
+                        fp = os.path.join(map_dir, pat + suffix)
+                    elif suffix == ".backup.json":
+                        fp = os.path.join(map_dir, pat.replace("_map.json", "_map.backup.json").replace("_boss_map.json", "_boss_map.backup.json"))
+                    else:
+                        fp = os.path.join(map_dir, pat)
+                    if os.path.exists(fp):
+                        os.remove(fp)
+
+            # 메모리 맵도 무조건 리셋 (현재 구간 아니어도)
+            if i == getattr(self, '_current_segment_idx', -1):
+                self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{seg_name}")
+                self._map_pathfinder = SimplePathfinder(self._game_map)
+                self._map_explorer = MapExplorer(self._game_map)
+
+            self._update_card_map_badge(i)
+            cleared += 1
+
+        self._append_log(f"🗑️ 전체 맵 초기화 완료 ({cleared}개 경유지)", force=True)
+        logger.info(f"[맵핑] 전체 맵 초기화: {cleared}개 경유지")
 
     def _clear_map_for(self, idx: int):
         """특정 경유지 맵 초기화"""
@@ -9792,13 +10259,19 @@ class GameModeDialog(ctk.CTkToplevel):
         # 템플릿 완성 여부 확인
         if not matcher.has_all_templates():
             missing = matcher.get_missing_digits()
-            self.after(0, lambda: self._append_log(f"템플릿 미완성: {missing}"))
-            self._monitoring = False
-            self.after(0, lambda: self._monitor_btn.configure(text="▶ 모니터링 시작", fg_color="#5e81ac"))
+            try:
+                self.after(0, lambda: self._append_log(f"템플릿 미완성: {missing}"))
+                self._monitoring = False
+                self.after(0, lambda: self._monitor_btn.configure(text="▶ 모니터링 시작", fg_color="#5e81ac"))
+            except (tk.TclError, RuntimeError):
+                self._monitoring = False
             return
 
         logger.info("[좌표모니터] 모니터링 시작 (템플릿)")
-        self.after(0, lambda: self._append_log("모니터링 시작 (템플릿)"))
+        try:
+            self.after(0, lambda: self._append_log("모니터링 시작 (템플릿)"))
+        except (tk.TclError, RuntimeError):
+            pass
 
         while self._monitoring:
             try:
@@ -9828,13 +10301,19 @@ class GameModeDialog(ctk.CTkToplevel):
                 y_color = "#a3be8c" if y_val is not None else "#bf616a"
                 status_text = f"인식 상태: 템플릿 | X={x_val}, Y={y_val}"
 
-                self.after(0, lambda xt=x_text, xc=x_color: self._realtime_x_label.configure(text=xt, text_color=xc))
-                self.after(0, lambda yt=y_text, yc=y_color: self._realtime_y_label.configure(text=yt, text_color=yc))
-                self.after(0, lambda st=status_text: self._ocr_raw_label.configure(text=st))
+                try:
+                    self.after(0, lambda xt=x_text, xc=x_color: self._realtime_x_label.configure(text=xt, text_color=xc))
+                    self.after(0, lambda yt=y_text, yc=y_color: self._realtime_y_label.configure(text=yt, text_color=yc))
+                    self.after(0, lambda st=status_text: self._ocr_raw_label.configure(text=st))
+                except (tk.TclError, RuntimeError):
+                    pass
 
             except Exception as e:
                 logger.error(f"[좌표모니터] 오류: {e}")
-                self.after(0, lambda err=str(e): self._append_log(f"오류: {err}"))
+                try:
+                    self.after(0, lambda err=str(e): self._append_log(f"오류: {err}"))
+                except (tk.TclError, RuntimeError):
+                    pass
 
             # 0.1초씩 5회 대기 (중지 시 즉시 반응)
             for _ in range(5):
@@ -9980,6 +10459,14 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception as e:
                 logger.error(f"[특화모드] 리프레시 콜백 실패: {e}")
 
+    def _restore_and_focus(self):
+        """저장된 위치 복원 + 포커스 (화면 밖 → 제자리)"""
+        self._load_window_geometry()
+        self.lift()
+        self.focus_force()
+        self.attributes('-topmost', True)
+        self.after(100, lambda: self.attributes('-topmost', False))
+
     def _load_window_geometry(self):
         """저장된 창 위치/크기 불러오기"""
         import json
@@ -10006,6 +10493,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         logger.warning(f"[특화모드] 저장된 위치가 화면 밖: x={x}, y={y}")
         except Exception as e:
             logger.error(f"[특화모드] 창 위치 로드 실패: {e}")
+
+        # 저장된 위치 없음/실패 → 화면 중앙에 기본 크기로 배치
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        x = max(0, (screen_w - default_w) // 2)
+        y = max(0, (screen_h - default_h) // 2)
+        self.geometry(f"{default_w}x{default_h}+{x}+{y}")
 
     def _save_window_geometry(self):
         """창 위치/크기 저장"""
@@ -11409,25 +11903,32 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
 
         # Action을 monitor_action 형식으로 변환 (모든 속성 포함)
+        # Action은 .text/.keys/.x/.y, AutomationRule은 .action_text/.action_keys/.action_x/.action_y
+        _is_rule = isinstance(clipboard, AutomationRule)
         action_type = clipboard.action_type
         monitor_action = None
 
+        _clip_text = clipboard.action_text if _is_rule else clipboard.text
+        _clip_keys = clipboard.action_keys if _is_rule else clipboard.keys
+        _clip_x = clipboard.action_x if _is_rule else clipboard.x
+        _clip_y = clipboard.action_y if _is_rule else clipboard.y
+
         if action_type == "type":
-            monitor_action = {"type": "텍스트 입력", "text": clipboard.action_text or ""}
+            monitor_action = {"type": "텍스트 입력", "text": _clip_text or ""}
         elif action_type in ["hotkey", "key_press"]:
-            monitor_action = {"type": "키 입력", "keys": clipboard.action_keys or []}
+            monitor_action = {"type": "키 입력", "keys": _clip_keys or []}
         elif action_type in ["click", "double_click", "right_click"]:
             if getattr(clipboard, 'target_image', None):
                 monitor_action = {"type": "이미지 클릭", "image": clipboard.target_image, "click_type": action_type}
             else:
-                monitor_action = {"type": "마우스 클릭", "x": clipboard.action_x, "y": clipboard.action_y, "click_type": action_type}
+                monitor_action = {"type": "마우스 클릭", "x": _clip_x, "y": _clip_y, "click_type": action_type}
         elif action_type == "scroll":
             monitor_action = {"type": "스크롤", "amount": getattr(clipboard, 'scroll_amount', 0)}
         elif action_type == "drag":
             monitor_action = {
                 "type": "드래그",
-                "from_x": clipboard.action_x,
-                "from_y": clipboard.action_y,
+                "from_x": _clip_x,
+                "from_y": _clip_y,
                 "to_x": getattr(clipboard, 'drag_to_x', 0),
                 "to_y": getattr(clipboard, 'drag_to_y', 0)
             }
@@ -11965,6 +12466,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
     def _on_close(self):
         """닫기"""
+        if hasattr(self, '_batch_render_id') and self._batch_render_id:
+            try:
+                self.after_cancel(self._batch_render_id)
+            except (tk.TclError, ValueError):
+                pass
+            self._batch_render_id = None
         if self._modified:
             from tkinter import messagebox
             if messagebox.askyesno("저장 확인", "수정된 내용이 있습니다. 저장하시겠습니까?"):
@@ -12797,9 +13304,12 @@ class PlayerView(BaseView):
             print("[실행] 선택된 재생 없음")
             return
 
-        repeat_count = (
-            0 if self._infinite_var.get() else int(self._repeat_var.get() or 1)
-        )
+        try:
+            repeat_count = (
+                0 if self._infinite_var.get() else max(1, int(self._repeat_var.get() or 1))
+            )
+        except (ValueError, TypeError):
+            repeat_count = 1
 
         # 실행 시작
         success = self._action_player.play(

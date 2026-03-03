@@ -1036,6 +1036,8 @@ class ObstacleAvoidanceController:
             logger.info(f"[BFS] 경로: {path[:10]}{'...' if len(path) > 10 else ''}")
             return next_dir
         else:
+            self.pathfind_mode = False
+            self.wall_follow_mode = False  # 하위 호환성
             logger.warning(f"[BFS] 경로 없음! 장애물 {self.obstacle_map.get_obstacle_count()}개 발견됨")
             return None
 

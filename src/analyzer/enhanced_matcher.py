@@ -4,6 +4,7 @@ WinCro 강화된 이미지 매칭 모듈
 여러 매칭 기법을 조합하여 인식률을 높입니다.
 """
 
+import time
 import threading
 from collections import OrderedDict
 
@@ -230,6 +231,7 @@ class EnhancedMatcher:
                     templ_img,
                     cv2.TM_CCOEFF_NORMED
                 )
+                time.sleep(0)  # GIL 해제
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
                 if max_val > best_score:
@@ -265,6 +267,7 @@ class EnhancedMatcher:
                 templates['edges'],
                 cv2.TM_CCOEFF_NORMED
             )
+            time.sleep(0)  # GIL 해제
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
             h, w = templates['edges'].shape[:2]
@@ -374,6 +377,7 @@ class EnhancedMatcher:
                 cv2.TM_CCORR_NORMED,
                 mask=mask
             )
+            time.sleep(0)  # GIL 해제
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
             found = max_val >= threshold
@@ -429,6 +433,7 @@ class EnhancedMatcher:
 
             try:
                 result = cv2.matchTemplate(screen_gray, region, cv2.TM_CCOEFF_NORMED)
+                time.sleep(0)  # GIL 해제
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
                 if max_val >= threshold:
@@ -436,11 +441,11 @@ class EnhancedMatcher:
                     if name == 'top':
                         est_x, est_y = max_loc[0], max_loc[1]
                     elif name == 'bottom':
-                        est_x, est_y = max_loc[0], max_loc[1] + (h - margin)
+                        est_x, est_y = max_loc[0], max_loc[1] - (h - margin)
                     elif name == 'left':
                         est_x, est_y = max_loc[0], max_loc[1]
                     elif name == 'right':
-                        est_x, est_y = max_loc[0] + (w - margin), max_loc[1]
+                        est_x, est_y = max_loc[0] - (w - margin), max_loc[1]
 
                     matches.append({
                         'region': name,
@@ -495,6 +500,7 @@ class EnhancedMatcher:
 
             try:
                 result = cv2.matchTemplate(screen_gray, scaled, cv2.TM_CCOEFF_NORMED)
+                time.sleep(0)  # GIL 해제
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
                 if max_val > best_score:

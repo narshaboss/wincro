@@ -1,0 +1,3580 @@
+{
+  "plan_id": "plan_20260205_000742",
+  "name": "원각공장",
+  "description": "12개 동작으로 구성된 자동화 계획",
+  "initial_rules": [
+    {
+      "rule_id": "rule_0000",
+      "rule_type": "fixed_sequence",
+      "description": "클릭 (1375, 901)",
+      "action_type": "double_click",
+      "action_x": 1375,
+      "action_y": 901,
+      "action_text": null,
+      "action_keys": [],
+      "drag_to_x": null,
+      "drag_to_y": null,
+      "drag_duration": null,
+      "scroll_amount": 0,
+      "target_image": "click_2c90692f_0002.png",
+      "target_images": [],
+      "trigger_image": null,
+      "trigger_x": null,
+      "trigger_y": null,
+      "confidence": 0.65,
+      "search_radius": 120,
+      "search_region": null,
+      "move_mouse_before_search": false,
+      "wait_after": 1.2497515678405762,
+      "wait_random": false,
+      "wait_random_range": 0.3,
+      "typing_random": false,
+      "typing_delay": 0.1,
+      "typing_delay_range": 0.05,
+      "timeout": 30.0,
+      "skip_on_not_found": false,
+      "repeat_count": 1,
+      "repeat_delay": 0.5,
+      "repeat_delay_random": false,
+      "repeat_delay_random_range": 0.3,
+      "timestamp": 6.173039436340332,
+      "parent_id": null,
+      "children": [
+        {
+          "rule_id": "rule_0002",
+          "rule_type": "fixed_sequence",
+          "description": "더블클릭 (709, 779)",
+          "action_type": "double_click",
+          "action_x": 709,
+          "action_y": 779,
+          "action_text": null,
+          "action_keys": [],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": "trigger_20260205_000933_300.png",
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 120,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "wait_after": 4.749686002731323,
+          "wait_random": false,
+          "wait_random_range": 0.3,
+          "typing_random": false,
+          "typing_delay": 0.1,
+          "typing_delay_range": 0.05,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 13.98986029624939,
+          "parent_id": "rule_0000",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        },
+        {
+          "rule_id": "rule_0003",
+          "rule_type": "fixed_sequence",
+          "description": "더블클릭 (562, 481)",
+          "action_type": "double_click",
+          "action_x": 562,
+          "action_y": 481,
+          "action_text": null,
+          "action_keys": [],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": "trigger_20260205_001043_847.png",
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 120,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "wait_after": 4.031756162643433,
+          "wait_random": false,
+          "wait_random_range": 0.3,
+          "typing_random": false,
+          "typing_delay": 0.1,
+          "typing_delay_range": 0.05,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 18.739546298980713,
+          "parent_id": "rule_0000",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        },
+        {
+          "rule_id": "rule_0004",
+          "rule_type": "fixed_sequence",
+          "description": "key_press",
+          "action_type": "key_press",
+          "action_x": null,
+          "action_y": null,
+          "action_text": null,
+          "action_keys": [
+            "enter"
+          ],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": null,
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 0,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "wait_after": 10.0,
+          "wait_random": true,
+          "wait_random_range": 0.3,
+          "typing_random": false,
+          "typing_delay": 0.1,
+          "typing_delay_range": 0.05,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 22.771302461624146,
+          "parent_id": "rule_0000",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        },
+        {
+          "rule_id": "rule_0006",
+          "rule_type": "fixed_sequence",
+          "description": "클릭 (1200, 316)",
+          "action_type": "click",
+          "action_x": 1200,
+          "action_y": 316,
+          "action_text": null,
+          "action_keys": [],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": "click_ca861819_0004.png",
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 120,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "wait_after": 10.0,
+          "wait_random": true,
+          "wait_random_range": 0.3,
+          "typing_random": false,
+          "typing_delay": 0.1,
+          "typing_delay_range": 0.05,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 31.07292675971985,
+          "parent_id": "rule_0000",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        },
+        {
+          "rule_id": "rule_0005",
+          "rule_type": "fixed_sequence",
+          "description": "텍스트 입력: 62",
+          "action_type": "type",
+          "action_x": null,
+          "action_y": null,
+          "action_text": "62",
+          "action_keys": [],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": null,
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 0,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "wait_after": 3.0,
+          "wait_random": false,
+          "wait_random_range": 0.3,
+          "typing_random": true,
+          "typing_delay": 3.0,
+          "typing_delay_range": 0.5,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 22.771302461624146,
+          "parent_id": "rule_0000",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        },
+        {
+          "rule_id": "rule_0007",
+          "rule_type": "fixed_sequence",
+          "description": "key_press",
+          "action_type": "key_press",
+          "action_x": null,
+          "action_y": null,
+          "action_text": null,
+          "action_keys": [
+            "enter"
+          ],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": null,
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 0,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "wait_after": 2.5,
+          "wait_random": true,
+          "wait_random_range": 0.3,
+          "typing_random": false,
+          "typing_delay": 0.1,
+          "typing_delay_range": 0.05,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 78.84673857688904,
+          "parent_id": "rule_0000",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        }
+      ],
+      "is_monitoring_mode": false,
+      "monitoring_final_image": null,
+      "monitoring_watches": []
+    },
+    {
+      "rule_id": "rule_65546d26",
+      "rule_type": "fixed_sequence",
+      "description": "국내성 흑해골굴",
+      "action_type": "game_mode",
+      "action_x": null,
+      "action_y": null,
+      "action_text": null,
+      "action_keys": [],
+      "drag_to_x": null,
+      "drag_to_y": null,
+      "drag_duration": null,
+      "scroll_amount": 0,
+      "target_image": "game_character_trigger_20260130_015924_341.png",
+      "target_images": [],
+      "trigger_image": null,
+      "trigger_x": null,
+      "trigger_y": null,
+      "confidence": 0.8,
+      "search_radius": 0,
+      "search_region": null,
+      "move_mouse_before_search": false,
+      "wait_after": 0.5,
+      "wait_random": false,
+      "wait_random_range": 0.3,
+      "typing_random": false,
+      "typing_delay": 0.1,
+      "typing_delay_range": 0.05,
+      "timeout": 30.0,
+      "skip_on_not_found": false,
+      "repeat_count": 1,
+      "repeat_delay": 0.5,
+      "repeat_delay_random": false,
+      "repeat_delay_random_range": 0.3,
+      "timestamp": 0.0,
+      "parent_id": null,
+      "children": [],
+      "is_monitoring_mode": false,
+      "monitoring_final_image": null,
+      "monitoring_watches": []
+    },
+    {
+      "rule_id": "rule_8464965f",
+      "rule_type": "fixed_sequence",
+      "description": "평양성 흑해골굴",
+      "action_type": "game_mode",
+      "action_x": null,
+      "action_y": null,
+      "action_text": null,
+      "action_keys": [],
+      "drag_to_x": null,
+      "drag_to_y": null,
+      "drag_duration": null,
+      "scroll_amount": 0,
+      "target_image": "game_character_trigger_20260130_015924_341.png",
+      "target_images": [],
+      "trigger_image": null,
+      "trigger_x": null,
+      "trigger_y": null,
+      "confidence": 0.8,
+      "search_radius": 0,
+      "search_region": null,
+      "move_mouse_before_search": false,
+      "wait_after": 0.5,
+      "wait_random": false,
+      "wait_random_range": 0.3,
+      "typing_random": false,
+      "typing_delay": 0.1,
+      "typing_delay_range": 0.05,
+      "timeout": 30.0,
+      "skip_on_not_found": false,
+      "repeat_count": 1,
+      "repeat_delay": 0.5,
+      "repeat_delay_random": false,
+      "repeat_delay_random_range": 0.3,
+      "timestamp": 0.0,
+      "parent_id": null,
+      "children": [],
+      "is_monitoring_mode": false,
+      "monitoring_final_image": null,
+      "monitoring_watches": []
+    }
+  ],
+  "monitoring_rules": [],
+  "created_at": "2026-02-05T00:07:42.725280",
+  "video_path": "C:\\Projects\\wincro\\data\\recordings\\녹화_20260205_000557.mp4",
+  "input_log_path": "C:\\Projects\\wincro\\data\\recordings\\녹화_20260205_000557_input.json",
+  "user_verified": true,
+  "modified": true,
+  "total_repeat_count": 1,
+  "game_modes": {
+    "rule_65546d26": {
+      "enabled": true,
+      "name": "국내성 흑해골굴",
+      "character_image": "game_character_trigger_20260130_015924_341.png",
+      "target_image": "game_target_trigger_20260130_015118_673.png",
+      "obstacle_images": [],
+      "move_keys": {
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right"
+      },
+      "analysis_interval": 0.1,
+      "confidence": 0.8,
+      "character_confidence": 0.9,
+      "target_confidence": 0.8,
+      "arrival_threshold": 30,
+      "search_region": null,
+      "smooth_move": true,
+      "move_skill_key": "4",
+      "move_skill_distance": 150,
+      "auto_skill_key": "5",
+      "auto_skill_cooldown_image": "game_auto_skill_cd_trigger_20260215_005639_490_crop_50c94a.png",
+      "auto_skill_cd_region": [
+        11,
+        34,
+        233,
+        231
+      ],
+      "navigation_mode": "coordinate",
+      "coord_x_region": [
+        1487,
+        892,
+        1537,
+        915
+      ],
+      "coord_y_region": [
+        1547,
+        894,
+        1590,
+        915
+      ],
+      "target_x": 13,
+      "target_y": 22,
+      "waypoints": [
+        [
+          31,
+          30,
+          "국내성 흑해골굴",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 31,
+                "y": 30
+              },
+              {
+                "x": 30,
+                "y": 30
+              }
+            ],
+            "map_locked": true,
+            "route_walls": []
+          }
+        ],
+        [
+          13,
+          22,
+          "흑해골굴1굴",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          16,
+          11,
+          "흑해골굴2굴",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          16,
+          8,
+          "흑해골굴3굴",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          1,
+          1,
+          "흑해골굴4굴",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          21,
+          11,
+          "흑해골굴 5굴",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          5,
+          4,
+          "흑해골굴6굴",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          8,
+          23,
+          "흑해골굴7굴",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          4,
+          11,
+          "흑해골굴8굴",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          0,
+          0,
+          "흑해골굴9굴",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ],
+        [
+          0,
+          106,
+          "국내성 탈출",
+          {
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 0.8,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 0.9,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": true,
+            "group_parent": "국내성 흑해골굴",
+            "route_walls": []
+          }
+        ]
+      ],
+      "final_waypoint_idx": -1,
+      "obstacle_detection_enabled": true,
+      "stuck_threshold": 3,
+      "detour_distance": 8,
+      "diagonal_movement_enabled": false,
+      "oscillation_threshold": 3,
+      "detour_distance_max": 8,
+      "escape_skill_enabled": true,
+      "escape_skill_key": "q",
+      "escape_skill_cooldown": 4.0,
+      "escape_skill_stuck_threshold": 10,
+      "escape_skill_direction_count": 5,
+      "escape_skill_wait_after": 0.5,
+      "minimap_config": null,
+      "mapping_enabled": true,
+      "boss_skill_enabled": true,
+      "boss_skill_key": "q",
+      "boss_skill_cooldown": 4.0,
+      "move_skill_enabled": false,
+      "auto_skill_enabled": true,
+      "move_skill_cooldown": 5.0,
+      "auto_skill_cooldown": 5.0
+    },
+    "rule_8464965f": {
+      "enabled": true,
+      "name": "평양성 흑해골굴",
+      "character_image": "game_character_trigger_20260130_015924_341.png",
+      "target_image": "game_target_trigger_20260130_015118_673.png",
+      "obstacle_images": [],
+      "move_keys": {
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right"
+      },
+      "analysis_interval": 0.1,
+      "confidence": 0.8,
+      "character_confidence": 0.9,
+      "target_confidence": 0.8,
+      "arrival_threshold": 30,
+      "search_region": null,
+      "smooth_move": true,
+      "move_skill_key": "4",
+      "move_skill_distance": 150,
+      "auto_skill_key": "5",
+      "auto_skill_cooldown_image": "game_auto_skill_cd_trigger_20260215_005639_490_crop_50c94a.png",
+      "auto_skill_cd_region": [
+        11,
+        34,
+        233,
+        231
+      ],
+      "navigation_mode": "coordinate",
+      "coord_x_region": [
+        1487,
+        892,
+        1537,
+        915
+      ],
+      "coord_y_region": [
+        1547,
+        894,
+        1590,
+        915
+      ],
+      "target_x": 0,
+      "target_y": 0,
+      "waypoints": [
+        [
+          31,
+          30,
+          "평양성 흑해골굴",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 31,
+                "y": 30
+              },
+              {
+                "x": 30,
+                "y": 30
+              }
+            ],
+            "route_walls": [
+              {
+                "x": 17,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴(복사)",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴(복사2)",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴(복사3)",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          106,
+          "평양성탈출",
+          {
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 0.8,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 0.9,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false,
+            "route_walls": []
+          }
+        ]
+      ],
+      "final_waypoint_idx": -1,
+      "obstacle_detection_enabled": true,
+      "stuck_threshold": 3,
+      "detour_distance": 8,
+      "diagonal_movement_enabled": false,
+      "oscillation_threshold": 3,
+      "detour_distance_max": 8,
+      "escape_skill_enabled": true,
+      "escape_skill_key": "q",
+      "escape_skill_cooldown": 4.0,
+      "escape_skill_stuck_threshold": 10,
+      "escape_skill_direction_count": 5,
+      "escape_skill_wait_after": 0.5,
+      "minimap_config": null,
+      "mapping_enabled": true,
+      "boss_skill_enabled": true,
+      "boss_skill_key": "q",
+      "boss_skill_cooldown": 4.0,
+      "move_skill_enabled": false,
+      "auto_skill_enabled": true,
+      "move_skill_cooldown": 5.0,
+      "auto_skill_cooldown": 5.0
+    },
+    "rule_752d917a": {
+      "enabled": true,
+      "name": "평양성 흑해골굴",
+      "character_image": "game_character_trigger_20260130_015924_341.png",
+      "target_image": "game_target_trigger_20260130_015118_673.png",
+      "obstacle_images": [],
+      "move_keys": {
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right"
+      },
+      "analysis_interval": 0.1,
+      "confidence": 0.8,
+      "character_confidence": 0.9,
+      "target_confidence": 0.8,
+      "arrival_threshold": 30,
+      "search_region": null,
+      "smooth_move": true,
+      "move_skill_key": "4",
+      "move_skill_distance": 150,
+      "auto_skill_key": "5",
+      "auto_skill_cooldown_image": "game_auto_skill_cd_trigger_20260215_005639_490_crop_50c94a.png",
+      "auto_skill_cd_region": [
+        11,
+        34,
+        233,
+        231
+      ],
+      "navigation_mode": "coordinate",
+      "coord_x_region": [
+        1487,
+        892,
+        1537,
+        915
+      ],
+      "coord_y_region": [
+        1547,
+        894,
+        1590,
+        915
+      ],
+      "target_x": 0,
+      "target_y": 0,
+      "waypoints": [
+        [
+          31,
+          30,
+          "평양성 흑해골굴",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 31,
+                "y": 30
+              },
+              {
+                "x": 30,
+                "y": 30
+              }
+            ],
+            "route_walls": [
+              {
+                "x": 17,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          31,
+          30,
+          "평양성 흑해골굴-2",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 31,
+                "y": 30
+              },
+              {
+                "x": 30,
+                "y": 30
+              }
+            ],
+            "route_walls": [
+              {
+                "x": 17,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴(복사)",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴(복사)",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          31,
+          30,
+          "평양성 흑해골굴-3",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 31,
+                "y": 30
+              },
+              {
+                "x": 30,
+                "y": 30
+              }
+            ],
+            "route_walls": [
+              {
+                "x": 17,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴(복사2)",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴(복사2)",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          31,
+          30,
+          "평양성 흑해골굴(복사3)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 31,
+                "y": 30
+              },
+              {
+                "x": 30,
+                "y": 30
+              }
+            ],
+            "route_walls": [
+              {
+                "x": 17,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false
+          }
+        ],
+        [
+          1,
+          9,
+          "평양흑해골굴입구(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 11,
+                "y": 19
+              },
+              {
+                "x": 12,
+                "y": 19
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 9
+              },
+              {
+                "x": 1,
+                "y": 10
+              },
+              {
+                "x": 6,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 7,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 17,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 18,
+                "y": 2,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 9,
+                "enabled": false
+              },
+              {
+                "x": 23,
+                "y": 10,
+                "enabled": false
+              }
+            ],
+            "route_walls": [],
+            "map_locked": false,
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          13,
+          22,
+          "평양흑해골굴1굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 9,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 13,
+                "y": 22
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          11,
+          "평양흑해골굴2굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 25,
+                "y": 2
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          16,
+          8,
+          "평양흑해골굴3굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 21,
+                "y": 1
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 16,
+                "y": 8
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          1,
+          1,
+          "평양흑해골굴4굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 10,
+                "y": 23
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          21,
+          11,
+          "평양흑해골굴 5굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 4,
+                "y": 10
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 21,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          5,
+          4,
+          "평양흑해골굴6굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 20,
+                "y": 22
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 5,
+                "y": 4
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          8,
+          23,
+          "평양흑해골굴7굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 14,
+                "y": 3
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 8,
+                "y": 23
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          4,
+          11,
+          "평양흑해골굴8굴(복사3)",
+          {
+            "route_starts": [
+              {
+                "x": 24,
+                "y": 14
+              }
+            ],
+            "route_ends": [
+              {
+                "x": 4,
+                "y": 11
+              }
+            ],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          0,
+          "평양흑해골굴9굴(복사3)",
+          {
+            "target_image": "wp_img_c917ed11.png",
+            "target_images": [],
+            "confidence": 0.8022727272727272,
+            "search_radius": 0,
+            "action_x": null,
+            "action_y": null,
+            "move_mouse_before_search": false,
+            "character_image": "wp_char_96c7fb74.png",
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 1.2,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [
+              {
+                "x": 12,
+                "y": 4
+              }
+            ],
+            "route_ends": [],
+            "map_locked": false,
+            "route_walls": [],
+            "group_parent": "평양성 흑해골굴"
+          }
+        ],
+        [
+          0,
+          106,
+          "평양성탈출",
+          {
+            "arrival_keys": [
+              {
+                "key": "6",
+                "wait_after": 1.1,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "2",
+                "wait_after": 0.8,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
+                "key": "enter",
+                "wait_after": 0.9,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              }
+            ],
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 0,
+                "y": 106
+              },
+              {
+                "x": 0,
+                "y": 107
+              },
+              {
+                "x": 0,
+                "y": 108
+              },
+              {
+                "x": 0,
+                "y": 109
+              }
+            ],
+            "map_locked": false,
+            "route_walls": []
+          }
+        ]
+      ],
+      "final_waypoint_idx": -1,
+      "obstacle_detection_enabled": true,
+      "stuck_threshold": 3,
+      "detour_distance": 8,
+      "diagonal_movement_enabled": false,
+      "oscillation_threshold": 3,
+      "detour_distance_max": 8,
+      "escape_skill_enabled": true,
+      "escape_skill_key": "q",
+      "escape_skill_cooldown": 4.0,
+      "escape_skill_stuck_threshold": 10,
+      "escape_skill_direction_count": 5,
+      "escape_skill_wait_after": 0.5,
+      "minimap_config": null,
+      "mapping_enabled": true,
+      "boss_skill_enabled": true,
+      "boss_skill_key": "q",
+      "boss_skill_cooldown": 4.0,
+      "move_skill_enabled": false,
+      "auto_skill_enabled": true,
+      "move_skill_cooldown": 5.0,
+      "auto_skill_cooldown": 5.0
+    }
+  }
+}

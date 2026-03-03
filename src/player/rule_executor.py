@@ -1267,8 +1267,10 @@ class RuleExecutor:
 
                         # PyAutoGUI로 시도
                         self._is_moving_mouse = True
-                        pyautogui.moveTo(click_x, click_y, duration=self._mouse_duration)
-                        self._is_moving_mouse = False
+                        try:
+                            pyautogui.moveTo(click_x, click_y, duration=self._mouse_duration)
+                        finally:
+                            self._is_moving_mouse = False
 
                         pos_after_move = pyautogui.position()
                         if abs(pos_after_move[0] - click_x) < PIXEL_TOLERANCE_SMALL and abs(pos_after_move[1] - click_y) < PIXEL_TOLERANCE_SMALL:
@@ -1631,6 +1633,7 @@ class RuleExecutor:
                 return None
 
             result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+            time.sleep(0)  # GIL 해제
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
             logger.debug(f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f} - {Path(image_path).name}")
@@ -1727,6 +1730,7 @@ class RuleExecutor:
                     except cv2.error as e:
                         logger.error(f"[트리거] 매칭 오류: {e}")
                         return None
+                    time.sleep(0)  # GIL 해제
 
                     _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
@@ -1881,6 +1885,7 @@ class RuleExecutor:
             except cv2.error as e:
                 logger.error(f"템플릿 매칭 오류: {e}")
                 return []
+            time.sleep(0)  # GIL 해제
 
             # 중지 체크
             if self._stop_event.is_set():
@@ -2291,6 +2296,7 @@ class RuleExecutor:
                             return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
                         # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
                         wait_count = 0
+                        time.sleep(0.5)
                         continue
                 else:
                     # 최종 이미지가 화면에 없음 → 사라진 적 있음 표시
@@ -2301,6 +2307,7 @@ class RuleExecutor:
 
             # 감시 이미지 처리 완료 (조건 충족 → 점프 등), 다음 반복으로
             if watch_found:
+                time.sleep(0.5)
                 continue
 
             # 3. 대기
@@ -2393,8 +2400,12 @@ class RuleExecutor:
 
                 # search_radius가 있고 search_region이 없으면 변환
                 if not search_region and search_radius > 0:
-                    action_center_x = monitor_action.get('x') or monitor_action.get('center_x')
-                    action_center_y = monitor_action.get('y') or monitor_action.get('center_y')
+                    action_center_x = monitor_action.get('x')
+                    if action_center_x is None:
+                        action_center_x = monitor_action.get('center_x')
+                    action_center_y = monitor_action.get('y')
+                    if action_center_y is None:
+                        action_center_y = monitor_action.get('center_y')
                     if action_center_x is not None and action_center_y is not None:
                         search_region = self._radius_to_region(action_center_x, action_center_y, search_radius)
                         logger.debug(f"[이미지 클릭] search_radius로 범위 계산: {search_region}")
@@ -2686,9 +2697,6 @@ class RuleExecutor:
             logger.info(f"[특화모드] 검색영역: ({search_region[0]},{search_region[1]}) ~ ({search_region[2]},{search_region[3]})")
         else:
             logger.info(f"[특화모드] 검색영역: 전체 화면")
-
-        # 중지 이벤트 초기화
-        self._stop_event.clear()
 
         # ESC 키로 중지할 수 있도록 키보드 훅 설정
         import keyboard
@@ -3033,8 +3041,6 @@ class RuleExecutor:
         logger.info(f"[좌표모드] 이동키: ↑={config.move_keys.get('up')} ↓={config.move_keys.get('down')} ←={config.move_keys.get('left')} →={config.move_keys.get('right')}")
         logger.info(f"[좌표모드] 알고리즘: A* 경로탐색 + GameMap")
 
-        # 중지 이벤트 초기화
-        self._stop_event.clear()
         import keyboard
         _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
         logger.info("[좌표모드] ESC 키로 중지 가능")
@@ -3072,7 +3078,10 @@ class RuleExecutor:
         def _rebuild_path_index():
             """경로 변경 시 역매핑 재구축"""
             nonlocal path_pos_index
-            path_pos_index = {pos: i for i, pos in enumerate(current_path)}
+            path_pos_index = {}
+            for i, pos in enumerate(current_path):
+                if pos not in path_pos_index:
+                    path_pos_index[pos] = i
 
         def find_path_direction(cx, cy, tx, ty):
             """
@@ -3103,7 +3112,8 @@ class RuleExecutor:
                                     return d
 
             # 1차: 알려진 이동가능 경로만
-            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False)
+            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, max_iterations=20000)
+            time.sleep(0)  # GIL 해제
             if result.found and len(result.directions) > 0:
                 current_path = result.path
                 path_index = 0
@@ -3114,7 +3124,8 @@ class RuleExecutor:
 
             # 2차: 미탐색 영역 포함 (연속 실패 3회 이상이면 건너뜀)
             if unknown_path_fails < 3:
-                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=True)
+                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=True, max_iterations=20000)
+                time.sleep(0)  # GIL 해제
                 if result.found and len(result.directions) > 0:
                     current_path = result.path
                     path_index = 0
@@ -3130,6 +3141,8 @@ class RuleExecutor:
                 if d not in tried and not game_map.is_blocked(nx, ny):
                     dist = abs(nx - tx) + abs(ny - ty)
                     candidates.append((dist, d))
+
+            time.sleep(0)  # GIL 해제 (스마트 탐색 후)
 
             if candidates:
                 candidates.sort()
@@ -3151,6 +3164,7 @@ class RuleExecutor:
                     logger.info("[좌표모드] 백트래킹 시도")
                     return d
 
+            time.sleep(0)  # GIL 해제 (백트래킹 후)
             # 5차: 사방이 벽 (진짜 막다른 길) → 목표 방향으로 직진
             logger.warning("[좌표모드] 막다른 길, 직진 시도")
             dx = tx - cx
@@ -3175,7 +3189,8 @@ class RuleExecutor:
                 current_x, current_y = matcher.read_both_coordinates(
                     config.coord_x_region,
                     config.coord_y_region,
-                    "X", "Y"
+                    "X", "Y",
+                    stop_event=self._stop_event
                 )
 
                 if current_x is None or current_y is None:
@@ -3185,7 +3200,7 @@ class RuleExecutor:
                         return False
                     if coord_fail_count % 10 == 1:
                         logger.warning(f"[좌표모드] #{iteration} 좌표 읽기 실패 ({coord_fail_count}회 연속)")
-                    time.sleep(interval)
+                    time.sleep(max(interval, 0.05))
                     continue
 
                 coord_fail_count = 0  # 성공 시 리셋
@@ -3288,7 +3303,7 @@ class RuleExecutor:
                                 ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 wall_x = prev_x + ddx
                                 wall_y = prev_y + ddy
-                                game_map.mark_soft_blocked(wall_x, wall_y)
+                                game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
                                 logger.info(f"[좌표모드] 임시벽 발견: ({wall_x},{wall_y})")
                             # 장애물 발견 → 경로 재계산
                             current_path = []
@@ -3331,7 +3346,6 @@ class RuleExecutor:
                         pyautogui.press(direction_key)
                         time.sleep(0.05)
 
-                    pyautogui.press('enter')
                     time.sleep(escape_skill_wait_after)
 
                     last_escape_time = time.time()
@@ -3349,7 +3363,7 @@ class RuleExecutor:
                 direction = find_path_direction(current_x, current_y, target_x, target_y)
 
                 if direction is None:
-                    time.sleep(0.1)
+                    self._stop_event.wait(0.1)
                     prev_x, prev_y = current_x, current_y
                     continue
 
@@ -3414,23 +3428,22 @@ class RuleExecutor:
         with self._pyautogui_lock:
             original_pause = pyautogui.PAUSE
             pyautogui.PAUSE = 0
-        try:
-            start_time = time.time()
-            while time.time() - start_time < interval and not self._stop_event.is_set():
+            try:
+                start_time = time.time()
+                while time.time() - start_time < interval and not self._stop_event.is_set():
+                    for key in keys:
+                        pyautogui.keyDown(key)
+                    time.sleep(0.015)  # 15ms 누르기
+                    for key in keys:
+                        pyautogui.keyUp(key)
+                    time.sleep(0.005)  # 5ms 간격
+            finally:
+                # 예외 시에도 키 해제 보장
                 for key in keys:
-                    pyautogui.keyDown(key)
-                time.sleep(0.015)  # 15ms 누르기
-                for key in keys:
-                    pyautogui.keyUp(key)
-                time.sleep(0.005)  # 5ms 간격
-        finally:
-            # 예외 시에도 키 해제 보장
-            for key in keys:
-                try:
-                    pyautogui.keyUp(key)
-                except Exception:
-                    pass
-            with self._pyautogui_lock:
+                    try:
+                        pyautogui.keyUp(key)
+                    except Exception:
+                        pass
                 pyautogui.PAUSE = original_pause
 
 

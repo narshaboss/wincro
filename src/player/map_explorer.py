@@ -223,7 +223,7 @@ class MapExplorer:
             if direction:
                 # 이동 가능한 경로인지 확인 (passable이거나 unknown)
                 tx, ty = target
-                if not self.game_map.is_blocked(tx, ty):
+                if not self.game_map.is_blocked(tx, ty) and not self.game_map.is_soft_blocked(tx, ty):
                     self._current_direction = direction
                     logger.debug(f"[Explorer] 백트래킹: ({current_x},{current_y}) -> {target}")
                     return direction

@@ -6,6 +6,7 @@
 
 import heapq
 import logging
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -112,6 +113,8 @@ class SimplePathfinder:
                 if max_iterations > 0 and _iter_count >= max_iterations:
                     logger.debug(f"[Pathfinder] 최대 반복 초과 ({max_iterations})")
                     return PathResult(found=False, path=[], directions=[], cost=-1)
+            if _iter_count % 200 == 0:
+                time.sleep(0)  # GIL 해제
 
             f_cost, g_cost, current = heapq.heappop(open_set)
 
@@ -291,7 +294,7 @@ class SimplePathfinder:
             PathResult 객체
         """
         self._goal = goal
-        self._current_path = self.find_path(current, goal, allow_unknown)
+        self._current_path = self.find_path(current, goal, allow_unknown, max_iterations=20000)
         self._path_index = 0
 
         if self._current_path.found:

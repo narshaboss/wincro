@@ -1036,7 +1036,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         existing_region = None
         if self._rule and getattr(self._rule, 'search_region', None):
             existing_region = self._rule.search_region
-        elif self._rule and self._rule.search_radius and self._rule.action_x and self._rule.action_y:
+        elif self._rule and self._rule.search_radius and self._rule.action_x is not None and self._rule.action_y is not None:
             cx, cy, r = self._rule.action_x, self._rule.action_y, self._rule.search_radius
             existing_region = [cx - r, cy - r, cx + r, cy + r]
 
@@ -2750,7 +2750,11 @@ class AnalyzerView(BaseView):
             logger.error(f"취소 오류: {e}")
 
     def _on_progress(self, progress: AnalysisProgress):
-        self.after(0, lambda: self._update_progress(progress))
+        import time as _time
+        now = _time.time()
+        if not hasattr(self, '_last_progress_time') or now - self._last_progress_time >= 0.2 or progress.current >= progress.total:
+            self._last_progress_time = now
+            self.after(0, lambda: self._update_progress(progress))
 
     def _update_progress(self, progress: AnalysisProgress):
         self._progress_label.configure(text=progress.message)
