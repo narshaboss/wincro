@@ -99,6 +99,15 @@
 
 ## 버그 수정 이력
 
+### 2026-03-05: 맵핑 (0,0) 좌표 버그 + 특화모드 복사 수정 (v1.0.139)
+
+- **route_starts/ends/walls falsy-zero 필터**: `(int(x)!=0 or int(y)!=0)` 조건이 유효한 (0,0) 좌표 제거 → `is not None`만 체크
+- **도착지 벽 등록 → 맵핑 불가**: 맵핑테스트에서 도착지를 mark_blocked → 인접 unknown 프론티어 감지 불가 → passable + portal_protected로 변경 (3곳)
+- **프론티어 자기위치 제외**: `_find_nearest_frontier` BFS가 현재 위치를 프론티어 후보에서 제외 → 유일한 프론티어일 때 즉시 완료 → 조건 제거
+- **맵핑 기록 미저장 (boss segment)**: `_boss_segment_active`와 `skip_save`가 (0,0) 경유지를 보스로 판정 → 맵핑테스트에서 auto-save 차단 → `not _is_mapping_test` 조건 추가 (6곳)
+- **entry tile blocked + start_pos 보호**: 전체맵핑 시 entry tile을 blocked+start_pos 설정 → A*/BFS 경유 불가 → passable + start_pos=None으로 변경 (2곳)
+- **특화모드 복사 시 맵 미복사 + 잠금 미해제**: `_setup_copied_game_mode_maps` 헬퍼 추가 — 원본 맵 파일을 map_file로 참조 + map_locked 해제
+
 ### 2026-03-03: v1.0.137 정밀분석 + 맵핑테스트 버그 수정 (v1.0.138)
 
 **v1.0.137 정밀분석 수정 (8파일 36건):**
@@ -1665,7 +1674,7 @@ self._mini_total_repeat = 1
 - 총 테스트 파일: 3개
 
 - 프로젝트 시작 시간: 2026-01-16
-- 마지막 업데이트: 2026-03-03 (v1.0.137 정밀분석 + 맵핑테스트 버그 수정)
+- 마지막 업데이트: 2026-03-05 (맵핑 (0,0) 좌표 버그 + 특화모드 복사 수정)
 
 ## 업데이트 규칙
 

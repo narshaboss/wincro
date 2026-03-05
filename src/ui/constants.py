@@ -128,8 +128,17 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
                 "click_type": click_type_map.get(action_type, "click"),
             }
         else:
-            x = getattr(action, 'x', 0) or 0
-            y = getattr(action, 'y', 0) or 0
+            # AutomationRule은 action_x/action_y, Action은 x/y
+            x = getattr(action, 'x', None)
+            if x is None:
+                x = getattr(action, 'action_x', None)
+            if x is None:
+                x = 0
+            y = getattr(action, 'y', None)
+            if y is None:
+                y = getattr(action, 'action_y', None)
+            if y is None:
+                y = 0
             ma = {
                 "type": "좌표 클릭",
                 "x": x,
@@ -143,10 +152,31 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
         ma = {"type": "스크롤", "dx": dx, "dy": dy}
 
     elif action_type == "drag":
-        x = getattr(action, 'x', 0) or 0
-        y = getattr(action, 'y', 0) or 0
-        end_x = getattr(action, 'end_x', 0) or getattr(action, 'drag_end_x', 0) or 0
-        end_y = getattr(action, 'end_y', 0) or getattr(action, 'drag_end_y', 0) or 0
+        # AutomationRule은 action_x/action_y + drag_to_x/drag_to_y
+        x = getattr(action, 'x', None)
+        if x is None:
+            x = getattr(action, 'action_x', None)
+        if x is None:
+            x = 0
+        y = getattr(action, 'y', None)
+        if y is None:
+            y = getattr(action, 'action_y', None)
+        if y is None:
+            y = 0
+        end_x = getattr(action, 'end_x', None)
+        if end_x is None:
+            end_x = getattr(action, 'drag_end_x', None)
+        if end_x is None:
+            end_x = getattr(action, 'drag_to_x', None)
+        if end_x is None:
+            end_x = 0
+        end_y = getattr(action, 'end_y', None)
+        if end_y is None:
+            end_y = getattr(action, 'drag_end_y', None)
+        if end_y is None:
+            end_y = getattr(action, 'drag_to_y', None)
+        if end_y is None:
+            end_y = 0
         ma = {"type": "드래그", "start_x": x, "start_y": y, "end_x": end_x, "end_y": end_y}
 
     if ma is None:
