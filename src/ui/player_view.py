@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 실행 화면 모듈
 
 동작 재현 기능을 위한 UI를 제공합니다.
@@ -3079,17 +3079,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 실행 중이면 먼저 중지
         if self._is_running:
             self._stop_execution()
-            # GameModeDialog 실행 스레드 종료 대기
-            _gm = getattr(self, '_gm_dialog', None)
-            if _gm:
-                _rt = getattr(_gm, '_run_thread', None)
-                if _rt is not None and _rt.is_alive():
-                    _rt.join(timeout=2.0)
-                try:
-                    _gm.destroy()
-                except Exception:
-                    pass
-                self._gm_dialog = None
+        # GameModeDialog 정리 (실행 완료 후에도 참조 남아 있을 수 있음)
+        _gm = getattr(self, '_gm_dialog', None)
+        if _gm:
+            _rt = getattr(_gm, '_run_thread', None)
+            if _rt is not None and _rt.is_alive():
+                _rt.join(timeout=2.0)
+            try:
+                _gm.destroy()
+            except Exception:
+                pass
+            self._gm_dialog = None
 
         if self._modified:
             from tkinter import messagebox
@@ -3736,6 +3736,26 @@ class GameModeDialog(ctk.CTkToplevel):
             wall_count = stats['blocked_tiles']
             passable_count = stats['passable_tiles']
             soft_count = stats.get('soft_blocked_tiles', 0)
+            if (mapping_on or _segment_map_locked) and soft_count > 0:
+                _soft_snapshot = self._game_map.get_soft_blocked_snapshot()
+                _promoted = 0
+                _cleaned = 0
+                for (_sx, _sy), _cnt in list(_soft_snapshot.items()):
+                    if self._game_map.is_passable(_sx, _sy) or self._game_map.is_blocked(_sx, _sy):
+                        self._game_map.clear_soft_blocked(_sx, _sy)
+                        _cleaned += 1
+                    else:
+                        self._game_map.clear_soft_blocked(_sx, _sy)
+                        self._game_map.mark_blocked(_sx, _sy)
+                        _promoted += 1
+                stats = self._game_map.get_statistics()
+                wall_count = stats['blocked_tiles']
+                passable_count = stats['passable_tiles']
+                soft_count = stats.get('soft_blocked_tiles', 0)
+                if _promoted > 0:
+                    self.after(0, lambda n=_promoted: self._append_log(f"🧱 임시벽 {n}개 영구벽 승격"))
+                if _cleaned > 0:
+                    self.after(0, lambda n=_cleaned: self._append_log(f"🧹 임시벽 오염 {n}개 정리"))
             self.after(0, lambda: self._append_log(f"📍 맵 로드: 이동가능 {passable_count}개, 벽 {wall_count}개, 임시벽 {soft_count}개"))
             if wall_count > 0:
                 walls_preview = list(self._game_map.blocked)[:5]
@@ -3751,7 +3771,9 @@ class GameModeDialog(ctk.CTkToplevel):
         last_dir = None
         stuck_count = 0
         total_stuck_count = 0  # 탈출 스킬용 연속 정체 카운트
+        none_dir_streak = 0    # direction=None 연속 횟수 (가짜 정체 방지)
         tick_counter = 0  # soft_blocked tick용 카운터
+        last_auto_save_passable = -1  # 동일 타일 수 반복 자동저장 방지
         explored_from = {}  # {(x,y): set(방향)} — 자동 탐색용 (최대 500개)
         mark_portal_entry = False  # 구간 전환 후 첫 좌표를 입구 포탈로 등록
         unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
@@ -3777,8 +3799,17 @@ class GameModeDialog(ctk.CTkToplevel):
         explore_target = None          # (x,y) — 탐색 목표 (도달 전까지 고정)
         explore_target_tries = 0       # 현재 explore_target 시도 횟수
         explore_unreachable = set()    # 도달 불가 프런티어 좌표들
+        _last_frontier_log_target = None  # 동일 프런티어 목표 로그 스팸 억제용
+        _last_frontier_log_iter = -9999
+        edge_fail_counts = {}          # {(x,y,dir): n} 비연속 엣지 실패 누적
+        EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
+        EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
         _portal_protected = set()      # 포탈 좌표 (절대 unblock 금지)
         _is_backtrack_dir = False      # find_path_direction이 백트래킹으로 반환했는지
+        _pending_probe_target = None   # 이번 이동이 미탐색 직접진입인 경우 목표 좌표
+        _last_probe_target = None      # 직전 이동 시도에서의 미탐색 직접진입 목표
+        probe_focus_target = None      # 벽/길 여부를 끝까지 확인할 미탐색 검증 타깃
+        probe_focus_stall = 0          # 검증 타깃 접근 불가 상태 연속 횟수
         boss_no_frontier_count = 0     # 프런티어 미발견 연속 횟수 (탐색 완료 판정용)
         boss_pre_teleport = False      # 보스 던전 전환 후 텔레포트 대기 (맵 기록 중지)
         boss_approach_steps = 0        # 보스 감지 횟수
@@ -3839,6 +3870,32 @@ class GameModeDialog(ctk.CTkToplevel):
         path_index = 0     # 경로에서 현재 위치
         path_pos_index = {}  # 경로 위치 → 인덱스 역매핑 (O(1) 조회)
         recent_positions = []  # 최근 방문 위치 (반복 감지용)
+        blocked_dirs = {}  # (x, y, dir) -> expire_iteration
+        DIR_BLOCK_TTL_MIN = 6
+        DIR_BLOCK_TTL_MAX = 36
+
+        def _dir_key(x, y, d):
+            return (int(x), int(y), str(d))
+
+        def _cleanup_blocked_dirs(now_iter):
+            for _k, _exp in list(blocked_dirs.items()):
+                if now_iter >= _exp:
+                    blocked_dirs.pop(_k, None)
+
+        def _is_dir_blocked(x, y, d, now_iter):
+            _exp = blocked_dirs.get(_dir_key(x, y, d))
+            if _exp is None:
+                return False
+            if now_iter >= _exp:
+                blocked_dirs.pop(_dir_key(x, y, d), None)
+                return False
+            return True
+
+        def _register_dir_block(x, y, d, now_iter, ttl=None):
+            if ttl is None:
+                ttl = DIR_BLOCK_TTL_MIN
+            ttl = max(DIR_BLOCK_TTL_MIN, min(DIR_BLOCK_TTL_MAX, int(ttl)))
+            blocked_dirs[_dir_key(x, y, d)] = int(now_iter) + ttl
 
         def _rebuild_path_index():
             """경로 변경 시 역매핑 재구축 (중복 좌표는 첫 등장만 유지)"""
@@ -3888,6 +3945,76 @@ class GameModeDialog(ctk.CTkToplevel):
             _is_backtrack_dir = False
             current_pos = (cx, cy)
             target_pos = (tx, ty)
+            _manhattan = abs(cx - tx) + abs(cy - ty)
+            # 프런티어 탐색(전체맵핑/근처맵핑) 중에만 공격적 차단무시 허용
+            _frontier_probe_phase = full_mapping_exploring or _local_explore_phase
+            _blocked_primary_dir = None  # 경유지 이동 단계에서 경로차단 시 fallback 난수탐색 방지
+            _cleanup_blocked_dirs(iteration)
+
+            # 반복 감지용 위치 기록 (모든 단계에서 기록 — 4차에서만 기록하면 1~3차 return 시 진동 미감지)
+            recent_positions.append((cx, cy))
+            if len(recent_positions) > 20:
+                recent_positions.pop(0)
+            if len(recent_positions) >= 10:
+                from collections import Counter
+                _rp_counts = Counter(recent_positions[-10:])
+                _rp_most = _rp_counts.most_common(1)[0][1]
+                _osc_hit = False
+                if _rp_most >= 5:
+                    _osc_hit = True
+                elif len(_rp_counts) <= 3 and len(recent_positions) >= 8:
+                    _last8 = recent_positions[-8:]
+                    _last8_c = Counter(_last8)
+                    if len(_last8_c) == 2:
+                        _c1, _c2 = _last8_c.most_common(2)
+                        if _c1[1] >= 3 and _c2[1] >= 3:
+                            _osc_hit = True
+                if _osc_hit:
+                    if _ui_update_ok:
+                        self.after(0, lambda cx2=cx, cy2=cy:
+                            self._append_log(f"🔁 반복감지({cx2},{cy2}) → 경로초기화(벽해제없음)"))
+                    recent_positions.clear()
+                    explored_from.pop(current_pos, None)
+                    for _osc_p in list(_rp_counts.keys()):
+                        if _osc_p != current_pos:
+                            explored_from.pop(_osc_p, None)
+                    current_path = []
+                    path_index = 0
+                    path_pos_index = {}
+                    pathfinder.invalidate_path()
+
+            def _can_take_path_dir(_d):
+                """경로 방향 사용 가능 여부.
+                맵핑 모드에서는 약한 방향차단(실패 누적 임계치 미만)을 경로 우선으로 무시해
+                불필요한 지그재그/백트래킹을 줄인다.
+                """
+                if not _is_dir_blocked(cx, cy, _d, iteration):
+                    return True
+                if (not _is_mapping_mode) or _manhattan <= 2:
+                    return False
+                _ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)
+                if _ef >= EDGE_FAIL_MARK_THRESHOLD:
+                    return False
+
+                # 1) 프런티어 탐색 단계: 기존처럼 적극 우회 허용
+                if _frontier_probe_phase:
+                    if _ui_update_ok and _ef >= 1:
+                        self.after(0, lambda x=cx, y=cy, d2=_d, ef=_ef:
+                            self._append_log(f"🧭 경로우선: ({x},{y}) {d2} 차단무시(실패:{ef})"))
+                    return True
+
+                # 2) 경유지 이동 단계: 차단을 존중 (랜덤 탐색으로 튀는 부작용 방지)
+                return False
+
+            def _is_portal_step_forbidden(_x, _y, _goal=None):
+                _pos = (_x, _y)
+                if _pos == current_pos:
+                    return False
+                if _pos not in _portal_protected:
+                    return False
+                if _goal is not None and _pos == _goal:
+                    return False
+                return True
 
             # 경로가 있고 현재 위치가 경로 상에 있으면 따라가기
             if current_path and path_index < len(current_path):
@@ -3898,7 +4025,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         next_pos = current_path[path_index + 1]
                         # 다음 타일이 벽/소프트블록/출발지이면 캐시 무효화 → A* 재계산
                         _is_start = (self._game_map.start_pos is not None and next_pos == self._game_map.start_pos)
-                        if use_map and (_is_start or
+                        _is_portal_step = _is_portal_step_forbidden(next_pos[0], next_pos[1], target_pos)
+                        if use_map and (_is_start or _is_portal_step or
                                         self._game_map.is_blocked(next_pos[0], next_pos[1]) or
                                         self._game_map.is_soft_blocked(next_pos[0], next_pos[1])):
                             current_path = None
@@ -3909,14 +4037,27 @@ class GameModeDialog(ctk.CTkToplevel):
                             dy = next_pos[1] - cy
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 if ddx == dx and ddy == dy:
+                                    if not _can_take_path_dir(d):
+                                        _blocked_primary_dir = d
+                                        current_path = None
+                                        path_index = 0
+                                        path_pos_index = {}
+                                        break
                                     remaining = len(current_path) - path_index - 1
                                     if _ui_update_ok:
                                         self.after(0, lambda d2=d, r=remaining:
                                             self._append_log(f"🚶 경로추적 {d2} (잔여:{r}칸)"))
                                     return d
 
-            _manhattan = abs(cx - tx) + abs(cy - ty)
             _skip_to_explore = False  # 최단경로 모드 A* 실패 시 True → 1차~2차 건너뜀
+            _dir_avoid = set()  # 현재 위치에서 방향차단된 인접 타일 (A* avoid용)
+
+            def _build_avoid_set(_goal=None):
+                _avoid = set(_dir_avoid)
+                for _ppx, _ppy in _portal_protected:
+                    if _is_portal_step_forbidden(_ppx, _ppy, _goal):
+                        _avoid.add((_ppx, _ppy))
+                return _avoid if _avoid else None
 
             # ── 맵핑테스트 최단경로 전용 모드 ──────────────────────────
             # 맵 데이터 충분(50타일+) OR 출발좌표 없는 맵핑테스트:
@@ -3924,11 +4065,17 @@ class GameModeDialog(ctk.CTkToplevel):
             # 벽 발견 → 맵 갱신 → 다음 호출에서 A* 재계산 → 자연 수렴
             # 재생/전체테스트/부분실행은 _is_mapping_test=False → 절대 진입 안 함
             if _is_mapping_test and (not full_mapping_exploring or _mt_has_map):
+                # 현재 위치에서 방향차단된 인접 타일을 avoid_set에 추가
+                # → A*가 차단된 방향을 경로에 포함하지 않음 (진동 방지)
+                for _da_d, (_da_dx, _da_dy) in DIRECTIONS_4.items():
+                    if _is_dir_blocked(cx, cy, _da_d, iteration):
+                        _dir_avoid.add((cx + _da_dx, cy + _da_dy))
                 _sp_result = pathfinder.find_path(
                     current_pos, target_pos, allow_unknown=True,
                     stop_event=self._stop_event,
                     max_iterations=max(_manhattan * 30, 20000),
-                    unknown_cost=3)  # 미탐색 비용 3배 → 알려진 경로 우선
+                    unknown_cost=3,  # 미탐색 비용 3배 → 알려진 경로 우선
+                    avoid_set=_build_avoid_set(target_pos))
                 if self._stop_event.is_set():
                     return None
                 if _sp_result.found and _sp_result.directions:
@@ -3938,16 +4085,26 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _ui_update_ok:
                         self.after(0, lambda l=len(_sp_result.path):
                             self._append_log(f"🛤️ 최단경로: {l}칸"))
-                    return _sp_result.directions[0]
+                    _d0 = _sp_result.directions[0]
+                    if _can_take_path_dir(_d0):
+                        return _d0
+                    _blocked_primary_dir = _d0
                 # A* 실패 (사방 벽 등 극단적 경우) → 1차~2차 건너뛰고 3차로 직행
                 _skip_to_explore = True
 
             # 1차~2차: 일반 모드 경로 탐색 (최단경로 맵핑 모드에서는 건너뜀)
             if not _skip_to_explore:
+                # 현재 위치에서 방향차단된 인접 타일 수집 (1차~2차 공통)
+                if not _dir_avoid:
+                    for _da_d, (_da_dx, _da_dy) in DIRECTIONS_4.items():
+                        if _is_dir_blocked(cx, cy, _da_d, iteration):
+                            _dir_avoid.add((cx + _da_dx, cy + _da_dy))
+                _avoid_arg = _build_avoid_set(target_pos)
                 # 1차: 알려진 이동가능 경로만 (soft_blocked 제외 — 깨끗한 우회)
                 # allow_unknown=False → 탐색 범위가 알려진 타일로 한정되므로 max_iterations 불필요
                 result_clean = pathfinder.find_path(current_pos, target_pos, allow_unknown=False,
-                                              stop_event=self._stop_event, allow_soft_blocked=False)
+                                              stop_event=self._stop_event, allow_soft_blocked=False,
+                                              avoid_set=_avoid_arg)
                 if self._stop_event.is_set():
                     return None
                 time.sleep(0)  # GIL 해제 (Stage1 후)
@@ -3964,12 +4121,16 @@ class GameModeDialog(ctk.CTkToplevel):
                     unknown_path_fails = 0
                     if _ui_update_ok:
                         self.after(0, lambda l=len(result_clean.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
-                    return result_clean.directions[0]
+                    _d0 = result_clean.directions[0]
+                    if _can_take_path_dir(_d0):
+                        return _d0
+                    _blocked_primary_dir = _d0
 
                 time.sleep(0)  # GIL 해제 (Stage1.5 전)
                 # 1.5차: soft_blocked 포함 (우회로 없거나 1차 경로가 너무 길 때)
                 result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False,
-                                              stop_event=self._stop_event, allow_soft_blocked=True)
+                                              stop_event=self._stop_event, allow_soft_blocked=True,
+                                              avoid_set=_avoid_arg)
                 if self._stop_event.is_set():
                     return None
                 # 1.5차 결과 중 best known path 선택
@@ -3993,7 +4154,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     _result_unknown = pathfinder.find_path(current_pos, target_pos, allow_unknown=True,
                                                            stop_event=self._stop_event,
                                                            max_iterations=max(_manhattan * 30, 20000),
-                                                           unknown_cost=3)  # 미탐색 비용 3배 → 알려진 경로 우선
+                                                           unknown_cost=3,  # 미탐색 비용 3배 → 알려진 경로 우선
+                                                           avoid_set=_avoid_arg)
                     if self._stop_event.is_set():
                         return None
                     if _result_unknown.found and len(_result_unknown.directions) > 0:
@@ -4017,7 +4179,10 @@ class GameModeDialog(ctk.CTkToplevel):
                         if _ui_update_ok:
                             self.after(0, lambda l=len(_result_unknown.path), kl=len(_best_known.path):
                                 self._append_log(f"🔍 직선 경로: {l}칸 (기존 우회 {kl}칸)"))
-                        return _result_unknown.directions[0]
+                        _d0 = _result_unknown.directions[0]
+                        if _can_take_path_dir(_d0):
+                            return _d0
+                        _blocked_primary_dir = _d0
                     else:
                         # 알려진 경로가 더 짧거나 같음
                         current_path = _best_known.path
@@ -4027,7 +4192,10 @@ class GameModeDialog(ctk.CTkToplevel):
                         _label = "임시벽 통과" if _best_known is result else "경로"
                         if _ui_update_ok:
                             self.after(0, lambda l=len(_best_known.path), lb=_label: self._append_log(f"🛤️ {lb} 발견: {l}칸"))
-                        return _best_known.directions[0]
+                        _d0 = _best_known.directions[0]
+                        if _can_take_path_dir(_d0):
+                            return _d0
+                        _blocked_primary_dir = _d0
                 elif _best_known:
                     current_path = _best_known.path
                     path_index = 0
@@ -4035,14 +4203,37 @@ class GameModeDialog(ctk.CTkToplevel):
                     unknown_path_fails = 0
                     if _ui_update_ok:
                         self.after(0, lambda l=len(_best_known.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
-                    return _best_known.directions[0]
+                    _d0 = _best_known.directions[0]
+                    if _can_take_path_dir(_d0):
+                        return _d0
+                    _blocked_primary_dir = _d0
                 elif _result_unknown:
                     current_path = _result_unknown.path
                     path_index = 0
                     _rebuild_path_index()
                     if _ui_update_ok:
                         self.after(0, lambda l=len(_result_unknown.path): self._append_log(f"🔍 탐색 경로: {l}칸 (미지 영역 포함)"))
-                    return _result_unknown.directions[0]
+                    _d0 = _result_unknown.directions[0]
+                    if _can_take_path_dir(_d0):
+                        return _d0
+                    _blocked_primary_dir = _d0
+
+            # 경유지 이동 단계(비-프런티어): 경로 첫 방향이 차단되면
+            # 해당 방향을 현재 타일에서 시도 후보에서 제외하고 대체 경로를 우선 시도
+            if _blocked_primary_dir and _is_mapping_test and not _frontier_probe_phase:
+                _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
+                # 경유지 이동 단계: 1회 실패는 일시 흔들림일 수 있어 같은 방향 1회 재시도
+                if _blocked_edge_fail <= 1:
+                    if _ui_update_ok and iteration % 10 == 0:
+                        self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                            self._append_log(f"🧭 경유지 경로재시도: ({x},{y}) {d2}"))
+                    return _blocked_primary_dir
+                tried = explored_from.get(current_pos, set())
+                tried.add(_blocked_primary_dir)
+                explored_from[current_pos] = tried
+                if _ui_update_ok and iteration % 10 == 0:
+                    self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                        self._append_log(f"🧭 경유지 차단회피: ({x},{y}) {d2} 제외"))
 
             # 3차: 스마트 탐색 — 현재 위치에서 아직 안 가본 방향 시도
             _start_pos = self._game_map.start_pos
@@ -4050,14 +4241,26 @@ class GameModeDialog(ctk.CTkToplevel):
             candidates = []
             for d, (ddx, ddy) in DIRECTIONS_4.items():
                 nx, ny = cx + ddx, cy + ddy
-                if d not in tried and not self._game_map.is_blocked(nx, ny):
+                if d not in tried and not self._game_map.is_blocked(nx, ny) and not _is_dir_blocked(cx, cy, d, iteration):
                     if _start_pos is not None and (nx, ny) == _start_pos:
                         continue  # 출발지 회피
+                    if _is_portal_step_forbidden(nx, ny, target_pos):
+                        continue  # 보호 포탈 회피
                     dist = abs(nx - tx) + abs(ny - ty)
-                    candidates.append((dist, d))
+                    candidates.append((dist, d, nx, ny))
 
             if candidates:
-                candidates.sort()
+                if _is_mapping_test and not _frontier_probe_phase:
+                    _opp_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
+                    _recent_set = set(recent_positions[-6:])
+                    candidates.sort(key=lambda x: (
+                        x[0],                              # 목표 거리 우선
+                        1 if x[1] in tried else 0,         # 이미 시도한 방향 후순위
+                        1 if (_opp_last and x[1] == _opp_last) else 0,  # 직전 반대 방향 후순위
+                        1 if (x[2], x[3]) in _recent_set else 0,         # 최근 방문 좌표 후순위
+                    ))
+                else:
+                    candidates.sort()
                 chosen = candidates[0][1]
                 tried.add(chosen)
                 explored_from[current_pos] = tried
@@ -4067,39 +4270,6 @@ class GameModeDialog(ctk.CTkToplevel):
 
             # 4차: 이미 시도했지만 벽이 아닌 방향 재시도 (백트래킹)
             _is_backtrack_dir = True
-            # 최근 방문 위치 회피 + 반복 감지 시 벽 해제
-            recent_positions.append((cx, cy))
-            if len(recent_positions) > 20:
-                recent_positions.pop(0)
-
-            # 반복 감지: 최근 10회 중 같은 위치 5회 이상 → 인접 벽 해제
-            if len(recent_positions) >= 10:
-                from collections import Counter
-                pos_counts = Counter(recent_positions[-10:])
-                most_common_count = pos_counts.most_common(1)[0][1]
-                if most_common_count >= 5:
-                    unblocked = 0
-                    for d2, (ddx2, ddy2) in DIRECTIONS_4.items():
-                        nb = (cx + ddx2, cy + ddy2)
-                        if nb in _portal_protected:
-                            continue  # 포탈 좌표 보호
-                        if self._game_map.is_blocked(nb[0], nb[1]):
-                            self._game_map.mark_passable(nb[0], nb[1])
-                            unblocked += 1
-                        elif self._game_map.is_soft_blocked(nb[0], nb[1]):
-                            self._game_map.mark_passable(nb[0], nb[1])
-                            unblocked += 1
-                    if unblocked > 0:
-                        if _ui_update_ok:
-                            self.after(0, lambda u=unblocked, cx2=cx, cy2=cy:
-                                self._append_log(f"🔓 반복감지({cx2},{cy2}) → {u}개 인접벽 해제"))
-                        recent_positions.clear()
-                        # 현재 위치의 explored_from 초기화 (해제된 벽 방향 재시도 허용)
-                        explored_from.pop(current_pos, None)
-                        current_path = []
-                        path_index = 0
-                        path_pos_index = {}
-                        # return None 제거: 벽 해제 후 아래 백트래킹으로 즉시 방향 결정
 
             # 최근 방문 위치를 피해서 백트래킹
             recent_set = set(recent_positions[-6:])
@@ -4107,13 +4277,23 @@ class GameModeDialog(ctk.CTkToplevel):
             backtrack_candidates = []
             for d, (ddx, ddy) in DIRECTIONS_4.items():
                 nx, ny = cx + ddx, cy + ddy
+                if _is_dir_blocked(cx, cy, d, iteration):
+                    continue
                 if _start_pos is not None and (nx, ny) == _start_pos:
                     continue  # 출발지 회피
+                if _is_portal_step_forbidden(nx, ny, target_pos):
+                    continue  # 보호 포탈 회피
                 if not self._game_map.is_blocked(nx, ny) and not self._game_map.is_soft_blocked(nx, ny):
                     backtrack_candidates.append((d, (nx, ny)))
-            # 맵핑테스트: 목표 방향 우선 정렬 (먼 곳 탐색 방지, 전체맵핑 중엔 비활성)
-            if _is_mapping_test and not full_mapping_exploring and backtrack_candidates:
-                backtrack_candidates.sort(key=lambda x: abs(x[1][0] - tx) + abs(x[1][1] - ty))
+            # 맵핑 모드: 목표 방향 우선 정렬 (전체맵핑 포함)
+            if _is_mapping_mode and backtrack_candidates:
+                _opp_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
+                backtrack_candidates.sort(key=lambda x: (
+                    abs(x[1][0] - tx) + abs(x[1][1] - ty),   # 목표에 가까운 방향 우선
+                    1 if x[1] in recent_set else 0,          # 최근 방문 위치는 후순위
+                    1 if (_opp_last and x[0] == _opp_last) else 0,  # 직전 반대 방향은 후순위
+                    1 if x[0] in tried_dirs else 0,          # 이미 실패한 방향은 후순위
+                ))
             if backtrack_candidates:
                 # 이미 실패한 방향 제외 + 최근 방문 안 한 곳 우선
                 for d, pos in backtrack_candidates:
@@ -4145,23 +4325,78 @@ class GameModeDialog(ctk.CTkToplevel):
             # 직전 실패 방향 회피
             for offset in range(1, 5):
                 d = dirs[(iteration + offset) % 4]
-                if d != last_dir:
+                if d != last_dir and not _is_dir_blocked(cx, cy, d, iteration):
                     return d
-            return dirs[iteration % 4]
+            _fallback = dirs[iteration % 4]
+            if not _is_dir_blocked(cx, cy, _fallback, iteration):
+                return _fallback
+
+            # 경유지 이동 단계: 모든 방향이 "차단"으로만 막힌 경우
+            # 완전 정지(None) 대신, 통과 가능한 타일로 1칸 진행해 멈칫 연쇄를 끊는다.
+            if _is_mapping_test and not _frontier_probe_phase:
+                _start_pos = self._game_map.start_pos
+                _opp_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
+                _relief = []
+                for d, (ddx, ddy) in DIRECTIONS_4.items():
+                    nx, ny = cx + ddx, cy + ddy
+                    if _start_pos is not None and (nx, ny) == _start_pos:
+                        continue
+                    if _is_portal_step_forbidden(nx, ny, target_pos):
+                        continue
+                    if self._game_map.is_blocked(nx, ny) or self._game_map.is_soft_blocked(nx, ny):
+                        continue
+                    _relief.append((
+                        abs(nx - tx) + abs(ny - ty),                # 목표에 가까운 칸 우선
+                        1 if (_opp_last and d == _opp_last) else 0, # 직전 반대방향 후순위
+                        d
+                    ))
+                if _relief:
+                    _relief.sort()
+                    return _relief[0][2]
+            return None
 
         frontier_cooldown = set()  # 최근 도달/무효화된 프런티어 (재선택 방지)
         frontier_cooldown_iter = 0  # 쿨다운 리셋 기준 반복
+        frontier_blocked_until = {}  # {(x,y): unix_ts} 도달불가 프런티어 임시 봉인
+        FRONTIER_BLOCK_SECONDS = 25.0
+
+        def _cleanup_frontier_blocks():
+            _now = time.time()
+            for _k, _exp in list(frontier_blocked_until.items()):
+                if _exp <= _now:
+                    frontier_blocked_until.pop(_k, None)
+
+        def _is_frontier_blocked(pos):
+            _cleanup_frontier_blocks()
+            return frontier_blocked_until.get(pos, 0.0) > time.time()
+
+        def _frontier_inbound_fail_info(tx, ty):
+            """프런티어 타일로 진입하는 인접 엣지의 실패 누적/시도 기록 요약."""
+            _max_fail = 0
+            _has_tried = False
+            for _d, (_ddx, _ddy) in DIRECTIONS_4.items():
+                _sx = int(tx) - _ddx
+                _sy = int(ty) - _ddy
+                _ec = edge_fail_counts.get(_dir_key(_sx, _sy, _d), 0)
+                if _ec > _max_fail:
+                    _max_fail = _ec
+                _tried = explored_from.get((_sx, _sy), set())
+                if _d in _tried:
+                    _has_tried = True
+            return _max_fail, _has_tried
 
         def _find_nearest_frontier(cx, cy, max_radius=150, explore_center=None, explore_radius=0):
             """가장 가까운 frontier 찾기 (BFS - 가까운 것부터 탐색)
             explore_center/explore_radius: 근처맵핑 시 미탐색 이웃도 반경 내여야 프론티어 판정
             """
             from collections import deque
-            _delta_to_dir = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}
             _start_pos = self._game_map.start_pos
+            _origin = (cx, cy)
             visited = {(cx, cy)}
             queue = deque([(cx, cy, 0)])
             _fnf_iter = 0
+            _fnf_dbg_checked = 0  # 디버그: 프런티어 체크한 타일 수
+            _fnf_dbg_skip_reasons = []  # 디버그: 시작 타일 스킵 이유
             while queue:
                 _fnf_iter += 1
                 if _fnf_iter % 100 == 0:
@@ -4169,11 +4404,14 @@ class GameModeDialog(ctk.CTkToplevel):
                 px, py, dist = queue.popleft()
                 if dist > max_radius:  # 최대 탐색 거리
                     break
-                # frontier 체크 (explore_unreachable은 프런티어 반환만 스킵, 이웃 확장은 허용)
-                if (px, py) not in explore_unreachable:
+                # frontier 체크 (도달불가 임시봉인 좌표는 제외)
+                if not _is_frontier_blocked((px, py)):
                     if (px, py) in self._game_map.passable:
-                        if (px, py) not in frontier_cooldown:
-                            _ef = explored_from.get((px, py), set())
+                        if (px, py) in _portal_protected and (px, py) != _origin:
+                            if dist == 0:
+                                _fnf_dbg_skip_reasons.append(f"pp({px},{py})")
+                        elif (px, py) not in frontier_cooldown:
+                            _fnf_dbg_checked += 1
                             for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                                 nx, ny = px + ddx, py + ddy
                                 if not self._game_map.is_known(nx, ny):
@@ -4182,21 +4420,67 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _ed = max(abs(nx - explore_center[0]), abs(ny - explore_center[1]))
                                         if _ed > explore_radius:
                                             continue
-                                    # 이미 시도+실패한 방향은 frontier 판정에서 제외
-                                    if _delta_to_dir.get((ddx, ddy)) in _ef:
-                                        continue
                                     return (px, py)
-                # 인접 타일 탐색 (passable만, start_pos 제외 — A* 일관성)
+                        elif dist == 0:
+                            _fnf_dbg_skip_reasons.append(f"cd({px},{py})")
+                    elif dist == 0:
+                        _fnf_dbg_skip_reasons.append(f"!pass({px},{py})")
+                elif dist == 0:
+                    _fnf_dbg_skip_reasons.append(f"fb({px},{py})")
+                # 인접 타일 탐색 (passable + portal_protected blocked 통과, start_pos 제외)
                 for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                     nx, ny = px + ddx, py + ddy
-                    if (nx, ny) not in visited and (nx, ny) in self._game_map.passable:
-                        if _start_pos is None or (nx, ny) != _start_pos:
+                    if (nx, ny) not in visited:
+                        _can_traverse = (nx, ny) in self._game_map.passable
+                        # portal_protected 타일은 blocked여도 BFS 통과 허용 (맵 분리 방지)
+                        if not _can_traverse and (nx, ny) in _portal_protected:
+                            _can_traverse = True
+                        if (nx, ny) in _portal_protected and (nx, ny) != _origin:
+                            _can_traverse = False
+                        if _can_traverse and (_start_pos is None or (nx, ny) != _start_pos):
                             visited.add((nx, ny))
                             queue.append((nx, ny, dist + 1))
-            # 쿨다운 때문에 못 찾았으면 쿨다운 무시하고 재시도
-            if frontier_cooldown:
-                frontier_cooldown.clear()
-                return _find_nearest_frontier(cx, cy, max_radius=max_radius, explore_center=explore_center, explore_radius=explore_radius)
+            # 디버그: 왜 못 찾았는지 (항상 출력 — 프론티어 못 찾으면 로그 필수)
+            _fnf_vis_count = len(visited)
+            _fnf_pass_count = len(self._game_map.passable)
+            logger.info(f"[FNF] ({cx},{cy}) visited={_fnf_vis_count} checked={_fnf_dbg_checked} skip={_fnf_dbg_skip_reasons} start_pos={_start_pos} passable={_fnf_pass_count} blocked={len(self._game_map.blocked)}")
+            if _fnf_vis_count < 20:
+                logger.info(f"[FNF] visited_tiles={sorted(visited)}")
+                # UI 로그로도 출력 (디버깅용)
+                if _ui_update_ok:
+                    self.after(0, lambda v=_fnf_vis_count, c=_fnf_dbg_checked, sp=_start_pos, vis=sorted(visited) if _fnf_vis_count < 15 else []:
+                        self._append_log(f"🔎 FNF: vis={v} chk={c} sp={sp} tiles={vis}"))
+            return None
+
+        def _find_nearest_frontier_raw(cx, cy, max_radius=150, explore_center=None, explore_radius=0):
+            """필터/쿨다운/시도기록을 무시한 순수 frontier 검색 (조기완료 방지용)."""
+            from collections import deque
+            _start_pos = self._game_map.start_pos
+            _origin = (cx, cy)
+            visited = {(cx, cy)}
+            queue = deque([(cx, cy, 0)])
+            while queue:
+                px, py, dist = queue.popleft()
+                if dist > max_radius:
+                    break
+                if (px, py) in self._game_map.passable and ((px, py) not in _portal_protected or (px, py) == _origin):
+                    for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                        nx, ny = px + ddx, py + ddy
+                        if not self._game_map.is_known(nx, ny):
+                            if explore_center is not None:
+                                _ed = max(abs(nx - explore_center[0]), abs(ny - explore_center[1]))
+                                if _ed > explore_radius:
+                                    continue
+                            return (px, py)
+                for ddx, ddy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                    nx, ny = px + ddx, py + ddy
+                    if (nx, ny) not in visited:
+                        _can_tr = (nx, ny) in self._game_map.passable or (nx, ny) in _portal_protected
+                        if (nx, ny) in _portal_protected and (nx, ny) != _origin:
+                            _can_tr = False
+                        if _can_tr and (_start_pos is None or (nx, ny) != _start_pos):
+                            visited.add((nx, ny))
+                            queue.append((nx, ny, dist + 1))
             return None
 
         try:
@@ -4255,15 +4539,32 @@ class GameModeDialog(ctk.CTkToplevel):
                 current_x = int(current_x)
                 current_y = int(current_y)
 
+                # OCR 오독 가드: 목표가 0,0이 아닌데 좌표가 갑자기 (0,0)으로 튀면 무시
+                # (구간 전환/포탈 직후 일시 오독으로 도착/전환 판정이 깨지는 현상 방지)
+                if current_x == 0 and current_y == 0:
+                    _cur_re_guard = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                    _zero_goal = (target_x == 0 and target_y == 0) or any(ex == 0 and ey == 0 for ex, ey in _cur_re_guard)
+                    if not _zero_goal and not all_targets[target_idx][3]:
+                        _jump0 = abs(prev_x - current_x) + abs(prev_y - current_y) if prev_x is not None else 0
+                        # 큰 점프 형태의 0,0은 사실상 오독으로 간주
+                        if _jump0 >= 6:
+                            coord_fail_count += 1
+                            if coord_fail_count % 5 == 1 and _ui_update_ok:
+                                self.after(0, lambda px=prev_x, py=prev_y, j=_jump0, c=coord_fail_count, m=max_coord_fails:
+                                    self._append_log(f"⚠️ 좌표 0,0 오독 무시: ({px},{py})→(0,0) 거리={j} ({c}/{m})"))
+                            self._stop_event.wait(0.05)
+                            continue
+
                 # 좌표 범위 검증 (OCR 오독 필터링)
                 # 1) 절대 범위: 500 초과 무시
                 if abs(current_x) > 500 or abs(current_y) > 500:
-                    if iteration % 10 == 1:
+                    if iteration % 10 == 1 and _ui_update_ok:
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"⚠️ 좌표 범위 초과 무시: ({cx},{cy})"))
                     self._stop_event.wait(0.1)
                     continue
                 # 2) 이전 좌표 대비 점프 거리: 30칸 이상이면 OCR 오독 의심
+                _force_jump_check = False
                 if portal_grace > 0:
                     portal_grace -= 1
                     _jump_reject_coord = None
@@ -4272,19 +4573,41 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _pending_start_pos is not None and mapping_on and use_map:
                         dist_from_pending = abs(current_x - _pending_start_pos[0]) + abs(current_y - _pending_start_pos[1])
                         if dist_from_pending >= 5:
-                            old_sp = _pending_start_pos
-                            _pending_start_pos = (current_x, current_y)
-                            self._game_map.start_pos = _pending_start_pos
-                            self._game_map.mark_blocked(current_x, current_y)
-                            # start_pos 업데이트 후 이전 위치를 passable로 변경 (미탐색 상태 방지)
-                            if old_sp not in _portal_protected:
-                                self._game_map.mark_passable(old_sp[0], old_sp[1])
-                            self.after(0, lambda ox=old_sp[0], oy=old_sp[1], cx=current_x, cy=current_y:
-                                self._append_log(f"🔄 출발지 교정: ({ox},{oy})→({cx},{cy})"))
+                            _protected_jump = False
+                            _portal_step = None
+                            if prev_x is not None and last_dir:
+                                _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
+                                _portal_step = (prev_x + _pdx, prev_y + _pdy)
+                                if _portal_step in _portal_protected:
+                                    _protected_jump = True
+                            if _protected_jump:
+                                _force_jump_check = True
+                                portal_grace = 0
+                                _pending_start_pos = None
+                                if _ui_update_ok:
+                                    self.after(0, lambda pt=_portal_step, px=prev_x, py=prev_y, cx=current_x, cy=current_y:
+                                        self._append_log(f"🚫 보호포탈 점프 감지: ({px},{py})→({cx},{cy}) via {pt} — 교정취소"))
+                            else:
+                                old_sp = _pending_start_pos
+                                _pending_start_pos = (current_x, current_y)
+                                if full_mapping_exploring or _local_explore_phase:
+                                    # 전체맵핑/근처맵핑: start_pos=None 유지, passable 등록
+                                    self._game_map.start_pos = None
+                                    if self._game_map.mark_passable(current_x, current_y):
+                                        _portal_protected.add((current_x, current_y))
+                                else:
+                                    self._game_map.start_pos = _pending_start_pos
+                                    self._game_map.mark_blocked(current_x, current_y)
+                                # start_pos 업데이트 후 이전 위치를 passable로 변경 (미탐색 상태 방지)
+                                if old_sp not in _portal_protected:
+                                    self._game_map.mark_passable(old_sp[0], old_sp[1])
+                                if _ui_update_ok:
+                                    self.after(0, lambda ox=old_sp[0], oy=old_sp[1], cx=current_x, cy=current_y:
+                                        self._append_log(f"🔄 출발지 교정: ({ox},{oy})→({cx},{cy})"))
                     # portal_grace 만료 → 교정 종료
                     if portal_grace == 0:
                         _pending_start_pos = None
-                elif prev_x is not None:
+                if prev_x is not None and (portal_grace <= 0 or _force_jump_check):
                     jump = abs(current_x - prev_x) + abs(current_y - prev_y)
                     if jump >= 30:
                         # 목표 근접(1칸 이내)에서 점프 → 포탈 전환, 차단 안 함
@@ -4296,23 +4619,24 @@ class GameModeDialog(ctk.CTkToplevel):
                                 was_near = any(abs(prev_x - ex) + abs(prev_y - ey) <= 1 for ex, ey in _jf_re)
                         # 포탈 전환 중이면 허용 (mark_portal_entry, boss_pre_teleport, 목표 근접)
                         if not mark_portal_entry and not boss_pre_teleport and not was_near:
-                            # 맵핑테스트/전체맵핑: 30칸+ 점프도 포탈로 처리 (벽 등록 + 중지)
+                            # 맵핑테스트/전체맵핑: 30칸+ 점프도 포탈로 처리
                             if _is_mapping_mode and mapping_on and use_map:
                                 if last_dir:
                                     _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
                                     _portal_tile = (prev_x + _pdx, prev_y + _pdy)
                                     self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
                                     _portal_protected.add(_portal_tile)
-                                    self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
-                                        self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
-                                # 맵핑 중 포탈: 벽 등록 후 탐색 계속 (중지 안 함)
-                                self._game_map.mark_passable(current_x, current_y)
-                                current_path = []
-                                stuck_count = 0
-                                last_dir = None
-                                prev_x, prev_y = current_x, current_y  # 포탈 후 prev 갱신 (재감지 방지)
-                                self._stop_event.wait(0.05)
-                                continue
+                                    if _ui_update_ok:
+                                        self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
+                                            self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                                try:
+                                    self._auto_save_map()
+                                except Exception as _save_e:
+                                    logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
+                                self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
+                                    self._append_log(f"🛑 맵핑 중 포탈 이탈: ({px},{py})→({cx},{cy}) — 현재 테스트 중지"))
+                                self.after(0, self._stop_execution)
+                                return
                             # 비정상 좌표 점프: portal_grace/mark_portal_entry로 처리 안 된 점프
                             if (current_x, current_y) == _jump_reject_coord:
                                 _jump_reject_count += 1
@@ -4326,27 +4650,29 @@ class GameModeDialog(ctk.CTkToplevel):
                             else:
                                 _jump_reject_coord = (current_x, current_y)
                                 _jump_reject_count = 1
-                            self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
-                                self._append_log(f"⚠️ 좌표 점프 무시: ({px},{py})→({cx},{cy}) 거리={j}"))
+                            if _ui_update_ok:
+                                self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
+                                    self._append_log(f"⚠️ 좌표 점프 무시: ({px},{py})→({cx},{cy}) 거리={j}"))
                             self._stop_event.wait(0.1)
                             continue
                     elif (full_mapping_exploring or _local_explore_phase) and jump >= 5:
-                        # 맵핑 중 5칸+ 점프 = 포탈 밟음 → 포탈 타일 벽 등록 후 탐색 계속
+                        # 맵핑 중 5칸+ 점프 = 포탈 밟음 → 포탈 타일 벽 등록 후 중지
                         if last_dir and mapping_on and use_map:
                             _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
                             _portal_tile = (prev_x + _pdx, prev_y + _pdy)
                             self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
                             _portal_protected.add(_portal_tile)
-                            self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
-                                self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
-                        # 맵핑 중 포탈: 벽 등록 후 탐색 계속 (중지 안 함)
-                        self._game_map.mark_passable(current_x, current_y)
-                        current_path = []
-                        stuck_count = 0
-                        last_dir = None
-                        prev_x, prev_y = current_x, current_y  # 포탈 후 prev 갱신 (재감지 방지)
-                        self._stop_event.wait(0.05)
-                        continue
+                            if _ui_update_ok:
+                                self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
+                                    self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                        try:
+                            self._auto_save_map()
+                        except Exception as _save_e:
+                            logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
+                        self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
+                            self._append_log(f"🛑 맵핑 중 포탈 이탈: ({px},{py})→({cx},{cy}) — 현재 테스트 중지"))
+                        self.after(0, self._stop_execution)
+                        return
                     else:
                         _jump_reject_coord = None
                         _jump_reject_count = 0
@@ -4452,21 +4778,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             if (_sx, _sy) != (current_x, current_y):
                                 self._game_map.mark_blocked(_sx, _sy)
                             _portal_protected.add((_sx, _sy))
-                        # 4방향 모두 벽이면(갇힘) 인접 벽 해제, 아니면 기존 벽 유지
-                        blocked_neighbors = sum(
-                            1 for d, (ddx, ddy) in DIRECTIONS_4.items()
-                            if self._game_map.is_blocked(current_x + ddx, current_y + ddy))
-                        unblocked = 0
-                        if blocked_neighbors >= 4:
-                            for d, (ddx, ddy) in DIRECTIONS_4.items():
-                                nx, ny = current_x + ddx, current_y + ddy
-                                if (nx, ny) in _portal_protected:
-                                    continue  # 포탈 좌표 보호
-                                if self._game_map.is_blocked(nx, ny):
-                                    self._game_map.mark_passable(nx, ny)
-                                    unblocked += 1
-                        self.after(0, lambda cx=current_x, cy=current_y, ub=unblocked:
-                            self._append_log(f"📍 전체맵핑 시작: ({cx},{cy})" + (f" [갇힘→인접벽 {ub}개 해제]" if ub else "")))
+                        self.after(0, lambda cx=current_x, cy=current_y:
+                            self._append_log(f"📍 전체맵핑 시작: ({cx},{cy})"))
                     # 보스 던전이면 출발지=포탈이므로 벽 등록 (되돌아가기 방지)
                     elif all_targets[target_idx][3]:
                         self._game_map.mark_blocked(current_x, current_y)
@@ -4589,6 +4902,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         path_index = 0
                         path_pos_index = {}
                         explored_from = {}
+                        edge_fail_counts.clear()
                         unknown_path_fails = 0
                         last_dir = None
                         recent_positions.clear()
@@ -4598,6 +4912,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         boss_patrol = None
                         explore_target = None
                         explore_target_tries = 0
+                        probe_focus_target = None
+                        probe_focus_stall = 0
                         explore_unreachable = set()
                         frontier_cooldown.clear()
                         boss_no_frontier_count = 0
@@ -4606,7 +4922,6 @@ class GameModeDialog(ctk.CTkToplevel):
                         _boss_chasing = False
                         _boss_chase_miss = 0
                         patrol_skip_count = 0
-                        explored_from = {}  # 구간 전환 → 이전 구간 방향 기록 클리어
                         _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                         _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
                         full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts and not _segment_map_locked)  # 구간 전환 → 출발좌표 있으면 전체맵핑
@@ -4702,16 +5017,19 @@ class GameModeDialog(ctk.CTkToplevel):
                         path_index = 0
                         path_pos_index = {}
                         explored_from = {}
+                        edge_fail_counts.clear()
                         unknown_path_fails = 0
                         last_dir = None
                         recent_positions.clear()
+                        _portal_protected.clear()
                         # 보스 던전 상태 리셋
                         boss_mode = "exploring"
                         boss_patrol = None
                         explore_target = None
                         explore_target_tries = 0
+                        probe_focus_target = None
+                        probe_focus_stall = 0
                         explore_unreachable = set()
-                        _portal_protected.clear()
                         frontier_cooldown.clear()
                         boss_no_frontier_count = 0
                         boss_approach_steps = 0
@@ -4719,7 +5037,6 @@ class GameModeDialog(ctk.CTkToplevel):
                         _boss_chasing = False
                         _boss_chase_miss = 0
                         patrol_skip_count = 0
-                        explored_from = {}  # 구간 전환 → 이전 구간 방향 기록 클리어
                         _mt_seg_has_starts = bool(all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else [])
                         _segment_map_locked = all_targets[target_idx][9] if len(all_targets[target_idx]) > 9 else False
                         full_mapping_exploring = (_is_mapping_test and _mt_seg_has_starts and not _segment_map_locked)  # 구간 전환 → 출발좌표 있으면 전체맵핑
@@ -4750,13 +5067,21 @@ class GameModeDialog(ctk.CTkToplevel):
                         )
                         if start_x is not None:
                             current_x, current_y = int(start_x), int(start_y)
-                        # 도착 좌표 = 입구 포탈 → 출발지(보라색) + 벽 등록 (되돌아가기 방지)
+                        # 도착 좌표 = 입구 포탈 → 출발지 등록 (되돌아가기 방지)
                         if start_x is not None and mapping_on and use_map:
-                            self._game_map.start_pos = (current_x, current_y)
-                            self._game_map.mark_blocked(current_x, current_y)
                             _pending_start_pos = (current_x, current_y)
-                            self.after(0, lambda cx=current_x, cy=current_y:
-                                self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
+                            if full_mapping_exploring or _local_explore_phase:
+                                # 전체맵핑/근처맵핑: passable 유지 (BFS 통과 가능)
+                                self._game_map.start_pos = None
+                                self._game_map.mark_passable(current_x, current_y)
+                                _portal_protected.add((current_x, current_y))
+                                self.after(0, lambda cx=current_x, cy=current_y:
+                                    self._append_log(f"🚪 출발지 등록 (passable): ({cx},{cy})"))
+                            else:
+                                self._game_map.start_pos = (current_x, current_y)
+                                self._game_map.mark_blocked(current_x, current_y)
+                                self.after(0, lambda cx=current_x, cy=current_y:
+                                    self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
                         # 보스 던전: 출구/입구 포탈 벽 등록 + 보호 (A* 경유 방지)
                         if _next_is_boss:
                             _jp_starts = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
@@ -4784,6 +5109,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._game_map.mark_passable(current_x, current_y)
                         if use_map:
                             self._game_map.clear_soft_blocked(current_x, current_y)
+                            if last_dir and prev_x is not None:
+                                blocked_dirs.pop(_dir_key(prev_x, prev_y, last_dir), None)
+                                edge_fail_counts.pop(_dir_key(prev_x, prev_y, last_dir), None)
                             # 왔던 방향의 반대를 explored_from에 기록 (뒤로가기는 마지막에 시도)
                             if last_dir:
                                 new_pos = (current_x, current_y)
@@ -4796,14 +5124,22 @@ class GameModeDialog(ctk.CTkToplevel):
                                     keys_to_remove = [k for k in list(explored_from.keys())[:250] if k != new_pos]
                                     for k in keys_to_remove:
                                         del explored_from[k]
+                            if probe_focus_target is not None:
+                                if probe_focus_target == (current_x, current_y) or self._game_map.is_known(probe_focus_target[0], probe_focus_target[1]):
+                                    probe_focus_target = None
+                                    probe_focus_stall = 0
                             # 30칸마다 자동 저장 (디바운스, 중지 시 생략)
                             passable_count = len(self._game_map.passable)
-                            if not _no_save and passable_count % 30 == 0 and not self._map_save_lock.locked() and not self._stop_event.is_set():
+                            if (not _no_save and passable_count % 30 == 0 and
+                                passable_count != last_auto_save_passable and
+                                not self._map_save_lock.locked() and not self._stop_event.is_set()):
                                 if _ui_update_ok:
                                     self.after(0, lambda pc=passable_count: self._append_log(f"💾 자동저장 ({pc}타일)"))
                                 threading.Thread(target=self._auto_save_map, daemon=True).start()
+                                last_auto_save_passable = passable_count
                         stuck_count = 0
                         total_stuck_count = 0
+                        none_dir_streak = 0
                         unknown_path_fails = 0  # 이동 성공 → A* unknown 신뢰 복구
                     else:
                         # 이동 실패
@@ -4819,68 +5155,145 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 실패한 방향 기록: 벽 확정 전에는 기록하지 않음 (재시도로 stuck_count 3 도달 보장)
                         # 벽 확정(stuck_count>=3) 후 아래에서 기록
                         _is_mapping_mode = _is_mapping_test or full_mapping_exploring
+                        if last_dir and prev_x is not None and portal_grace <= 0:
+                            _edge_key = _dir_key(prev_x, prev_y, last_dir)
+                            _edge_fail = min(EDGE_FAIL_MAX, edge_fail_counts.get(_edge_key, 0) + 1)
+                            edge_fail_counts[_edge_key] = _edge_fail
+                            if _ui_update_ok and _edge_fail >= 2 and explore_target is not None:
+                                _fdx, _fdy = DIRECTIONS_4.get(last_dir, (0, 0))
+                                _fx, _fy = prev_x + _fdx, prev_y + _fdy
+                                if explore_target == (_fx, _fy):
+                                    self.after(0, lambda px=prev_x, py=prev_y, wx=_fx, wy=_fy, ef=_edge_fail:
+                                        self._append_log(f"🧪 인접검증 누적: ({px},{py})→({wx},{wy}) 실패 {ef}회"))
+                            _waypoint_phase = _is_mapping_test and not (full_mapping_exploring or _local_explore_phase)
+                            _tddx, _tddy = DIRECTIONS_4.get(last_dir, (0, 0))
+                            _tx, _ty = prev_x + _tddx, prev_y + _tddy
+                            _frontier_probe_phase_fail = full_mapping_exploring or _local_explore_phase
+                            _verification_edge = False
+                            if (_last_probe_target is not None and
+                                _last_probe_target == (_tx, _ty) and
+                                not self._game_map.is_known(_tx, _ty)):
+                                _verification_edge = True
+                            elif _frontier_probe_phase_fail and explore_target == (_tx, _ty):
+                                _verification_edge = True
+                            # 경유지 이동 단계는 1회 실패에서 바로 방향차단하지 않음 (과민 멈칫 방지)
+                            if ((not _waypoint_phase) or _edge_fail >= 2) and not (_verification_edge and _edge_fail < EDGE_FAIL_MARK_THRESHOLD):
+                                _ttl = 4 if stuck_count <= 1 else min(DIR_BLOCK_TTL_MAX, DIR_BLOCK_TTL_MIN + stuck_count * 6)
+                                if _waypoint_phase:
+                                    # 근거리 병목은 길게 차단, 원거리는 과도 차단 방지
+                                    _dist_now = abs(prev_x - target_x) + abs(prev_y - target_y)
+                                    if _dist_now <= 30:
+                                        _ttl = max(_ttl, 10)
+                                    else:
+                                        _ttl = max(_ttl, 4)
+                                _register_dir_block(prev_x, prev_y, last_dir, iteration, ttl=_ttl)
+                            elif _ui_update_ok and _verification_edge and _edge_fail < EDGE_FAIL_MARK_THRESHOLD:
+                                self.after(0, lambda px=prev_x, py=prev_y, wx=_tx, wy=_ty, ef=_edge_fail:
+                                    self._append_log(f"🧪 벽검증 유지: ({px},{py})→({wx},{wy}) {ef}/3"))
+                            # 맵핑 모드: 같은 엣지 2회 이상 실패하면 프런티어 판정에서 제외되도록 방향 시도 기록
+                            if _is_mapping_mode and _edge_fail >= 2:
+                                # 경유지 이동 단계에서는 이동가능 타일 실패도 재시도 제한을 걸어 루프를 줄인다.
+                                # (완전탐색 단계에서만 이동가능 타일 실패 보류)
+                                if ((not self._game_map.is_passable(_tx, _ty)) or (not _frontier_probe_phase_fail)) and not (_verification_edge and _edge_fail < EDGE_FAIL_MARK_THRESHOLD):
+                                    fail_pos = (prev_x, prev_y)
+                                    tried = explored_from.get(fail_pos, set())
+                                    tried.add(last_dir)
+                                    explored_from[fail_pos] = tried
+                                elif _ui_update_ok and _edge_fail == 2:
+                                    self.after(0, lambda px=prev_x, py=prev_y, wx=_tx, wy=_ty:
+                                        self._append_log(f"🧪 이동타일 실패 보류: ({px},{py})→({wx},{wy})"))
+                            if _ui_update_ok and stuck_count >= 2:
+                                self.after(0, lambda px=prev_x, py=prev_y, d2=last_dir:
+                                    self._append_log(f"🧭 방향차단 유지: ({px},{py}) {d2} (타일회피 생략)"))
+                            # 실패 직후 경로 캐시를 비워 즉시 재경로 계산
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                            pathfinder.invalidate_path()
                         if not _is_mapping_mode and last_dir and prev_x is not None:
                             fail_pos = (prev_x, prev_y)
                             tried = explored_from.get(fail_pos, set())
                             tried.add(last_dir)
                             explored_from[fail_pos] = tried
                         _wall_threshold = 3 if _is_mapping_mode else 2
-                        if stuck_count >= _wall_threshold and last_dir and portal_grace <= 0:
+                        _edge_fail_now = 0
+                        _edge_target_hit = False
+                        _probe_target_hit = False
+                        if last_dir and prev_x is not None:
+                            _edge_fail_now = edge_fail_counts.get(_dir_key(prev_x, prev_y, last_dir), 0)
+                            _edx, _edy = DIRECTIONS_4.get(last_dir, (0, 0))
+                            if explore_target is not None:
+                                _edge_target_hit = (prev_x + _edx, prev_y + _edy) == explore_target
+                            if _last_probe_target is not None:
+                                _probe_target_hit = (prev_x + _edx, prev_y + _edy) == _last_probe_target
+                        if (stuck_count >= _wall_threshold or
+                            (_is_mapping_mode and _edge_fail_now >= EDGE_FAIL_MARK_THRESHOLD and (_edge_target_hit or _probe_target_hit))) and last_dir and portal_grace <= 0:
                             if use_map:
                                 ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 wall_x = prev_x + ddx
                                 wall_y = prev_y + ddy
+                                _wall_marked = False
+                                _edge_key = _dir_key(prev_x, prev_y, last_dir)
+                                _edge_fail = edge_fail_counts.get(_edge_key, 0)
+                                _known_passable = self._game_map.is_passable(wall_x, wall_y)
+                                _force_probe_wall = (
+                                    _is_mapping_mode and mapping_on and (not _segment_map_locked)
+                                    and _probe_target_hit
+                                    and _last_probe_target == (wall_x, wall_y)
+                                    and not self._game_map.is_known(wall_x, wall_y)
+                                    and _edge_fail >= EDGE_FAIL_MARK_THRESHOLD
+                                    and (wall_x, wall_y) not in _portal_protected
+                                )
+                                _force_frontier_wall = (
+                                    _is_mapping_mode and mapping_on and (not _segment_map_locked)
+                                    and explore_target == (wall_x, wall_y)
+                                    and _edge_fail >= EDGE_FAIL_MARK_THRESHOLD
+                                    and (wall_x, wall_y) not in _portal_protected
+                                ) or _force_probe_wall
 
-                                if _segment_map_locked:
-                                    # 잠금맵: 맵 파일 수정 없이 임시벽으로 회피 (메모리만, 디스크 저장 안 함)
+                                if _known_passable and not _force_frontier_wall:
+                                    if _ui_update_ok:
+                                        self.after(0, lambda px=prev_x, py=prev_y, wx=wall_x, wy=wall_y, d2=last_dir:
+                                            self._append_log(f"🧭 방향차단: ({px},{py})→({wx},{wy}) {d2} (타일유지 x{wx}y{wy})"))
+                                elif _segment_map_locked:
+                                    # 잠금맵: 맵 파일 수정 없이 메모리에만 벽 적용
                                     if not self._game_map.is_blocked(wall_x, wall_y):
-                                        self._game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
+                                        self._game_map.mark_blocked(wall_x, wall_y)
+                                        _wall_marked = True
                                 elif mapping_on:
                                     # 맵 기록 모드: 벽 등록
-                                    if boss_mode == "patrolling":
-                                        if not self._game_map.is_blocked(wall_x, wall_y):
-                                            self._game_map.mark_soft_blocked(wall_x, wall_y)
-                                            if _ui_update_ok:
-                                                self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                    self._append_log(f"🚧 임시벽: x{wx}y{wy} (몬스터?)"))
-                                    else:
-                                        if not self._game_map.is_blocked(wall_x, wall_y):
-                                            if _is_mapping_mode:
-                                                # 맵핑테스트/전체맵핑: 임시벽 없이 전부 영구벽
-                                                self._game_map.mark_blocked(wall_x, wall_y)
-                                                if _ui_update_ok:
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🧱 벽: x{wx}y{wy}"))
-                                            elif self._game_map.is_soft_blocked(wall_x, wall_y):
-                                                # 일반 탐색: 재실패 → count +3 (몬스터 가능, tick으로 복구)
-                                                for _ in range(3):
-                                                    self._game_map.mark_soft_blocked(wall_x, wall_y)
-                                                if _ui_update_ok:
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🚧 임시벽 강화: x{wx}y{wy} (재실패)"))
-                                            elif self._game_map.is_passable(wall_x, wall_y):
-                                                self._game_map.mark_soft_blocked(wall_x, wall_y)
-                                                if _ui_update_ok:
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🚧 임시벽: x{wx}y{wy} (기존 경로)"))
+                                    if not self._game_map.is_blocked(wall_x, wall_y):
+                                        self._game_map.mark_blocked(wall_x, wall_y)
+                                        _wall_marked = True
+                                        if _ui_update_ok:
+                                            if _force_probe_wall:
+                                                self.after(0, lambda wx=wall_x, wy=wall_y, ef=_edge_fail:
+                                                    self._append_log(f"🧱 미탐색진입 벽확정: x{wx}y{wy} (엣지실패:{ef})"))
+                                            elif _force_frontier_wall:
+                                                self.after(0, lambda wx=wall_x, wy=wall_y, ef=_edge_fail:
+                                                    self._append_log(f"🧱 인접검증 벽확정: x{wx}y{wy} (엣지실패:{ef})"))
                                             else:
-                                                self._game_map.mark_blocked(wall_x, wall_y)
-                                                if _ui_update_ok:
-                                                    self.after(0, lambda wx=wall_x, wy=wall_y:
-                                                        self._append_log(f"🧱 벽 확정: x{wx}y{wy}"))
+                                                self.after(0, lambda wx=wall_x, wy=wall_y:
+                                                    self._append_log(f"🧱 벽: x{wx}y{wy}"))
                                     # 벽 발견시 저장 (디바운스, 중지 시 생략)
-                                    if not _no_save and not self._map_save_lock.locked() and not self._stop_event.is_set():
+                                    if _wall_marked and (not _no_save) and (not self._map_save_lock.locked()) and (not self._stop_event.is_set()):
                                         threading.Thread(target=self._auto_save_map, daemon=True).start()
                                 else:
-                                    # 부분실행/전체테스트: 임시벽만 (디스크 저장 안 함, 영구벽 승격 안 함)
+                                    # 부분실행/전체테스트: 메모리 벽만 적용 (디스크 저장 안 함)
                                     if not self._game_map.is_blocked(wall_x, wall_y):
-                                        self._game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
+                                        self._game_map.mark_blocked(wall_x, wall_y)
+                                        _wall_marked = True
 
                                 # 벽이 현재 프런티어 목표이면 즉시 무효화
-                                if explore_target == (wall_x, wall_y):
+                                if _wall_marked and explore_target == (wall_x, wall_y):
                                     frontier_cooldown.add(explore_target)
                                     explore_target = None
                                     explore_target_tries = 0
+                                if _wall_marked and probe_focus_target == (wall_x, wall_y):
+                                    probe_focus_target = None
+                                    probe_focus_stall = 0
+                                if _wall_marked:
+                                    edge_fail_counts.pop(_edge_key, None)
 
                                 # 경로 재계산 필요
                                 current_path = []
@@ -4952,40 +5365,23 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_index = 0
                             path_pos_index = {}
                             explored_from = {}
+                            edge_fail_counts.clear()
                             unknown_path_fails = 0
                             time.sleep(0.05)
                             continue
 
-                        # 장기 정체 복구: 인접 벽 해제 (잘못된 벽 등록 자동 수정)
-                        # 몬스터 등 임시 장애물이 영구벽으로 잘못 등록된 경우 복구
-                        # ※ 직전에 실패한 방향의 벽은 해제하지 않음 (진짜 벽 보호)
+                        # 장기 정체 복구: 벽 해제 없이 경로/시도 상태만 초기화
                         if total_stuck_count >= 8 and use_map:
-                            unblocked = 0
-                            fail_wall = None
-                            if last_dir:
-                                fdx, fdy = DIRECTIONS_4.get(last_dir, (0, 0))
-                                fail_wall = (current_x + fdx, current_y + fdy)
-                            _tried_here = explored_from.get((current_x, current_y), set())
-                            for d, (ddx, ddy) in DIRECTIONS_4.items():
-                                nx, ny = current_x + ddx, current_y + ddy
-                                if (nx, ny) == fail_wall:
-                                    continue  # 직전 실패 방향 벽은 유지
-                                if d in _tried_here:
-                                    continue  # 이미 실패한 방향 벽도 유지
-                                if (nx, ny) in _portal_protected:
-                                    continue  # 포탈 좌표 보호
-                                if self._game_map.is_blocked(nx, ny):
-                                    self._game_map.mark_passable(nx, ny)
-                                    unblocked += 1
-                            if unblocked > 0:
-                                self.after(0, lambda u=unblocked, cx=current_x, cy=current_y:
-                                    self._append_log(f"🔓 장기정체({cx},{cy}) → {u}개 인접벽 해제 (실패방향 제외)"))
+                            if _ui_update_ok:
+                                self.after(0, lambda cx=current_x, cy=current_y:
+                                    self._append_log(f"🧭 장기정체({cx},{cy}) → 경로초기화(벽해제없음)"))
+                            stuck_count = 0
                             total_stuck_count = 0
+                            explored_from.pop((current_x, current_y), None)
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
                             pathfinder.invalidate_path()
-                            # explored_from 유지 (확인된 벽 방향 기억 — 해제 후 재실패 루프 방지)
 
                 # soft_blocked 자동 감소 (10회마다) — 맵핑테스트/전체맵핑에서는 비활성 (벽 유지 필수), 잠금맵은 활성
                 if use_map and (not _is_mapping_mode or _segment_map_locked):
@@ -5042,12 +5438,14 @@ class GameModeDialog(ctk.CTkToplevel):
                 # ── 보스 던전 핸들러 ──
                 if is_boss_dungeon:
                     current_pos_tuple = (current_x, current_y)
+                    _pending_probe_target = None
 
                     # 모드 상태 주기적 로그 (30회마다)
                     if iteration % 30 == 1:
                         pc = len(self._game_map.passable) if use_map else 0
-                        self.after(0, lambda m=boss_mode, p=pc, cx=current_x, cy=current_y:
-                            self._append_log(f"📊 보스던전 [{m}] ({cx},{cy}) 맵:{p}칸"))
+                        if _ui_update_ok:
+                            self.after(0, lambda m=boss_mode, p=pc, cx=current_x, cy=current_y:
+                                self._append_log(f"📊 보스던전 [{m}] ({cx},{cy}) 맵:{p}칸"))
 
                     # 텔레포트 대기: 구간 전환 후 아직 이전 맵에 있음 → 맵 기록 중지 상태
                     if boss_pre_teleport:
@@ -5120,7 +5518,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     if boss_mode == "exploring" and boss_patrol is None and len(self._game_map.passable) >= 50:
                         _fnf_ec = _local_explore_center if _local_explore_phase else None
                         _fnf_er = _local_explore_radius if _local_explore_phase else 0
-                        if self._game_map.is_fully_explored() or _find_nearest_frontier(current_x, current_y, explore_center=_fnf_ec, explore_radius=_fnf_er) is None:
+                        if self._game_map.is_fully_explored() or _find_nearest_frontier_raw(current_x, current_y, explore_center=_fnf_ec, explore_radius=_fnf_er) is None:
                             boss_no_frontier_count = 10  # 아래 완료 체크로 즉시 진입
 
                     # 순찰 좌표 등록됨 + 맵 충분히 탐색됨 → 순찰 모드
@@ -5141,26 +5539,21 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_index = 0
                             path_pos_index = {}
                             explored_from = {}
+                            edge_fail_counts.clear()
                             unknown_path_fails = 0
                             explore_target = None
                             explore_target_tries = 0
+                            probe_focus_target = None
+                            probe_focus_stall = 0
                             patrol_skip_count = 0
-                            # 순찰 시작 시 현재 위치 인접 벽 해제 (잘못된 벽 때문에 출발 못하는 문제 방지)
-                            # 단, 포탈 입구(start_pos)는 유지
+                            # 순찰 시작 시 벽 해제 금지 (맵 오염 방지)
                             portal_pos = getattr(self._game_map, 'start_pos', None)
                             unblocked_start = 0
-                            for d, (ddx, ddy) in DIRECTIONS_4.items():
-                                nx, ny = current_x + ddx, current_y + ddy
-                                if (nx, ny) in _portal_protected:
-                                    continue  # 포탈 좌표 보호
-                                if (nx, ny) != portal_pos and self._game_map.is_blocked(nx, ny):
-                                    self._game_map.mark_passable(nx, ny)
-                                    unblocked_start += 1
                             pc = len(self._game_map.patrol_points)
                             first_pt = self._game_map.patrol_points[0]
                             self.after(0, lambda: self._append_log(f"{'='*30}"))
-                            self.after(0, lambda pc=pc, fp=first_pt, ub=unblocked_start: self._append_log(
-                                f"🔍 순찰모드 시작! {pc}개 순찰좌표 순회 (1번: {fp})" + (f" [인접벽 {ub}개 해제]" if ub else "")))
+                            self.after(0, lambda pc=pc, fp=first_pt: self._append_log(
+                                f"🔍 순찰모드 시작! {pc}개 순찰좌표 순회 (1번: {fp})"))
                             self.after(0, lambda: self._append_log(f"{'='*30}"))
 
                     if boss_mode == "exploring":
@@ -5175,44 +5568,129 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 인접 미탐색 타일이 있으면 직접 진입
                             # 고정 순서 대신 매 반복마다 시작 방향을 회전 (같은 방향만 반복 방지)
                             direction = None
+                            _probe_focus_active = False
+                            if probe_focus_target is not None:
+                                _pfx, _pfy = probe_focus_target
+                                _pf_dist = abs(current_x - _pfx) + abs(current_y - _pfy)
+                                if (self._game_map.is_known(_pfx, _pfy) or
+                                    (_pfx, _pfy) in _portal_protected or
+                                    _pf_dist > 8):
+                                    probe_focus_target = None
+                                    probe_focus_stall = 0
+                                else:
+                                    _probe_focus_active = True
+                                    _pdx = _pfx - current_x
+                                    _pdy = _pfy - current_y
+                                    _probe_dir = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}.get((_pdx, _pdy))
+                                    if _probe_dir is not None:
+                                        _probe_fail = edge_fail_counts.get(_dir_key(current_x, current_y, _probe_dir), 0)
+                                        if _probe_fail < EDGE_FAIL_MARK_THRESHOLD:
+                                            direction = _probe_dir
+                                            probe_focus_stall = 0
+                                            if _ui_update_ok and iteration % 5 == 0:
+                                                self.after(0, lambda cx=current_x, cy=current_y, tx=_pfx, ty=_pfy, ef=_probe_fail:
+                                                    self._append_log(f"🧪 벽검증 고정: ({cx},{cy})→({tx},{ty}) {ef + 1}/3"))
+                                    if direction is None:
+                                        _sp = self._game_map.start_pos
+                                        _anchors = []
+                                        for _ad, (_adx, _ady) in DIRECTIONS_4.items():
+                                            _ax, _ay = _pfx - _adx, _pfy - _ady
+                                            if _sp is not None and (_ax, _ay) == _sp:
+                                                continue
+                                            if (_ax, _ay) in _portal_protected and (_ax, _ay) != (current_x, current_y):
+                                                continue
+                                            if self._game_map.is_passable(_ax, _ay):
+                                                _anchors.append((abs(current_x - _ax) + abs(current_y - _ay), _ax, _ay))
+                                        _anchors.sort()
+                                        for _, _ax, _ay in _anchors[:4]:
+                                            _back_dir = find_path_direction(current_x, current_y, _ax, _ay)
+                                            if _back_dir:
+                                                direction = _back_dir
+                                                probe_focus_stall = 0
+                                                if _ui_update_ok and iteration % 10 == 0:
+                                                    self.after(0, lambda cx=current_x, cy=current_y, tx=_pfx, ty=_pfy, ax=_ax, ay=_ay:
+                                                        self._append_log(f"🧪 벽검증 복귀: ({cx},{cy})→({ax},{ay}) target=({tx},{ty})"))
+                                                break
+                                    if direction is None:
+                                        probe_focus_stall += 1
+                                        if _ui_update_ok and iteration % 10 == 0:
+                                            self.after(0, lambda cx=current_x, cy=current_y, tx=_pfx, ty=_pfy, st=probe_focus_stall:
+                                                self._append_log(f"🧪 벽검증 대기: ({cx},{cy}) target=({tx},{ty}) stall={st}"))
+                                        if probe_focus_stall >= 3:
+                                            if _ui_update_ok:
+                                                self.after(0, lambda tx=_pfx, ty=_pfy:
+                                                    self._append_log(f"🧪 벽검증 해제: ({tx},{ty}) 접근불가"))
+                                            probe_focus_target = None
+                                            probe_focus_stall = 0
+                                            _probe_focus_active = False
                             dir_list = list(DIRECTIONS_4.items())
                             rotate_offset = iteration % len(dir_list)
                             rotated_dirs = dir_list[rotate_offset:] + dir_list[:rotate_offset]
                             unknown_candidates = []
                             _explored_here = explored_from.get((current_x, current_y), set())
-                            for d, (ddx, ddy) in rotated_dirs:
-                                if d in _explored_here:
-                                    continue  # 이미 시도+실패한 방향 스킵 (진동 방지)
-                                nx, ny = current_x + ddx, current_y + ddy
-                                if not self._game_map.is_known(nx, ny):
-                                    # 근처맵핑 모드: 반경 밖이면 미탐색이어도 무시
-                                    if _local_explore_phase and _local_explore_center is not None:
-                                        _le_dist = max(abs(nx - _local_explore_center[0]), abs(ny - _local_explore_center[1]))
-                                        if _le_dist > _local_explore_radius:
-                                            continue
-                                    unknown_candidates.append(d)
-                            if unknown_candidates:
-                                # 직전 방향이 아닌 것 우선, 없으면 아무거나
-                                direction = None
-                                for d in unknown_candidates:
-                                    if d != last_dir:
-                                        direction = d
-                                        break
-                                if direction is None:
-                                    direction = unknown_candidates[0]
-                                explore_target = None
-                                boss_no_frontier_count = 0
-                                if iteration % 5 == 0:
-                                    self.after(0, lambda cx=current_x, cy=current_y, d=direction, uc=unknown_candidates:
-                                        self._append_log(f"🗺️ [탐색] ({cx},{cy}) → {d} (미탐색:{uc})"))
+                            if direction is None and not _probe_focus_active:
+                                for d, (ddx, ddy) in rotated_dirs:
+                                    if d in _explored_here:
+                                        continue  # 이미 시도+실패한 방향 스킵 (진동 방지)
+                                    nx, ny = current_x + ddx, current_y + ddy
+                                    if (nx, ny) in _portal_protected and (nx, ny) != (target_x, target_y):
+                                        continue  # 보호 포탈/입구 타일 직접진입 금지
+                                    if not self._game_map.is_known(nx, ny):
+                                        # 근처맵핑 모드: 반경 밖이면 미탐색이어도 무시
+                                        if _local_explore_phase and _local_explore_center is not None:
+                                            _le_dist = max(abs(nx - _local_explore_center[0]), abs(ny - _local_explore_center[1]))
+                                            if _le_dist > _local_explore_radius:
+                                                continue
+                                        unknown_candidates.append(d)
+                                _allow_local_probe = True
+                                if explore_target is not None:
+                                    _et_dist_now = abs(current_x - explore_target[0]) + abs(current_y - explore_target[1])
+                                    # 프런티어가 멀면 경로 우선으로 직행 (지그재그/우회 낭비 감소)
+                                    if _et_dist_now > 2:
+                                        _allow_local_probe = False
+                                if unknown_candidates and _allow_local_probe:
+                                    # 직전 방향이 아닌 것 우선, 없으면 아무거나
+                                    direction = None
+                                    for d in unknown_candidates:
+                                        if d != last_dir:
+                                            direction = d
+                                            break
+                                    if direction is None:
+                                        direction = unknown_candidates[0]
+                                    _pdx, _pdy = DIRECTIONS_4.get(direction, (0, 0))
+                                    _pending_probe_target = (current_x + _pdx, current_y + _pdy)
+                                    probe_focus_target = _pending_probe_target
+                                    probe_focus_stall = 0
+                                    explore_target = None
+                                    boss_no_frontier_count = 0
+                                    if iteration % 5 == 0 and _ui_update_ok:
+                                        self.after(0, lambda cx=current_x, cy=current_y, d=direction, uc=unknown_candidates, pt=_pending_probe_target:
+                                            self._append_log(f"🗺️ [탐색] ({cx},{cy}) → {d} (미탐색:{uc}, 목표:{pt})"))
+                                elif unknown_candidates and not _allow_local_probe and iteration % 10 == 0 and _ui_update_ok:
+                                    self.after(0, lambda et=explore_target, cx=current_x, cy=current_y:
+                                        self._append_log(f"🧭 목표우선 유지: {et} 직행 (현재:{cx},{cy})"))
+                                elif not unknown_candidates and _ui_update_ok:
+                                    self.after(0, lambda cx=current_x, cy=current_y,
+                                               ef=list(explored_from.get((current_x, current_y), set())):
+                                        self._append_log(f"🔎 미탐색없음: ({cx},{cy}) explored={ef}"))
 
                         # 없으면 가장 가까운 frontier까지 기존 A* 알고리즘으로 이동
-                        if direction is None and not _phase2_direct:
+                        if direction is None and not _phase2_direct and not _probe_focus_active:
                             # 프런티어 쿨다운 주기 리셋 (20회마다)
                             if iteration - frontier_cooldown_iter > 20:
                                 frontier_cooldown.clear()
                                 frontier_cooldown_iter = iteration
 
+                            # 디버그: 프런티어 탐색 상태
+                            if _ui_update_ok:
+                                self.after(0, lambda cx=current_x, cy=current_y, et=explore_target,
+                                           fc=len(frontier_cooldown), eu=len(explore_unreachable),
+                                           pt=len(self._game_map.passable), bl=len(self._game_map.blocked),
+                                           bnf=boss_no_frontier_count:
+                                    self._append_log(f"🔎 프런티어탐색: ({cx},{cy}) et={et} cd={fc} unreach={eu} pass={pt} block={bl} bnf={bnf}"))
+
+                            _frontier_from_raw = False  # raw 복구 여부 초기값
+                            _prev_explore_target = explore_target
                             # 기존 목표 유효성 검증
                             if explore_target is not None:
                                 et = explore_target
@@ -5226,6 +5704,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                         for ddx, ddy in [(0,-1),(0,1),(-1,0),(1,0)]
                                     )
                                 if not still_ok:
+                                    if _ui_update_ok:
+                                        self.after(0, lambda et=explore_target, cx=current_x, cy=current_y:
+                                            self._append_log(f"🔎 프런티어무효: {et} (현재:{cx},{cy}) → cooldown"))
                                     frontier_cooldown.add(explore_target)
                                     explore_target = None
                                     explore_target_tries = 0
@@ -5235,31 +5716,146 @@ class GameModeDialog(ctk.CTkToplevel):
                                 _ec = _local_explore_center if _local_explore_phase else None
                                 _er = _local_explore_radius if _local_explore_phase else 0
                                 explore_target = _find_nearest_frontier(current_x, current_y, max_radius=_fr, explore_center=_ec, explore_radius=_er)
-                                # 근처맵핑 모드: 반경 내 프런티어가 반경 밖이면 무시
-                                if explore_target and _local_explore_phase and _local_explore_center is not None:
-                                    _et_dist = max(abs(explore_target[0] - _local_explore_center[0]), abs(explore_target[1] - _local_explore_center[1]))
-                                    if _et_dist > _local_explore_radius:
-                                        explore_target = None
+                                if explore_target is None:
+                                    if _ui_update_ok:
+                                        self.after(0, lambda cx=current_x, cy=current_y, r=_fr,
+                                                   fc=list(frontier_cooldown)[:5], fb=bool(_local_explore_phase),
+                                                   bnf=boss_no_frontier_count:
+                                            self._append_log(f"🔎 프런티어없음: ({cx},{cy}) r={r} local={fb} cd={fc} bnf={bnf}"))
+                                    _raw_target = _find_nearest_frontier_raw(current_x, current_y, max_radius=_fr, explore_center=_ec, explore_radius=_er)
+                                    # raw 복구된 프론티어가 이미 도달불가(unreachable)로 확정됐으면 무시
+                                    if _raw_target is not None and _raw_target in explore_unreachable:
+                                        _raw_target = None
+                                    if _raw_target is not None:
+                                        explore_target = _raw_target
+                                        _frontier_from_raw = True
+                                        if _ui_update_ok:
+                                            _same_ft = (_last_frontier_log_target == explore_target)
+                                            if (not _same_ft) or ((iteration - _last_frontier_log_iter) >= 20):
+                                                self.after(0, lambda et=explore_target, cx=current_x, cy=current_y:
+                                                    self._append_log(f"🧪 숨은 프런티어 복구: {et} (현재:{cx},{cy})"))
+                                                _last_frontier_log_target = explore_target
+                                                _last_frontier_log_iter = iteration
+                            # 근처맵핑 모드: 반경 내 프런티어가 반경 밖이면 무시
+                            if explore_target and _local_explore_phase and _local_explore_center is not None:
+                                _et_dist = max(abs(explore_target[0] - _local_explore_center[0]), abs(explore_target[1] - _local_explore_center[1]))
+                                if _et_dist > _local_explore_radius:
+                                    explore_target = None
+                                    explore_target_tries = 0
+                            # 시도 카운트는 "새 목표로 바뀐 경우"에만 초기화 (기존 목표는 누적 유지)
+                            if explore_target is not None and explore_target != _prev_explore_target:
                                 explore_target_tries = 0
-                                if explore_target:
-                                    self.after(0, lambda et=explore_target, cx=current_x, cy=current_y:
-                                        self._append_log(f"🗺️ [탐색] 프런티어 목표: {et} (현재:{cx},{cy})"))
+                            if explore_target:
+                                _same_ft = (_last_frontier_log_target == explore_target)
+                                if (not _same_ft) or ((iteration - _last_frontier_log_iter) >= 20):
+                                    if _ui_update_ok:
+                                        self.after(0, lambda et=explore_target, cx=current_x, cy=current_y:
+                                            self._append_log(f"🗺️ [탐색] 프런티어 목표: {et} (현재:{cx},{cy})"))
+                                    _last_frontier_log_target = explore_target
+                                    _last_frontier_log_iter = iteration
 
                             if explore_target:
-                                boss_no_frontier_count = 0
+                                # raw 복구 프론티어는 카운터 리셋 안 함 (전체맵핑 완료 조건 도달 보장)
+                                if not _frontier_from_raw:
+                                    boss_no_frontier_count = 0
                                 direction = find_path_direction(
                                     current_x, current_y,
                                     explore_target[0], explore_target[1])
                                 if direction is None:
                                     explore_target_tries += 3  # 방향 없음 = 빠르게 포기
-                                elif _is_backtrack_dir:
-                                    explore_target_tries += 1  # 백트래킹 = A* 실패
                                 else:
-                                    explore_target_tries = 0   # 정상 경로 = 리셋
+                                    _ddx, _ddy = DIRECTIONS_4.get(direction, (0, 0))
+                                    _cur_dist = abs(current_x - explore_target[0]) + abs(current_y - explore_target[1])
+                                    _next_dist = abs((current_x + _ddx) - explore_target[0]) + abs((current_y + _ddy) - explore_target[1])
+                                    if _is_backtrack_dir or _next_dist >= _cur_dist:
+                                        # 원거리(>=5칸)에서는 과민 누적을 완화해 조기 스킵 방지
+                                        if _cur_dist <= 4:
+                                            explore_target_tries += 1
+                                        else:
+                                            explore_target_tries = max(0, explore_target_tries - 1)
+                                    else:
+                                        explore_target_tries = max(0, explore_target_tries - 1)  # 진전 시 완화
                                 if explore_target_tries >= 15:
+                                    _forced_wall = False
+                                    # 프런티어 반복 실패: 인접 진입엣지 실패가 누적되면 벽으로 확정
+                                    if (_is_mapping_mode and mapping_on and use_map and
+                                        explore_target not in _portal_protected and
+                                        self._game_map.is_passable(explore_target[0], explore_target[1])):
+                                        _adj_dist = abs(current_x - explore_target[0]) + abs(current_y - explore_target[1])
+                                        _in_fail_max, _in_has_tried = _frontier_inbound_fail_info(explore_target[0], explore_target[1])
+                                        if _adj_dist == 1:
+                                            _dx = explore_target[0] - current_x
+                                            _dy = explore_target[1] - current_y
+                                            _adj_dir = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}.get((_dx, _dy))
+                                            _adj_edge_fail = edge_fail_counts.get(_dir_key(current_x, current_y, _adj_dir), 0) if _adj_dir else 0
+                                        else:
+                                            _adj_dir = None
+                                            _adj_edge_fail = 0
+
+                                        _can_force = (
+                                            (_adj_dir is not None and _adj_edge_fail >= EDGE_FAIL_MARK_THRESHOLD) or
+                                            (_in_fail_max >= EDGE_FAIL_MARK_THRESHOLD)
+                                        )
+                                        _mark_wall = None
+                                        _mark_reason = "none"
+                                        _frontier_tried = explored_from.get(explore_target, set())
+                                        _unknown_neighbors = []
+                                        for _ud, (_uxd, _uyd) in DIRECTIONS_4.items():
+                                            _ux = explore_target[0] + _uxd
+                                            _uy = explore_target[1] + _uyd
+                                            if self._game_map.is_known(_ux, _uy):
+                                                continue
+                                            _uef = edge_fail_counts.get(_dir_key(explore_target[0], explore_target[1], _ud), 0)
+                                            _utr = _ud in _frontier_tried
+                                            _unknown_neighbors.append((_ux, _uy, _ud, _uef, _utr))
+
+                                        # 1) 프런티어 인접 미탐색 타일 벽 확정을 우선 시도
+                                        #    (passable 프런티어 타일 자체를 벽으로 오염시키는 문제 방지)
+                                        if _unknown_neighbors:
+                                            _unknown_neighbors.sort(key=lambda t: (t[3], 1 if t[4] else 0), reverse=True)
+                                            _ux, _uy, _ud, _uef, _utr = _unknown_neighbors[0]
+                                            if ((_uef >= EDGE_FAIL_MARK_THRESHOLD) or
+                                                (_uef >= 2 and _utr and len(_unknown_neighbors) == 1 and _adj_dist <= 2)):
+                                                if ((_ux, _uy) not in _portal_protected and
+                                                    not self._game_map.is_blocked(_ux, _uy)):
+                                                    _mark_wall = (_ux, _uy)
+                                                    _mark_reason = "frontier_unknown"
+
+                                        # 2) 보조: 프런티어 진입 자체가 반복 실패한 경우에만 프런티어 타일 벽 확정
+                                        if (_mark_wall is None and _can_force and
+                                            not self._game_map.is_blocked(explore_target[0], explore_target[1])):
+                                            _mark_wall = explore_target
+                                            _mark_reason = "frontier_tile"
+
+                                        if _mark_wall is not None:
+                                            self._game_map.mark_blocked(_mark_wall[0], _mark_wall[1])
+                                            _forced_wall = True
+                                            for _d, (_ddx, _ddy) in DIRECTIONS_4.items():
+                                                _sx = _mark_wall[0] - _ddx
+                                                _sy = _mark_wall[1] - _ddy
+                                                edge_fail_counts.pop(_dir_key(_sx, _sy, _d), None)
+                                            if _ui_update_ok:
+                                                if _mark_reason == "frontier_unknown":
+                                                    self.after(0, lambda et=explore_target, mw=_mark_wall, ef=max(_adj_edge_fail, _in_fail_max):
+                                                        self._append_log(f"🧱 프런티어 인접벽확정: {et} -> {mw} (엣지실패:{ef})"))
+                                                else:
+                                                    self.after(0, lambda et=explore_target, ef=max(_adj_edge_fail, _in_fail_max):
+                                                        self._append_log(f"🧱 인접 프런티어 벽확정: {et} (엣지실패:{ef})"))
+                                            if (not _no_save) and (not self._map_save_lock.locked()) and (not self._stop_event.is_set()):
+                                                threading.Thread(target=self._auto_save_map, daemon=True).start()
+                                        elif _ui_update_ok:
+                                            self.after(0, lambda et=explore_target, ad=_adj_dist, af=_adj_edge_fail, inf=_in_fail_max, iht=_in_has_tried:
+                                                self._append_log(f"🧪 프런티어 보류: {et} (dist:{ad}, adjFail:{af}, inFail:{inf}, tried:{iht})"))
+                                    frontier_cooldown.add(explore_target)
+                                    frontier_blocked_until[explore_target] = time.time() + FRONTIER_BLOCK_SECONDS
                                     explore_unreachable.add(explore_target)
-                                    self.after(0, lambda et=explore_target, t=explore_target_tries:
-                                        self._append_log(f"🚫 프런티어 {et} 도달 불가 ({t}회) → 스킵"))
+                                    if _ui_update_ok:
+                                        if _forced_wall:
+                                            self.after(0, lambda et=explore_target, t=explore_target_tries:
+                                                self._append_log(f"🚫 프런티어 {et} 도달 불가 ({t}회) → 벽확정+스킵"))
+                                        else:
+                                            self.after(0, lambda et=explore_target, t=explore_target_tries:
+                                                self._append_log(f"🚫 프런티어 {et} 도달 불가 ({t}회) → 스킵"))
                                     explore_target = None
                                     explore_target_tries = 0
                             else:
@@ -5273,12 +5869,15 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _is_mapping_mode = _is_mapping_test or full_mapping_exploring
                                     boss_no_frontier_count = 0
                                     explore_target = None
+                                    probe_focus_target = None
+                                    probe_focus_stall = 0
                                     explore_unreachable.clear()
                                     frontier_cooldown.clear()
                                     current_path = []
                                     path_index = 0
                                     path_pos_index = {}
                                     explored_from = {}
+                                    edge_fail_counts.clear()
                                     last_dir = None
                                     stuck_count = 0
                                     _tiles = len(self._game_map.passable)
@@ -5304,47 +5903,38 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 _best_end = (_mte_x, _mte_y)
                                         if _best_end:
                                             target_x, target_y = _best_end
-                                    self.after(0, lambda t=_tiles, tx=target_x, ty=target_y:
-                                        self._append_log(f"✅ 근처맵핑 완료 ({t}칸) → ({tx},{ty}) 최단경로"))
+                                    if _ui_update_ok:
+                                        self.after(0, lambda t=_tiles, tx=target_x, ty=target_y:
+                                            self._append_log(f"✅ 근처맵핑 완료 ({t}칸) → ({tx},{ty}) 최단경로"))
                                     self._stop_event.wait(0.05)
                                     continue
 
-                                # 30회 이상 프런티어 미발견 → 인접 벽 해제 (거짓 벽 복구)
+                                # 30회 이상 프런티어 미발견 → 벽 해제 없이 탐색 상태 리셋
                                 if boss_no_frontier_count >= 30:
-                                    unblocked = 0
-                                    for (px, py) in list(self._game_map.passable):
-                                        for ddx, ddy in [(0,-1),(0,1),(-1,0),(1,0)]:
-                                            nb = (px+ddx, py+ddy)
-                                            if nb in _portal_protected:
-                                                continue  # 포탈 좌표 보호
-                                            if nb in self._game_map.blocked:
-                                                self._game_map.mark_passable(nb[0], nb[1])
-                                                unblocked += 1
-                                        if unblocked >= 5:
-                                            break
-                                    if unblocked > 0:
-                                        self.after(0, lambda u=unblocked:
-                                            self._append_log(f"🔓 프런티어 없음 → {u}개 인접벽 해제"))
-                                        boss_no_frontier_count = 0
-                                        explore_unreachable.clear()  # 벽 해제 후 재시도
-                                        frontier_cooldown.clear()
-                                    else:
-                                        # 해제할 벽도 없음 → 강제 탐색 완료
-                                        boss_no_frontier_count = 10  # 아래 완료 체크로 fall-through
+                                    if _ui_update_ok:
+                                        self.after(0, lambda:
+                                            self._append_log("🧭 프런티어 없음 지속 → 상태리셋(벽해제없음)"))
+                                    boss_no_frontier_count = 0
+                                    explore_unreachable.clear()
+                                    frontier_cooldown.clear()
+                                    explore_target = None
+                                    explore_target_tries = 0
+                                    edge_fail_counts.clear()
 
                                 # 5회 이상 → 벽 아닌 방향이라도 시도 (새 타일 발견 기대)
                                 elif boss_no_frontier_count >= 5:
                                     for d, (ddx, ddy) in DIRECTIONS_4.items():
                                         nx, ny = current_x + ddx, current_y + ddy
-                                        if not self._game_map.is_blocked(nx, ny):
+                                        if not self._game_map.is_blocked(nx, ny) and not _is_dir_blocked(current_x, current_y, d, iteration):
                                             direction = d
                                             break
 
                                 _fnf_ec2 = _local_explore_center if _local_explore_phase else None
                                 _fnf_er2 = _local_explore_radius if _local_explore_phase else 0
+                                _raw_frontier_left = _find_nearest_frontier_raw(current_x, current_y, explore_center=_fnf_ec2, explore_radius=_fnf_er2)
                                 if boss_no_frontier_count >= 10 and (
                                         self._game_map.is_fully_explored()
-                                        or _find_nearest_frontier(current_x, current_y, explore_center=_fnf_ec2, explore_radius=_fnf_er2) is None):
+                                        or _raw_frontier_left is None):
                                     # 프런티어 없지만 미탐색 남음 + unreachable 있음 → 클리어 후 재시도
                                     if not self._game_map.is_fully_explored() and explore_unreachable:
                                         if _ui_update_ok:
@@ -5369,6 +5959,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         path_index = 0
                                         path_pos_index = {}
                                         explored_from = {}
+                                        edge_fail_counts.clear()
                                         unknown_path_fails = 0
                                         explore_target = None
                                         explore_target_tries = 0
@@ -5400,8 +5991,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             full_mapping_exploring = False
                                             _is_mapping_mode = _is_mapping_test or full_mapping_exploring
                                             _local_explore_phase = False  # 근처맵핑 상태도 리셋
-                                            # 전체맵핑 완료 → 도착지/출구 포탈 벽 해제 (경유지 이동 가능하도록)
-                                            # 단, 입구 포탈(start_routes)은 유지 (되돌아가면 맵 오염)
+                                            # 전체맵핑 완료 후에도 포탈 보호벽은 유지 (맵 오염/층이동 방지)
                                             _start_routes_keep = set()
                                             _sr_reblock = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
                                             for _sx, _sy in _sr_reblock:
@@ -5411,18 +6001,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                             for _pp in _pp_tiles:
                                                 if _pp in _start_routes_keep:
                                                     _portal_protected.add(_pp)  # 입구는 보호 유지
-                                                    continue
-                                                self._game_map.mark_passable(_pp[0], _pp[1])
+                                            # 포탈 타일은 해제하지 않음
                                             # 입구 포탈 start_pos 재설정 (A* 회피용)
                                             if _sr_reblock:
                                                 self._game_map.start_pos = tuple(_sr_reblock[0])
                                                 self._game_map.mark_blocked(_sr_reblock[0][0], _sr_reblock[0][1])
-                                            # 도착지 벽 해제 (이동할 수 있도록)
-                                            if target_x is not None and target_y is not None:
-                                                self._game_map.mark_passable(target_x, target_y)
                                             _cur_re = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
-                                            for _mte_x, _mte_y in _cur_re:
-                                                self._game_map.mark_passable(_mte_x, _mte_y)
                                             # 도착좌표 여러 개면 최단거리 선택
                                             if _cur_re:
                                                 _best_end = None
@@ -5437,8 +6021,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                                         _best_end = (_mte_x, _mte_y)
                                                 if _best_end:
                                                     target_x, target_y = _best_end
-                                                    self.after(0, lambda tx=target_x, ty=target_y, bc=_best_cost:
-                                                        self._append_log(f"🎯 최단 경유지: ({tx},{ty}) (거리:{bc})"))
+                                                    if _ui_update_ok:
+                                                        self.after(0, lambda tx=target_x, ty=target_y, bc=_best_cost:
+                                                            self._append_log(f"🎯 최단 경유지: ({tx},{ty}) (거리:{bc})"))
                                             # 맵 저장
                                             if not self._map_save_lock.locked() and not self._stop_event.is_set():
                                                 threading.Thread(target=self._auto_save_map, daemon=True).start()
@@ -5482,6 +6067,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 boss_no_frontier_count = 0
                                                 explore_target = None
                                                 explore_target_tries = 0
+                                                probe_focus_target = None
+                                                probe_focus_stall = 0
                                                 explore_unreachable = set()
                                                 _portal_protected.clear()
                                                 frontier_cooldown.clear()
@@ -5491,6 +6078,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 path_index = 0
                                                 path_pos_index = {}
                                                 explored_from = {}
+                                                edge_fail_counts.clear()
                                                 unknown_path_fails = 0
                                                 last_dir = None
                                                 recent_positions.clear()
@@ -5532,6 +6120,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             path_index = 0
                                             path_pos_index = {}
                                             explored_from = {}
+                                            edge_fail_counts.clear()
                                             unknown_path_fails = 0
                                             last_dir = None
                                             recent_positions.clear()
@@ -5573,6 +6162,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         path_index = 0
                                         path_pos_index = {}
                                         explored_from = {}
+                                        edge_fail_counts.clear()
                                         unknown_path_fails = 0
                                         last_dir = None
                                         recent_positions.clear()
@@ -5621,8 +6211,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                         pyautogui.keyUp(boss_skill_key)
                                     self._key_press_count += 1
                                     last_boss_skill_time = _now
-                                    self.after(0, lambda cx=current_x, cy=current_y, k=boss_skill_key:
-                                        self._append_log(f"⚔️ 보스 스킬! ({cx},{cy}) 키={k}"))
+                                    if _ui_update_ok:
+                                        self.after(0, lambda cx=current_x, cy=current_y, k=boss_skill_key:
+                                            self._append_log(f"⚔️ 보스 스킬! ({cx},{cy}) 키={k}"))
                                 except Exception as _e:
                                     logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
 
@@ -5673,8 +6264,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                         if _td3 > 20:
                                             # UI 오탐 (고정 UI 이름 요소) → 보스 사라진 것으로 처리
                                             _appr_boss_visible = False
-                                            self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
-                                                self._append_log(f"✅ 보스 사라짐 ({cx},{cy}) 거리={td}타일 — UI 오탐"))
+                                            if _ui_update_ok:
+                                                self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
+                                                    self._append_log(f"✅ 보스 사라짐 ({cx},{cy}) 거리={td}타일 — UI 오탐"))
                                         elif _td3 > 2:
                                             # 보스가 멀어짐 (2타일 초과) → 다시 추적
                                             _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
@@ -5701,8 +6293,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                             # 순찰 재시작 (stale is_completed 방지 → 거짓 구간전환 차단)
                                             if boss_patrol is not None:
                                                 boss_patrol.start((current_x, current_y))
-                                            self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
-                                                self._append_log(f"🏃 보스 멀어짐 ({cx},{cy}) 거리={td}타일 → 재추적+스킬"))
+                                            if _ui_update_ok:
+                                                self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
+                                                    self._append_log(f"🏃 보스 멀어짐 ({cx},{cy}) 거리={td}타일 → 재추적+스킬"))
                                             self._stop_event.wait(0.05)
                                             continue
                             except Exception:
@@ -5810,6 +6403,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_index = 0
                             path_pos_index = {}
                             explored_from = {}
+                            edge_fail_counts.clear()
                             unknown_path_fails = 0
                             last_dir = None
                             recent_positions.clear()
@@ -5910,8 +6504,9 @@ class GameModeDialog(ctk.CTkToplevel):
 
                                         # 20타일 초과 → UI 요소 오탐, 무시
                                         if tile_dist > 20:
-                                            self.after(0, lambda dx=dx_pixel, dy=dy_pixel, td=tile_dist:
-                                                self._append_log(f"⚠️ 보스 감지 무시 (거리={td}타일, dx={dx}px) — UI 오탐 추정"))
+                                            if _ui_update_ok:
+                                                self.after(0, lambda dx=dx_pixel, dy=dy_pixel, td=tile_dist:
+                                                    self._append_log(f"⚠️ 보스 감지 무시 (거리={td}타일, dx={dx}px) — UI 오탐 추정"))
                                             _boss_found = False  # UI 오탐 → 감지 아님 처리
 
                                         # 1타일 이내 → approaching (캐릭터 미감지 시 화면중앙 폴백으로 거리 오차 → chasing으로만 전환)
@@ -5943,10 +6538,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     last_boss_skill_time = time.time()
                                                 except Exception:
                                                     pass
-                                            self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
-                                                       cx=current_x, cy=current_y, dx=dx_pixel, dy=dy_pixel,
-                                                       td=tile_dist:
-                                                self._append_log(f"🎯 보스 근접! ({cx},{cy}) dx={dx}px dy={dy}px 거리={td}타일 {s}회 → 접근 완료 (신뢰도={conf:.1%})"))
+                                            if _ui_update_ok:
+                                                self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
+                                                           cx=current_x, cy=current_y, dx=dx_pixel, dy=dy_pixel,
+                                                           td=tile_dist:
+                                                    self._append_log(f"🎯 보스 근접! ({cx},{cy}) dx={dx}px dy={dy}px 거리={td}타일 {s}회 → 접근 완료 (신뢰도={conf:.1%})"))
                                             prev_x, prev_y = current_x, current_y
                                             time.sleep(0.05)
                                             continue
@@ -5957,6 +6553,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                             _boss_chasing = True
                                             stuck_count = 0
                                             total_stuck_count = 0
+                                            last_dir = None
+                                            prev_x, prev_y = current_x, current_y
                                             _chase_ty = current_y + est_dy_tiles
                                             # X는 UI NAME 고정이라 오프셋 못 씀 → 현재 X 유지
                                             # (Y 도달 후 recheck에서 X 탐색)
@@ -6035,6 +6633,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             path_index = 0
                             path_pos_index = {}
                             explored_from = {}
+                            edge_fail_counts.clear()
                             unknown_path_fails = 0
                             last_dir = None
                             recent_positions.clear()
@@ -6079,7 +6678,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         else:
                             _move_target_raw = boss_patrol.get_next_target(current_pos_tuple)
                             if _move_target_raw is None:
-                                self.after(0, lambda: self._append_log("⚠️ 순찰 좌표 없음 → 탐색 복귀"))
+                                if _ui_update_ok:
+                                    self.after(0, lambda: self._append_log("⚠️ 순찰 좌표 없음 → 탐색 복귀"))
                                 boss_mode = "exploring"
                                 boss_patrol = None
                                 _boss_chasing = False
@@ -6091,6 +6691,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 path_index = 0
                                 path_pos_index = {}
                                 explored_from = {}
+                                edge_fail_counts.clear()
                                 unknown_path_fails = 0
                                 boss_no_frontier_count = 0
                                 frontier_cooldown.clear()
@@ -6129,25 +6730,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
                         if direction is None:
                             if _boss_chasing and not self._stop_event.is_set():
-                                # 추적 중 갇힘 → 주변 임시벽 자동 해제
-                                if use_map:
-                                    _cleared = 0
-                                    for _cd, (_cddx, _cddy) in DIRECTIONS_4.items():
-                                        _cnx, _cny = current_x + _cddx, current_y + _cddy
-                                        if self._game_map.is_soft_blocked(_cnx, _cny):
-                                            self._game_map.clear_soft_blocked(_cnx, _cny)
-                                            _cleared += 1
-                                    if _cleared > 0:
-                                        self.after(0, lambda cx=current_x, cy=current_y, c=_cleared:
-                                            self._append_log(f"🔓 추적 갇힘({cx},{cy}) → 임시벽 {c}개 해제"))
-                                        current_path = []
-                                        path_index = 0
-                                        path_pos_index = {}
-                                        pathfinder.invalidate_path()
-                                        prev_x, prev_y = current_x, current_y
-                                        time.sleep(0.05)
-                                        continue  # 임시벽 해제 후 이동 재시도 (재감지 전에)
-                                # 추적 목표 도달/실패 → 즉시 보스 재감지
+                                # 추적 목표 도달/실패 → 즉시 보스 재감지 (벽/임시벽 해제 없음)
                                 _rechk_found = False
                                 try:
                                     import pyautogui as _pag2
@@ -6193,6 +6776,13 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     _boss_chasing = False
                                                     boss_mode = "approaching"
                                                     boss_appr_miss = 0
+                                                    stuck_count = 0
+                                                    total_stuck_count = 0
+                                                    last_dir = None
+                                                    current_path = []
+                                                    path_index = 0
+                                                    path_pos_index = {}
+                                                    pathfinder.invalidate_path()
                                                     # X축 스캔 상태 초기화 (좌우 교대 탐색용)
                                                     self._appr_x_step = 0
                                                     self._appr_x_dir = 1  # 1=right, -1=left
@@ -6208,8 +6798,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                                             last_boss_skill_time = time.time()
                                                         except Exception:
                                                             pass
-                                                    self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
-                                                        self._append_log(f"🎯 추적→접근! ({cx},{cy}) 거리={td}타일 → approaching"))
+                                                    if _ui_update_ok:
+                                                        self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
+                                                            self._append_log(f"🎯 추적→접근! ({cx},{cy}) 거리={td}타일 → approaching"))
                                                     prev_x, prev_y = current_x, current_y
                                                     time.sleep(0.05)
                                                     continue
@@ -6242,15 +6833,17 @@ class GameModeDialog(ctk.CTkToplevel):
                                                         _boss_chase_miss = 0
                                                         # 다음번엔 반대 방향 스캔
                                                         self._boss_x_scan_dir *= -1
-                                                        self.after(0, lambda cx=current_x, cy=current_y,
-                                                                   tx=_chase_tx, ty=_chase_ty, td=_td2, dy=_dy2:
-                                                            self._append_log(f"🔄 Y근접({td}타일) X탐색 → ({tx},{ty})"))
+                                                        if _ui_update_ok:
+                                                            self.after(0, lambda cx=current_x, cy=current_y,
+                                                                       tx=_chase_tx, ty=_chase_ty, td=_td2, dy=_dy2:
+                                                                self._append_log(f"🔄 Y근접({td}타일) X탐색 → ({tx},{ty})"))
                                                     else:
                                                         # 우회 불가 → 미감지 처리 (miss 누적 → 15회 시 순찰 복귀)
                                                         _rechk_found = False
                                                         self._boss_x_scan_dir *= -1  # 방향 전환
-                                                        self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
-                                                            self._append_log(f"⚠️ Y근접({td}타일) X탐색 실패+우회불가"))
+                                                        if _ui_update_ok:
+                                                            self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
+                                                                self._append_log(f"⚠️ Y근접({td}타일) X탐색 실패+우회불가"))
                                             else:
                                                 _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
                                                 _chase_ty = current_y + _edy2
@@ -6261,9 +6854,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     _rchk_dy_sign = 1 if _edy2 >= 0 else -1
                                                     _chase_ty += _rchk_dy_sign
                                                 _boss_chase_miss = 0
-                                                self.after(0, lambda cx=current_x, cy=current_y,
-                                                       tx=_chase_tx, ty=_chase_ty, td=_td2:
-                                                self._append_log(f"🔄 재감지! ({cx},{cy})→({tx},{ty}) 거리={td}타일"))
+                                                if _ui_update_ok:
+                                                    self.after(0, lambda cx=current_x, cy=current_y,
+                                                               tx=_chase_tx, ty=_chase_ty, td=_td2:
+                                                        self._append_log(f"🔄 재감지! ({cx},{cy})→({tx},{ty}) 거리={td}타일"))
                                 except Exception:
                                     pass
                                 if not _rechk_found and not self._stop_event.is_set():
@@ -6274,8 +6868,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                         # 현재 위치에서 가장 가까운 순찰 포인트부터 재시작
                                         if boss_patrol is not None:
                                             boss_patrol.start((current_x, current_y))
-                                        self.after(0, lambda cx=current_x, cy=current_y:
-                                            self._append_log(f"🔍 보스 미감지 → 순찰 복귀 (({cx},{cy})부터)"))
+                                        if _ui_update_ok:
+                                            self.after(0, lambda cx=current_x, cy=current_y:
+                                                self._append_log(f"🔍 보스 미감지 → 순찰 복귀 (({cx},{cy})부터)"))
                                     else:
                                         if _ui_update_ok:
                                             self.after(0, lambda tx=_move_target[0], ty=_move_target[1], m=_boss_chase_miss:
@@ -6284,8 +6879,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             else:
                                 boss_patrol.skip_current_target()
                                 patrol_skip_count += 1
-                                self.after(0, lambda tx=_move_target[0], ty=_move_target[1]:
-                                    self._append_log(f"⚠️ 순찰 ({tx},{ty}) 도달 불가 → 스킵"))
+                                if _ui_update_ok:
+                                    self.after(0, lambda tx=_move_target[0], ty=_move_target[1]:
+                                        self._append_log(f"⚠️ 순찰 ({tx},{ty}) 도달 불가 → 스킵"))
                                 patrol_total = len(self._game_map.patrol_points)
                                 skip_threshold = min(patrol_total, 15)
                                 if patrol_skip_count >= skip_threshold and patrol_total > 0:
@@ -6302,12 +6898,14 @@ class GameModeDialog(ctk.CTkToplevel):
                                     explore_unreachable = set()
                                     frontier_cooldown.clear()
                                     explored_from = {}
+                                    edge_fail_counts.clear()
                                     unknown_path_fails = 0
                                     boss_no_frontier_count = 0
                                     boss_approach_steps = 0
                                     boss_appr_miss = 0
-                                    self.after(0, lambda ps=patrol_skip_count:
-                                        self._append_log(f"🔄 순찰 {ps}개 연속 도달불가 → 탐색모드 복귀"))
+                                    if _ui_update_ok:
+                                        self.after(0, lambda ps=patrol_skip_count:
+                                            self._append_log(f"🔄 순찰 {ps}개 연속 도달불가 → 탐색모드 복귀"))
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
@@ -6334,47 +6932,51 @@ class GameModeDialog(ctk.CTkToplevel):
                         if not self._stop_event.is_set() and _ui_update_ok:
                             self.after(0, lambda cx=current_x, cy=current_y, m=boss_mode:
                                 self._append_log(f"⏸ ({cx},{cy}) 보스던전 방향 없음 ({m})"))
-                        # 방향 없음 연속 → 인접 벽 해제 복구 (exploring 모드 갇힘 방지)
+                        # 방향 없음 연속 → 벽 해제 없이 방향차단/경로 상태만 리셋
+                        none_dir_streak += 1
                         stuck_count += 1
                         if stuck_count >= 10 and mapping_on and use_map:
-                            _unblocked = 0
-                            for _d, (_ddx, _ddy) in DIRECTIONS_4.items():
-                                _nx, _ny = current_x + _ddx, current_y + _ddy
-                                if (_nx, _ny) in _portal_protected:
-                                    continue  # 포탈 좌표 보호
-                                if self._game_map.is_blocked(_nx, _ny):
-                                    self._game_map.mark_passable(_nx, _ny)
-                                    _unblocked += 1
-                            if _unblocked > 0:
-                                self.after(0, lambda u=_unblocked, cx=current_x, cy=current_y:
-                                    self._append_log(f"🔓 방향없음 복구 ({cx},{cy}) → {u}개 인접벽 해제"))
+                            _cleared = 0
+                            for _d in DIRECTIONS_4.keys():
+                                if blocked_dirs.pop(_dir_key(current_x, current_y, _d), None) is not None:
+                                    _cleared += 1
+                            if _ui_update_ok:
+                                self.after(0, lambda c=_cleared, cx=current_x, cy=current_y:
+                                    self._append_log(f"🧭 방향없음 복구 ({cx},{cy}) → 차단초기화 {c}개 (벽해제없음)"))
                             stuck_count = 0
                             total_stuck_count = 0
+                            none_dir_streak = 0
                             explored_from.pop((current_x, current_y), None)
+                            for _d in DIRECTIONS_4.keys():
+                                edge_fail_counts.pop(_dir_key(current_x, current_y, _d), None)
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
+                            pathfinder.invalidate_path()
                         _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                         _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음[{boss_mode}]"
                         logger.info(f"[타이밍] {_timing_msg}")
                         if _ui_update_ok:
                             self.after(0, lambda m=_timing_msg: self._append_log(m))
                         self._stop_event.wait(0.1)
-                        # prev를 현재 위치로 → 다음 반복에서 이동 판정 정상 동작
-                        prev_x, prev_y = current_x, current_y
+                        # direction=None은 이동 시도가 없으므로 실패 판정 누적 방지
+                        prev_x, prev_y = None, None
                         last_dir = None
+                        _last_probe_target = None
                         continue
 
                     if self._stop_event.is_set():
                         break
 
                     # 보스던전 방향 로그 (10회마다)
-                    if iteration % 10 == 0 and not self._stop_event.is_set():
+                    none_dir_streak = 0
+                    if iteration % 10 == 0 and not self._stop_event.is_set() and _ui_update_ok:
                         self.after(0, lambda cx=current_x, cy=current_y, d=direction, m=boss_mode:
                             self._append_log(f"🎮 [{m}] ({cx},{cy}) → {d}"))
 
                     _t_path_ms = int((time.time() - _t_iter_start) * 1000) - _t_ocr_ms
                     _t_key_start = time.time()
+                    _last_probe_target = _pending_probe_target
                     press_key(direction)
                     _t_key_ms = int((time.time() - _t_key_start) * 1000)
                     _t_iter_total = int((time.time() - _t_iter_start) * 1000)
@@ -6397,6 +6999,23 @@ class GameModeDialog(ctk.CTkToplevel):
                     break
 
                 if direction is None:
+                    none_dir_streak += 1
+                    if none_dir_streak >= 3 and mapping_on and use_map:
+                        _cleared = 0
+                        for _d in DIRECTIONS_4.keys():
+                            if blocked_dirs.pop(_dir_key(current_x, current_y, _d), None) is not None:
+                                _cleared += 1
+                        explored_from.pop((current_x, current_y), None)
+                        for _d in DIRECTIONS_4.keys():
+                            edge_fail_counts.pop(_dir_key(current_x, current_y, _d), None)
+                        current_path = []
+                        path_index = 0
+                        path_pos_index = {}
+                        pathfinder.invalidate_path()
+                        if _ui_update_ok:
+                            self.after(0, lambda c=_cleared, cx=current_x, cy=current_y:
+                                self._append_log(f"🧭 방향없음 복구 ({cx},{cy}) → 차단초기화 {c}개"))
+                        none_dir_streak = 0
                     _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                     _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} A*:{_t_path_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음"
                     logger.info(f"[타이밍] {_timing_msg}")
@@ -6406,10 +7025,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         self.after(0, lambda cx=current_x, cy=current_y:
                             self._append_log(f"⏸ ({cx},{cy}) 방향 없음"))
                     self._stop_event.wait(0.1)
-                    prev_x, prev_y = current_x, current_y
+                    prev_x, prev_y = None, None
+                    last_dir = None
+                    _last_probe_target = None
                     continue
 
                 # UI 업데이트
+                none_dir_streak = 0
                 # 도착좌표가 여러 개면 가장 가까운 도착좌표 기준으로 거리 계산
                 _cur_re_dist = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
                 if _cur_re_dist:
@@ -6465,6 +7087,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
                 # 이동 (포탈 근접 시 짧은 탭으로 오버슈트 방지)
                 _t_key_start = time.time()
+                _last_probe_target = None
                 if dist <= 1:
                     # 포탈 1칸 전: smooth_move 무시, 짧은 탭 1회만
                     key = self._config.move_keys.get(direction, direction)
@@ -6495,8 +7118,18 @@ class GameModeDialog(ctk.CTkToplevel):
                     self.after(0, lambda m=_timing_msg: self._append_log(m))
 
         except Exception as e:
-            logger.error(f"[좌표모드] 오류: {e}")
-            self.after(0, lambda err=str(e): self._append_log(f"⚠️ 오류: {err}"))
+            logger.exception("[좌표모드] 오류")
+            _etype = type(e).__name__
+            _eloc = "unknown"
+            try:
+                import traceback as _tbm
+                _tb = _tbm.extract_tb(e.__traceback__)
+                if _tb:
+                    _last = _tb[-1]
+                    _eloc = f"{_last.filename}:{_last.lineno}"
+            except Exception:
+                pass
+            self.after(0, lambda err=str(e), et=_etype, loc=_eloc: self._append_log(f"⚠️ 오류: {et} @ {loc} - {err}"))
         finally:
             # keyboard.remove_hotkey를 별도 스레드에서 실행 (join 없이 — 블로킹 방지)
             def _remove_hotkey():

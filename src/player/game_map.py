@@ -6,6 +6,8 @@
 
 import json
 import logging
+import os
+import tempfile
 import threading
 from typing import Dict, Optional, Tuple, List, Set
 from pathlib import Path
@@ -41,10 +43,112 @@ class GameMap:
     SOFT_BLOCKED_PROMOTE_THRESHOLD = 5  # 이 횟수 이상 실패 시 영구벽 승격
     COORD_MAX = 500  # 좌표 유효 범위 (-COORD_MAX ~ +COORD_MAX), OCR 오독 방지
 
+    COORD_SANITY_MIN_TILES = 20
+    COORD_LOCAL_MARGIN = 80
+    COORD_CLUSTER_MARGIN = 120
+
     @staticmethod
     def _is_valid_coord(x: int, y: int) -> bool:
         """좌표 유효성 검사 (OCR 오독 필터링)"""
         return -GameMap.COORD_MAX <= x <= GameMap.COORD_MAX and -GameMap.COORD_MAX <= y <= GameMap.COORD_MAX
+
+    @staticmethod
+    def _median_value(values: List[int]) -> int:
+        if not values:
+            return 0
+        sorted_values = sorted(values)
+        mid = len(sorted_values) // 2
+        if len(sorted_values) % 2 == 1:
+            return int(sorted_values[mid])
+        return int(round((sorted_values[mid - 1] + sorted_values[mid]) / 2))
+
+    @classmethod
+    def _filter_coord_cluster(cls, coords: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+        if len(coords) < cls.COORD_SANITY_MIN_TILES:
+            return set(coords)
+        xs = [p[0] for p in coords]
+        ys = [p[1] for p in coords]
+        center_x = cls._median_value(xs)
+        center_y = cls._median_value(ys)
+        filtered = {
+            p for p in coords
+            if abs(p[0] - center_x) <= cls.COORD_CLUSTER_MARGIN
+            and abs(p[1] - center_y) <= cls.COORD_CLUSTER_MARGIN
+        }
+        min_keep = max(cls.COORD_SANITY_MIN_TILES // 2, int(len(coords) * 0.6))
+        if len(filtered) >= min_keep and len(filtered) < len(coords):
+            return filtered
+        return set(coords)
+
+    def is_plausible_local_coord(self, x: int, y: int) -> bool:
+        pos = (int(x), int(y))
+        if not self._is_valid_coord(pos[0], pos[1]):
+            return False
+        with self._lock:
+            all_coords = self.passable | self.blocked | set(self.soft_blocked.keys())
+        if len(all_coords) < self.COORD_SANITY_MIN_TILES:
+            return True
+        xs = [p[0] for p in all_coords]
+        ys = [p[1] for p in all_coords]
+        return (
+            min(xs) - self.COORD_LOCAL_MARGIN <= pos[0] <= max(xs) + self.COORD_LOCAL_MARGIN
+            and min(ys) - self.COORD_LOCAL_MARGIN <= pos[1] <= max(ys) + self.COORD_LOCAL_MARGIN
+        )
+
+    @classmethod
+    def _sanitize_state(
+        cls,
+        passable: Set[Tuple[int, int]],
+        blocked: Set[Tuple[int, int]],
+        soft_blocked: Dict[Tuple[int, int], int],
+        patrol_points: List[Tuple[int, int]],
+        start_pos: Optional[Tuple[int, int]],
+        end_pos: Optional[Tuple[int, int]],
+    ) -> Tuple[
+        Set[Tuple[int, int]],
+        Set[Tuple[int, int]],
+        Dict[Tuple[int, int], int],
+        List[Tuple[int, int]],
+        Optional[Tuple[int, int]],
+        Optional[Tuple[int, int]],
+    ]:
+        passable = {p for p in passable if cls._is_valid_coord(p[0], p[1])}
+        blocked = {p for p in blocked if cls._is_valid_coord(p[0], p[1])}
+        soft_blocked = {
+            p: c for p, c in soft_blocked.items()
+            if cls._is_valid_coord(p[0], p[1])
+        }
+        patrol_points = [
+            p for p in patrol_points
+            if cls._is_valid_coord(p[0], p[1])
+        ]
+        if start_pos is not None and not cls._is_valid_coord(start_pos[0], start_pos[1]):
+            start_pos = None
+        if end_pos is not None and not cls._is_valid_coord(end_pos[0], end_pos[1]):
+            end_pos = None
+
+        all_coords = passable | blocked | set(soft_blocked.keys())
+        filtered_coords = cls._filter_coord_cluster(all_coords)
+        if filtered_coords != all_coords:
+            dropped = sorted(all_coords - filtered_coords)
+            logger.warning(
+                f"[Map] 좌표 오염 정리: {dropped[:5]}{'...' if len(dropped) > 5 else ''}"
+            )
+            passable = {p for p in passable if p in filtered_coords}
+            blocked = {p for p in blocked if p in filtered_coords}
+            soft_blocked = {p: c for p, c in soft_blocked.items() if p in filtered_coords}
+            patrol_points = [p for p in patrol_points if p in filtered_coords]
+            if start_pos not in filtered_coords:
+                start_pos = None
+            if end_pos not in filtered_coords:
+                end_pos = None
+
+        blocked -= passable
+        soft_blocked = {
+            p: c for p, c in soft_blocked.items()
+            if p not in passable and p not in blocked
+        }
+        return passable, blocked, soft_blocked, patrol_points, start_pos, end_pos
 
     def __init__(self, name: str = "Unknown"):
         self.name = name
@@ -57,58 +161,58 @@ class GameMap:
         self.end_pos: Optional[Tuple[int, int]] = None    # 도착지
 
     def mark_passable(self, x: int, y: int):
-        """이동 가능한 좌표로 등록 (start_pos는 보호 — 포탈 입구 되돌아가기 방지)"""
+        """?? ??? ??? ?????."""
         pos = (int(x), int(y))
         if not self._is_valid_coord(pos[0], pos[1]):
-            logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
-            return
+            logger.warning(f"[Map] ?? ?? ?? ??: {pos}")
+            return False
+        if not self.is_plausible_local_coord(pos[0], pos[1]):
+            logger.warning(f"[Map] ?? ?? ?? ??: {pos}")
+            return False
         with self._lock:
-            # 출발지(포탈 입구)는 절대 passable 등록 금지
             if self.start_pos is not None and pos == self.start_pos:
-                return
+                return False
             self.passable.add(pos)
-            # 장애물에서 제거 (혹시 잘못 등록됐으면)
             self.blocked.discard(pos)
-            # 임시 장애물에서도 제거
             self.soft_blocked.pop(pos, None)
-        logger.debug(f"[Map] {pos} 이동 가능")
+        logger.debug(f"[Map] {pos} ?? ??")
+        return True
 
     def mark_blocked(self, x: int, y: int):
-        """장애물 좌표로 등록 (영구벽)"""
+        """?? ? ??? ?????."""
         pos = (int(x), int(y))
         if not self._is_valid_coord(pos[0], pos[1]):
-            logger.warning(f"[Map] 좌표 범위 초과 무시: {pos}")
-            return
+            logger.warning(f"[Map] ?? ?? ?? ??: {pos}")
+            return False
+        if not self.is_plausible_local_coord(pos[0], pos[1]):
+            logger.warning(f"[Map] ?? ?? ?? ??: {pos}")
+            return False
         with self._lock:
             self.blocked.add(pos)
-            # 이동 가능에서 제거
             self.passable.discard(pos)
-            # 임시 장애물에서도 제거 (영구벽으로 승격됨)
             self.soft_blocked.pop(pos, None)
-        logger.debug(f"[Map] {pos} 장애물!")
+        logger.debug(f"[Map] {pos} ?")
+        return True
 
     def mark_soft_blocked(self, x: int, y: int, allow_promote: bool = True):
-        """임시 장애물로 등록 (몬스터 등). fail_count 누적, 임계값 초과 시 영구벽 승격
-
-        Args:
-            allow_promote: False면 영구벽 승격 없이 count만 증가 (부분실행/전체테스트용)
-        """
+        """?? ? ??? ?????."""
         pos = (int(x), int(y))
         if not self._is_valid_coord(pos[0], pos[1]):
-            return
+            return False
+        if not self.is_plausible_local_coord(pos[0], pos[1]):
+            logger.warning(f"[Map] ??? ?? ?? ?? ??: {pos}")
+            return False
         with self._lock:
-            # 이미 영구벽이면 무시
             if pos in self.blocked:
-                return
+                return False
             count = self.soft_blocked.get(pos, 0) + 1
             if allow_promote and count >= self.SOFT_BLOCKED_PROMOTE_THRESHOLD:
-                # 영구벽으로 승격 (mark_blocked 내부에서도 _lock 재진입 - RLock이므로 안전)
                 self.mark_blocked(x, y)
-                logger.info(f"[Map] {pos} 임시→영구벽 승격 (실패 {count}회)")
+                logger.info(f"[Map] {pos} ?????? ?? (?? {count}?)")
             else:
-                # count 상한: THRESHOLD로 제한 (무한 누적 방지)
                 self.soft_blocked[pos] = min(count, self.SOFT_BLOCKED_PROMOTE_THRESHOLD)
-                logger.debug(f"[Map] {pos} 임시 장애물 (실패 {count}회)")
+                logger.debug(f"[Map] {pos} ?? ? (?? {count}?)")
+        return True
 
     def clear_soft_blocked(self, x: int, y: int):
         """임시 장애물 해제 (이동 성공 시)"""
@@ -346,36 +450,65 @@ class GameMap:
         return True
 
     def save(self, filepath: str):
-        """JSON 저장 (스레드 안전: lock 내에서 스냅샷 후, lock 밖에서 파일 I/O)"""
+        """JSON ?? (?? ?? + ?? ?? ??)"""
         with self._lock:
-            passable_snapshot = list(self.passable)
-            blocked_snapshot = list(self.blocked)
+            passable_snapshot = set(self.passable)
+            blocked_snapshot = set(self.blocked)
             soft_blocked_snapshot = dict(self.soft_blocked)
             patrol_snapshot = list(self.patrol_points)
             start_snap = self.start_pos
             end_snap = self.end_pos
             name_snap = self.name
 
+        passable_snapshot, blocked_snapshot, soft_blocked_snapshot, patrol_snapshot, start_snap, end_snap = self._sanitize_state(
+            passable_snapshot,
+            blocked_snapshot,
+            soft_blocked_snapshot,
+            patrol_snapshot,
+            start_snap,
+            end_snap,
+        )
+
+        with self._lock:
+            self.passable = set(passable_snapshot)
+            self.blocked = set(blocked_snapshot)
+            self.soft_blocked = dict(soft_blocked_snapshot)
+            self.patrol_points = list(patrol_snapshot)
+            self.start_pos = start_snap
+            self.end_pos = end_snap
+
         data = {
             "name": name_snap,
-            "passable": [list(p) for p in passable_snapshot],
-            "blocked": [list(p) for p in blocked_snapshot],
+            "passable": [list(p) for p in sorted(passable_snapshot)],
+            "blocked": [list(p) for p in sorted(blocked_snapshot)],
             "soft_blocked": {f"{p[0]},{p[1]}": c for p, c in soft_blocked_snapshot.items()},
             "patrol_points": [list(p) for p in patrol_snapshot],
             "start_pos": list(start_snap) if start_snap is not None else None,
             "end_pos": list(end_snap) if end_snap is not None else None,
         }
 
-        path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path_obj = Path(filepath)
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=f"{path_obj.stem}_", suffix=".tmp", dir=str(path_obj.parent))
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, filepath)
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"[Map] 저장: {filepath} (이동가능 {len(passable_snapshot)}개, 장애물 {len(blocked_snapshot)}개, 임시벽 {len(soft_blocked_snapshot)}개)")
+        logger.info(
+            f"[Map] ??: {filepath} (???? {len(passable_snapshot)}?, ? {len(blocked_snapshot)}?, ??? {len(soft_blocked_snapshot)}?)"
+        )
 
     def load(self, filepath: str) -> bool:
-        """JSON 로드 (파일 I/O는 lock 밖, 데이터 할당은 lock 안)"""
+        """JSON ??"""
         path = Path(filepath)
         if not path.exists():
             return False
@@ -384,23 +517,34 @@ class GameMap:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            # 파싱은 lock 밖에서 수행
             new_name = data.get("name", "Unknown")
             new_passable = set(tuple(p) for p in data.get("passable", []))
             new_blocked = set(tuple(p) for p in data.get("blocked", []))
             raw_sb = data.get("soft_blocked", {})
             new_soft_blocked = {}
             for key, count in raw_sb.items():
-                parts = key.split(",")
-                pos = (int(parts[0]), int(parts[1]))
-                new_soft_blocked[pos] = count
+                try:
+                    parts = key.split(",")
+                    if len(parts) >= 2:
+                        pos = (int(parts[0]), int(parts[1]))
+                        new_soft_blocked[pos] = count
+                except (ValueError, IndexError):
+                    continue
             new_patrol = [tuple(p) for p in data.get("patrol_points", [])]
             sp = data.get("start_pos")
             new_start = tuple(sp) if sp is not None else None
             ep = data.get("end_pos")
             new_end = tuple(ep) if ep is not None else None
 
-            # 데이터 할당은 lock 안에서 원자적으로
+            new_passable, new_blocked, new_soft_blocked, new_patrol, new_start, new_end = self._sanitize_state(
+                new_passable,
+                new_blocked,
+                new_soft_blocked,
+                new_patrol,
+                new_start,
+                new_end,
+            )
+
             with self._lock:
                 self.name = new_name
                 self.passable = new_passable
@@ -410,20 +554,19 @@ class GameMap:
                 self.start_pos = new_start
                 self.end_pos = new_end
 
-            logger.info(f"[Map] 로드: {filepath} (이동가능 {len(new_passable)}개, 장애물 {len(new_blocked)}개, 순찰 {len(new_patrol)}개)")
+            logger.info(f"[Map] ??: {filepath} (???? {len(new_passable)}?, ? {len(new_blocked)}?, ?? {len(new_patrol)}?)")
             return True
         except Exception as e:
-            logger.error(f"[Map] 로드 실패: {e}")
+            logger.error(f"[Map] ?? ??: {e}")
             return False
 
     def load_and_merge(self, filepath: str) -> bool:
-        """JSON 로드 후 병합 (파일 I/O는 lock 밖, 병합은 lock 안)"""
+        """JSON ?? ? ?? ?? ??"""
         path = Path(filepath)
         if not path.exists():
             return False
 
         try:
-            # 파일 I/O와 파싱은 lock 밖에서 수행
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
@@ -432,9 +575,13 @@ class GameMap:
             raw_sb = data.get("soft_blocked", {})
             loaded_soft_blocked = {}
             for key, count in raw_sb.items():
-                parts = key.split(",")
-                pos = (int(parts[0]), int(parts[1]))
-                loaded_soft_blocked[pos] = count
+                try:
+                    parts = key.split(",")
+                    if len(parts) >= 2:
+                        pos = (int(parts[0]), int(parts[1]))
+                        loaded_soft_blocked[pos] = count
+                except (ValueError, IndexError):
+                    continue
             loaded_patrol = [tuple(p) for p in data.get("patrol_points", [])]
             sp = data.get("start_pos")
             loaded_start = tuple(sp) if sp is not None else None
@@ -442,47 +589,55 @@ class GameMap:
             loaded_end = tuple(ep) if ep is not None else None
             loaded_name = data.get("name", "Unknown")
 
-            # 병합은 lock 안에서 원자적으로
+            loaded_passable, loaded_blocked, loaded_soft_blocked, loaded_patrol, loaded_start, loaded_end = self._sanitize_state(
+                loaded_passable,
+                loaded_blocked,
+                loaded_soft_blocked,
+                loaded_patrol,
+                loaded_start,
+                loaded_end,
+            )
+
             with self._lock:
                 if self.name == "Unknown":
                     self.name = loaded_name
 
                 before = len(self.passable) + len(self.blocked)
-
-                # 병합: 현재 메모리 상태 우선 (실행 중 발견한 벽/이동가능이 파일보다 최신)
-                self.passable |= (loaded_passable - self.blocked)
-                self.blocked |= (loaded_blocked - self.passable)
-                # soft_blocked 병합: 더 높은 fail_count 유지
+                merged_passable = set(self.passable) | (loaded_passable - set(self.blocked))
+                merged_blocked = set(self.blocked) | (loaded_blocked - merged_passable)
+                merged_soft = dict(self.soft_blocked)
                 for pos, count in loaded_soft_blocked.items():
-                    existing = self.soft_blocked.get(pos, 0)
-                    self.soft_blocked[pos] = max(existing, count)
+                    merged_soft[pos] = max(merged_soft.get(pos, 0), count)
+                merged_patrol = list(self.patrol_points) if self.patrol_points else list(loaded_patrol)
+                merged_start = self.start_pos if self.start_pos is not None else loaded_start
+                merged_end = self.end_pos if self.end_pos is not None else loaded_end
 
-                # soft_blocked도 passable/blocked와 충돌 해결
-                for pos in list(self.soft_blocked.keys()):
-                    if pos in self.passable or pos in self.blocked:
-                        del self.soft_blocked[pos]
+            merged_passable, merged_blocked, merged_soft, merged_patrol, merged_start, merged_end = self._sanitize_state(
+                merged_passable,
+                merged_blocked,
+                merged_soft,
+                merged_patrol,
+                merged_start,
+                merged_end,
+            )
 
-                # 순찰 좌표 병합 (없으면 가져옴)
-                if loaded_patrol and not self.patrol_points:
-                    self.patrol_points = loaded_patrol
-                # 출발지/도착지 병합 (없으면 가져옴)
-                if loaded_start is not None and self.start_pos is None:
-                    self.start_pos = loaded_start
-                if loaded_end is not None and self.end_pos is None:
-                    self.end_pos = loaded_end
-
-                # 출발지가 설정되면 반드시 blocked에 포함 (포탈 되돌아가기 방지)
+            with self._lock:
+                self.passable = merged_passable
+                self.blocked = merged_blocked
+                self.soft_blocked = merged_soft
+                self.patrol_points = merged_patrol
+                self.start_pos = merged_start
+                self.end_pos = merged_end
                 if self.start_pos is not None:
                     self.passable.discard(self.start_pos)
                     self.blocked.add(self.start_pos)
-                    self.soft_blocked.pop(self.start_pos, None)  # soft_blocked 충돌 해결
-
+                    self.soft_blocked.pop(self.start_pos, None)
                 after = len(self.passable) + len(self.blocked)
 
-            logger.info(f"[Map] 병합: {before}개 → {after}개")
+            logger.info(f"[Map] ??: {before}? -> {after}?")
             return True
         except Exception as e:
-            logger.error(f"[Map] 병합 실패: {e}")
+            logger.error(f"[Map] ?? ??: {e}")
             return False
 
     def cleanup_outliers(self) -> int:
