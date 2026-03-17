@@ -3109,9 +3109,15 @@ class RuleExecutor:
             try:
                 save_path = get_segment_map_path(current_segment_idx)
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                _sanitize_segment_start_pos(game_map, current_segment_idx)
-                game_map.save(save_path)
-                logger.info(f"[좌표모드] '{old_name}' 맵 저장: {save_path}")
+                _old_map_ref = game_map
+                _sanitize_segment_start_pos(_old_map_ref, current_segment_idx)
+                def _save_old_segment_async(_map=_old_map_ref, _path=save_path, _name=old_name):
+                    try:
+                        _map.save(_path)
+                        logger.info(f"[좌표모드] '{_name}' 맵 저장: {_path}")
+                    except Exception as _save_e:
+                        logger.error(f"[좌표모드] 맵 저장 실패: {_save_e}")
+                threading.Thread(target=_save_old_segment_async, daemon=True).start()
             except Exception as e:
                 logger.error(f"[좌표모드] 맵 저장 실패: {e}")
             # 새 구간 맵 로드
@@ -3566,8 +3572,11 @@ class RuleExecutor:
                 # 2. 도착 체크 (좌표 모드: threshold 최대 2로 제한)
                 # route_ends가 있으면 어느 하나에 도착해도 경유지 완료
                 _cur_route_ends = all_targets[current_target_idx][7] if len(all_targets[current_target_idx]) > 7 else []
+                _arr_keys_cur = all_targets[current_target_idx][6] if len(all_targets[current_target_idx]) > 6 else []
                 if _cur_route_ends:
-                    _arrived = any(current_x == ax and current_y == ay for ax, ay in _cur_route_ends)
+                    _arrived_exact = any(current_x == ax and current_y == ay for ax, ay in _cur_route_ends)
+                    _arrived_near = any(abs(current_x - ax) + abs(current_y - ay) <= 1 for ax, ay in _cur_route_ends)
+                    _arrived = _arrived_exact or (bool(_arr_keys_cur) and _arrived_near)
                 else:
                     _arrived = (current_x == target_x and current_y == target_y)
                 _need_actual_jump = _wait_for_actual_jump(current_target_idx)

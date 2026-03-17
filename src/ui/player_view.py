@@ -3118,6 +3118,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._is_running = False
         self._stop_event = threading.Event()
         self._map_save_lock = threading.Lock()
+        self._segment_switch_in_progress = False
         self._runtime_reload_segment_idx = None
         self._runtime_reload_cooldown_until = 0.0
         self._bosstest_running = False
@@ -5603,11 +5604,19 @@ class GameModeDialog(ctk.CTkToplevel):
                             continue
                         elif _ui_update_ok:
                             if _protected_portal_jump:
-                                self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
-                                    self._append_log(f"🔎 보호포탈 좌표 재확인 확정: ({px},{py})→({cx},{cy})"))
+                                if not mark_portal_entry:
+                                    self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
+                                        self._append_log(f"🔎 보호포탈 좌표 재확인 확정: ({px},{py})→({cx},{cy})"))
                             else:
-                                self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, st=_suspicious_jump_streak:
-                                    self._append_log(f"🔎 좌표 점프 재확인 확정: ({px},{py})→({cx},{cy}) 반복={st}"))
+                                if not mark_portal_entry:
+                                    self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, st=_suspicious_jump_streak:
+                                        self._append_log(f"🔎 좌표 점프 재확인 확정: ({px},{py})→({cx},{cy}) 반복={st}"))
+                        logger.info(
+                            f"[전환추적] 점프확정 후 분기진입: prev=({prev_x},{prev_y}) "
+                            f"curr=({current_x},{current_y}) jump={jump} target_idx={target_idx} "
+                            f"target=({target_x},{target_y}) portal_grace={portal_grace} "
+                            f"mark_portal={mark_portal_entry} boss_pre={boss_pre_teleport}"
+                        )
                     if _is_mapping_mode and mapping_on and use_map and jump >= 5:
                         if _jump_confirm_hits is None:
                             _jump_confirm_hits, _jump_confirm_samples = _confirm_coordinate_pair(current_x, current_y, tries=3, wait_s=0.02)
@@ -5646,7 +5655,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                         self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
                                             self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
                                 try:
+                                    logger.info(
+                                        f"[전환추적] 맵핑 포탈이탈 critical save 시작: "
+                                        f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) portal_tile={_portal_tile}"
+                                    )
                                     self._auto_save_map(critical=True)
+                                    logger.info("[전환추적] 맵핑 포탈이탈 critical save 완료")
                                 except Exception as _save_e:
                                     logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
                                 self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
@@ -5704,12 +5718,20 @@ class GameModeDialog(ctk.CTkToplevel):
                     _segment_map_locked = _seg_locked_now
                     if _segment_map_locked:
                         mapping_on = False
-                _refresh_segment_completion_guard()
+                # 굴 전환 직후에는 세그먼트 완료 판정을 즉시 다시 계산할 필요가 없다.
+                # 이 구간은 좌표/포탈 동기화만 우선하고, 완료 판정은 안정화 후에만 갱신한다.
+                if not mark_portal_entry and portal_grace <= 0:
+                    _refresh_segment_completion_guard()
                 _is_mapping_mode = _is_mapping_test or _mapping_guard_active()
 
                 # 구간 전환 후 첫 좌표 → 출발지 + 벽 등록 (되돌아가기 방지)
                 # 즉시 등록하되, 좌표가 나중에 바뀌면 start_pos도 갱신됨
                 if mark_portal_entry and mapping_on and use_map:
+                    logger.info(
+                        f"[전환추적] mark_portal_entry 시작: idx={target_idx} "
+                        f"coord=({current_x},{current_y}) mapping_on={mapping_on} "
+                        f"is_mapping_test={_is_mapping_test} has_starts={bool(len(all_targets[target_idx]) > 8 and all_targets[target_idx][8])}"
+                    )
                     mark_portal_entry = False
                     self._start_registered = True
                     # 맵핑테스트 + 출발좌표 없음 = 랜덤출발 → 출발지 벽 등록 안 함
@@ -5718,21 +5740,26 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _mt_no_starts:
                         self._game_map.start_pos = None
                         self._game_map.mark_passable(current_x, current_y)
-                        self.after(0, lambda cx=current_x, cy=current_y:
-                            self._append_log(f"🚪 출발지 등록 (벽 없음, 랜덤출발): ({cx},{cy})"))
+                        logger.info(f"[전환추적] mark_portal_entry 랜덤출발 등록 완료: ({current_x},{current_y})")
                     elif (not _is_mapping_test) and (len(all_targets[target_idx]) > 8 and all_targets[target_idx][8]):
                         # 일반/부분/플레이 테스트의 start-based 세그먼트는
                         # 현재 진입 타일을 막지 않는다. entry 타일까지 blocked 처리하면
                         # prebuilt map의 첫 연결이 끊겨 A*가 이유 없이 실패할 수 있다.
+                        logger.info(
+                            f"[전환추적] mark_portal_entry start-based 동기화: idx={target_idx} "
+                            f"coord=({current_x},{current_y})"
+                        )
                         self._game_map.mark_passable(current_x, current_y)
+                        logger.info("[전환추적] mark_portal_entry start-based mark_passable 완료")
                         self._sanitize_segment_start_pos(self._game_map, target_idx)
-                        self.after(0, lambda cx=current_x, cy=current_y:
-                            self._append_log(f"🚪 출발지 동기화(경유지이동): ({cx},{cy})"))
+                        logger.info("[전환추적] mark_portal_entry start-based start_pos 정규화 완료")
                     else:
+                        logger.info(
+                            f"[전환추적] mark_portal_entry 일반등록: idx={target_idx} coord=({current_x},{current_y})"
+                        )
                         self._game_map.start_pos = _pending_start_pos
                         self._game_map.mark_blocked(current_x, current_y)
-                        self.after(0, lambda cx=current_x, cy=current_y:
-                            self._append_log(f"🚪 출발지 등록 + 벽: ({cx},{cy})"))
+                        logger.info("[전환추적] mark_portal_entry 일반등록 완료")
                     # 맵핑테스트: 전체맵핑 설정 (start_pos 해제 + 도착지/출발지 벽)
                     if full_mapping_exploring or _segment_requires_full_completion:
                         # ?? ?? ?? stale ??? ???? ??? start-based full mapping ??? ?? ????.
@@ -5779,11 +5806,16 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._append_log(f"📍 전체맵핑 시작: ({cx},{cy})"))
                     # 사용자 지정 벽좌표 등록
                     _route_walls = all_targets[target_idx][10] if len(all_targets[target_idx]) > 10 else []
+                    if _route_walls:
+                        logger.info(f"[전환추적] mark_portal_entry route_walls 등록 시작: count={len(_route_walls)}")
                     for _wx, _wy in _route_walls:
                         self._game_map.mark_blocked(_wx, _wy)
                         _portal_protected.add((_wx, _wy))
                     if _route_walls:
-                        self.after(0, lambda n=len(_route_walls): self._append_log(f"🧱 벽좌표 {n}개 등록"))
+                        logger.info("[전환추적] mark_portal_entry route_walls 등록 완료")
+                    logger.info(
+                        f"[전환추적] mark_portal_entry 종료: idx={target_idx} coord=({current_x},{current_y})"
+                    )
 
                 # 첫 반복: 시작 위치 등록 (1회만 실행)
                 if prev_x is None and mapping_on and use_map and not getattr(self, '_start_registered', False):
@@ -5917,8 +5949,13 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 도착 체크 (정확한 좌표 일치 — 포탈은 정확 좌표에서만 작동)
                 # 도착좌표가 여러 개면 어느 하나라도 밟으면 도착 처리
                 _cur_route_ends = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                _arr_keys_cur = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                 if _cur_route_ends:
-                    _arrived = any(current_x == ex and current_y == ey for ex, ey in _cur_route_ends)
+                    _arrived_exact = any(current_x == ex and current_y == ey for ex, ey in _cur_route_ends)
+                    # 탈출/키입력형 경유지는 포탈 패드 위에서 OCR이 1칸 흔들리는 경우가 있어
+                    # route_ends + arrival_keys 조합일 때만 1칸 근접 도착을 허용한다.
+                    _arrived_near = any(abs(current_x - ex) + abs(current_y - ey) <= 1 for ex, ey in _cur_route_ends)
+                    _arrived = _arrived_exact or (bool(_arr_keys_cur) and _arrived_near)
                 else:
                     _arrived = (abs(current_x - target_x) + abs(current_y - target_y) == 0)
                 if _arrived and not is_boss_dungeon and portal_grace <= 0:
@@ -5980,7 +6017,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             time.sleep(0.05)
                             continue  # target_idx 증가 건너뛰고 프런티어 탐색 시작
                     # 도착 키 입력
-                    _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                    _arr_keys = _arr_keys_cur
                     if _arr_keys and not self._stop_event.is_set():
                         self._exec_arrival_keys(_arr_keys)
                         _kn = ",".join(kd.get("key","") for kd in _arr_keys)
@@ -6006,6 +6043,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._game_map.end_pos = None
                         if not self._switch_segment_map(target_idx, skip_save=_no_save):
                             self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                            self._stop_event.wait(0.05)
+                            continue
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
                         self._map_pathfinder = pathfinder
                         target_x, target_y = _pick_target(target_idx)
@@ -6104,10 +6143,20 @@ class GameModeDialog(ctk.CTkToplevel):
                     # (복사-2 입구(6,2)→1굴(9,3) 점프거리=4 < 8 → 미감지 버그 수정)
                     if was_near_target:
                         portal_threshold = 3
+                    if jump_dist >= portal_threshold:
+                        logger.info(
+                            f"[전환추적] 포탈감지 후보: idx={target_idx} jump={jump_dist} threshold={portal_threshold} "
+                            f"was_near={was_near_target} boss={is_boss_dungeon} mapping_guard={_mapping_guard_active()} "
+                            f"local_phase={_local_explore_phase} prev=({prev_x},{prev_y}) curr=({current_x},{current_y})"
+                        )
                     # 마지막 경유지에서 포탈 감지 → 도착 처리 (싱글 테스트 포함)
                     # 전체맵핑/보스던전 탐색 중에는 포탈 감지 비활성화 (오탐 방지)
                     if jump_dist >= portal_threshold and was_near_target and not is_boss_dungeon and not (_mapping_guard_active() or _local_explore_phase) and target_idx == len(all_targets) - 1:
                         # 맵 도착지 저장 (포탈 직전 좌표)
+                        logger.info(
+                            f"[전환추적] 포탈 도착 분기 진입: idx={target_idx} jump={jump_dist} "
+                            f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) final=True"
+                        )
                         if use_map and not _no_save:
                             if self._should_persist_segment_end(target_idx):
                                 self._game_map.end_pos = (prev_x, prev_y)
@@ -6116,6 +6165,10 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 도착 키 입력
                         _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                         if _arr_keys and not self._stop_event.is_set():
+                            logger.info(
+                                f"[전환추적] 포탈 도착 도착키 호출: idx={target_idx} "
+                                f"keys={[kd.get('key', '') for kd in _arr_keys]}"
+                            )
                             self._exec_arrival_keys(_arr_keys)
                             _kn = ",".join(kd.get("key","") for kd in _arr_keys)
                             self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
@@ -6125,8 +6178,16 @@ class GameModeDialog(ctk.CTkToplevel):
                         return
                     elif jump_dist >= portal_threshold and was_near_target and not is_boss_dungeon and not (_mapping_guard_active() or _local_explore_phase) and target_idx < len(all_targets) - 1:
                         # 도착 키 입력
+                        logger.info(
+                            f"[전환추적] 포탈 구간전환 분기 진입: idx={target_idx}->{target_idx + 1} jump={jump_dist} "
+                            f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) target=({target_x},{target_y})"
+                        )
                         _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                         if _arr_keys and not self._stop_event.is_set():
+                            logger.info(
+                                f"[전환추적] 포탈 전환 도착키 호출: idx={target_idx} "
+                                f"keys={[kd.get('key', '') for kd in _arr_keys]}"
+                            )
                             self._exec_arrival_keys(_arr_keys)
                             _kn = ",".join(kd.get("key","") for kd in _arr_keys)
                             self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
@@ -6143,8 +6204,20 @@ class GameModeDialog(ctk.CTkToplevel):
                         next_segment = target_idx + 1
                         self._boss_segment_active = False
                         # 맵핑테스트: (0,0) 경유지도 맵 데이터 저장 (유실 방지)
+                        logger.info(
+                            f"[전환추적] 포탈 전환 맵교체 호출: current_idx={target_idx} next_idx={next_segment} "
+                            f"skip_save={(_cur_is_boss_p and not _is_mapping_test) or _no_save}"
+                        )
                         if not self._switch_segment_map(next_segment, skip_save=(_cur_is_boss_p and not _is_mapping_test) or _no_save):
+                            logger.warning(
+                                f"[전환추적] 포탈 전환 맵교체 실패: current_idx={target_idx} next_idx={next_segment}"
+                            )
                             self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                            self._stop_event.wait(0.05)
+                            continue
+                        logger.info(
+                            f"[전환추적] 포탈 전환 맵교체 완료: next_idx={next_segment}"
+                        )
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
                         self._map_pathfinder = pathfinder
                         target_idx += 1
@@ -6227,25 +6300,10 @@ class GameModeDialog(ctk.CTkToplevel):
                             mark_portal_entry = True
                         if _segment_map_locked:
                             mapping_on = False
-                        # 던전 로딩 대기 후 좌표 재측정
-                        self._stop_event.wait(2.0)
-                        start_x, start_y = matcher.read_both_coordinates(
-                            self._config.coord_x_region,
-                            self._config.coord_y_region,
-                            stop_event=self._stop_event
-                        )
-                        if start_x is not None:
-                            current_x, current_y = int(start_x), int(start_y)
-                        # 도착 좌표는 다음 루프의 공용 출발지 등록 분기에서 한 번만 처리한다.
-                        # 여기서 미리 등록하면 mark_portal_entry와 중복되어 보호/벽 상태가 꼬일 수 있다.
-                        if start_x is not None and mapping_on and use_map:
-                            _pending_start_pos = (current_x, current_y)
-                        elif (start_x is not None and use_map and (not _is_mapping_test) and
-                              len(all_targets[target_idx]) > 8 and all_targets[target_idx][8]):
-                            # start-based 잠금맵/일반 플레이는 포탈 진입 직후 현재 좌표를
-                            # 막지 않고, 설정된 route_start만 start_pos로 유지한다.
-                            self._game_map.mark_passable(current_x, current_y)
-                            self._sanitize_segment_start_pos(self._game_map, target_idx)
+                        # 전환 직후 동기 OCR 재측정은 화면 전환 중 ImageGrab 지연과 겹쳐
+                        # 프로그램이 멎는 직접 원인이 된다.
+                        # 좌표/출발지 동기화는 다음 루프의 mark_portal_entry + 굴 전환 안정화 분기에서만 처리한다.
+                        _pending_start_pos = None
                         # 보스 던전: 출구/입구 포탈 벽 등록 + 보호 (A* 경유 방지)
                         if _next_is_boss:
                             _jp_starts = all_targets[target_idx][8] if len(all_targets[target_idx]) > 8 else []
@@ -7653,6 +7711,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 _skip_save3 = (_prev_boss3 and not _is_mapping_test) or _no_save
                                                 if not self._switch_segment_map(target_idx, skip_save=_skip_save3):
                                                     self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                                    self._stop_event.wait(0.05)
+                                                    continue
                                                 pathfinder = SimplePathfinder(self._game_map)
                                                 self._map_pathfinder = pathfinder
                                                 target_x, target_y = _pick_target(target_idx)
@@ -7764,6 +7824,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _skip_save3b = (_prev_boss3 and not _is_mapping_test) or _no_save
                                         if not self._switch_segment_map(target_idx, skip_save=_skip_save3b):
                                             self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                            self._stop_event.wait(0.05)
+                                            continue
                                         pathfinder = SimplePathfinder(self._game_map)
                                         self._map_pathfinder = pathfinder
                                         target_x, target_y = _pick_target(target_idx)
@@ -8010,6 +8072,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss and not _is_mapping_test) or _no_save):
                                 self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                                 _arm_boss_transition_cooldown(3.0)
+                                self._stop_event.wait(0.05)
+                                continue
                             pathfinder = SimplePathfinder(self._game_map)
                             self._map_pathfinder = pathfinder
                             target_x, target_y = _pick_target(target_idx)
@@ -8277,6 +8341,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss2 and not _is_mapping_test) or _no_save):
                                 self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                                 _arm_boss_transition_cooldown(3.0)
+                                self._stop_event.wait(0.05)
+                                continue
                             pathfinder = SimplePathfinder(self._game_map)
                             self._map_pathfinder = pathfinder
                             target_x, target_y = _pick_target(target_idx)
@@ -8650,6 +8716,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                             if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss and not _is_mapping_test) or _no_save):
                                                 self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                                                 _arm_boss_transition_cooldown(3.0)
+                                                self._stop_event.wait(0.05)
+                                                continue
                                             pathfinder = SimplePathfinder(self._game_map)
                                             self._map_pathfinder = pathfinder
                                             target_x, target_y = _pick_target(target_idx)
@@ -10303,10 +10371,14 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _auto_save_map(self, segment_idx: int = None, game_map_ref=None, critical: bool = False) -> str:
         """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장, 롤링 백업 포함)"""
+        _trace_t0 = time.time()
         if segment_idx is None:
             segment_idx = getattr(self, '_current_segment_idx', 0)
         if game_map_ref is None:
             game_map_ref = self._game_map
+        if getattr(self, "_segment_switch_in_progress", False) and not critical:
+            logger.info("[맵핑] 전환 중 일반 맵 저장 건너뜀")
+            return ""
         self._sanitize_segment_end_pos(game_map_ref, segment_idx)
         # 보스 경유지 중에는 맵 저장 차단 (오염 방지)
         if getattr(self, '_boss_segment_active', False):
@@ -10345,6 +10417,10 @@ class GameModeDialog(ctk.CTkToplevel):
         try:
             seg_name = self._get_segment_display_name(segment_idx)
             map_path = self._get_segment_map_name(segment_idx)
+            if critical:
+                logger.info(
+                    f"[전환추적] critical 맵 저장 시작: seg='{seg_name}' idx={segment_idx} path={map_path}"
+                )
             from pathlib import Path
             Path(map_path).parent.mkdir(parents=True, exist_ok=True)
             # 롤링 백업: 기존 파일 → .bak1 → .bak2 → .bak3 (최대 3개 유지)
@@ -10370,6 +10446,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 if not self._verify_saved_map_file(map_path, expected_passable=_p_count):
                     raise RuntimeError(f"맵 저장 검증 실패: {map_path}")
             logger.info(f"[맵핑] '{seg_name}' 맵 저장: {map_path}")
+            if critical:
+                logger.info(
+                    f"[전환추적] critical 맵 저장 완료: seg='{seg_name}' idx={segment_idx} "
+                    f"dt={time.time() - _trace_t0:.3f}s path={map_path}"
+                )
             try:
                 self.after(0, lambda sn=seg_name, pc=_p_count, mp=map_path:
                     self._append_log(f"💾 맵 저장: '{sn}' ({pc}타일) → {mp}"))
@@ -10441,17 +10522,19 @@ class GameModeDialog(ctk.CTkToplevel):
         if self._stop_event.is_set():
             return False
 
-        # 맵 전환은 save lock 안에서 수행 (백그라운드 auto-save와 경합 방지)
-        acquired = self._map_save_lock.acquire(timeout=1.0)
-        if not acquired:
-            logger.error("[맵핑] 맵 전환 락 획득 실패 (1초 타임아웃)")
-            return False
+        _trace_t0 = time.time()
+        self._segment_switch_in_progress = True
+        logger.info(
+            f"[전환추적] 구간전환 시작: current_idx={getattr(self, '_current_segment_idx', 0)} "
+            f"new_idx={new_segment_idx} skip_save={skip_save}"
+        )
+        # 굴 전환 시 현재 구간 저장을 동기적으로 수행하면
+        # os.fsync/os.replace 구간에서 전환 스레드가 멎을 수 있다.
+        # 전환은 즉시 진행하고, 현재 구간 저장은 이전 GameMap 객체를 분리해 백그라운드로 넘긴다.
+        acquired = False
         try:
             # 현재 맵 저장 (skip_save=True면 건너뜀 — 보스 경유지 등 오염 방지)
             # 맵 잠금 구간도 저장 건너뜀
-            # 전환 경로에서는 GameMap.save()의 atomic save만 사용한다.
-            # 여기서 롤링 백업/재검증까지 동기적으로 수행하면 굴 전환 때
-            # 눈에 띄는 프리징이 발생할 수 있다.
             _current_seg_idx = getattr(self, '_current_segment_idx', 0)
             if (not skip_save and
                 not self._is_segment_map_locked(_current_seg_idx)):
@@ -10460,15 +10543,25 @@ class GameModeDialog(ctk.CTkToplevel):
                     map_path = self._get_segment_map_name(segment_idx)
                     from pathlib import Path
                     Path(map_path).parent.mkdir(parents=True, exist_ok=True)
-                    self._sanitize_segment_end_pos(self._game_map, segment_idx)
-                    self._game_map.save(map_path)
-                    time.sleep(0)  # GIL 해제 (맵 저장 후)
-                    logger.info(f"[맵핑] '{self._get_segment_display_name(segment_idx)}' 맵 저장: {map_path}")
+                    _old_map_ref = self._game_map
+                    _old_seg_name = self._get_segment_display_name(segment_idx)
+                    self._sanitize_segment_end_pos(_old_map_ref, segment_idx)
+                    def _save_old_segment_async(_map=_old_map_ref, _path=map_path, _name=_old_seg_name):
+                        try:
+                            _map.save(_path)
+                            logger.info(f"[맵핑] '{_name}' 맵 저장: {_path}")
+                        except Exception as _save_e:
+                            logger.error(f"[맵핑] 현재 맵 저장 실패: {_save_e}")
+                    threading.Thread(target=_save_old_segment_async, daemon=True).start()
+                    logger.info(
+                        f"[전환추적] 구간전환 이전맵 저장 분리: idx={segment_idx} seg='{_old_seg_name}' path={map_path}"
+                    )
                 except Exception as e:
                     logger.error(f"[맵핑] 현재 맵 저장 실패: {e}")
-                    return False
+                    logger.warning("[맵핑] 현재 구간 저장 실패 → 저장만 건너뛰고 전환 계속")
             else:
-                logger.info(f"[맵핑] 보스 경유지 → 맵 저장 건너뜀 (오염 방지)")
+                if skip_save or self._is_segment_map_locked(_current_seg_idx):
+                    logger.info(f"[맵핑] 보스 경유지 → 맵 저장 건너뜀 (오염 방지)")
 
             # 새 구간으로 전환
             old_name = self._get_segment_display_name(getattr(self, '_current_segment_idx', 0))
@@ -10485,6 +10578,9 @@ class GameModeDialog(ctk.CTkToplevel):
             # 새 구간 맵 로드 (lock 안에서 수행 — auto_save가 빈 맵을 덮어쓰는 경합 방지)
             map_path = self._get_segment_map_name(new_segment_idx)
             if os.path.exists(map_path):
+                logger.info(
+                    f"[전환추적] 구간전환 맵 로드 시작: new_idx={new_segment_idx} seg='{new_name}' path={map_path}"
+                )
                 self._game_map.load(map_path)
                 time.sleep(0)  # GIL 해제 (맵 로드 후)
                 _loaded_start_before = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
@@ -10506,13 +10602,29 @@ class GameModeDialog(ctk.CTkToplevel):
                     logger.warning(f"[맵핑] '{new_name}' 끊긴 연결 자동복구 저장 보류")
                 stats = self._game_map.get_statistics()
                 logger.info(f"[맵핑] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
+                logger.info(
+                    f"[전환추적] 구간전환 맵 로드 완료: old='{old_name}' new='{new_name}' "
+                    f"tiles={stats['total_tiles']} dt={time.time() - _trace_t0:.3f}s"
+                )
             elif self._uses_transient_local_map(new_segment_idx):
                 logger.info(f"[맵핑] '{old_name}'→'{new_name}' 전환, 로컬 경유지 런타임 새 맵 사용")
+                logger.info(
+                    f"[전환추적] 구간전환 런타임 새 맵: old='{old_name}' new='{new_name}' "
+                    f"dt={time.time() - _trace_t0:.3f}s"
+                )
             else:
                 logger.info(f"[맵핑] '{old_name}'→'{new_name}' 전환, 새 맵 생성")
+                logger.info(
+                    f"[전환추적] 구간전환 새 맵 생성: old='{old_name}' new='{new_name}' "
+                    f"dt={time.time() - _trace_t0:.3f}s"
+                )
             return True
         finally:
-            self._map_save_lock.release()
+            logger.info(
+                f"[전환추적] 구간전환 종료: current_idx={getattr(self, '_current_segment_idx', 0)} "
+                f"dt={time.time() - _trace_t0:.3f}s"
+            )
+            self._segment_switch_in_progress = False
 
     def _reload_current_segment_map_runtime(self, segment_idx: int) -> bool:
         """현재 세그먼트 맵을 디스크 기준으로 깨끗하게 다시 읽어 메모리 오염을 제거한다.
@@ -13099,12 +13211,17 @@ class GameModeDialog(ctk.CTkToplevel):
         """도착 키 리스트 실행 (반복, 대기시간, 랜덤 지원)"""
         import pyautogui
         import random as _rnd
+        _trace_keys = ",".join(kd.get("key", "") for kd in (keys_list or []) if kd.get("key"))
+        _trace_t0 = time.time()
+        logger.info(f"[전환추적] 도착키 실행 시작: keys=[{_trace_keys}] count={len(keys_list or [])}")
         # 키 입력 전 0.5초 대기 (도착 직후 안정화)
         self._stop_event.wait(0.5)
         if self._stop_event.is_set():
+            logger.info("[전환추적] 도착키 실행 중지됨: stop_event during pre-wait")
             return
         for kd in keys_list:
             if self._stop_event.is_set():
+                logger.info("[전환추적] 도착키 실행 중단: stop_event during key loop")
                 break
             key_name = kd.get("key", "")
             if not key_name:
@@ -13116,8 +13233,13 @@ class GameModeDialog(ctk.CTkToplevel):
             repeat_delay = kd.get("repeat_delay", 0.5)
             repeat_delay_random = kd.get("repeat_delay_random", False)
             repeat_delay_random_range = kd.get("repeat_delay_random_range", 0.3)
+            logger.info(
+                f"[전환추적] 도착키 키 시작: key={key_name} repeat={repeat_count} "
+                f"wait_after={wait_after} repeat_delay={repeat_delay}"
+            )
             for rep in range(repeat_count):
                 if self._stop_event.is_set():
+                    logger.info(f"[전환추적] 도착키 키 중단: key={key_name} rep={rep+1}/{repeat_count}")
                     break
                 try:
                     # keyDown + hold + keyUp (게임이 즉시 press를 씹는 경우 방지)
@@ -13125,6 +13247,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     time.sleep(0.05)
                     pyautogui.keyUp(key_name)
                     self._key_press_count += 1
+                    logger.info(f"[전환추적] 도착키 입력 완료: key={key_name} rep={rep+1}/{repeat_count}")
                 except Exception as _ke:
                     logger.error(f"[도착키] '{key_name}' 입력 오류: {_ke}")
                 # 반복 사이 대기
@@ -13142,6 +13265,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 w = max(0, w)
             if w > 0:
                 self._stop_event.wait(w)
+            logger.info(f"[전환추적] 도착키 키 종료: key={key_name}")
+        logger.info(f"[전환추적] 도착키 실행 종료: dt={time.time() - _trace_t0:.3f}s keys=[{_trace_keys}]")
 
     def _edit_arrival_key(self, index: int):
         """도착 키 설정 팝업 — 액션 추가 키입력과 동일한 옵션"""
