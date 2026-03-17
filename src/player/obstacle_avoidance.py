@@ -6,6 +6,7 @@ WinCro 8방향 지능형 장애물 회피 모듈
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from collections import deque
@@ -152,6 +153,8 @@ class BFSPathfinder:
 
         while queue:
             iterations += 1
+            if iterations % 200 == 0:
+                time.sleep(0)  # GIL 해제
             if iterations > max_iterations:
                 logger.warning(f"[BFS] 최대 반복 초과 ({max_iterations}): {start} → {goal}")
                 return None
@@ -1184,8 +1187,8 @@ class ObstacleAvoidanceController:
             # 우회 중에도 막힘 - 우회 실패
             logger.warning(f"[회피] 우회 '{self.detour_direction}'도 막힘!")
             self.direction_memory.add_blocked(
-                self.detour_start_pos[0] if self.detour_start_pos else current_x,
-                self.detour_start_pos[1] if self.detour_start_pos else current_y,
+                self.detour_start_pos[0] if self.detour_start_pos is not None else current_x,
+                self.detour_start_pos[1] if self.detour_start_pos is not None else current_y,
                 self.detour_direction
             )
             self._complete_detour(current_x, current_y, success=False)
@@ -1206,6 +1209,7 @@ class ObstacleAvoidanceController:
             self.detour_consecutive_failures += 1
 
         self.detour_mode = False
+        self.pathfind_mode = False
         self.detour_direction = None
         self.detour_steps_remaining = 0
         self.detour_start_pos = None

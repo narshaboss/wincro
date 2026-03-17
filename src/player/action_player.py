@@ -598,6 +598,7 @@ class ActionPlayer:
             except cv2.error as e:
                 logger.error(f"템플릿 매칭 오류: {e}")
                 return []
+            time.sleep(0)  # GIL 해제
 
             # 최고 매칭 점수 확인 (디버그용)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)

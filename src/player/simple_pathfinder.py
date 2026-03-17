@@ -62,6 +62,7 @@ class SimplePathfinder:
         self._current_path: Optional[PathResult] = None
         self._path_index: int = 0
         self._goal: Optional[Tuple[int, int]] = None
+        self._path_options: Optional[Tuple[bool, bool]] = None
 
     def _heuristic(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
         """맨해튼 거리 휴리스틱"""
@@ -71,7 +72,10 @@ class SimplePathfinder:
                   allow_unknown: bool = False, stop_event=None,
                   max_iterations: int = 0,
                   allow_soft_blocked: bool = True,
-                  unknown_cost: int = 1) -> PathResult:
+                  unknown_cost: int = 1,
+                  respect_blocked_edges: bool = False,
+                  allow_avoid_goal: bool = True,
+                  avoid_set: set = None) -> PathResult:
         """
         A* 알고리즘으로 경로 탐색 (came_from 역추적 방식)
 
@@ -148,22 +152,26 @@ class SimplePathfinder:
             # 인접 타일 탐색
             neighbors = self.game_map.get_walkable_neighbors(
                 current[0], current[1], allow_unknown=allow_unknown,
-                allow_soft_blocked=allow_soft_blocked
+                allow_soft_blocked=allow_soft_blocked,
+                respect_blocked_edges=respect_blocked_edges,
             )
 
-            # 목표가 인접하면 벽이어도 마지막 단계로 도달 허용
-            # (전체맵핑에서 포탈 벽 등록된 경우 → 일반 모드에서 도달 가능해야 함)
+            # 목표가 인접하면 soft_blocked/unknown이어도 마지막 단계로 도달 허용
+            # (단, 영구벽 is_blocked는 제외)
             if abs(current[0] - goal[0]) + abs(current[1] - goal[1]) == 1:
-                if not any(nx == goal[0] and ny == goal[1] for nx, ny, _ in neighbors):
-                    for d_name, (dx, dy) in DIRECTIONS_4.items():
-                        if current[0] + dx == goal[0] and current[1] + dy == goal[1]:
-                            neighbors.append((goal[0], goal[1], d_name))
-                            break
+                if not self.game_map.is_blocked(goal[0], goal[1]):
+                    if not any(nx == goal[0] and ny == goal[1] for nx, ny, _ in neighbors):
+                        for d_name, (dx, dy) in DIRECTIONS_4.items():
+                            if current[0] + dx == goal[0] and current[1] + dy == goal[1]:
+                                neighbors.append((goal[0], goal[1], d_name))
+                                break
 
             for nx, ny, direction in neighbors:
+                next_pos = (nx, ny)
+                if avoid_set and next_pos in avoid_set and (not allow_avoid_goal or next_pos != goal):
+                    continue  # 회피 대상 건너뜀 (목표 자체는 허용)
                 move_cost = self.game_map.get_soft_blocked_cost(nx, ny, unknown_cost=unknown_cost)
                 new_cost = g_cost + move_cost
-                next_pos = (nx, ny)
 
                 # 더 좋은 경로일 때만 갱신
                 if new_cost < best_g.get(next_pos, float('inf')):
@@ -192,16 +200,19 @@ class SimplePathfinder:
             self._goal = goal
             self._current_path = None
             self._path_index = 0
+            self._path_options = None
 
     def invalidate_path(self):
         """경로 무효화 (벽 발견 시 재계산 유도)"""
         self._current_path = None
         self._path_index = 0
+        self._path_options = None
 
     def get_next_direction(self, current: Tuple[int, int],
                            allow_unknown: bool = False,
                            stop_event=None,
-                           max_iterations: int = 5000) -> Optional[str]:
+                           max_iterations: int = 5000,
+                           respect_blocked_edges: bool = False) -> Optional[str]:
         """
         현재 위치에서 다음 이동 방향 반환
 
@@ -226,10 +237,13 @@ class SimplePathfinder:
 
         # 경로 재계산 필요 여부 확인
         need_recalculate = False
+        desired_options = (bool(allow_unknown), bool(respect_blocked_edges))
 
         if self._current_path is None:
             need_recalculate = True
         elif not self._current_path.found:
+            need_recalculate = True
+        elif self._path_options != desired_options:
             need_recalculate = True
         elif self._path_index >= len(self._current_path.path):
             need_recalculate = True
@@ -263,8 +277,10 @@ class SimplePathfinder:
         if need_recalculate:
             self._current_path = self.find_path(
                 current, self._goal, allow_unknown,
-                stop_event=stop_event, max_iterations=max_iterations)
+                stop_event=stop_event, max_iterations=max_iterations,
+                respect_blocked_edges=respect_blocked_edges)
             self._path_index = 0
+            self._path_options = desired_options
 
             if not self._current_path.found:
                 logger.warning(f"[Pathfinder] 경로 없음: {current} -> {self._goal}")
@@ -279,7 +295,8 @@ class SimplePathfinder:
         self._path_index += 1
 
     def recalculate_path(self, current: Tuple[int, int], goal: Tuple[int, int],
-                         allow_unknown: bool = False) -> PathResult:
+                         allow_unknown: bool = False,
+                         respect_blocked_edges: bool = False) -> PathResult:
         """
         경로 재계산
 
@@ -294,8 +311,11 @@ class SimplePathfinder:
             PathResult 객체
         """
         self._goal = goal
-        self._current_path = self.find_path(current, goal, allow_unknown, max_iterations=20000)
+        self._current_path = self.find_path(
+            current, goal, allow_unknown, max_iterations=20000,
+            respect_blocked_edges=respect_blocked_edges)
         self._path_index = 0
+        self._path_options = (bool(allow_unknown), bool(respect_blocked_edges))
 
         if self._current_path.found:
             logger.info(f"[Pathfinder] 경로 재계산: {len(self._current_path.path)}칸")
@@ -333,6 +353,7 @@ class SimplePathfinder:
         self._current_path = None
         self._path_index = 0
         self._goal = None
+        self._path_options = None
 
     def get_state_info(self) -> dict:
         """상태 정보 반환"""

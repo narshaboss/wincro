@@ -84,10 +84,8 @@ class EnhancedMatcher:
         self._orb = None
         self._bf_matcher = None
 
-        # 화면 전처리 캐시 (동일 화면 반복 호출 방지)
-        self._screen_cache_shape = None
-        self._screen_cache_mean = None
-        self._screen_cache_result = None
+        # 화면 전처리 캐시 (동일 화면 반복 호출 방지, 튜플로 원자적 갱신)
+        self._screen_cache = None  # (shape, mean, result) 또는 None
 
     def _get_orb(self):
         """ORB 검출기 지연 로딩"""
@@ -173,14 +171,13 @@ class EnhancedMatcher:
 
     def _preprocess_screen(self, screen: np.ndarray) -> Dict[str, np.ndarray]:
         """화면 이미지 전처리 (동일 화면이면 캐시 반환)"""
-        # 빠른 근사 비교: shape + mean
+        # 빠른 근사 비교: shape + sampled hash
         cur_shape = screen.shape
-        cur_mean = float(np.mean(screen))
+        cur_mean = hash(screen[::50, ::50].tobytes())
 
-        if (self._screen_cache_result is not None
-                and self._screen_cache_shape == cur_shape
-                and self._screen_cache_mean == cur_mean):
-            return self._screen_cache_result
+        cache = self._screen_cache  # 원자적 읽기
+        if cache is not None and cache[0] == cur_shape and cache[1] == cur_mean:
+            return cache[2]
 
         result = {'original': screen}
 
@@ -193,10 +190,8 @@ class EnhancedMatcher:
         result['edges'] = cv2.Canny(result['gray'], 50, 150)
         result['gray_blur'] = cv2.GaussianBlur(result['gray'], (3, 3), 0)
 
-        # 캐시 갱신
-        self._screen_cache_shape = cur_shape
-        self._screen_cache_mean = cur_mean
-        self._screen_cache_result = result
+        # 캐시 갱신 (튜플로 원자적 쓰기)
+        self._screen_cache = (cur_shape, cur_mean, result)
 
         return result
 
@@ -695,9 +690,7 @@ class EnhancedMatcher:
         with self._cache_lock:
             self._cache.clear()
             self._last_positions.clear()
-        self._screen_cache_shape = None
-        self._screen_cache_mean = None
-        self._screen_cache_result = None
+        self._screen_cache = None  # 원자적 초기화
         logger.debug("강화 매처 캐시 초기화")
 
     def invalidate_template(self, template_path: str):

@@ -8,6 +8,7 @@ import customtkinter as ctk
 import tkinter as tk
 import logging
 import os
+import threading
 from datetime import datetime
 from typing import Optional, Callable, Dict
 from collections import deque
@@ -521,6 +522,11 @@ class MainWindow(ctk.CTk):
         self._sequence_plans = []  # 시퀀스 플랜 경로 리스트
         self._sequence_repeats = []  # 시퀀스 플랜별 반복횟수
         self._sequence_index = 0  # 현재 시퀀스 인덱스
+        self._mini_active_plan = None
+        self._mini_remaining_rules = []
+        self._mini_gm_dialog = None
+        self._mini_gm_after_id = None
+        self._mini_stop_requested = False
 
         # UI 먼저 생성 (빠르게)
         self._create_mini_player_ui()
@@ -1322,48 +1328,189 @@ class MainWindow(ctk.CTk):
         self._mini_play_btn.configure(state="normal")
 
     def _mini_start_execution(self, selected_plan, repeat_count: int):
-        """플랜 로드 완료 후 실행 시작 (메인 스레드에서 호출)"""
+        """Mini player start entrypoint."""
         try:
-            logger.info(f"[미니플레이어] RuleExecutor 생성, 반복: {repeat_count}회")
-            self._rule_executor = RuleExecutor()
-            self._rule_executor.set_callbacks(
-                on_progress=self._mini_on_progress,
-                on_complete=self._mini_on_repeat_complete,
-            )
-
+            logger.info(f"[mini-player] start, repeat={repeat_count}")
+            self._mini_active_plan = selected_plan
+            self._mini_remaining_rules = []
+            self._mini_stop_requested = False
+            self._mini_total_repeat = max(1, repeat_count)
+            self._mini_current_repeat = 0
             self._is_running = True
             self._mini_pause_btn.configure(state="normal")
             self._mini_stop_btn.configure(state="normal")
-            self._mini_status.configure(text=f"▶ 실행 중... (1/{repeat_count}회)")
-
-            # 비동기 실행
-            import threading
-            thread = threading.Thread(
-                target=self._mini_execute_plan,
-                args=(selected_plan,),
-                daemon=True
-            )
-            thread.start()
-            logger.info(f"[미니플레이어] 실행 스레드 시작")
+            self._mini_status.configure(text=f"running... (1/{self._mini_total_repeat})")
+            self._mini_execute_plan(selected_plan)
         except Exception as e:
-            logger.error(f"[미니플레이어] 실행 오류: {e}")
-            self._mini_status.configure(text=f"✗ 오류: {e}")
+            logger.error(f"[mini-player] start error: {e}")
+            self._mini_status.configure(text=f"error: {e}")
             self._is_running = False
             self._mini_play_btn.configure(state="normal")
-            self._mini_pause_btn.configure(state="disabled", text="⏸ 일시중지")
+            self._mini_pause_btn.configure(state="disabled", text="pause")
             self._mini_stop_btn.configure(state="disabled")
 
     def _mini_execute_plan(self, plan):
-        """미니 플레이어 - 플랜 실행 (스레드)"""
+        """Run one plan using the same game_mode chain as editor/test mode."""
         try:
-            self._rule_executor.execute_plan(plan)
+            self._mini_active_plan = plan
+            self._mini_remaining_rules = []
+            has_game_mode = any(
+                rule.action_type == "game_mode" and plan.game_modes.get(rule.rule_id)
+                for rule in plan.initial_rules
+            )
+
+            if has_game_mode:
+                logger.info("[mini-player] game_mode detected -> GameModeDialog chain")
+                self._mini_play_plan_rules(plan.initial_rules)
+                return
+
+            run_plan = AutomationPlan(
+                name=plan.name,
+                description=plan.description,
+                initial_rules=plan.initial_rules,
+                monitoring_rules=plan.monitoring_rules,
+            )
+            run_plan.game_modes = plan.game_modes
+            run_plan.total_repeat_count = 1
+            if hasattr(plan, '_source_file'):
+                run_plan._source_file = getattr(plan, '_source_file')
+            self._mini_run_plan_via_executor(run_plan, chain_remaining=None)
         except Exception as e:
-            logger.error(f"[미니플레이어] 플랜 실행 오류: {e}")
+            logger.error(f"[mini-player] execute error: {e}")
             try:
                 self.after(0, lambda: self._mini_on_complete(False, str(e)))
             except (tk.TclError, RuntimeError):
                 pass
 
+    def _mini_play_plan_rules(self, rules_to_run):
+        active_plan = self._mini_active_plan
+        if active_plan is None:
+            self._mini_on_complete(False, "no active plan")
+            return
+
+        if not rules_to_run:
+            self._mini_on_repeat_complete(True, "")
+            return
+
+        first_gm_idx = None
+        for i, rule in enumerate(rules_to_run):
+            if rule.action_type == "game_mode" and active_plan.game_modes.get(rule.rule_id):
+                first_gm_idx = i
+                break
+
+        if first_gm_idx is None:
+            self._mini_run_rules_via_executor(rules_to_run, chain_remaining=None)
+            return
+
+        if first_gm_idx == 0:
+            gm_rule = rules_to_run[0]
+            self._mini_remaining_rules = list(rules_to_run[1:])
+            logger.info(f"[mini-player] run game_mode first ({len(self._mini_remaining_rules)} remaining)")
+            self._mini_run_game_mode(gm_rule.rule_id)
+            return
+
+        before_gm = list(rules_to_run[:first_gm_idx])
+        gm_and_after = list(rules_to_run[first_gm_idx:])
+        logger.info(f"[mini-player] run {len(before_gm)} rules before game_mode")
+        self._mini_run_rules_via_executor(before_gm, chain_remaining=gm_and_after)
+
+    def _mini_run_game_mode(self, config_rule_id):
+        active_plan = self._mini_active_plan
+        if active_plan is None:
+            self._mini_on_complete(False, "no active plan")
+            return
+        if config_rule_id not in active_plan.game_modes:
+            self._mini_on_game_mode_complete(False, "missing game mode")
+            return
+
+        from .player_view import GameModeDialog
+
+        self._mini_gm_dialog = GameModeDialog(
+            self,
+            active_plan,
+            lambda: None,
+            lambda: None,
+            config_rule_id=config_rule_id,
+            auto_run=True,
+        )
+        self._mini_gm_dialog._suppress_completion_notification = True
+        self._mini_gm_dialog.withdraw()
+        self._rule_executor = None
+
+        def _check_gm_done():
+            gm = getattr(self, '_mini_gm_dialog', None)
+            if gm is None:
+                return
+            try:
+                if not gm.winfo_exists():
+                    self._mini_gm_dialog = None
+                    self._mini_on_game_mode_complete(False, "dialog closed")
+                    return
+                if not gm._is_running:
+                    completed_ok = getattr(gm, '_completed_normally', False)
+                    gm.destroy()
+                    self._mini_gm_dialog = None
+                    self._mini_on_game_mode_complete(completed_ok)
+                    return
+                self._mini_gm_after_id = self.after(500, _check_gm_done)
+            except Exception:
+                self._mini_gm_dialog = None
+                self._mini_on_game_mode_complete(False, "dialog error")
+
+        self._mini_gm_after_id = self.after(500, _check_gm_done)
+
+    def _mini_on_game_mode_complete(self, success: bool, error_msg: str = None):
+        if getattr(self, '_mini_stop_requested', False):
+            self._mini_on_complete(False, error_msg or "stopped")
+            return
+        remaining = list(getattr(self, '_mini_remaining_rules', []) or [])
+        self._mini_remaining_rules = []
+        if success and remaining:
+            logger.info(f"[mini-player] game_mode complete -> continue {len(remaining)} rules")
+            self._mini_play_plan_rules(remaining)
+            return
+        self._mini_on_repeat_complete(success, error_msg or "")
+
+    def _mini_run_rules_via_executor(self, rules_to_run, chain_remaining=None):
+        active_plan = self._mini_active_plan
+        if active_plan is None:
+            self._mini_on_complete(False, "no active plan")
+            return
+
+        partial_plan = AutomationPlan(
+            name=f"{active_plan.name} (partial)",
+            description=f"partial {len(rules_to_run)} rules",
+            initial_rules=list(rules_to_run),
+            monitoring_rules=[],
+        )
+        partial_plan.game_modes = active_plan.game_modes
+        partial_plan.total_repeat_count = 1
+        self._mini_run_plan_via_executor(partial_plan, chain_remaining=chain_remaining)
+
+    def _mini_run_plan_via_executor(self, plan_to_run, chain_remaining=None):
+        self._rule_executor = RuleExecutor()
+
+        def on_complete(success: bool, message: str):
+            try:
+                if not self.winfo_exists():
+                    return
+                if getattr(self, '_mini_stop_requested', False):
+                    self._rule_executor = None
+                    self.after(0, lambda: self._mini_on_complete(False, "stopped"))
+                    return
+                if success and chain_remaining:
+                    self._rule_executor = None
+                    self.after(0, lambda: self._mini_play_plan_rules(chain_remaining))
+                else:
+                    self.after(0, lambda s=success, m=message: self._mini_on_repeat_complete(s, m))
+            except (tk.TclError, RuntimeError):
+                pass
+
+        self._rule_executor.set_callbacks(
+            on_progress=self._mini_on_progress,
+            on_complete=on_complete,
+        )
+        self._rule_executor.execute_plan_async(plan_to_run)
     def auto_run_sequence(self, plan_paths: list, repeats: list = None) -> bool:
         """시작 시 자동 실행 - 플랜 순서 모드 (플레이 모드 전용)"""
         logger.info(f"[자동실행-시퀀스] 플랜 순서 자동 실행 시작: {len(plan_paths)}개 플랜")
@@ -1391,32 +1538,58 @@ class MainWindow(ctk.CTk):
         return True
 
     def _mini_on_pause(self):
-        """미니 플레이어 - 일시중지/재개"""
+        """Mini player pause/resume."""
+        if getattr(self, '_mini_gm_dialog', None):
+            self._mini_status.configure(text="pause not available during game_mode")
+            return
         if not self._rule_executor:
             return
 
         if self._is_paused:
             self._rule_executor.resume()
             self._is_paused = False
-            self._mini_status.configure(text="▶ 실행 중...")
-            self._mini_pause_btn.configure(text="⏸ 일시중지")
+            self._mini_status.configure(text="running...")
+            self._mini_pause_btn.configure(text="pause")
         else:
             self._rule_executor.pause()
             self._is_paused = True
-            self._mini_status.configure(text="⏸ 일시중지됨")
-            self._mini_pause_btn.configure(text="▶ 재개")
+            self._mini_status.configure(text="paused")
+            self._mini_pause_btn.configure(text="resume")
 
     def _mini_on_stop(self):
-        """미니 플레이어 - 중지"""
+        """Mini player stop."""
+        if getattr(self, '_mini_stop_requested', False):
+            return
+        self._mini_stop_requested = True
+
         if self._rule_executor:
             self._rule_executor.stop()
+
+        gm = getattr(self, '_mini_gm_dialog', None)
+        if gm is not None:
+            try:
+                if self.winfo_exists() and gm.winfo_exists():
+                    self.after(0, gm._stop_execution)
+                else:
+                    gm._stop_event.set()
+            except Exception:
+                try:
+                    gm._stop_event.set()
+                except Exception:
+                    pass
+            try:
+                gm._bosstest_stop_event.set()
+                gm._bosstest_release_key()
+            except Exception:
+                pass
+
         self._is_running = False
         self._is_paused = False
         self._sequence_mode = False
         self._mini_play_btn.configure(state="normal")
-        self._mini_pause_btn.configure(state="disabled", text="⏸ 일시중지")
+        self._mini_pause_btn.configure(state="disabled", text="pause")
         self._mini_stop_btn.configure(state="disabled")
-        self._mini_status.configure(text="■ 중지됨")
+        self._mini_status.configure(text="stopping...")
 
     def _mini_on_progress(self, progress):
         """미니 플레이어 - 진행 콜백 (ExecutionProgress 객체)"""
@@ -1442,13 +1615,17 @@ class MainWindow(ctk.CTk):
             logger.debug(f"진행 콜백 오류: {e}")
 
     def _mini_on_repeat_complete(self, success, message):
-        """미니 플레이어 - 1회 실행 완료 콜백 (반복 처리)"""
+        """Mini player one-run completion callback."""
         try:
             if not self.winfo_exists():
                 return
 
+            if getattr(self, '_mini_stop_requested', False):
+                self._sequence_mode = False
+                self.after(0, lambda: self._mini_on_complete(False, "stopped"))
+                return
+
             if not success:
-                # 실패하면 중지
                 self._sequence_mode = False
                 self.after(0, lambda: self._mini_on_complete(False, message))
                 return
@@ -1456,110 +1633,108 @@ class MainWindow(ctk.CTk):
             self._mini_current_repeat += 1
 
             if self._mini_current_repeat >= self._mini_total_repeat:
-                # 현재 플랜의 모든 반복 완료
                 if self._sequence_mode:
-                    # 시퀀스 모드: 다음 플랜으로 이동
                     next_index = self._sequence_index + 1
                     if next_index < len(self._sequence_plans):
-                        logger.info(f"[시퀀스] 플랜 {self._sequence_index + 1}/{len(self._sequence_plans)} 완료, 다음 플랜으로 이동")
+                        logger.info(f"[sequence] plan {self._sequence_index + 1}/{len(self._sequence_plans)} complete -> next")
                         self.after(0, lambda idx=next_index: self._run_sequence_plan(idx))
                         return
-                    else:
-                        # 마지막 플랜 완료
-                        logger.info(f"[시퀀스] 전체 시퀀스 완료 ({len(self._sequence_plans)}개 플랜)")
-                        self._sequence_mode = False
-                        self.after(0, lambda: self._mini_on_complete(True, ""))
-                        return
-                else:
-                    # 일반 모드: 완료
+                    logger.info(f"[sequence] complete ({len(self._sequence_plans)} plans)")
+                    self._sequence_mode = False
                     self.after(0, lambda: self._mini_on_complete(True, ""))
                     return
 
-            if not self._is_running:
-                # 중지됨
-                self._sequence_mode = False
-                self.after(0, lambda: self._mini_on_complete(False, "중지됨"))
+                self.after(0, lambda: self._mini_on_complete(True, ""))
                 return
 
-            # 다음 반복 실행
-            logger.info(f"[미니플레이어] 반복 {self._mini_current_repeat + 1}/{self._mini_total_repeat} 시작")
+            if not self._is_running:
+                self._sequence_mode = False
+                self.after(0, lambda: self._mini_on_complete(False, "stopped"))
+                return
+
+            logger.info(f"[mini-player] repeat {self._mini_current_repeat + 1}/{self._mini_total_repeat}")
 
             def update_repeat_status():
                 try:
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
                         if self._sequence_mode:
-                            seq_info = f"시퀀스 {self._sequence_index + 1}/{len(self._sequence_plans)} - "
+                            seq_info = f"sequence {self._sequence_index + 1}/{len(self._sequence_plans)} - "
                         else:
                             seq_info = ""
-                        self._mini_status.configure(text=f"▶ {seq_info}실행 중... ({self._mini_current_repeat + 1}/{self._mini_total_repeat}회)")
+                        self._mini_status.configure(text=f"running {seq_info}({self._mini_current_repeat + 1}/{self._mini_total_repeat})")
                 except (tk.TclError, RuntimeError):
                     pass
 
             self.after(0, update_repeat_status)
         except (tk.TclError, RuntimeError):
-            logger.debug("UI가 파괴되어 반복 콜백 중단")
+            logger.debug("mini-player repeat callback skipped")
             return
 
-        # 현재 플랜 다시 실행 (다음 반복)
         if self._sequence_mode and self._sequence_index < len(self._sequence_plans):
-            # 시퀀스 모드: 파일 경로에서 직접 로드
-            import threading
             def reload_and_execute():
                 try:
                     import json
                     plan_path = self._sequence_plans[self._sequence_index]
-                    with open(plan_path, "r", encoding="utf-8") as f:
+                    with open(plan_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        templates_dir = DATA_DIR / "templates"
+                        templates_dir = DATA_DIR / 'templates'
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                    self._mini_execute_plan(plan)
+                    try:
+                        self.after(0, lambda p=plan: self._mini_execute_plan(p))
+                    except (tk.TclError, RuntimeError):
+                        pass
                 except Exception as e:
-                    logger.error(f"[시퀀스] 반복 재로드 오류: {e}")
+                    logger.error(f"[sequence] reload error: {e}")
                     try:
                         self.after(0, lambda: self._mini_on_complete(False, str(e)))
                     except (tk.TclError, RuntimeError):
                         pass
+
             threading.Thread(target=reload_and_execute, daemon=True).start()
         else:
-            # 일반 모드: 캐시에서 찾기
-            plan_name = self._mini_plan_var.get()
-            selected_plan = None
-            for p in self._mini_plans:
-                if p.name == plan_name:
-                    selected_plan = p
-                    break
-
-            if selected_plan:
-                import threading
-                thread = threading.Thread(
-                    target=self._mini_execute_plan,
-                    args=(selected_plan,),
-                    daemon=True
-                )
-                thread.start()
+            plan = self._mini_active_plan
+            if plan is not None:
+                try:
+                    self.after(0, lambda p=plan: self._mini_execute_plan(p))
+                except (tk.TclError, RuntimeError):
+                    pass
 
     def _mini_on_complete(self, success, message):
-        """미니 플레이어 - 완료 콜백"""
+        """Mini player completion callback."""
         was_sequence = self._sequence_mode or len(self._sequence_plans) > 0
         seq_count = len(self._sequence_plans)
+
         def update():
+            try:
+                after_id = getattr(self, '_mini_gm_after_id', None)
+                if after_id:
+                    self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError, ValueError):
+                pass
+
             self._is_running = False
             self._is_paused = False
             self._sequence_mode = False
             self._sequence_plans = []
             self._sequence_repeats = []
             self._sequence_index = 0
+            self._mini_active_plan = None
+            self._mini_remaining_rules = []
+            self._mini_gm_dialog = None
+            self._mini_gm_after_id = None
+            self._mini_stop_requested = False
             self._mini_play_btn.configure(state="normal")
-            self._mini_pause_btn.configure(state="disabled", text="⏸ 일시중지")
+            self._mini_pause_btn.configure(state="disabled", text="pause")
             self._mini_stop_btn.configure(state="disabled")
             if success:
                 if was_sequence:
-                    status = f"✓ 시퀀스 완료 ({seq_count}개 플랜)"
+                    status = f"complete ({seq_count} plans)"
                 else:
-                    status = f"✓ 완료 ({self._mini_total_repeat}회)"
+                    status = f"complete ({self._mini_total_repeat})"
             else:
-                status = f"✗ 실패: {message}"
+                status = f"failed: {message}"
             self._mini_status.configure(text=status)
+
         self.after(0, update)
 
     def _setup_topbar(self):

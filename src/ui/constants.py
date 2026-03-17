@@ -34,16 +34,16 @@ _waypoint_clipboard = None
 
 
 def get_waypoint_clipboard():
-    """경유지 클립보드에서 가져오기 (스레드 안전)"""
+    """경유지 클립보드에서 가져오기 (스레드 안전, deep copy)"""
     with _clipboard_lock:
-        return _waypoint_clipboard
+        return copy.deepcopy(_waypoint_clipboard) if _waypoint_clipboard is not None else None
 
 
 def set_waypoint_clipboard(waypoints):
-    """경유지 클립보드에 저장 (스레드 안전)"""
+    """경유지 클립보드에 저장 (스레드 안전, deep copy)"""
     global _waypoint_clipboard
     with _clipboard_lock:
-        _waypoint_clipboard = waypoints
+        _waypoint_clipboard = copy.deepcopy(waypoints) if waypoints is not None else None
 
 
 # 액션 타입별 한국어 이름 (전체)

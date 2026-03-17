@@ -6,6 +6,7 @@ OpenCV를 사용한 이미지 템플릿 매칭 기능을 제공합니다.
 
 import cv2
 import numpy as np
+import time
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
@@ -185,6 +186,7 @@ class TemplateMatcher:
                 # 마스크 매칭은 TM_CCORR_NORMED 또는 TM_SQDIFF 사용
                 # TM_CCORR_NORMED가 마스크와 가장 잘 작동
                 result = cv2.matchTemplate(screen, template, cv2.TM_CCORR_NORMED, mask=mask)
+                time.sleep(0)  # GIL 해제
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
                 confidence = max_val
                 top_left = max_loc
@@ -192,6 +194,7 @@ class TemplateMatcher:
             else:
                 # 일반 매칭
                 result = cv2.matchTemplate(screen, template, method)
+                time.sleep(0)  # GIL 해제
                 min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
                 # 방법에 따라 최적 위치 선택
@@ -281,9 +284,11 @@ class TemplateMatcher:
                 # 마스크 픽셀이 15% 미만이거나 200개 미만 → 마스크 없이 일반 매칭
                 logger.debug(f"[마스크매칭] 마스크 커버리지 낮음 ({mask_ratio:.1%}, {mask_pixels}px) → 마스크 없이 매칭")
                 result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED)
+                time.sleep(0)  # GIL 해제
             else:
                 # TM_SQDIFF_NORMED + mask: 차이가 클수록 벌점 (0=완벽, 1=최악)
                 result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED, mask=mask)
+                time.sleep(0)  # GIL 해제
 
             min_val, _, min_loc, _ = cv2.minMaxLoc(result)
 
@@ -343,6 +348,7 @@ class TemplateMatcher:
                 return []
 
             result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+            time.sleep(0)  # GIL 해제
 
             # 임계값 이상인 모든 위치 찾기
             locations = np.where(result >= threshold)
@@ -433,6 +439,7 @@ class TemplateMatcher:
             try:
                 # 스케일된 템플릿으로 직접 매칭 수행
                 result_map = cv2.matchTemplate(screen, scaled_template, cv2.TM_CCOEFF_NORMED)
+                time.sleep(0)  # GIL 해제
                 _, max_val, _, max_loc = cv2.minMaxLoc(result_map)
 
                 if max_val >= threshold and max_val > best_result.confidence:
@@ -500,6 +507,7 @@ class TemplateMatcher:
                     continue
 
                 result_map = cv2.matchTemplate(screen, rotated_template, cv2.TM_CCOEFF_NORMED)
+                time.sleep(0)  # GIL 해제
                 _, max_val, _, max_loc = cv2.minMaxLoc(result_map)
 
                 if max_val >= threshold and max_val > best_result.confidence:

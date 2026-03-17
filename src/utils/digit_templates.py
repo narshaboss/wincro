@@ -6,6 +6,7 @@ OCR보다 정확합니다.
 """
 
 import json
+import time
 import numpy as np
 import threading
 from pathlib import Path
@@ -274,6 +275,7 @@ class DigitTemplateMatcher:
 
                     # 템플릿 매칭
                     result = cv2.matchTemplate(binary, scaled_template, cv2.TM_CCOEFF_NORMED)
+                    time.sleep(0)  # GIL 해제
 
                     # 각 x 위치에서 최대값만 사용 (같은 숫자 중복 방지)
                     for pt_x in range(result.shape[1]):
@@ -346,7 +348,7 @@ class DigitTemplateMatcher:
         if digits:
             result = int(''.join(digits))
             avg_score = sum(scores) / len(scores)
-            logger.info(f"[템플릿] 인식: {result} (신뢰도: {avg_score:.2f})")
+            logger.debug(f"[템플릿] 인식: {result} (신뢰도: {avg_score:.2f})")
             return result
 
         return None

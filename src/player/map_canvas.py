@@ -743,7 +743,7 @@ class MapWindow(tk.Toplevel):
 
     def __init__(self, master, game_map: GameMap, title: str = "맵 보기",
                  restore_callback=None, save_callback=None,
-                 clear_callback=None):
+                 clear_callback=None, ai_patrol_callback=None):
         super().__init__(master)
         self.title(f"🗺️ {title}")
         self.configure(bg="#f0f4f8")
@@ -752,6 +752,8 @@ class MapWindow(tk.Toplevel):
         self._restore_callback = restore_callback
         self._save_callback = save_callback
         self._clear_callback = clear_callback
+        self._ai_patrol_callback = ai_patrol_callback
+        self._ai_patrol_btn = None
 
         # 맵 크기에 맞게 창 크기 자동 조절
         win_w, win_h = self._calc_window_size(game_map)
@@ -779,6 +781,19 @@ class MapWindow(tk.Toplevel):
         if restore_callback:
             tk.Button(toolbar, text="되돌리기", command=self._on_restore,
                      bg="#d08770", fg="white", relief="flat", padx=8).pack(side="left", padx=2)
+
+        if ai_patrol_callback:
+            self._ai_patrol_btn = tk.Button(
+                toolbar,
+                text="AI순찰 생성",
+                command=self._on_ai_patrol,
+                bg="#5b8c5a",
+                fg="white",
+                relief="flat",
+                padx=8,
+            )
+            self._ai_patrol_btn.pack(side="left", padx=2)
+            self._sync_ai_patrol_button_state()
 
         # 초기화 버튼 (콜백이 있을 때만 — 잠금맵은 콜백 전달 안 함)
         if clear_callback:
@@ -915,6 +930,7 @@ class MapWindow(tk.Toplevel):
         """타일 변경 시 저장"""
         if self._save_callback:
             self._save_callback()
+        self._sync_ai_patrol_button_state()
 
     def _on_restore(self):
         """되돌리기 실행"""
@@ -922,6 +938,7 @@ class MapWindow(tk.Toplevel):
             self._restore_callback()
             self.map_canvas.auto_fit()
             self.map_canvas.render()
+            self._sync_ai_patrol_button_state()
 
     def _on_clear(self):
         """맵 초기화 실행"""
@@ -936,6 +953,26 @@ class MapWindow(tk.Toplevel):
             self.map_canvas.render()
             messagebox.showinfo("초기화 완료", "맵이 초기화되었습니다.", parent=self)
             self.destroy()
+
+    def _sync_ai_patrol_button_state(self):
+        if not self._ai_patrol_btn:
+            return
+        has_patrol = bool(getattr(self.game_map, "patrol_points", None))
+        self._ai_patrol_btn.configure(
+            text="AI순찰 해제" if has_patrol else "AI순찰 생성",
+            bg="#bf616a" if has_patrol else "#5b8c5a",
+        )
+
+    def _on_ai_patrol(self):
+        if not self._ai_patrol_callback:
+            return
+        enabled = bool(self._ai_patrol_callback())
+        self.map_canvas.render()
+        if self._ai_patrol_btn:
+            self._ai_patrol_btn.configure(
+                text="AI순찰 해제" if enabled else "AI순찰 생성",
+                bg="#bf616a" if enabled else "#5b8c5a",
+            )
 
     def update_positions(self, player: Optional[Tuple[int, int]] = None,
                         target: Optional[Tuple[int, int]] = None,

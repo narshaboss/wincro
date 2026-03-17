@@ -161,7 +161,7 @@ class MapExplorer:
                 dx, dy = DIRECTIONS_4.get(self._current_direction, (0, 0))
                 wall_x = prev_x + dx
                 wall_y = prev_y + dy
-                self.game_map.mark_soft_blocked(wall_x, wall_y)
+                self.game_map.mark_blocked(wall_x, wall_y)
                 logger.debug(f"[Explorer] 이동 실패: ({prev_x},{prev_y}) {self._current_direction} → ({wall_x},{wall_y}) 임시벽")
 
         # 현재 위치에서 미탐색 방향 찾기

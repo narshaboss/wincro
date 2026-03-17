@@ -1085,6 +1085,19 @@ class RuleExecutor:
         action_type = rule.action_type
 
         try:
+            if action_type == "wait":
+                wait_duration = getattr(rule, 'duration', None)
+                if wait_duration is None:
+                    try:
+                        wait_duration = float(rule.action_text) if rule.action_text else 0.0
+                    except (ValueError, TypeError):
+                        wait_duration = 0.0
+                wait_duration = max(0.0, float(wait_duration or 0.0))
+                if wait_duration > 0:
+                    logger.info(f"{_CYAN}{self._step_prefix}⏳ 대기 {wait_duration:.2f}초{_RESET}")
+                    time.sleep(wait_duration)
+                return self._make_result(rule, True, "대기 완료", start_time)
+
             if action_type in ["click", "double_click", "right_click"]:
                 click_x, click_y = None, None
                 click_method = "없음"
@@ -1407,6 +1420,7 @@ class RuleExecutor:
                 if hasattr(self, '_current_plan') and self._current_plan:
                     config = self._current_plan.game_modes.get(rule.rule_id)
                 if config:
+                    config._rule_id = rule.rule_id  # 맵 경로 생성 시 rule_id prefix용
                     logger.info(f"{_GREEN}{self._step_prefix}🎮 특화모드 실행: {config.name or '특화모드'}{_RESET}")
                     success = self.execute_game_mode(config)
                     return self._make_result(rule, success, "특화모드 완료" if success else "특화모드 실패", start_time)
@@ -1715,7 +1729,19 @@ class RuleExecutor:
                 screenshot_gray = None
                 result = None
                 try:
-                    screenshot = ImageGrab.grab()
+                    _cap = [None]
+                    def _grab_trigger():
+                        try:
+                            _cap[0] = ImageGrab.grab()
+                        except Exception:
+                            pass
+                    _gt = threading.Thread(target=_grab_trigger, daemon=True)
+                    _gt.start()
+                    _gt.join(timeout=5.0)
+                    if _gt.is_alive() or _cap[0] is None:
+                        time.sleep(check_interval)
+                        continue
+                    screenshot = _cap[0]
                     screenshot_np = np.array(screenshot)
                     screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
 
@@ -1832,8 +1858,19 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return []
 
-            # 화면 캡처
-            screenshot = ImageGrab.grab()
+            # 화면 캡처 (타임아웃 보호)
+            _cap2 = [None]
+            def _grab_all():
+                try:
+                    _cap2[0] = ImageGrab.grab()
+                except Exception:
+                    pass
+            _gt2 = threading.Thread(target=_grab_all, daemon=True)
+            _gt2.start()
+            _gt2.join(timeout=5.0)
+            if _gt2.is_alive() or _cap2[0] is None:
+                return []
+            screenshot = _cap2[0]
             screenshot_np = np.array(screenshot)
             screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
             screen_h, screen_w = screenshot_gray.shape
@@ -2113,6 +2150,8 @@ class RuleExecutor:
                         if monitor_action and monitor_action.get('type') and monitor_action.get('type') != '없음':
                             # 반복 횟수
                             repeat_count = monitor_action.get('repeat_count', 1)
+                            if not isinstance(repeat_count, int) or repeat_count < 1:
+                                repeat_count = 1
                             repeat_delay = monitor_action.get('repeat_delay', 0.5)
                             repeat_delay_random = monitor_action.get('repeat_delay_random', False)
                             repeat_delay_range = monitor_action.get('repeat_delay_random_range', 0.3)
@@ -2353,7 +2392,12 @@ class RuleExecutor:
                         # 글자별 랜덤 딜레이
                         input_ctrl = get_input_controller()
                         for char in text:
-                            input_ctrl.typewrite([char] if char.isascii() else char, interval=0)
+                            if char.isascii():
+                                input_ctrl.typewrite([char], interval=0)
+                            else:
+                                pyperclip.copy(char)
+                                time.sleep(0.02)
+                                input_ctrl.hotkey('ctrl', 'v')
                             delay = typing_delay + random.uniform(-typing_delay_range, typing_delay_range)
                             time.sleep(max(0.01, delay))
                     else:
@@ -2505,6 +2549,8 @@ class RuleExecutor:
 
             # 반복 횟수 처리
             repeat_count = action.get('repeat_count', 1)
+            if not isinstance(repeat_count, int) or repeat_count < 1:
+                repeat_count = 1
             for rep in range(repeat_count):
                 success, msg = self.test_single_monitor_action(action)
                 if repeat_count > 1:
@@ -2726,7 +2772,7 @@ class RuleExecutor:
                         pyautogui.keyUp(current_key)
                         current_key = None
                         logger.info(f"[특화모드] 키 해제 (캐릭터 미발견)")
-                    time.sleep(config.analysis_interval)
+                    self._stop_event.wait(config.analysis_interval)
                     continue
                 else:
                     char_not_found_count = 0
@@ -2735,6 +2781,7 @@ class RuleExecutor:
 
                 # 2. 목표 위치 찾기
                 target_result = self._find_image_on_screen(config.target_image, target_conf, search_region)
+                time.sleep(0)  # GIL 해제
                 if not target_result:
                     target_not_found_count += 1
                     if target_not_found_count <= 3 or target_not_found_count % 20 == 0:
@@ -2744,7 +2791,7 @@ class RuleExecutor:
                         pyautogui.keyUp(current_key)
                         current_key = None
                         logger.info(f"[특화모드] 키 해제 (목표 미발견)")
-                    time.sleep(config.analysis_interval)
+                    self._stop_event.wait(config.analysis_interval)
                     continue
                 else:
                     target_not_found_count = 0
@@ -2801,7 +2848,7 @@ class RuleExecutor:
                     current_key = new_key
 
                 # 7. 대기 (키는 계속 누른 상태)
-                time.sleep(config.analysis_interval)
+                self._stop_event.wait(config.analysis_interval)
 
             if iteration >= max_iterations:
                 logger.warning(f"{_YELLOW}[특화모드] 최대 반복 횟수 초과 ({max_iterations}){_RESET}")
@@ -2853,12 +2900,62 @@ class RuleExecutor:
 
         logger.info(f"{_GREEN}[좌표모드] ========== 실행 시작 (A* 경로탐색) =========={_RESET}")
 
+        def _exec_arrival_keys_re(arr_keys):
+            """arrival_keys 실행: list-of-dict 또는 구형 문자열 모두 지원"""
+            if not arr_keys:
+                return
+            if isinstance(arr_keys, list):
+                for kd in arr_keys:
+                    if isinstance(kd, dict):
+                        k = kd.get('key', '')
+                        w = kd.get('wait_after', 0.3)
+                        if k:
+                            pyautogui.press(k)
+                            time.sleep(max(0.1, w))
+                    elif isinstance(kd, str) and kd.strip():
+                        pyautogui.press(kd.strip())
+                        time.sleep(0.1)
+            elif isinstance(arr_keys, str):
+                for _ak in arr_keys.split(','):
+                    _ak = _ak.strip()
+                    if _ak:
+                        pyautogui.press(_ak)
+                        time.sleep(0.1)
+
         # 맵핑 시스템 초기화
         import os
         map_name = config.name or "autosave"
         map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
         mapping_enabled = getattr(config, 'mapping_enabled', True)
         current_segment_idx = 0
+        waypoints = getattr(config, 'waypoints', []) or []
+
+        # rule_id prefix (UI의 _get_segment_map_name과 동일 형식)
+        _rid = getattr(config, '_rule_id', '') or ''
+        _rid_prefix = f"{_rid.replace('rule_', '')}_" if _rid else ''
+
+        def _segment_meta(seg_idx):
+            if 0 <= seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                    return wp[3]
+            return {}
+
+        def _is_boss_segment(seg_idx):
+            if 0 <= seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 2:
+                    try:
+                        return int(wp[0]) == 0 and int(wp[1]) == 0
+                    except Exception:
+                        return False
+            return False
+
+        def _uses_transient_local_map(seg_idx):
+            if _is_boss_segment(seg_idx):
+                return False
+            route_starts = _segment_meta(seg_idx).get('route_starts', []) or []
+            return not bool(route_starts)
 
         # 구간별 맵 파일명 헬퍼 (UI의 _get_segment_map_name과 동일 형식)
         def get_segment_map_path(seg_idx):
@@ -2870,13 +2967,6 @@ class RuleExecutor:
                 seg_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{seg_idx+1}"
             else:
                 seg_name = f"경유지{seg_idx+1}"
-            # 공유 맵 파일이 설정되어 있으면 해당 경로 직접 반환
-            if seg_idx < len(waypoints):
-                wp = waypoints[seg_idx]
-                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
-                    shared = wp[3].get('map_file')
-                    if shared and os.path.exists(shared):
-                        return shared
             # 보스 경유지(0,0) 판별
             is_boss = False
             if seg_idx < len(waypoints):
@@ -2884,11 +2974,29 @@ class RuleExecutor:
                 if isinstance(wp, (list, tuple)) and len(wp) >= 2:
                     if int(wp[0]) == 0 and int(wp[1]) == 0:
                         is_boss = True
-            # UI와 동일 형식: {seg_idx:02d}_{seg_name}_map.json
+            # UI와 동일 형식: {rid_prefix}{seg_idx:02d}_{seg_name}_map.json
             if is_boss:
-                new_path = os.path.join(map_dir, f"{seg_idx:02d}_{seg_name}_boss_map.json")
+                new_path = os.path.join(map_dir, f"{_rid_prefix}{seg_idx:02d}_{seg_name}_boss_map.json")
+            elif _uses_transient_local_map(seg_idx):
+                new_path = os.path.join(map_dir, f"{_rid_prefix}{seg_idx:02d}_{seg_name}_local_map.json")
             else:
-                new_path = os.path.join(map_dir, f"{seg_idx:02d}_{seg_name}_map.json")
+                new_path = os.path.join(map_dir, f"{_rid_prefix}{seg_idx:02d}_{seg_name}_map.json")
+            # 파일이 이미 존재하면 바로 반환
+            if os.path.exists(new_path):
+                return new_path
+            # 공유 맵 파일(소스)이 있으면 자체 경로로 복사 (원본 보호)
+            if seg_idx < len(waypoints):
+                wp = waypoints[seg_idx]
+                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
+                    shared = wp[3].get('map_file')
+                    if shared and os.path.exists(shared):
+                        try:
+                            os.makedirs(map_dir, exist_ok=True)
+                            shutil.copy2(shared, new_path)
+                            logger.info(f"[좌표모드] 공유맵 복사: {os.path.basename(shared)} → {os.path.basename(new_path)}")
+                        except Exception:
+                            pass
+                        return new_path
             # 같은 이름의 다른 경유지가 있는지 확인
             has_dup = False
             for i, w in enumerate(waypoints):
@@ -2898,23 +3006,34 @@ class RuleExecutor:
                         has_dup = True
                         break
             # 마이그레이션: 새 파일 없고, 이름 중복 아닐 때만
-            if not os.path.exists(new_path) and not has_dup:
+            if not has_dup:
+                # rule_id prefix 없는 기존 파일도 소스로 검색
+                no_prefix_path = os.path.join(map_dir, f"{seg_idx:02d}_{seg_name}_{'boss_' if is_boss else ''}map.json")
                 if is_boss:
                     old_candidates = [
+                        no_prefix_path,
                         os.path.join(map_dir, f"{map_name}_{seg_idx:02d}_{seg_name}_boss_map.json"),
                         os.path.join(map_dir, f"{map_name}_{seg_idx}_{seg_name}_boss_map.json"),
                         os.path.join(map_dir, f"{map_name}_{seg_name}_boss{seg_idx}_map.json"),
                         os.path.join(map_dir, f"{map_name}_{seg_name}_map.json"),
                     ]
                 else:
-                    old_candidates = [
+                    old_candidates = [no_prefix_path]
+                    if _uses_transient_local_map(seg_idx):
+                        old_candidates.extend([
+                            os.path.join(map_dir, f"{map_name}_{seg_idx:02d}_{seg_name}_local_map.json"),
+                            os.path.join(map_dir, f"{map_name}_{seg_idx}_{seg_name}_local_map.json"),
+                            os.path.join(map_dir, f"{map_name}_{seg_name}_local_map.json"),
+                        ])
+                    old_candidates.extend([
                         os.path.join(map_dir, f"{map_name}_{seg_idx:02d}_{seg_name}_map.json"),
                         os.path.join(map_dir, f"{map_name}_{seg_idx}_{seg_name}_map.json"),
                         os.path.join(map_dir, f"{map_name}_{seg_name}_map.json"),
-                    ]
+                    ])
                 for old_path in old_candidates:
                     if os.path.exists(old_path):
                         try:
+                            os.makedirs(map_dir, exist_ok=True)
                             shutil.copy2(old_path, new_path)
                             logger.info(f"[좌표모드] 맵 마이그레이션: {os.path.basename(old_path)} → {os.path.basename(new_path)}")
                         except Exception:
@@ -2923,10 +3042,39 @@ class RuleExecutor:
             return new_path
 
         # 첫 번째 경유지 맵 로드
+        def _sanitize_segment_start_pos(game_map_ref, seg_idx):
+            if game_map_ref is None:
+                return
+            _meta = _segment_meta(seg_idx)
+            route_starts = []
+            for item in _meta.get('route_starts', []) or []:
+                try:
+                    route_starts.append((int(item.get('x')), int(item.get('y'))))
+                except Exception:
+                    continue
+            if not route_starts:
+                return
+            preferred_start = tuple(route_starts[0])
+            current_start = tuple(game_map_ref.start_pos) if getattr(game_map_ref, 'start_pos', None) is not None else None
+            if current_start is not None and current_start not in route_starts:
+                game_map_ref.start_pos = None
+                adjacent_passable = 0
+                for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                    if game_map_ref.is_passable(current_start[0] + dx, current_start[1] + dy):
+                        adjacent_passable += 1
+                if adjacent_passable >= 2:
+                    game_map_ref.mark_passable(current_start[0], current_start[1])
+            # route_start는 메타 기준점으로만 유지하고, 실제 진입 시작 타일은
+            # 포탈 직후 경로가 이어지도록 계속 걸을 수 있어야 한다.
+            game_map_ref.start_pos = None
+            game_map_ref.mark_passable(preferred_start[0], preferred_start[1])
+            game_map_ref.start_pos = preferred_start
+
         game_map = GameMap(name=map_name)
         seg0_path = get_segment_map_path(0)
         if os.path.exists(seg0_path):
             game_map.load_and_merge(seg0_path)
+            _sanitize_segment_start_pos(game_map, 0)
             stats = game_map.get_statistics()
             logger.info(f"[좌표모드] 첫 경유지 맵 로드: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
         else:
@@ -2936,6 +3084,7 @@ class RuleExecutor:
                 old_map_path = os.path.join(map_dir, fallback)
                 if os.path.exists(old_map_path):
                     game_map.load_and_merge(old_map_path)
+                    _sanitize_segment_start_pos(game_map, 0)
                     stats = game_map.get_statistics()
                     logger.info(f"[좌표모드] 호환 맵 로드: {old_map_path} ({stats['total_tiles']}개 타일)")
                     loaded = True
@@ -2960,6 +3109,7 @@ class RuleExecutor:
             try:
                 save_path = get_segment_map_path(current_segment_idx)
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                _sanitize_segment_start_pos(game_map, current_segment_idx)
                 game_map.save(save_path)
                 logger.info(f"[좌표모드] '{old_name}' 맵 저장: {save_path}")
             except Exception as e:
@@ -2971,10 +3121,30 @@ class RuleExecutor:
             new_path = get_segment_map_path(new_seg_idx)
             if os.path.exists(new_path):
                 game_map.load_and_merge(new_path)
+                _sanitize_segment_start_pos(game_map, new_seg_idx)
                 stats = game_map.get_statistics()
                 logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
             else:
                 logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 새 맵 생성")
+
+        def _reload_current_segment_map_runtime(seg_idx):
+            """세그먼트 전환 직후 런타임 오염이 의심될 때 현재 맵을 디스크 기준으로 다시 읽는다."""
+            nonlocal game_map, pathfinder
+            map_path = get_segment_map_path(seg_idx)
+            if not map_path or not os.path.exists(map_path):
+                return False
+            seg_name = get_seg_name(seg_idx)
+            try:
+                fresh_map = GameMap(name=f"{map_name}_{seg_name}")
+                fresh_map.load_and_merge(map_path)
+                _sanitize_segment_start_pos(fresh_map, seg_idx)
+                game_map = fresh_map
+                pathfinder = SimplePathfinder(game_map)
+                logger.warning(f"[좌표모드] '{seg_name}' 런타임 맵 재로드")
+                return True
+            except Exception as e:
+                logger.error(f"[좌표모드] '{seg_name}' 런타임 맵 재로드 실패: {e}")
+                return False
 
         if mapping_enabled:
             logger.info(f"[좌표모드] 맵핑 시스템 활성화")
@@ -3007,7 +3177,7 @@ class RuleExecutor:
         if final_wp_idx < 0 or final_wp_idx >= len(waypoints_raw):
             final_wp_idx = len(waypoints_raw) - 1
 
-        all_targets = []  # [(x, y, name, is_boss, arrival_keys, route_ends, route_walls, map_locked), ...]
+        all_targets = []  # Same tuple shape/order as editor mode.
         for i, wp in enumerate(waypoints_raw):
             if i > final_wp_idx:
                 break
@@ -3016,12 +3186,35 @@ class RuleExecutor:
                 wp_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else {}
                 wp_x, wp_y = int(wp[0]), int(wp[1])
                 _is_boss = (wp_x == 0 and wp_y == 0)
-                _arr_keys = wp_cfg.get('arrival_keys', '')
+                _boss_img_path = wp_cfg.get('target_image')
+                _char_img_path = wp_cfg.get('character_image')
+                _arr_keys = wp_cfg.get('arrival_keys', [])
                 _re_raw = wp_cfg.get('route_ends', [])
-                _route_ends = [(int(r['x']), int(r['y'])) for r in _re_raw if isinstance(r, dict) and 'x' in r and 'y' in r]
-                _route_walls = wp_cfg.get('route_walls', [])
+                _route_ends = []
+                _disabled_ends = []
+                for r in _re_raw:
+                    if isinstance(r, dict) and 'x' in r and 'y' in r:
+                        _pt = (int(r['x']), int(r['y']))
+                        if r.get('enabled', True):
+                            _route_ends.append(_pt)
+                        else:
+                            _disabled_ends.append(_pt)
+                _route_starts = []
+                for s in wp_cfg.get('route_starts', []) or []:
+                    if isinstance(s, dict) and 'x' in s and 'y' in s:
+                        _route_starts.append((int(s['x']), int(s['y'])))
+                _route_walls = []
+                for w in wp_cfg.get('route_walls', []) or []:
+                    if isinstance(w, dict) and 'x' in w and 'y' in w:
+                        _route_walls.append((int(w['x']), int(w['y'])))
+                _route_walls.extend(_disabled_ends)
                 _map_locked = wp_cfg.get('map_locked', False)
-                all_targets.append((wp_x, wp_y, wp_name, _is_boss, _arr_keys, _route_ends, _route_walls, _map_locked))
+                all_targets.append((
+                    wp_x, wp_y, wp_name, _is_boss,
+                    _boss_img_path, _char_img_path,
+                    _arr_keys, _route_ends, _route_starts,
+                    _map_locked, _route_walls,
+                ))
 
         if not all_targets:
             logger.error("[좌표모드] 경유지가 없습니다. 경유지를 추가하세요.")
@@ -3035,16 +3228,22 @@ class RuleExecutor:
         if current_target_idx >= len(all_targets):
             logger.error("[좌표모드] 모든 경유지가 보스 경유지 → 실행 불가")
             return False
-        target_x, target_y = all_targets[current_target_idx][0], all_targets[current_target_idx][1]
+        def _pick_target(tidx):
+            _re = all_targets[tidx][7] if len(all_targets[tidx]) > 7 else []
+            if _re:
+                return random.choice(_re)
+            return all_targets[tidx][0], all_targets[tidx][1]
+
+        target_x, target_y = _pick_target(current_target_idx)
 
         # 첫 경유지 route_walls 등록
-        if all_targets and len(all_targets[current_target_idx]) > 6:
-            for rw in all_targets[current_target_idx][6]:
-                if isinstance(rw, dict) and 'x' in rw and 'y' in rw:
-                    game_map.mark_blocked(int(rw['x']), int(rw['y']))
+        if all_targets and len(all_targets[current_target_idx]) > 10:
+            for rw in all_targets[current_target_idx][10]:
+                if isinstance(rw, tuple) and len(rw) == 2:
+                    game_map.mark_blocked(int(rw[0]), int(rw[1]))
 
         # 첫 경유지 map_locked 적용
-        if all_targets and len(all_targets[current_target_idx]) > 7 and all_targets[current_target_idx][7]:
+        if all_targets and len(all_targets[current_target_idx]) > 9 and all_targets[current_target_idx][9]:
             mapping_enabled = False
             logger.info("[좌표모드] 잠금맵 → 맵핑 비활성화")
 
@@ -3056,11 +3255,24 @@ class RuleExecutor:
         escape_skill_wait_after = getattr(config, 'escape_skill_wait_after', 0.5)
         escape_skill_cooldown = getattr(config, 'escape_skill_cooldown', 10.0)
         last_escape_time = 0
+        auto_skill_enabled = getattr(config, 'auto_skill_enabled', False)
+        auto_skill_key = getattr(config, 'auto_skill_key', '') or ''
+        auto_skill_cooldown = getattr(config, 'auto_skill_cooldown', 5.0)
+        auto_skill_cd_image = getattr(config, 'auto_skill_cooldown_image', '') or ''
+        if auto_skill_cd_image and not Path(auto_skill_cd_image).exists():
+            auto_skill_cd_image = ''
+        auto_skill_cd_region = getattr(config, 'auto_skill_cd_region', None)
+        _auto_skill_cd_tmpl = None
+        if auto_skill_cd_image:
+            try:
+                _auto_skill_cd_tmpl = cv2.imread(auto_skill_cd_image)
+            except Exception:
+                _auto_skill_cd_tmpl = None
 
         wp_info = [(t[0], t[1], t[2]) for t in all_targets]
         logger.info(f"[좌표모드] 경유지 {len(all_targets)}개: {wp_info}")
         logger.info(f"[좌표모드] 최종 목표: {all_targets[-1][2]} ({all_targets[-1][0]},{all_targets[-1][1]})")
-        logger.info(f"[좌표모드] 현재 목표: ({target_x}, {target_y}) [{all_targets[0][2]}] [{current_target_idx+1}/{len(all_targets)}]")
+        logger.info(f"[좌표모드] 현재 목표: ({target_x}, {target_y}) [{all_targets[current_target_idx][2]}] [{current_target_idx+1}/{len(all_targets)}]")
         logger.info(f"[좌표모드] X 영역: {config.coord_x_region}")
         logger.info(f"[좌표모드] Y 영역: {config.coord_y_region}")
         if escape_skill_enabled:
@@ -3069,6 +3281,9 @@ class RuleExecutor:
         logger.info(f"[좌표모드] 알고리즘: A* 경로탐색 + GameMap")
 
         import keyboard
+        if auto_skill_enabled and auto_skill_key:
+            _as_mode = "image" if _auto_skill_cd_tmpl is not None else f"timer({auto_skill_cooldown}s)"
+            logger.info(f"[coordinate-mode] auto-skill: key={auto_skill_key}, cooldown={_as_mode}")
         _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
         logger.info("[좌표모드] ESC 키로 중지 가능")
 
@@ -3077,6 +3292,7 @@ class RuleExecutor:
         last_dir = None
         stuck_count = 0
         total_stuck_count = 0  # 탈출 스킬용 연속 정체 카운트
+        transition_recovery_attempts = 0
         current_path = []
         path_index = 0
         tick_counter = 0  # soft_blocked tick용 카운터
@@ -3110,6 +3326,15 @@ class RuleExecutor:
                 if pos not in path_pos_index:
                     path_pos_index[pos] = i
 
+        def _wait_for_actual_jump(seg_idx):
+            """Wait for a real portal jump before switching to a start-based next segment."""
+            if seg_idx >= len(all_targets) - 1:
+                return False
+            _next_meta = _segment_meta(seg_idx + 1)
+            _next_starts = _next_meta.get('route_starts', []) or []
+            _arr_keys = all_targets[seg_idx][6] if len(all_targets[seg_idx]) > 6 else []
+            return bool(_next_starts) and not bool(_arr_keys)
+
         def find_path_direction(cx, cy, tx, ty):
             """
             A* 경로탐색 + 자동 탐색으로 다음 방향 결정
@@ -3120,6 +3345,7 @@ class RuleExecutor:
             5. 최후 직진
             """
             nonlocal current_path, path_index, explored_from, unknown_path_fails
+            nonlocal pathfinder, game_map, transition_recovery_attempts
 
             current_pos = (cx, cy)
             target_pos = (tx, ty)
@@ -3149,6 +3375,9 @@ class RuleExecutor:
                 logger.info(f"[좌표모드] A* 경로 발견: {len(result.path)}칸")
                 return result.directions[0]
 
+            if self._stop_event.is_set():
+                return None
+
             # 1.5차: soft_blocked 허용
             result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, allow_soft_blocked=True, max_iterations=20000, stop_event=self._stop_event)
             time.sleep(0)  # GIL 해제
@@ -3159,6 +3388,9 @@ class RuleExecutor:
                 unknown_path_fails = 0
                 logger.info(f"[좌표모드] A* 경로 발견 (soft_blocked 허용): {len(result.path)}칸")
                 return result.directions[0]
+
+            if self._stop_event.is_set():
+                return None
 
             # 2차: 미탐색 영역 포함 (연속 실패 3회 이상이면 건너뜀)
             if unknown_path_fails < 3:
@@ -3171,48 +3403,90 @@ class RuleExecutor:
                     logger.info(f"[좌표모드] A* 탐색 경로: {len(result.path)}칸 (미지 영역 포함)")
                     return result.directions[0]
 
-            # 3차: 스마트 탐색 — 현재 위치에서 아직 안 가본 방향 시도
-            tried = explored_from.get(current_pos, set())
-            candidates = []
-            for d, (ddx, ddy) in DIRECTIONS_4.items():
-                nx, ny = cx + ddx, cy + ddy
-                if d not in tried and not game_map.is_blocked(nx, ny) and not game_map.is_soft_blocked(nx, ny):
-                    dist = abs(nx - tx) + abs(ny - ty)
-                    candidates.append((dist, d))
-
-            time.sleep(0)  # GIL 해제 (스마트 탐색 후)
-
-            if candidates:
-                candidates.sort()
-                chosen = candidates[0][1]
-                tried.add(chosen)
-                explored_from[current_pos] = tried
-                # explored_from 메모리 제한
-                if len(explored_from) > 500:
-                    keys_to_remove = list(explored_from.keys())[:250]
-                    for k in keys_to_remove:
-                        del explored_from[k]
-                logger.info(f"[좌표모드] 스마트 탐색: {chosen}")
-                return chosen
-
-            # 4차: 이미 시도했지만 벽이 아닌 방향 재시도 (백트래킹)
-            for d, (ddx, ddy) in DIRECTIONS_4.items():
-                nx, ny = cx + ddx, cy + ddy
-                if not game_map.is_blocked(nx, ny):
-                    logger.info("[좌표모드] 백트래킹 시도")
-                    return d
-
-            time.sleep(0)  # GIL 해제 (백트래킹 후)
-            # 5차: 사방이 벽 (진짜 막다른 길) → 목표 방향으로 직진
-            logger.warning("[좌표모드] 막다른 길, 직진 시도")
-            dx = tx - cx
-            dy = ty - cy
-            if dx == 0 and dy == 0:
+            if self._stop_event.is_set():
                 return None
-            if abs(dy) >= abs(dx):
-                return "up" if dy < 0 else "down"
-            else:
-                return "left" if dx < 0 else "right"
+
+            _has_route_starts = bool(len(all_targets[current_target_idx]) > 8 and all_targets[current_target_idx][8])
+            _map_locked = bool(len(all_targets[current_target_idx]) > 9 and all_targets[current_target_idx][9])
+            if transition_recovery_attempts > 0 and _has_route_starts:
+                transition_recovery_attempts -= 1
+                game_map.mark_passable(cx, cy)
+                _sanitize_segment_start_pos(game_map, current_target_idx)
+                result = pathfinder.find_path(
+                    current_pos,
+                    target_pos,
+                    allow_unknown=True,
+                    unknown_cost=3,
+                    max_iterations=20000,
+                    stop_event=self._stop_event,
+                    allow_soft_blocked=False,
+                    respect_blocked_edges=True,
+                )
+                time.sleep(0)
+                if self._stop_event.is_set():
+                    return None
+                if not (result.found and len(result.directions) > 0):
+                    result = pathfinder.find_path(
+                        current_pos,
+                        target_pos,
+                        allow_unknown=True,
+                        unknown_cost=3,
+                        max_iterations=20000,
+                        stop_event=self._stop_event,
+                        allow_soft_blocked=True,
+                        respect_blocked_edges=True,
+                    )
+                    time.sleep(0)
+                    if self._stop_event.is_set():
+                        return None
+                if result.found and len(result.directions) > 0:
+                    current_path = result.path
+                    path_index = 0
+                    _rebuild_path_index()
+                    unknown_path_fails = 0
+                    logger.info(f"[좌표모드] 진입직후 경로복구: {len(result.path)}칸")
+                    return result.directions[0]
+
+                if _map_locked and _reload_current_segment_map_runtime(current_target_idx):
+                    game_map.mark_passable(cx, cy)
+                    _sanitize_segment_start_pos(game_map, current_target_idx)
+                    result = pathfinder.find_path(
+                        current_pos,
+                        target_pos,
+                        allow_unknown=True,
+                        unknown_cost=3,
+                        max_iterations=20000,
+                        stop_event=self._stop_event,
+                        allow_soft_blocked=False,
+                        respect_blocked_edges=True,
+                    )
+                    time.sleep(0)
+                    if self._stop_event.is_set():
+                        return None
+                    if not (result.found and len(result.directions) > 0):
+                        result = pathfinder.find_path(
+                            current_pos,
+                            target_pos,
+                            allow_unknown=True,
+                            unknown_cost=3,
+                            max_iterations=20000,
+                            stop_event=self._stop_event,
+                            allow_soft_blocked=True,
+                            respect_blocked_edges=True,
+                        )
+                        time.sleep(0)
+                        if self._stop_event.is_set():
+                            return None
+                    if result.found and len(result.directions) > 0:
+                        current_path = result.path
+                        path_index = 0
+                        _rebuild_path_index()
+                        unknown_path_fails = 0
+                        logger.info(f"[좌표모드] 잠금맵 재로드 경로복구: {len(result.path)}칸")
+                        return result.directions[0]
+
+            # 3차: 스마트 탐색 — 현재 위치에서 아직 안 가본 방향 시도
+            return None
 
         try:
             iteration = 0
@@ -3259,34 +3533,28 @@ class RuleExecutor:
 
                 # 2. 도착 체크 (좌표 모드: threshold 최대 2로 제한)
                 # route_ends가 있으면 어느 하나에 도착해도 경유지 완료
-                _cur_route_ends = all_targets[current_target_idx][5] if len(all_targets[current_target_idx]) > 5 else []
-                _arrival_targets = _cur_route_ends if _cur_route_ends else [(target_x, target_y)]
-                coord_threshold = min(getattr(config, 'arrival_threshold', 0), 2)
-                arrival_dist = min(abs(current_x - ax) + abs(current_y - ay) for ax, ay in _arrival_targets)
-                if arrival_dist <= coord_threshold:
+                _cur_route_ends = all_targets[current_target_idx][7] if len(all_targets[current_target_idx]) > 7 else []
+                if _cur_route_ends:
+                    _arrived = any(current_x == ax and current_y == ay for ax, ay in _cur_route_ends)
+                else:
+                    _arrived = (current_x == target_x and current_y == target_y)
+                _need_actual_jump = _wait_for_actual_jump(current_target_idx)
+                if _arrived and not _need_actual_jump:
                     current_target_idx += 1
                     if current_target_idx >= len(all_targets):
                         # 최종 도착 키 입력
-                        _arr_keys_final = all_targets[current_target_idx - 1][4] if len(all_targets[current_target_idx - 1]) > 4 else ''
+                        _arr_keys_final = all_targets[current_target_idx - 1][6] if len(all_targets[current_target_idx - 1]) > 6 else []
                         if _arr_keys_final:
-                            for _ak in _arr_keys_final.split(','):
-                                _ak = _ak.strip()
-                                if _ak:
-                                    pyautogui.press(_ak)
-                                    time.sleep(0.1)
+                            _exec_arrival_keys_re(_arr_keys_final)
                             logger.info(f"[좌표모드] 최종 도착 키 입력: {_arr_keys_final}")
                         logger.info(f"{_GREEN}[좌표모드] ★★★ 최종 목표 도달! ({current_x}, {current_y}) ★★★{_RESET}")
                         return True
                     else:
                         # 도착 키 입력 (전환 전 현재 경유지)
                         _prev_idx = current_target_idx - 1
-                        _arr_keys = all_targets[_prev_idx][4] if len(all_targets[_prev_idx]) > 4 else ''
+                        _arr_keys = all_targets[_prev_idx][6] if len(all_targets[_prev_idx]) > 6 else []
                         if _arr_keys:
-                            for _ak in _arr_keys.split(','):
-                                _ak = _ak.strip()
-                                if _ak:
-                                    pyautogui.press(_ak)
-                                    time.sleep(0.1)
+                            _exec_arrival_keys_re(_arr_keys)
                             logger.info(f"[좌표모드] 도착 키 입력: {_arr_keys}")
                         # 보스 경유지 스킵
                         while current_target_idx < len(all_targets) and all_targets[current_target_idx][3]:
@@ -3297,22 +3565,23 @@ class RuleExecutor:
                             return True
                         # 구간 맵 전환
                         switch_segment_map(current_target_idx)
-                        target_x, target_y = all_targets[current_target_idx][0], all_targets[current_target_idx][1]
+                        target_x, target_y = _pick_target(current_target_idx)
                         seg_name = all_targets[current_target_idx][2]
                         logger.info(f"{_GREEN}[좌표모드] ▶ 경유지 도달! 다음: ({target_x},{target_y}) [{seg_name}] [{current_target_idx+1}/{len(all_targets)}]{_RESET}")
                         # route_walls 등록
-                        _rw = all_targets[current_target_idx][6] if len(all_targets[current_target_idx]) > 6 else []
+                        _rw = all_targets[current_target_idx][10] if len(all_targets[current_target_idx]) > 10 else []
                         for _w in _rw:
-                            if isinstance(_w, dict) and 'x' in _w and 'y' in _w:
-                                game_map.mark_blocked(int(_w['x']), int(_w['y']))
+                            if isinstance(_w, tuple) and len(_w) == 2:
+                                game_map.mark_blocked(int(_w[0]), int(_w[1]))
                         # map_locked 적용
-                        _ml = all_targets[current_target_idx][7] if len(all_targets[current_target_idx]) > 7 else False
+                        _ml = all_targets[current_target_idx][9] if len(all_targets[current_target_idx]) > 9 else False
                         if _ml:
                             mapping_enabled = False
                         else:
                             mapping_enabled = getattr(config, 'mapping_enabled', True)
                         stuck_count = 0
                         total_stuck_count = 0
+                        transition_recovery_attempts = 3
                         current_path = []
                         path_index = 0
                         path_pos_index = {}
@@ -3326,23 +3595,19 @@ class RuleExecutor:
                 # 2.5. 포탈 감지: 감속 구간(목표/route_ends 3칸 이내)에서 좌표 점프 시 다음 경유지로 전환
                 if prev_x is not None:
                     jump_dist = abs(current_x - prev_x) + abs(current_y - prev_y)
-                    _portal_re = all_targets[current_target_idx][5] if len(all_targets[current_target_idx]) > 5 else []
+                    _portal_re = all_targets[current_target_idx][7] if len(all_targets[current_target_idx]) > 7 else []
                     if _portal_re:
-                        near_target = any(abs(prev_x - ex) + abs(prev_y - ey) <= 3 for ex, ey in _portal_re)
+                        near_target = any(abs(prev_x - ex) + abs(prev_y - ey) <= 1 for ex, ey in _portal_re)
                     else:
-                        near_target = abs(prev_x - target_x) + abs(prev_y - target_y) <= 3
+                        near_target = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
                     portal_threshold = max(8, int(interval / 0.02) + 5) if smooth_move else 5
                     if near_target:
                         portal_threshold = 3
                     if jump_dist >= portal_threshold and near_target and current_target_idx < len(all_targets) - 1:
                         # 도착 키 입력 (포탈 전 현재 경유지)
-                        _arr_keys = all_targets[current_target_idx][4] if len(all_targets[current_target_idx]) > 4 else ''
+                        _arr_keys = all_targets[current_target_idx][6] if len(all_targets[current_target_idx]) > 6 else []
                         if _arr_keys:
-                            for _ak in _arr_keys.split(','):
-                                _ak = _ak.strip()
-                                if _ak:
-                                    pyautogui.press(_ak)
-                                    time.sleep(0.1)
+                            _exec_arrival_keys_re(_arr_keys)
                             logger.info(f"[좌표모드] 포탈 도착 키 입력: {_arr_keys}")
                         # 구간 맵 전환 (현재 맵 저장 → 다음 구간 맵 로드)
                         next_segment = current_target_idx + 1
@@ -3355,22 +3620,23 @@ class RuleExecutor:
                         if current_target_idx >= len(all_targets):
                             logger.info(f"{_GREEN}[좌표모드] ★★★ 최종 목표 도달! ({current_x}, {current_y}) ★★★{_RESET}")
                             return True
-                        target_x, target_y = all_targets[current_target_idx][0], all_targets[current_target_idx][1]
+                        target_x, target_y = _pick_target(current_target_idx)
                         seg_name = all_targets[current_target_idx][2]
                         logger.info(f"{_GREEN}[좌표모드] 🌀 포탈 감지! (점프 {jump_dist}칸) → {seg_name} 목표: ({target_x},{target_y}) [{current_target_idx+1}/{len(all_targets)}]{_RESET}")
                         # route_walls 등록
-                        _rw = all_targets[current_target_idx][6] if len(all_targets[current_target_idx]) > 6 else []
+                        _rw = all_targets[current_target_idx][10] if len(all_targets[current_target_idx]) > 10 else []
                         for _w in _rw:
-                            if isinstance(_w, dict) and 'x' in _w and 'y' in _w:
-                                game_map.mark_blocked(int(_w['x']), int(_w['y']))
+                            if isinstance(_w, tuple) and len(_w) == 2:
+                                game_map.mark_blocked(int(_w[0]), int(_w[1]))
                         # map_locked 적용
-                        _ml = all_targets[current_target_idx][7] if len(all_targets[current_target_idx]) > 7 else False
+                        _ml = all_targets[current_target_idx][9] if len(all_targets[current_target_idx]) > 9 else False
                         if _ml:
                             mapping_enabled = False
                         else:
                             mapping_enabled = getattr(config, 'mapping_enabled', True)
                         stuck_count = 0
                         total_stuck_count = 0
+                        transition_recovery_attempts = 3
                         current_path = []
                         path_index = 0
                         path_pos_index = {}
@@ -3424,7 +3690,7 @@ class RuleExecutor:
                                 ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 wall_x = prev_x + ddx
                                 wall_y = prev_y + ddy
-                                game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
+                                game_map.mark_blocked(wall_x, wall_y)
                                 logger.info(f"[좌표모드] 임시벽 발견: ({wall_x},{wall_y})")
                             # 장애물 발견 → 경로 재계산
                             current_path = []
@@ -3440,6 +3706,39 @@ class RuleExecutor:
                         tick_counter = 0
 
                 # 3.5. 탈출 스킬 체크
+                # 3.4. auto skill check (aligned with editor mode)
+                if auto_skill_enabled and auto_skill_key and not self._stop_event.is_set():
+                    _use_skill = False
+                    if _auto_skill_cd_tmpl is not None:
+                        try:
+                            _as_pil = getattr(matcher, '_last_screenshot', None)
+                            if _as_pil is not None:
+                                if auto_skill_cd_region and len(auto_skill_cd_region) == 4:
+                                    _rx1, _ry1, _rx2, _ry2 = auto_skill_cd_region
+                                    _as_pil = _as_pil.crop((_rx1, _ry1, _rx2, _ry2))
+                                _as_scr = cv2.cvtColor(np.array(_as_pil), cv2.COLOR_RGB2BGR)
+                                _as_res = cv2.matchTemplate(_as_scr, _auto_skill_cd_tmpl, cv2.TM_CCOEFF_NORMED)
+                                _, _as_max_val, _, _ = cv2.minMaxLoc(_as_res)
+                                if _as_max_val < 0.8:
+                                    _use_skill = True
+                        except Exception:
+                            _use_skill = True
+                    else:
+                        _use_skill = True
+
+                    if _use_skill:
+                        try:
+                            _orig_pause = pyautogui.PAUSE
+                            pyautogui.PAUSE = 0
+                            try:
+                                pyautogui.keyDown(auto_skill_key)
+                                time.sleep(0.015)
+                                pyautogui.keyUp(auto_skill_key)
+                            finally:
+                                pyautogui.PAUSE = _orig_pause
+                        except Exception:
+                            pass
+
                 if (escape_skill_enabled and
                     total_stuck_count >= escape_skill_stuck_threshold and
                     time.time() - last_escape_time >= escape_skill_cooldown):
@@ -3536,6 +3835,7 @@ class RuleExecutor:
 
                 save_path = get_segment_map_path(current_segment_idx)
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                _sanitize_segment_start_pos(game_map, current_segment_idx)
                 game_map.save(save_path)
                 seg_n = get_seg_name(current_segment_idx)
                 logger.info(f"[맵핑] '{seg_n}' 맵 저장: {save_path}")

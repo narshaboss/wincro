@@ -152,13 +152,44 @@ class GameMap:
 
     def __init__(self, name: str = "Unknown"):
         self.name = name
-        self._lock = threading.RLock()  # 스레드 안전: passable/blocked/soft_blocked 보호
-        self.passable: Set[Tuple[int, int]] = set()  # 이동 가능한 좌표
-        self.blocked: Set[Tuple[int, int]] = set()   # 장애물 좌표 (영구)
-        self.soft_blocked: Dict[Tuple[int, int], int] = {}  # 임시 장애물 {(x,y): fail_count}
-        self.patrol_points: List[Tuple[int, int]] = []  # 순찰 좌표 (순서 유지)
-        self.start_pos: Optional[Tuple[int, int]] = None  # 출발지
-        self.end_pos: Optional[Tuple[int, int]] = None    # 도착지
+        self._lock = threading.RLock()  # ??? ??: passable/blocked/soft_blocked ??
+        self.passable: Set[Tuple[int, int]] = set()  # ?? ??? ??
+        self.blocked: Set[Tuple[int, int]] = set()   # ??? ?? (??)
+        self.soft_blocked: Dict[Tuple[int, int], int] = {}  # ?? ??? {(x,y): fail_count}
+        self.blocked_edges: Set[Tuple[int, int, str]] = set()  # ?? ?? ?? ??
+        self.patrol_points: List[Tuple[int, int]] = []  # ?? ?? (?? ??)
+        self.start_pos: Optional[Tuple[int, int]] = None  # ???
+        self.end_pos: Optional[Tuple[int, int]] = None    # ???
+
+    @staticmethod
+    def _normalize_direction(direction: str) -> Optional[str]:
+        direction = str(direction).strip().lower()
+        if direction in DIRECTIONS_4:
+            return direction
+        return None
+
+    @classmethod
+    def _sanitize_blocked_edges(
+        cls,
+        blocked_edges: Set[Tuple[int, int, str]],
+        known_coords: Set[Tuple[int, int]],
+    ) -> Set[Tuple[int, int, str]]:
+        cleaned: Set[Tuple[int, int, str]] = set()
+        for x, y, direction in blocked_edges:
+            norm_dir = cls._normalize_direction(direction)
+            if norm_dir is None:
+                continue
+            sx, sy = int(x), int(y)
+            if not cls._is_valid_coord(sx, sy):
+                continue
+            dx, dy = DIRECTIONS_4[norm_dir]
+            tx, ty = sx + dx, sy + dy
+            if not cls._is_valid_coord(tx, ty):
+                continue
+            if known_coords and ((sx, sy) not in known_coords or (tx, ty) not in known_coords):
+                continue
+            cleaned.add((sx, sy, norm_dir))
+        return cleaned
 
     def mark_passable(self, x: int, y: int):
         """?? ??? ??? ?????."""
@@ -306,6 +337,47 @@ class GameMap:
         pos = (int(x), int(y))
         return pos in self.passable or pos in self.blocked or pos in self.soft_blocked
 
+    def mark_blocked_edge(self, x: int, y: int, direction: str) -> bool:
+        """passable ??? ???? ?? ?? ??? ?? ????."""
+        norm_dir = self._normalize_direction(direction)
+        if norm_dir is None:
+            return False
+        sx, sy = int(x), int(y)
+        if not self._is_valid_coord(sx, sy):
+            return False
+        dx, dy = DIRECTIONS_4[norm_dir]
+        tx, ty = sx + dx, sy + dy
+        if not self._is_valid_coord(tx, ty):
+            return False
+        if not self.is_plausible_local_coord(sx, sy) or not self.is_plausible_local_coord(tx, ty):
+            return False
+        with self._lock:
+            edge = (sx, sy, norm_dir)
+            if edge in self.blocked_edges:
+                return False
+            self.blocked_edges.add(edge)
+        logger.debug(f"[Map] blocked edge: {edge} -> ({tx}, {ty})")
+        return True
+
+    def clear_blocked_edge(self, x: int, y: int, direction: str) -> bool:
+        """?? ?? ?? ??? ????."""
+        norm_dir = self._normalize_direction(direction)
+        if norm_dir is None:
+            return False
+        edge = (int(x), int(y), norm_dir)
+        with self._lock:
+            if edge in self.blocked_edges:
+                self.blocked_edges.discard(edge)
+                logger.debug(f"[Map] clear blocked edge: {edge}")
+                return True
+        return False
+
+    def is_edge_blocked(self, x: int, y: int, direction: str) -> bool:
+        norm_dir = self._normalize_direction(direction)
+        if norm_dir is None:
+            return False
+        return (int(x), int(y), norm_dir) in self.blocked_edges
+
     def record_move(self, from_x: int, from_y: int, direction: str,
                     to_x: int, to_y: int, success: bool):
         """
@@ -356,7 +428,8 @@ class GameMap:
 
     def get_walkable_neighbors(self, x: int, y: int,
                                allow_unknown: bool = False,
-                               allow_soft_blocked: bool = True) -> List[Tuple[int, int, str]]:
+                               allow_soft_blocked: bool = True,
+                               respect_blocked_edges: bool = False) -> List[Tuple[int, int, str]]:
         """
         이동 가능한 인접 좌표 (A* 경로탐색용)
 
@@ -371,6 +444,9 @@ class GameMap:
         neighbors = []
         for direction, (dx, dy) in DIRECTIONS_4.items():
             nx, ny = int(x + dx), int(y + dy)
+
+            if respect_blocked_edges and self.is_edge_blocked(x, y, direction):
+                continue
 
             # 영구벽은 무조건 제외
             if self.is_blocked(nx, ny):
@@ -418,6 +494,7 @@ class GameMap:
             passable_count = len(self.passable)
             blocked_count = len(self.blocked)
             soft_blocked_count = len(self.soft_blocked)
+            blocked_edge_count = len(self.blocked_edges)
         return {
             "name": self.name,
             "total_tiles": len(all_coords),
@@ -426,7 +503,7 @@ class GameMap:
             "soft_blocked_tiles": soft_blocked_count,
             "explored_tiles": passable_count,  # 호환성
             "walkable_edges": passable_count,   # 호환성
-            "blocked_edges": blocked_count,     # 호환성
+            "blocked_edges": blocked_edge_count,     # 호환성
             "bounds": self.get_bounds(),
         }
 
@@ -455,6 +532,7 @@ class GameMap:
             passable_snapshot = set(self.passable)
             blocked_snapshot = set(self.blocked)
             soft_blocked_snapshot = dict(self.soft_blocked)
+            blocked_edges_snapshot = set(self.blocked_edges)
             patrol_snapshot = list(self.patrol_points)
             start_snap = self.start_pos
             end_snap = self.end_pos
@@ -468,11 +546,14 @@ class GameMap:
             start_snap,
             end_snap,
         )
+        known_snapshot = passable_snapshot | blocked_snapshot | set(soft_blocked_snapshot.keys())
+        blocked_edges_snapshot = self._sanitize_blocked_edges(blocked_edges_snapshot, known_snapshot)
 
         with self._lock:
             self.passable = set(passable_snapshot)
             self.blocked = set(blocked_snapshot)
             self.soft_blocked = dict(soft_blocked_snapshot)
+            self.blocked_edges = set(blocked_edges_snapshot)
             self.patrol_points = list(patrol_snapshot)
             self.start_pos = start_snap
             self.end_pos = end_snap
@@ -482,6 +563,7 @@ class GameMap:
             "passable": [list(p) for p in sorted(passable_snapshot)],
             "blocked": [list(p) for p in sorted(blocked_snapshot)],
             "soft_blocked": {f"{p[0]},{p[1]}": c for p, c in soft_blocked_snapshot.items()},
+            "blocked_edges": [[x, y, d] for x, y, d in sorted(blocked_edges_snapshot)],
             "patrol_points": [list(p) for p in patrol_snapshot],
             "start_pos": list(start_snap) if start_snap is not None else None,
             "end_pos": list(end_snap) if end_snap is not None else None,
@@ -531,6 +613,14 @@ class GameMap:
                 except (ValueError, IndexError):
                     continue
             new_patrol = [tuple(p) for p in data.get("patrol_points", [])]
+            raw_edges = data.get("blocked_edges", [])
+            new_blocked_edges = set()
+            for edge in raw_edges:
+                try:
+                    if len(edge) >= 3:
+                        new_blocked_edges.add((int(edge[0]), int(edge[1]), str(edge[2])))
+                except (ValueError, TypeError):
+                    continue
             sp = data.get("start_pos")
             new_start = tuple(sp) if sp is not None else None
             ep = data.get("end_pos")
@@ -544,12 +634,15 @@ class GameMap:
                 new_start,
                 new_end,
             )
+            known_loaded = new_passable | new_blocked | set(new_soft_blocked.keys())
+            new_blocked_edges = self._sanitize_blocked_edges(new_blocked_edges, known_loaded)
 
             with self._lock:
                 self.name = new_name
                 self.passable = new_passable
                 self.blocked = new_blocked
                 self.soft_blocked = new_soft_blocked
+                self.blocked_edges = new_blocked_edges
                 self.patrol_points = new_patrol
                 self.start_pos = new_start
                 self.end_pos = new_end
@@ -583,6 +676,14 @@ class GameMap:
                 except (ValueError, IndexError):
                     continue
             loaded_patrol = [tuple(p) for p in data.get("patrol_points", [])]
+            raw_edges = data.get("blocked_edges", [])
+            loaded_blocked_edges = set()
+            for edge in raw_edges:
+                try:
+                    if len(edge) >= 3:
+                        loaded_blocked_edges.add((int(edge[0]), int(edge[1]), str(edge[2])))
+                except (ValueError, TypeError):
+                    continue
             sp = data.get("start_pos")
             loaded_start = tuple(sp) if sp is not None else None
             ep = data.get("end_pos")
@@ -597,6 +698,8 @@ class GameMap:
                 loaded_start,
                 loaded_end,
             )
+            known_loaded = loaded_passable | loaded_blocked | set(loaded_soft_blocked.keys())
+            loaded_blocked_edges = self._sanitize_blocked_edges(loaded_blocked_edges, known_loaded)
 
             with self._lock:
                 if self.name == "Unknown":
@@ -608,6 +711,7 @@ class GameMap:
                 merged_soft = dict(self.soft_blocked)
                 for pos, count in loaded_soft_blocked.items():
                     merged_soft[pos] = max(merged_soft.get(pos, 0), count)
+                merged_edges = set(self.blocked_edges) | set(loaded_blocked_edges)
                 merged_patrol = list(self.patrol_points) if self.patrol_points else list(loaded_patrol)
                 merged_start = self.start_pos if self.start_pos is not None else loaded_start
                 merged_end = self.end_pos if self.end_pos is not None else loaded_end
@@ -620,11 +724,14 @@ class GameMap:
                 merged_start,
                 merged_end,
             )
+            known_merged = merged_passable | merged_blocked | set(merged_soft.keys())
+            merged_edges = self._sanitize_blocked_edges(merged_edges, known_merged)
 
             with self._lock:
                 self.passable = merged_passable
                 self.blocked = merged_blocked
                 self.soft_blocked = merged_soft
+                self.blocked_edges = merged_edges
                 self.patrol_points = merged_patrol
                 self.start_pos = merged_start
                 self.end_pos = merged_end
@@ -682,6 +789,20 @@ class GameMap:
                 p for p in self.patrol_points
                 if min_x <= p[0] <= max_x and min_y <= p[1] <= max_y
             ]
+            # blocked_edges 정리
+            self.blocked_edges = {
+                (x, y, d) for x, y, d in self.blocked_edges
+                if min_x <= x <= max_x and min_y <= y <= max_y
+            }
+            # start_pos / end_pos 범위 체크
+            if self.start_pos is not None:
+                sx, sy = self.start_pos
+                if sx < min_x or sx > max_x or sy < min_y or sy > max_y:
+                    self.start_pos = None
+            if self.end_pos is not None:
+                ex, ey = self.end_pos
+                if ex < min_x or ex > max_x or ey < min_y or ey > max_y:
+                    self.end_pos = None
 
         if removed > 0:
             logger.info(f"[Map] 이상치 정리: {removed}개 타일 제거 (범위: X[{min_x}~{max_x}] Y[{min_y}~{max_y}])")
@@ -723,6 +844,7 @@ class GameMap:
             self.passable.clear()
             self.blocked.clear()
             self.soft_blocked.clear()
+            self.blocked_edges.clear()
             self.patrol_points.clear()
             self.start_pos = None
             self.end_pos = None
