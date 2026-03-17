@@ -3073,7 +3073,7 @@ class RuleExecutor:
         game_map = GameMap(name=map_name)
         seg0_path = get_segment_map_path(0)
         if os.path.exists(seg0_path):
-            game_map.load_and_merge(seg0_path)
+            game_map.load(seg0_path)
             _sanitize_segment_start_pos(game_map, 0)
             stats = game_map.get_statistics()
             logger.info(f"[좌표모드] 첫 경유지 맵 로드: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
@@ -3083,7 +3083,7 @@ class RuleExecutor:
             for fallback in [f"{map_name}_시작_map.json", f"{map_name}_map.json"]:
                 old_map_path = os.path.join(map_dir, fallback)
                 if os.path.exists(old_map_path):
-                    game_map.load_and_merge(old_map_path)
+                    game_map.load(old_map_path)
                     _sanitize_segment_start_pos(game_map, 0)
                     stats = game_map.get_statistics()
                     logger.info(f"[좌표모드] 호환 맵 로드: {old_map_path} ({stats['total_tiles']}개 타일)")
@@ -3120,7 +3120,7 @@ class RuleExecutor:
             pathfinder = SimplePathfinder(game_map)
             new_path = get_segment_map_path(new_seg_idx)
             if os.path.exists(new_path):
-                game_map.load_and_merge(new_path)
+                game_map.load(new_path)
                 _sanitize_segment_start_pos(game_map, new_seg_idx)
                 stats = game_map.get_statistics()
                 logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
@@ -3136,7 +3136,7 @@ class RuleExecutor:
             seg_name = get_seg_name(seg_idx)
             try:
                 fresh_map = GameMap(name=f"{map_name}_{seg_name}")
-                fresh_map.load_and_merge(map_path)
+                fresh_map.load(map_path)
                 _sanitize_segment_start_pos(fresh_map, seg_idx)
                 game_map = fresh_map
                 pathfinder = SimplePathfinder(game_map)
@@ -3297,6 +3297,10 @@ class RuleExecutor:
         path_index = 0
         tick_counter = 0  # soft_blocked tick용 카운터
         explored_from = {}  # {(x,y): set(방향)} — 자동 탐색용
+        segment_transition_stabilize_until = 0.0
+        segment_transition_last_coord = None
+        segment_transition_stable_hits = 0
+        segment_transition_logged = False
         unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
 
         def press_key(direction):
@@ -3523,9 +3527,37 @@ class RuleExecutor:
                 if abs(current_x) > 500 or abs(current_y) > 500:
                     coord_fail_count += 1
                     if coord_fail_count % 10 == 1:
-                        logger.warning(f"[좌표모드] #{iteration} 좌표 범위 초과: ({current_x},{current_y})")
+                        logger.warning(f"[??????] #{iteration} ??? ??? ???: ({current_x},{current_y})")
                     time.sleep(max(interval, 0.05))
                     continue
+
+                if segment_transition_stabilize_until > 0.0:
+                    now_ts = time.time()
+                    if now_ts < segment_transition_stabilize_until:
+                        if not segment_transition_logged:
+                            logger.info("[coordinate-mode] segment transition stabilizing...")
+                            segment_transition_logged = True
+                        if segment_transition_last_coord is None:
+                            segment_transition_stable_hits = 1
+                        else:
+                            px, py = segment_transition_last_coord
+                            if abs(current_x - px) + abs(current_y - py) <= 1:
+                                segment_transition_stable_hits += 1
+                            else:
+                                segment_transition_stable_hits = 1
+                        segment_transition_last_coord = (current_x, current_y)
+                        prev_x, prev_y = current_x, current_y
+                        last_dir = None
+                        current_path = []
+                        path_index = 0
+                        path_pos_index = {}
+                        if segment_transition_stable_hits < 2:
+                            time.sleep(0.05)
+                            continue
+                        segment_transition_stabilize_until = 0.0
+                        logger.info(f"[coordinate-mode] segment transition stabilized: ({current_x},{current_y})")
+                    else:
+                        segment_transition_stabilize_until = 0.0
 
                 # 1.5. 첫 반복: 시작 위치를 이동가능으로 등록
                 if prev_x is None and mapping_enabled:
@@ -3586,6 +3618,10 @@ class RuleExecutor:
                         path_index = 0
                         path_pos_index = {}
                         explored_from = {}
+                        segment_transition_stabilize_until = time.time() + 1.5
+                        segment_transition_last_coord = None
+                        segment_transition_stable_hits = 0
+                        segment_transition_logged = False
                         unknown_path_fails = 0
                         last_dir = None
                         prev_x, prev_y = current_x, current_y
@@ -3641,6 +3677,10 @@ class RuleExecutor:
                         path_index = 0
                         path_pos_index = {}
                         explored_from = {}
+                        segment_transition_stabilize_until = time.time() + 1.5
+                        segment_transition_last_coord = None
+                        segment_transition_stable_hits = 0
+                        segment_transition_logged = False
                         unknown_path_fails = 0
                         last_dir = None
                         prev_x, prev_y = current_x, current_y

@@ -3797,6 +3797,10 @@ class GameModeDialog(ctk.CTkToplevel):
         mark_portal_entry = False  # 구간 전환 후 첫 좌표를 입구 포탈로 등록
         unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
         portal_grace = 0  # 구간 전환 후 점프 필터 비활성 카운터
+        _segment_transition_stabilize_until = 0.0  # 구간 전환 직후 좌표 안정화 대기
+        _segment_transition_last_coord = None
+        _segment_transition_stable_hits = 0
+        _segment_transition_logged = False
         _jump_reject_coord = None  # 연속 거부된 좌표
         _jump_reject_count = 0  # 연속 거부 횟수
         _suspicious_jump_candidate = None  # OCR 의심 점프 후보
@@ -4054,9 +4058,15 @@ class GameModeDialog(ctk.CTkToplevel):
 
         def _arm_segment_transition_state(wait_for_boss_teleport: bool, anchor_x: int = None, anchor_y: int = None):
             nonlocal portal_grace, prev_x, prev_y
+            nonlocal _segment_transition_stabilize_until, _segment_transition_last_coord
+            nonlocal _segment_transition_stable_hits, _segment_transition_logged
             nonlocal _jump_reject_coord, _jump_reject_count
             nonlocal _suspicious_jump_candidate, _suspicious_jump_streak
             portal_grace = 30
+            _segment_transition_stabilize_until = time.time() + 1.5
+            _segment_transition_last_coord = None
+            _segment_transition_stable_hits = 0
+            _segment_transition_logged = False
             _jump_reject_coord = None
             _jump_reject_count = 0
             _suspicious_jump_candidate = None
@@ -5447,6 +5457,54 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._append_log(f"⚠️ 좌표 범위 초과 무시: ({cx},{cy})"))
                     self._stop_event.wait(0.1)
                     continue
+
+                # 구간 전환 직후 첫 1~2프레임은 경로실패/런타임 복구로 몰지 않고 좌표 안정화만 기다린다.
+                # 굴 전환 순간 좌표가 크게 바뀌는 것은 정상인데, 이 프레임을 일반 실패로 처리하면
+                # 경로복구/재로드/로그가 연달아 돌며 프로그램이 먹통처럼 보일 수 있다.
+                if _segment_transition_stabilize_until > 0.0:
+                    _now_ts = time.time()
+                    _coord = (current_x, current_y)
+                    _coord_plausible = True
+                    if use_map and hasattr(self._game_map, "is_plausible_local_coord"):
+                        _coord_plausible = (
+                            self._game_map.is_known(current_x, current_y) or
+                            self._game_map.is_plausible_local_coord(current_x, current_y)
+                        )
+                    if _coord_plausible:
+                        if (_segment_transition_last_coord is not None and
+                            abs(_segment_transition_last_coord[0] - current_x) +
+                            abs(_segment_transition_last_coord[1] - current_y) <= 1):
+                            _segment_transition_stable_hits += 1
+                        else:
+                            _segment_transition_last_coord = _coord
+                            _segment_transition_stable_hits = 1
+                    else:
+                        _segment_transition_last_coord = None
+                        _segment_transition_stable_hits = 0
+
+                    _stabilizing = _now_ts < _segment_transition_stabilize_until
+                    if _segment_transition_stable_hits >= 2 or (not _stabilizing and _coord_plausible):
+                        _segment_transition_stabilize_until = 0.0
+                        _segment_transition_last_coord = None
+                        _segment_transition_stable_hits = 0
+                        _segment_transition_logged = False
+                        prev_x, prev_y = current_x, current_y
+                        last_dir = None
+                        if _ui_update_ok:
+                            self.after(0, lambda cx=current_x, cy=current_y:
+                                self._append_log(f"🧭 굴 전환 안정화 완료: ({cx},{cy})"))
+                    elif _stabilizing:
+                        if _ui_update_ok and not _segment_transition_logged:
+                            _segment_transition_logged = True
+                            self.after(0, lambda:
+                                self._append_log("🧭 굴 전환 좌표 안정화 중..."))
+                        prev_x, prev_y = current_x, current_y
+                        last_dir = None
+                        current_path = []
+                        path_index = 0
+                        path_pos_index = {}
+                        self._stop_event.wait(0.05)
+                        continue
                 # 1-1) 현재 맵 클러스터에서 너무 먼 좌표는 라이브 OCR 오독으로 우선 무시
                 if prev_x is not None and use_map:
                     _live_jump = abs(current_x - prev_x) + abs(current_y - prev_y)
@@ -9391,7 +9449,7 @@ class GameModeDialog(ctk.CTkToplevel):
         map_path = self._get_segment_map_name(0)
         seg_name = self._get_segment_display_name(0)
         if os.path.exists(map_path):
-            self._game_map.load_and_merge(map_path)
+            self._game_map.load(map_path)
             _loaded_start_before = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
             self._sanitize_segment_end_pos(self._game_map, 0)
             _loaded_start_after = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
@@ -9421,7 +9479,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 for fallback in [f"{map_name}_시작_map.json", f"{map_name}_map.json"]:
                     old_map_path = os.path.join(map_dir, fallback)
                     if os.path.exists(old_map_path):
-                        self._game_map.load_and_merge(old_map_path)
+                        self._game_map.load(old_map_path)
                         self._sanitize_segment_end_pos(self._game_map, 0)
                         stats = self._game_map.get_statistics()
                         logger.info(f"[맵핑] 호환 맵 로드: {old_map_path} ({stats['total_tiles']}개 타일)")
@@ -10427,7 +10485,7 @@ class GameModeDialog(ctk.CTkToplevel):
             # 새 구간 맵 로드 (lock 안에서 수행 — auto_save가 빈 맵을 덮어쓰는 경합 방지)
             map_path = self._get_segment_map_name(new_segment_idx)
             if os.path.exists(map_path):
-                self._game_map.load_and_merge(map_path)
+                self._game_map.load(map_path)
                 time.sleep(0)  # GIL 해제 (맵 로드 후)
                 _loaded_start_before = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
                 self._sanitize_segment_end_pos(self._game_map, new_segment_idx)
@@ -10475,7 +10533,7 @@ class GameModeDialog(ctk.CTkToplevel):
         seg_name = self._get_segment_display_name(segment_idx)
         try:
             fresh_map = GameMap(name=f"{self._config.name or 'autosave'}_{seg_name}")
-            fresh_map.load_and_merge(map_path)
+            fresh_map.load(map_path)
             _loaded_start_before = tuple(fresh_map.start_pos) if fresh_map.start_pos is not None else None
             self._sanitize_segment_end_pos(fresh_map, segment_idx)
             _loaded_start_after = tuple(fresh_map.start_pos) if fresh_map.start_pos is not None else None

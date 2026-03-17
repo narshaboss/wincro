@@ -735,10 +735,6 @@ class GameMap:
                 self.patrol_points = merged_patrol
                 self.start_pos = merged_start
                 self.end_pos = merged_end
-                if self.start_pos is not None:
-                    self.passable.discard(self.start_pos)
-                    self.blocked.add(self.start_pos)
-                    self.soft_blocked.pop(self.start_pos, None)
                 after = len(self.passable) + len(self.blocked)
 
             logger.info(f"[Map] ??: {before}? -> {after}?")
