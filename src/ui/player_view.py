@@ -3132,6 +3132,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._auto_run = auto_run
         self._wp_empty_label = None
         self._config_rule_id = config_rule_id  # None이면 새 특화모드
+        self._stop_reason = ""
+        self._stop_detail = ""
+        self._stop_marked_at = 0.0
         self._ui_call_queue = deque()
         self._ui_call_queue_lock = threading.Lock()
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
@@ -3196,6 +3199,40 @@ class GameModeDialog(ctk.CTkToplevel):
 
         dispatcher.post(_schedule_on_main)
         return None
+
+    def _mark_stop_reason(self, reason, detail="", overwrite=False):
+        """실행 중지 원인을 기록한다."""
+        try:
+            _reason = str(reason or "unknown")
+            _detail = str(detail or "")
+            if overwrite or not getattr(self, "_stop_reason", ""):
+                self._stop_reason = _reason
+                self._stop_detail = _detail
+                self._stop_marked_at = time.time()
+            logger.info(
+                f"[중단추적] reason={self._stop_reason or _reason} "
+                f"detail={_detail or self._stop_detail} "
+                f"stop_set={self._stop_event.is_set()} running={self._is_running} "
+                f"thread={threading.current_thread().name}"
+            )
+        except Exception as e:
+            logger.debug(f"[중단추적] 기록 실패: {e}")
+
+    def _request_stop_execution(self, reason, detail="", ui_log=None, overwrite=False):
+        """중단 사유를 남기고 안전하게 stop_execution을 예약한다."""
+        self._mark_stop_reason(reason, detail, overwrite=overwrite)
+        self._stop_event.set()
+
+        if ui_log:
+            try:
+                self._ui_post(lambda msg=str(ui_log): self._append_log(msg))
+            except Exception:
+                pass
+
+        try:
+            self.after(0, self._stop_execution)
+        except Exception:
+            self._is_running = False
 
     def _build_ui(self):
         """UI 구성"""
@@ -3450,6 +3487,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _rt = getattr(self, '_run_thread', None)
             if _rt is not None and not _rt.is_alive():
                 logger.warning("[실행] 스레드 종료됨 but _is_running=True → 강제 리셋")
+                self._mark_stop_reason("dead_thread_forced_reset", "_toggle_execution noticed dead run thread", overwrite=True)
                 self._is_running = False
                 self._stop_event.set()
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
@@ -3459,6 +3497,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
                 return
+            self._mark_stop_reason("manual_stop_button", "_toggle_execution pressed while running", overwrite=True)
             self._stop_execution()
         else:
             self._single_waypoint_mode = False
@@ -3471,6 +3510,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _rt = getattr(self, '_run_thread', None)
             if _rt is not None and not _rt.is_alive():
                 logger.warning("[실행] 스레드 종료됨 but _is_running=True → 강제 리셋")
+                self._mark_stop_reason("dead_thread_forced_reset", "_toggle_mapping_test noticed dead run thread", overwrite=True)
                 self._is_running = False
                 self._stop_event.set()
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
@@ -3479,6 +3519,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
                 return
+            self._mark_stop_reason("manual_stop_button", "_toggle_mapping_test pressed while running", overwrite=True)
             self._stop_execution()
         else:
             self._single_waypoint_mode = False
@@ -3542,6 +3583,9 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.error(f"[실행] 설정 적용 오류: {e}")
         self._is_running = True
         self._completed_normally = False
+        self._stop_reason = ""
+        self._stop_detail = ""
+        self._stop_marked_at = 0.0
         self._stop_event.clear()
         self._key_press_count = 0
         # 일반 전체 테스트에서는 맵 저장/기록 안 함
@@ -3571,6 +3615,12 @@ class GameModeDialog(ctk.CTkToplevel):
             return
         was_mapping = getattr(self, '_is_mapping', False)
         mapping_seg = getattr(self, '_current_segment_idx', -1)
+        if not getattr(self, "_stop_reason", ""):
+            self._mark_stop_reason("manual_or_external_stop", "_stop_execution entered without prior reason", overwrite=True)
+        logger.info(
+            f"[중단추적] stop_execution enter reason={self._stop_reason or 'unknown'} "
+            f"detail={self._stop_detail or '-'} key_count={self._key_press_count}"
+        )
         self._stop_event.set()
         self._is_running = False
         self._is_mapping = False
@@ -3582,6 +3632,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
             self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
             self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회")
+            self._append_log(f"🧭 중단사유: {self._stop_reason or 'unknown'}")
             # 맵핑 카드 버튼 복원
             if was_mapping and mapping_seg >= 0:
                 self._update_card_mapping_btn(mapping_seg, False)
@@ -3624,6 +3675,7 @@ class GameModeDialog(ctk.CTkToplevel):
         try:
             self._run_coordinate_loop()
         except Exception as e:
+            self._mark_stop_reason("run_loop_exception", f"{type(e).__name__}: {e}", overwrite=True)
             logger.error(f"[실행루프] 치명적 오류: {e}", exc_info=True)
             self.after(0, lambda err=str(e): self._append_log(f"⚠️ 치명적 오류: {err}"))
         finally:
@@ -3634,6 +3686,8 @@ class GameModeDialog(ctk.CTkToplevel):
             if getattr(self, "_completed_normally", False):
                 logger.debug("[실행루프] 정상 완료 예약됨 → stop_execution 생략")
                 return
+            if not getattr(self, "_stop_reason", ""):
+                self._mark_stop_reason("run_loop_finally_unclassified", "run loop exited without explicit stop reason", overwrite=True)
             self._stop_event.set()
             try:
                 self.after(0, self._stop_execution)
@@ -3652,10 +3706,10 @@ class GameModeDialog(ctk.CTkToplevel):
         if not matcher.has_all_templates():
             missing = matcher.get_missing_digits()
             self.after(0, lambda: self._append_log(f"⚠️ 템플릿 미완성: {missing}"))
-            self.after(0, self._stop_execution)
+            self._request_stop_execution("templates_incomplete", f"missing={missing}")
             return
 
-        _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
+        _escape_hotkey_id = keyboard.add_hotkey('escape', lambda: self._mark_stop_reason("escape_hotkey", "keyboard ESC hotkey", overwrite=True) or self._stop_event.set())
         self._key_press_count = 0
 
         # 설정값
@@ -5596,7 +5650,7 @@ class GameModeDialog(ctk.CTkToplevel):
             # stop_event.wait 사용 → 중지 즉시 반응 (time.sleep 대신)
             if self._stop_event.wait(2.0):
                 self.after(0, lambda: self._append_log("⚠️ 2초 대기 중 중지 감지"))
-                self.after(0, self._stop_execution)
+                self._request_stop_execution("pre_start_wait_interrupted", "stop_event set during initial 2s wait")
                 return
 
             iteration = 0
@@ -5639,7 +5693,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     coord_fail_count += 1
                     if coord_fail_count >= max_coord_fails:
                         self.after(0, lambda: self._append_log(f"❌ 좌표 읽기 연속 {max_coord_fails}회 실패 → 중단"))
-                        self.after(0, self._stop_execution)
+                        self._request_stop_execution("coord_fail_limit", f"coord_fail_count={coord_fail_count}")
                         return
                     if coord_fail_count % 5 == 1:
                         self.after(0, lambda c=coord_fail_count: self._append_log(f"⚠️ 좌표 읽기 실패 ({c}/{max_coord_fails})"))
@@ -5908,6 +5962,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                     logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
                                 self._ui_post(lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
                                     self._append_log(f"🛑 맵핑 중 포탈 이탈: ({px},{py})→({cx},{cy}) — 현재 테스트 중지"))
+                                self._mark_stop_reason(
+                                    "mapping_portal_exit",
+                                    f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y})",
+                                    overwrite=True,
+                                )
                                 self._ui_post(self._stop_execution)
                                 return
                             # 비정상 좌표 점프: portal_grace/mark_portal_entry로 처리 안 된 점프
@@ -5918,6 +5977,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                     # → 맵 오염 방지를 위해 실행 중지
                                     self._ui_post(lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
                                         self._append_log(f"🛑 비정상 좌표 점프: ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
+                                    self._mark_stop_reason(
+                                        "abnormal_coord_jump",
+                                        f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) jump={jump}",
+                                        overwrite=True,
+                                    )
                                     self._stop_event.set()
                                     break
                             else:
@@ -5950,6 +6014,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
                         self._ui_post(lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
                             self._append_log(f"🛑 맵핑 중 포탈 이탈: ({px},{py})→({cx},{cy}) — 현재 테스트 중지"))
+                        self._mark_stop_reason(
+                            "mapping_portal_exit",
+                            f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y})",
+                            overwrite=True,
+                        )
                         self._ui_post(self._stop_execution)
                         return
                     else:
@@ -9496,7 +9565,21 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _ui_update_ok:
                     self.after(0, lambda m=_timing_msg: self._append_log(m))
 
+            if iteration >= max_iterations and not self._stop_event.is_set():
+                self._mark_stop_reason(
+                    "max_iterations_reached",
+                    f"iteration={iteration}/{max_iterations}",
+                    overwrite=True,
+                )
+            elif self._stop_event.is_set() and not getattr(self, "_stop_reason", ""):
+                self._mark_stop_reason(
+                    "stop_event_set_external",
+                    f"iteration={iteration}",
+                    overwrite=True,
+                )
+
         except Exception as e:
+            self._mark_stop_reason("coordinate_loop_exception", f"{type(e).__name__}: {e}", overwrite=True)
             logger.exception("[좌표모드] 오류")
             _etype = type(e).__name__
             _eloc = "unknown"
@@ -9519,6 +9602,8 @@ class GameModeDialog(ctk.CTkToplevel):
             threading.Thread(target=_remove_hotkey, daemon=True).start()
 
             try:
+                if not getattr(self, "_stop_reason", ""):
+                    self._mark_stop_reason("coordinate_loop_finally_unclassified", "coordinate loop reached finally without reason", overwrite=True)
                 self.after(0, self._stop_execution)
             except Exception:
                 pass
