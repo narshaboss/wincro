@@ -4022,6 +4022,27 @@ class GameModeDialog(ctk.CTkToplevel):
                 _auto_skill_cd_tmpl = _ascv_init.imread(auto_skill_cd_image)
             except Exception:
                 pass
+        _auto_skill_diag_last_sig = None
+        _auto_skill_diag_last_time = 0.0
+        def _log_auto_skill_diag(sig, msg, force=False):
+            nonlocal _auto_skill_diag_last_sig, _auto_skill_diag_last_time
+            _now_diag = time.time()
+            if force or sig != _auto_skill_diag_last_sig or (_now_diag - _auto_skill_diag_last_time) >= 3.0:
+                logger.info(f"[상시스킬진단] {msg}")
+                _auto_skill_diag_last_sig = sig
+                _auto_skill_diag_last_time = _now_diag
+        if auto_skill_enabled:
+            _log_auto_skill_diag(
+                ("config", bool(auto_skill_key), bool(auto_skill_cd_image), bool(_auto_skill_cd_tmpl), tuple(auto_skill_cd_region) if isinstance(auto_skill_cd_region, (list, tuple)) else None),
+                f"설정 enabled={auto_skill_enabled} key={auto_skill_key or '-'} image={'Y' if auto_skill_cd_image else 'N'} tmpl={'Y' if _auto_skill_cd_tmpl is not None else 'N'} region={auto_skill_cd_region}",
+                force=True,
+            )
+            if auto_skill_cd_image and _auto_skill_cd_tmpl is None:
+                _log_auto_skill_diag(
+                    ("config", "template_load_fail", auto_skill_cd_image),
+                    f"이미지 로드 실패 path={auto_skill_cd_image}",
+                    force=True,
+                )
         if auto_skill_enabled and auto_skill_key:
             _as_mode = "이미지" if _auto_skill_cd_tmpl is not None else f"타이머({auto_skill_cooldown}초)"
             self.after(0, lambda k=auto_skill_key, m=_as_mode:
@@ -6839,6 +6860,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 _t_skill = time.time()
                 if auto_skill_enabled and auto_skill_key and not self._stop_event.is_set():
                     _use_skill = False
+                    _auto_skill_reason = "blocked"
+                    _auto_skill_score = None
                     if _auto_skill_cd_tmpl is not None:
                         # 이미지 기반: OCR 스크린샷 재사용 (추가 스크린샷 불필요)
                         try:
@@ -6852,15 +6875,45 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _as_scr = _ascv.cvtColor(_asnp.array(_as_cropped), _ascv.COLOR_RGB2BGR)
                                 else:
                                     _as_scr = _ascv.cvtColor(_asnp.array(_as_pil), _ascv.COLOR_RGB2BGR)
-                                _as_res = _ascv.matchTemplate(_as_scr, _auto_skill_cd_tmpl, _ascv.TM_CCOEFF_NORMED)
-                                _, _as_max_val, _, _ = _ascv.minMaxLoc(_as_res)
-                                if _as_max_val < 0.8:
-                                    _use_skill = True
-                        except Exception:
+                                _tmpl_h, _tmpl_w = _auto_skill_cd_tmpl.shape[:2]
+                                _scr_h, _scr_w = _as_scr.shape[:2]
+                                if _scr_h < _tmpl_h or _scr_w < _tmpl_w:
+                                    _auto_skill_reason = "region_too_small"
+                                    _log_auto_skill_diag(
+                                        ("runtime", _auto_skill_reason, _scr_w, _scr_h, _tmpl_w, _tmpl_h),
+                                        f"이미지모드: region이 템플릿보다 작음 screen={_scr_w}x{_scr_h} tmpl={_tmpl_w}x{_tmpl_h} region={auto_skill_cd_region}",
+                                    )
+                                else:
+                                    _as_res = _ascv.matchTemplate(_as_scr, _auto_skill_cd_tmpl, _ascv.TM_CCOEFF_NORMED)
+                                    _, _as_max_val, _, _ = _ascv.minMaxLoc(_as_res)
+                                    _auto_skill_score = float(_as_max_val)
+                                    _use_skill = _as_max_val < 0.8
+                                    _auto_skill_reason = "cooldown_hidden" if _use_skill else "cooldown_visible"
+                                    _log_auto_skill_diag(
+                                        ("runtime", _auto_skill_reason, round(_auto_skill_score, 3)),
+                                        f"이미지모드: score={_auto_skill_score:.3f} threshold=0.800 use={_use_skill} region={auto_skill_cd_region}",
+                                    )
+                            else:
+                                _auto_skill_reason = "no_screenshot"
+                                _log_auto_skill_diag(
+                                    ("runtime", _auto_skill_reason),
+                                    "이미지모드: last_screenshot 없음 -> 상시스킬 미사용",
+                                )
+                        except Exception as _auto_skill_exc:
                             _use_skill = True
+                            _auto_skill_reason = f"exception:{type(_auto_skill_exc).__name__}"
+                            _log_auto_skill_diag(
+                                ("runtime", "exception", type(_auto_skill_exc).__name__),
+                                f"이미지모드 예외 -> 상시스킬 사용: {type(_auto_skill_exc).__name__}: {_auto_skill_exc}",
+                            )
                     else:
                         # 이미지 미설정: 매 반복 사용
                         _use_skill = True
+                        _auto_skill_reason = "no_template"
+                        _log_auto_skill_diag(
+                            ("runtime", _auto_skill_reason, bool(auto_skill_cd_image)),
+                            f"이미지없음/로드실패 -> 상시스킬 사용 key={auto_skill_key} image={'Y' if auto_skill_cd_image else 'N'}",
+                        )
                     if _use_skill:
                         try:
                             _orig_pause = pyautogui.PAUSE
@@ -6872,8 +6925,17 @@ class GameModeDialog(ctk.CTkToplevel):
                             finally:
                                 pyautogui.PAUSE = _orig_pause
                             self._key_press_count += 1
-                        except Exception:
-                            pass
+                            _score_suffix = f" score={_auto_skill_score:.3f}" if _auto_skill_score is not None else ""
+                            _log_auto_skill_diag(
+                                ("press", _auto_skill_reason),
+                                f"상시스킬 입력 key={auto_skill_key} reason={_auto_skill_reason}{_score_suffix}",
+                            )
+                        except Exception as _auto_skill_press_exc:
+                            _log_auto_skill_diag(
+                                ("press_error", type(_auto_skill_press_exc).__name__),
+                                f"상시스킬 입력 실패 key={auto_skill_key}: {type(_auto_skill_press_exc).__name__}: {_auto_skill_press_exc}",
+                                force=True,
+                            )
                 _t_skill_ms = int((time.time() - _t_skill) * 1000)
                 if _t_skill_ms > 10:
                     logger.debug(f"[타이밍] 상시스킬: {_t_skill_ms}ms")

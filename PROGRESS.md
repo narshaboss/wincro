@@ -1846,3 +1846,23 @@ self._mini_total_repeat = 1
   - `APP_VERSION` `1.0.149` -> `1.0.150`
 
 ---
+
+### 2026-03-19: Auto-skill runtime diagnostic logging (v1.0.151)
+- Added runtime diagnostic logging for auto-skill decisions without changing the decision logic itself.
+- `src/ui/player_view.py`
+  - Added throttled `[??????]` logs for special-mode execution.
+  - Logs now capture:
+    - config summary (`enabled`, `key`, image/template presence, region)
+    - template load failure
+    - missing `last_screenshot`
+    - cropped region smaller than the template
+    - runtime match score and `use=True/False`
+    - actual key press reason and press failures
+- `src/player/rule_executor.py`
+  - Added the same throttled diagnostics for playback/coordinate-mode execution under `[coordinate-mode][auto-skill-diag]`.
+- Verification:
+  - `py_compile` passed for `src/ui/player_view.py` and `src/player/rule_executor.py`.
+- `config.py`
+  - `APP_VERSION` `1.0.150` -> `1.0.151`
+
+---

@@ -3274,6 +3274,15 @@ class RuleExecutor:
                 _auto_skill_cd_tmpl = cv2.imread(auto_skill_cd_image)
             except Exception:
                 _auto_skill_cd_tmpl = None
+        _auto_skill_diag_last_sig = None
+        _auto_skill_diag_last_time = 0.0
+        def _log_auto_skill_diag(sig, msg, force=False):
+            nonlocal _auto_skill_diag_last_sig, _auto_skill_diag_last_time
+            _now_diag = time.time()
+            if force or sig != _auto_skill_diag_last_sig or (_now_diag - _auto_skill_diag_last_time) >= 3.0:
+                logger.info(f"[coordinate-mode][auto-skill-diag] {msg}")
+                _auto_skill_diag_last_sig = sig
+                _auto_skill_diag_last_time = _now_diag
 
         wp_info = [(t[0], t[1], t[2]) for t in all_targets]
         logger.info(f"[좌표모드] 경유지 {len(all_targets)}개: {wp_info}")
@@ -3290,6 +3299,17 @@ class RuleExecutor:
         if auto_skill_enabled and auto_skill_key:
             _as_mode = "image" if _auto_skill_cd_tmpl is not None else f"timer({auto_skill_cooldown}s)"
             logger.info(f"[coordinate-mode] auto-skill: key={auto_skill_key}, cooldown={_as_mode}")
+            _log_auto_skill_diag(
+                ("config", bool(auto_skill_key), bool(auto_skill_cd_image), bool(_auto_skill_cd_tmpl), tuple(auto_skill_cd_region) if isinstance(auto_skill_cd_region, (list, tuple)) else None),
+                f"config enabled={auto_skill_enabled} key={auto_skill_key or '-'} image={'Y' if auto_skill_cd_image else 'N'} tmpl={'Y' if _auto_skill_cd_tmpl is not None else 'N'} region={auto_skill_cd_region}",
+                force=True,
+            )
+            if auto_skill_cd_image and _auto_skill_cd_tmpl is None:
+                _log_auto_skill_diag(
+                    ("config", "template_load_fail", auto_skill_cd_image),
+                    f"template load failed path={auto_skill_cd_image}",
+                    force=True,
+                )
         _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
         logger.info("[좌표모드] ESC 키로 중지 가능")
 
@@ -3758,6 +3778,8 @@ class RuleExecutor:
                 # 3.4. auto skill check (aligned with editor mode)
                 if auto_skill_enabled and auto_skill_key and not self._stop_event.is_set():
                     _use_skill = False
+                    _auto_skill_reason = "blocked"
+                    _auto_skill_score = None
                     if _auto_skill_cd_tmpl is not None:
                         try:
                             _as_pil = getattr(matcher, '_last_screenshot', None)
@@ -3766,14 +3788,44 @@ class RuleExecutor:
                                     _rx1, _ry1, _rx2, _ry2 = auto_skill_cd_region
                                     _as_pil = _as_pil.crop((_rx1, _ry1, _rx2, _ry2))
                                 _as_scr = cv2.cvtColor(np.array(_as_pil), cv2.COLOR_RGB2BGR)
-                                _as_res = cv2.matchTemplate(_as_scr, _auto_skill_cd_tmpl, cv2.TM_CCOEFF_NORMED)
-                                _, _as_max_val, _, _ = cv2.minMaxLoc(_as_res)
-                                if _as_max_val < 0.8:
-                                    _use_skill = True
-                        except Exception:
+                                _tmpl_h, _tmpl_w = _auto_skill_cd_tmpl.shape[:2]
+                                _scr_h, _scr_w = _as_scr.shape[:2]
+                                if _scr_h < _tmpl_h or _scr_w < _tmpl_w:
+                                    _auto_skill_reason = "region_too_small"
+                                    _log_auto_skill_diag(
+                                        ("runtime", _auto_skill_reason, _scr_w, _scr_h, _tmpl_w, _tmpl_h),
+                                        f"image mode: region smaller than template screen={_scr_w}x{_scr_h} tmpl={_tmpl_w}x{_tmpl_h} region={auto_skill_cd_region}",
+                                    )
+                                else:
+                                    _as_res = cv2.matchTemplate(_as_scr, _auto_skill_cd_tmpl, cv2.TM_CCOEFF_NORMED)
+                                    _, _as_max_val, _, _ = cv2.minMaxLoc(_as_res)
+                                    _auto_skill_score = float(_as_max_val)
+                                    _use_skill = _as_max_val < 0.8
+                                    _auto_skill_reason = "cooldown_hidden" if _use_skill else "cooldown_visible"
+                                    _log_auto_skill_diag(
+                                        ("runtime", _auto_skill_reason, round(_auto_skill_score, 3)),
+                                        f"image mode: score={_auto_skill_score:.3f} threshold=0.800 use={_use_skill} region={auto_skill_cd_region}",
+                                    )
+                            else:
+                                _auto_skill_reason = "no_screenshot"
+                                _log_auto_skill_diag(
+                                    ("runtime", _auto_skill_reason),
+                                    "image mode: last_screenshot missing -> auto-skill skipped",
+                                )
+                        except Exception as _auto_skill_exc:
                             _use_skill = True
+                            _auto_skill_reason = f"exception:{type(_auto_skill_exc).__name__}"
+                            _log_auto_skill_diag(
+                                ("runtime", "exception", type(_auto_skill_exc).__name__),
+                                f"image mode exception -> auto-skill press: {type(_auto_skill_exc).__name__}: {_auto_skill_exc}",
+                            )
                     else:
                         _use_skill = True
+                        _auto_skill_reason = "no_template"
+                        _log_auto_skill_diag(
+                            ("runtime", _auto_skill_reason, bool(auto_skill_cd_image)),
+                            f"no image/template -> auto-skill press key={auto_skill_key} image={'Y' if auto_skill_cd_image else 'N'}",
+                        )
 
                     if _use_skill:
                         try:
@@ -3785,8 +3837,17 @@ class RuleExecutor:
                                 pyautogui.keyUp(auto_skill_key)
                             finally:
                                 pyautogui.PAUSE = _orig_pause
-                        except Exception:
-                            pass
+                            _score_suffix = f" score={_auto_skill_score:.3f}" if _auto_skill_score is not None else ""
+                            _log_auto_skill_diag(
+                                ("press", _auto_skill_reason),
+                                f"auto-skill press key={auto_skill_key} reason={_auto_skill_reason}{_score_suffix}",
+                            )
+                        except Exception as _auto_skill_press_exc:
+                            _log_auto_skill_diag(
+                                ("press_error", type(_auto_skill_press_exc).__name__),
+                                f"auto-skill press failed key={auto_skill_key}: {type(_auto_skill_press_exc).__name__}: {_auto_skill_press_exc}",
+                                force=True,
+                            )
 
                 if (escape_skill_enabled and
                     total_stuck_count >= escape_skill_stuck_threshold and

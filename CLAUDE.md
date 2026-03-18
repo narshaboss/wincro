@@ -975,3 +975,15 @@ wincro/
   - real destroy-time test passed after switching into `AnalyzerView`, with no late worker-thread Tk exception
 - `config.py`
   - `APP_VERSION` `1.0.149` -> `1.0.150`
+
+### 2026-03-19: Auto-skill runtime diagnostic logging (v1.0.151)
+- Added throttled runtime diagnostic logs for auto-skill without changing the decision logic.
+- `src/ui/player_view.py`
+  - Added `[??????]` logs for special-mode execution.
+  - Logs capture config summary, template load failure, missing `last_screenshot`, region-too-small cases, runtime match score / use decision, and actual key-press reasons.
+- `src/player/rule_executor.py`
+  - Added matching `[coordinate-mode][auto-skill-diag]` logs for playback/coordinate-mode execution.
+- Verification:
+  - `py_compile` passed for `src/ui/player_view.py` and `src/player/rule_executor.py`
+- `config.py`
+  - `APP_VERSION` `1.0.150` -> `1.0.151`
