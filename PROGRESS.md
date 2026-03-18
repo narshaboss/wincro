@@ -1802,3 +1802,24 @@ self._mini_total_repeat = 1
   - `APP_VERSION` `1.0.147` -> `1.0.148`
 
 ---
+
+### 2026-03-18: UI batching and lazy view activation refactor (v1.0.149)
+- Added `src/ui/ui_batcher.py` with shared UI batching helpers:
+  - `UiCallbackDispatcher`
+  - `BufferedRecordPump`
+- Refactored the main embedded log panel in `src/ui/main_window.py` to batch log-widget updates instead of inserting lines into `Text` immediately.
+- Refactored `src/ui/log_view.py` to use the same buffered log-delivery path.
+- Changed main view switching in `src/ui/main_window.py` so button state updates happen immediately, a loading placeholder can render first, and heavy view creation is deferred with `after_idle(...)`.
+- Migrated `GameModeDialog` UI scheduling in `src/ui/player_view.py` to the shared dispatcher/log pump so special-mode UI updates follow the same batched path.
+- Fixed the startup regression caused by a missing `UiCallbackDispatcher` import in `main_window.py`.
+- Fixed the close-time regression in `player_view.py` caused by a local `time` import shadowing the module-level `time` object.
+- Verification:
+  - `py_compile` passed for `src/ui/ui_batcher.py`, `src/ui/main_window.py`, `src/ui/log_view.py`, and `src/ui/player_view.py`.
+  - Real startup test passed.
+  - Real view-switch test passed for `recorder -> analyzer -> player`.
+  - Real `GameModeDialog` open/close test passed.
+- Re-checked developer vs deployed UI-path differences and found no additional hidden `sys.frozen` split beyond expected packaging branches.
+- `config.py`
+  - `APP_VERSION` `1.0.148` -> `1.0.149`
+
+---

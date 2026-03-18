@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 로그 뷰어 모듈
 
 실시간 로그를 GUI에서 확인할 수 있습니다.
@@ -14,6 +14,7 @@ from threading import Lock
 import customtkinter as ctk
 
 from .main_window import BaseView, GUILogHandler
+from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,6 +35,14 @@ class LogView(BaseView):
         self._auto_scroll = True
         self._current_filter = "ALL"
         self._lock = Lock()
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=25, max_callbacks_per_tick=48)
+        self._log_pump = BufferedRecordPump(
+            self,
+            self._ui_dispatcher,
+            self._flush_log_records,
+            flush_interval_ms=40,
+            max_items_per_flush=200,
+        )
 
         # UI 구성
         self._setup_ui()
@@ -178,12 +187,7 @@ class LogView(BaseView):
         """로그 메시지 추가"""
         with self._lock:
             self._log_buffer.append((message, level))
-
-        # GUI 업데이트는 메인 스레드에서
-        try:
-            self.after(0, self._update_log_display, message, level)
-        except (tk.TclError, RuntimeError):
-            pass  # 위젯이 파괴된 경우 무시
+        self._log_pump.push((message, level))
 
     def _parse_ansi_message(self, message: str):
         """ANSI 코드를 파싱하여 (텍스트, 태그) 쌍의 리스트 반환"""
@@ -234,25 +238,29 @@ class LogView(BaseView):
 
     def _update_log_display(self, message: str, level: str) -> None:
         """로그 표시 업데이트"""
-        # 필터 확인
-        if self._current_filter != "ALL" and level != self._current_filter:
+        self._flush_log_records([(message, level)])
+
+    def _flush_log_records(self, records) -> None:
+        if not records:
             return
 
         try:
             self._log_text.configure(state="normal")
 
-            # ANSI 코드 파싱 및 색상 적용
-            parsed = self._parse_ansi_message(message)
-            for text, tag in parsed:
-                if tag:
-                    self._log_text.insert("end", text, tag)
-                else:
-                    self._log_text.insert("end", text, level)
+            inserted = False
+            for message, level in records:
+                if self._current_filter != "ALL" and level != self._current_filter:
+                    continue
+                inserted = True
+                parsed = self._parse_ansi_message(message)
+                for text, tag in parsed:
+                    if tag:
+                        self._log_text.insert("end", text, tag)
+                    else:
+                        self._log_text.insert("end", text, level)
+                self._log_text.insert("end", "\n")
 
-            self._log_text.insert("end", "\n")
-
-            # 자동 스크롤
-            if self._auto_scroll:
+            if inserted and self._auto_scroll:
                 self._log_text.see("end")
 
             self._log_text.configure(state="disabled")
@@ -282,6 +290,7 @@ class LogView(BaseView):
         """로그 지우기"""
         with self._lock:
             self._log_buffer.clear()
+        self._log_pump.clear()
 
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
@@ -290,6 +299,7 @@ class LogView(BaseView):
 
     def _refresh_display(self) -> None:
         """필터에 따라 로그 다시 표시"""
+        self._log_pump.clear()
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
 
@@ -326,3 +336,9 @@ class LogView(BaseView):
             logging.getLogger().removeHandler(self._handler)
         except (ValueError, RuntimeError):
             pass
+        self._log_pump.close()
+        self._ui_dispatcher.close()
+
+    def destroy(self) -> None:
+        self.cleanup()
+        super().destroy()

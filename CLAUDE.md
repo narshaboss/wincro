@@ -934,3 +934,24 @@ wincro/
 - Rolled auto-skill runtime detection back to the prior `cv2.matchTemplate(..., TM_CCOEFF_NORMED)` path in `src/ui/player_view.py` and `src/player/rule_executor.py`.
 - `config.py`
   - `APP_VERSION` `1.0.147` -> `1.0.148`
+
+### 2026-03-18: UI batching and lazy view activation refactor (v1.0.149)
+- Added shared UI batching helpers in `src/ui/ui_batcher.py`:
+  - `UiCallbackDispatcher`
+  - `BufferedRecordPump`
+- Refactored `src/ui/main_window.py` so:
+  - embedded log updates are batched
+  - nav buttons respond immediately
+  - loading placeholders can render before expensive view creation
+  - heavy view creation is deferred with `after_idle(...)`
+- Refactored `src/ui/log_view.py` to use the same buffered log update path.
+- Refactored `src/ui/player_view.py` so `GameModeDialog` uses the shared dispatcher and buffered log pump for UI updates.
+- Fixed two regressions found during validation:
+  - missing `UiCallbackDispatcher` import in `main_window.py`
+  - local `time` import shadowing in `player_view.py` close/save flow
+- Verification:
+  - `py_compile` passed for `src/ui/ui_batcher.py`, `src/ui/main_window.py`, `src/ui/log_view.py`, and `src/ui/player_view.py`
+  - real app startup test passed
+  - real view-switch test passed (`recorder -> analyzer -> player`)
+  - real `GameModeDialog` open/close test passed
+- Re-checked developer vs deployed UI execution differences and found no extra hidden split beyond expected packaging-specific branches.

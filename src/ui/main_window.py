@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 메인 윈도우 모듈
 
 프리미엄 UI 디자인 - 사이드바 네비게이션 + 하단 로그 패널
@@ -26,6 +26,7 @@ from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
 from ..player.rule_executor import RuleExecutor
+from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
 
 PLANS_DIR = DATA_DIR / "plans"
 
@@ -88,6 +89,14 @@ class LogPanel(ctk.CTkFrame):
         self._auto_scroll = True
         self._expanded = False  # 기본: 축소 상태
         self._lock = Lock()
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=25, max_callbacks_per_tick=48)
+        self._log_pump = BufferedRecordPump(
+            self,
+            self._ui_dispatcher,
+            self._flush_log_records,
+            flush_interval_ms=40,
+            max_items_per_flush=160,
+        )
 
         # 높이 설정
         self._collapsed_height = 32  # 축소시 헤더만
@@ -218,13 +227,7 @@ class LogPanel(ctk.CTkFrame):
     def _add_log_message(self, message: str, level: str):
         with self._lock:
             self._log_buffer.append((message, level))
-        try:
-            # 위젯이 아직 유효한 경우에만 UI 업데이트 스케줄
-            if self.winfo_exists():
-                self.after(0, self._update_display, message, level)
-        except tk.TclError:
-            # 위젯이 파괴된 경우 무시 (정상 종료 시나리오)
-            pass
+        self._log_pump.push((message, level))
 
     def _parse_ansi(self, message: str):
         """ANSI 코드를 파싱하여 (텍스트, 태그) 리스트 반환"""
@@ -267,11 +270,25 @@ class LogPanel(ctk.CTkFrame):
         return result
 
     def _update_display(self, message: str, level: str):
-        current_filter = self._filter_var.get() or "전체"
-        # 한글 필터 매핑
-        filter_map = {"전체": "ALL", "정보": "INFO", "경고": "WARNING", "오류": "ERROR"}
-        mapped_filter = filter_map.get(current_filter, current_filter)
-        if mapped_filter != "ALL" and level != mapped_filter:
+        self._flush_log_records([(message, level)])
+
+    def _matches_filter(self, level: str) -> bool:
+        current_filter = self._filter_var.get() or ""
+        values = list(self._filter_combo.cget("values") or [])
+        if not values:
+            return True
+        if current_filter == values[0]:
+            return True
+        if len(values) > 1 and current_filter == values[1]:
+            return level == "INFO"
+        if len(values) > 2 and current_filter == values[2]:
+            return level == "WARNING"
+        if len(values) > 3 and current_filter == values[3]:
+            return level == "ERROR"
+        return True
+
+    def _flush_log_records(self, records):
+        if not records:
             return
 
         try:
@@ -279,22 +296,25 @@ class LogPanel(ctk.CTkFrame):
                 return
             self._log_text.configure(state="normal")
 
-            # ANSI 코드 파싱 및 색상 적용
-            parsed = self._parse_ansi(message)
-            for text, tag in parsed:
-                if tag:
-                    self._log_text.insert("end", text, tag)
-                else:
-                    self._log_text.insert("end", text, level)
-            self._log_text.insert("end", "\n")
+            inserted = False
+            for message, level in records:
+                if not self._matches_filter(level):
+                    continue
+                inserted = True
+                parsed = self._parse_ansi(message)
+                for text, tag in parsed:
+                    if tag:
+                        self._log_text.insert("end", text, tag)
+                    else:
+                        self._log_text.insert("end", text, level)
+                self._log_text.insert("end", "\n")
 
-            # 최대 라인 수 유지 (안전한 라인 수 계산)
             line_count = self._get_line_count()
-            if line_count > 500:
+            if inserted and line_count > 500:
                 self._log_text.delete("1.0", "100.0")
                 line_count = self._get_line_count()
 
-            if self._auto_scroll:
+            if inserted and self._auto_scroll:
                 self._log_text.see("end")
             self._log_text.configure(state="disabled")
 
@@ -313,8 +333,7 @@ class LogPanel(ctk.CTkFrame):
             self._toggle_btn.configure(text="▼ 실시간 로그 (클릭하여 축소)")
             # 로그 내용 갱신
             self._refresh_display()
-            self.update_idletasks()
-            self.update()
+            self.after_idle(self._sync_layout)
         else:
             # 축소: 헤더만 표시
             self._log_container.pack_forget()
@@ -322,8 +341,14 @@ class LogPanel(ctk.CTkFrame):
             # pack_configure로 높이 강제 적용
             self.pack_configure(ipadx=0, ipady=0)
             self._toggle_btn.configure(text="▶ 실시간 로그 (클릭하여 확장)")
-            self.update_idletasks()
-            self.update()
+            self.after_idle(self._sync_layout)
+
+    def _sync_layout(self):
+        try:
+            if self.winfo_exists():
+                self.update_idletasks()
+        except tk.TclError:
+            pass
 
     def _on_filter_change(self, value: str):
         self._refresh_display()
@@ -331,12 +356,14 @@ class LogPanel(ctk.CTkFrame):
     def _clear_logs(self):
         with self._lock:
             self._log_buffer.clear()
+        self._log_pump.clear()
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
         self._log_text.configure(state="disabled")
         self._count_label.configure(text="0개")
 
     def _refresh_display(self):
+        self._log_pump.clear()
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
         current_filter = self._filter_var.get()
@@ -380,6 +407,12 @@ class LogPanel(ctk.CTkFrame):
             logging.getLogger().removeHandler(self._handler)
         except (ValueError, RuntimeError):
             pass
+        self._log_pump.close()
+        self._ui_dispatcher.close()
+
+    def destroy(self):
+        self.cleanup()
+        super().destroy()
 
 
 class SidebarButton(ctk.CTkButton):
@@ -464,6 +497,9 @@ class MainWindow(ctk.CTk):
         self._view_factories: Dict[str, Callable] = {}  # 지연 생성용 팩토리
         self._current_view: Optional[str] = None
         self._nav_buttons: Dict[str, SidebarButton] = {}
+        self._view_titles: Dict[str, str] = {}
+        self._pending_view_id: Optional[str] = None
+        self._view_switch_token = 0
 
         # 전역 F8 캡쳐 기능
         self._keyboard_listener: Optional[keyboard.Listener] = None
@@ -1777,6 +1813,7 @@ class MainWindow(ctk.CTk):
                 cmd = self._show_help
             else:
                 cmd = lambda v=view_id: self._switch_view(v)
+                self._view_titles[view_id] = label
 
             btn = ctk.CTkButton(
                 nav_container,
@@ -1843,6 +1880,36 @@ class MainWindow(ctk.CTk):
             fg_color=COLORS["bg_content"],
         )
         self._view_container.pack(fill="both", expand=True, padx=15, pady=(10, 5))
+
+        self._loading_view = ctk.CTkFrame(
+            self._view_container,
+            fg_color=COLORS["bg_card"],
+            corner_radius=16,
+        )
+        self._loading_content = ctk.CTkFrame(self._loading_view, fg_color="transparent")
+        self._loading_content.place(relx=0.5, rely=0.5, anchor="center")
+        self._loading_title = ctk.CTkLabel(
+            self._loading_content,
+            text="화면 준비 중...",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=COLORS["text_primary"],
+        )
+        self._loading_title.pack(pady=(0, 10))
+        self._loading_desc = ctk.CTkLabel(
+            self._loading_content,
+            text="UI를 빠르게 전환하고 있습니다",
+            font=ctk.CTkFont(size=13),
+            text_color=COLORS["text_secondary"],
+        )
+        self._loading_desc.pack()
+        self._loading_bar = ctk.CTkProgressBar(
+            self._loading_content,
+            width=240,
+            mode="indeterminate",
+            progress_color=COLORS["accent"],
+            fg_color=COLORS["bg_dark"],
+        )
+        self._loading_bar.pack(pady=(16, 0))
 
     def _setup_log_panel(self):
         # 로그 패널 (기본 축소 상태, 클릭하면 크게 확장)
@@ -1991,33 +2058,98 @@ class MainWindow(ctk.CTk):
     def _switch_view(self, view_id: str):
         """뷰 전환 (지연 생성 포함)"""
         previous_view = self._current_view
+        if view_id == previous_view and self._pending_view_id is None:
+            self._set_nav_button_state(view_id)
+            return
+
+        self._pending_view_id = view_id
+        self._view_switch_token += 1
+        token = self._view_switch_token
+        self._set_nav_button_state(view_id)
 
         # 뷰가 아직 생성 안 됐으면 팩토리로 지연 생성
         if view_id not in self._views and view_id in self._view_factories:
-            try:
-                view = self._view_factories[view_id]()
-                self._views[view_id] = view
-            except Exception as e:
-                logger.error(f"뷰 생성 실패 ({view_id}): {e}")
-                return
-
-        if view_id not in self._views:
+            self._show_loading_view(view_id)
+            self.after_idle(
+                lambda tok=token, target=view_id, previous=previous_view: self._materialize_view(tok, target, previous)
+            )
             return
 
-        # 현재 뷰 숨기기 (새 뷰가 준비된 후에만)
-        if previous_view and previous_view in self._views:
-            self._views[previous_view].pack_forget()
+        if view_id not in self._views:
+            self._pending_view_id = None
+            return
 
-        # 네비게이션 버튼 상태 업데이트
+        self.after_idle(lambda tok=token, target=view_id: self._show_ready_view(tok, target))
+
+    def _set_nav_button_state(self, active_view_id: Optional[str]):
         for btn_id, btn in self._nav_buttons.items():
-            if btn_id == view_id:
+            if btn_id == active_view_id:
                 btn.configure(fg_color=COLORS["accent"], text_color="white")
             else:
                 btn.configure(fg_color="transparent", text_color=COLORS["text_secondary"])
 
-        # 새 뷰 표시
-        self._views[view_id].pack(fill="both", expand=True)
+    def _hide_loading_view(self):
+        try:
+            self._loading_bar.stop()
+        except (tk.TclError, RuntimeError, ValueError):
+            pass
+        try:
+            if self._loading_view.winfo_manager():
+                self._loading_view.pack_forget()
+        except tk.TclError:
+            pass
+
+    def _show_loading_view(self, view_id: str):
+        title = self._view_titles.get(view_id, view_id)
+        self._loading_title.configure(text=f"{title} 준비 중...")
+        self._loading_desc.configure(text="클릭은 즉시 반영하고, 무거운 UI만 안전하게 이어서 불러오는 중입니다")
+        if self._current_view and self._current_view in self._views:
+            try:
+                self._views[self._current_view].pack_forget()
+            except tk.TclError:
+                pass
+        self._hide_loading_view()
+        self._loading_view.pack(fill="both", expand=True)
+        self._loading_bar.start()
+
+    def _materialize_view(self, token: int, view_id: str, previous_view: Optional[str]):
+        if token != self._view_switch_token or not self.winfo_exists():
+            return
+
+        try:
+            view = self._view_factories[view_id]()
+            self._views[view_id] = view
+        except Exception as e:
+            logger.error(f"뷰 생성 실패 ({view_id}): {e}")
+            self._hide_loading_view()
+            self._pending_view_id = None
+            if previous_view and previous_view in self._views:
+                self._set_nav_button_state(previous_view)
+                try:
+                    self._views[previous_view].pack(fill="both", expand=True)
+                except tk.TclError:
+                    pass
+                self._current_view = previous_view
+            return
+
+        self._show_ready_view(token, view_id)
+
+    def _show_ready_view(self, token: int, view_id: str):
+        if token != self._view_switch_token or not self.winfo_exists():
+            return
+
+        self._hide_loading_view()
+        if self._current_view and self._current_view in self._views and self._current_view != view_id:
+            try:
+                self._views[self._current_view].pack_forget()
+            except tk.TclError:
+                pass
+        try:
+            self._views[view_id].pack(fill="both", expand=True)
+        except tk.TclError:
+            return
         self._current_view = view_id
+        self._pending_view_id = None
 
     def register_view(self, view_id: str, view: ctk.CTkFrame):
         """뷰 등록 (즉시 생성된 뷰)"""

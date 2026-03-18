@@ -23,6 +23,7 @@ from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
 from .main_window import BaseView
 from .theme import COLORS
+from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
 from .constants import (
     ACTION_NAMES, ACTION_NAMES_SHORT, ACTION_COLORS,
     convert_to_monitor_action, collect_all_actions, assign_new_ids,
@@ -3133,6 +3134,14 @@ class GameModeDialog(ctk.CTkToplevel):
         self._config_rule_id = config_rule_id  # None이면 새 특화모드
         self._ui_call_queue = deque()
         self._ui_call_queue_lock = threading.Lock()
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
+        self._ui_log_pump = BufferedRecordPump(
+            self,
+            self._ui_dispatcher,
+            self._flush_log_records,
+            flush_interval_ms=40,
+            max_items_per_flush=180,
+        )
 
         from ..analyzer.automation_models import GameModeConfig
         if config_rule_id and config_rule_id in plan.game_modes:
@@ -3161,7 +3170,6 @@ class GameModeDialog(ctk.CTkToplevel):
 
         self._build_ui()
         self._update_previews()
-        self.after(25, self._drain_ui_call_queue)
 
         # UI 구성 완료 → 저장된 위치로 이동 + 포커스
         self.after(50, self._restore_and_focus)
@@ -9337,6 +9345,10 @@ class GameModeDialog(ctk.CTkToplevel):
     def _ui_post(self, callback):
         """백그라운드 스레드에서 Tk를 직접 건드리지 않도록 메인스레드 큐에 태운다."""
         try:
+            dispatcher = getattr(self, "_ui_dispatcher", None)
+            if dispatcher is not None:
+                dispatcher.post(callback)
+                return
             if threading.current_thread() is threading.main_thread():
                 callback()
                 return
@@ -9364,6 +9376,24 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception:
                 pass
 
+    def _flush_log_records(self, records):
+        """배치된 로그 레코드를 한 번에 UI 위젯에 반영한다."""
+        try:
+            if not records:
+                return
+            self._log_text.configure(state="normal")
+            self._log_text.insert("end", "".join(records))
+            self._log_line_counter += len(records)
+            if self._log_line_counter >= 20:
+                self._log_line_counter = 0
+                line_count = int(self._log_text.index("end-1c").split(".")[0])
+                if line_count > 500:
+                    self._log_text.delete("1.0", f"{line_count - 500}.0")
+            self._log_text.see("end")
+            self._log_text.configure(state="disabled")
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
+
     def _flush_log_buffer(self):
         """누적된 로그를 한 번에 UI 위젯에 반영한다."""
         try:
@@ -9378,16 +9408,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     return
                 self._ui_log_buffer = []
                 self._ui_log_flush_scheduled = False
-            self._log_text.configure(state="normal")
-            self._log_text.insert("end", "".join(_buffer))
-            self._log_line_counter += len(_buffer)
-            if self._log_line_counter >= 20:
-                self._log_line_counter = 0
-                line_count = int(self._log_text.index("end-1c").split(".")[0])
-                if line_count > 500:
-                    self._log_text.delete("1.0", f"{line_count - 500}.0")
-            self._log_text.see("end")
-            self._log_text.configure(state="disabled")
+            self._flush_log_records(_buffer)
         except Exception as e:
             logger.debug(f"무시된 예외: {e}")
 
@@ -9413,6 +9434,10 @@ class GameModeDialog(ctk.CTkToplevel):
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
             _line = f"[{timestamp}] {message}\n"
+            _pump = getattr(self, "_ui_log_pump", None)
+            if _pump is not None:
+                _pump.push(_line)
+                return
             _lock = getattr(self, "_ui_log_buffer_lock", None)
             if _lock is None:
                 _lock = threading.Lock()
@@ -9457,8 +9482,7 @@ class GameModeDialog(ctk.CTkToplevel):
     def _schedule_boss_ui_log(self, message: str, dedupe_key: Optional[str] = None, dedupe_window: float = 0.35):
         """보스 경유지에서 반복 UI 로그가 메인스레드를 잠그지 않도록 짧게 dedupe한다."""
         try:
-            with self._ui_call_queue_lock:
-                _pending = len(self._ui_call_queue)
+            _pending = self._pending_ui_callbacks()
             if _pending >= 96:
                 return
         except Exception:
@@ -9471,8 +9495,7 @@ class GameModeDialog(ctk.CTkToplevel):
         """보스 경유지 상태라벨 갱신을 짧게 coalesce한다."""
         try:
             try:
-                with self._ui_call_queue_lock:
-                    _pending = len(self._ui_call_queue)
+                _pending = self._pending_ui_callbacks()
                 if _pending >= 96:
                     return
             except Exception:
@@ -9492,9 +9515,26 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception as e:
             logger.debug(f"무시된 예외: {e}")
 
+    def _pending_ui_callbacks(self) -> int:
+        try:
+            dispatcher = getattr(self, "_ui_dispatcher", None)
+            if dispatcher is None:
+                with self._ui_call_queue_lock:
+                    return len(self._ui_call_queue)
+            pending = dispatcher.pending_count()
+            pump = getattr(self, "_ui_log_pump", None)
+            if pump is not None:
+                pending += pump.pending_count()
+            return pending
+        except Exception:
+            return 0
+
     def _clear_log(self):
         """로그 초기화"""
         try:
+            _pump = getattr(self, "_ui_log_pump", None)
+            if _pump is not None:
+                _pump.clear()
             self._log_text.configure(state="normal")
             self._log_text.delete("1.0", "end")
             self._log_text.configure(state="disabled")
@@ -10740,7 +10780,7 @@ class GameModeDialog(ctk.CTkToplevel):
             except (tk.TclError, RuntimeError):
                 pass
             return ""
-        import os, shutil, time
+        import os, shutil
         acquire_deadline = time.monotonic() + (5.0 if critical else 1.5)
         acquired = False
         while time.monotonic() < acquire_deadline:
@@ -15227,6 +15267,14 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception as e:
                 logger.error(f"[특화모드] 닫기 시 리프레시 실패: {e}")
 
+        try:
+            self._ui_log_pump.close()
+        except Exception:
+            pass
+        try:
+            self._ui_dispatcher.close()
+        except Exception:
+            pass
         self.destroy()
 
 
