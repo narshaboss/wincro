@@ -5631,22 +5631,36 @@ class GameModeDialog(ctk.CTkToplevel):
                         if _jump_confirm_hits < _required_hits or _suspicious_jump_streak < _required_streak:
                             if _ui_update_ok:
                                 if _protected_portal_jump:
-                                    self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, ss=list(_jump_confirm_samples), st=_suspicious_jump_streak:
-                                        self._append_log(f"⚠️ 보호포탈 OCR 점프 의심 무시: ({px},{py})→({cx},{cy}) 재확인={ss} 반복={st}"))
+                                    self._schedule_ui_log(
+                                        f"⚠️ 보호포탈 OCR 점프 의심 무시: ({prev_x},{prev_y})→({current_x},{current_y}) "
+                                        f"재확인={list(_jump_confirm_samples)} 반복={_suspicious_jump_streak}",
+                                        dedupe_key="generic_portal_jump_ignore",
+                                        dedupe_window=0.2,
+                                    )
                                 else:
-                                    self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, ss=list(_jump_confirm_samples), st=_suspicious_jump_streak:
-                                        self._append_log(f"⚠️ 좌표 OCR 점프 의심 무시: ({px},{py})→({cx},{cy}) 재확인={ss} 반복={st}"))
+                                    self._schedule_ui_log(
+                                        f"⚠️ 좌표 OCR 점프 의심 무시: ({prev_x},{prev_y})→({current_x},{current_y}) "
+                                        f"재확인={list(_jump_confirm_samples)} 반복={_suspicious_jump_streak}",
+                                        dedupe_key="generic_coord_jump_ignore",
+                                        dedupe_window=0.2,
+                                    )
                             self._stop_event.wait(0.05)
                             continue
                         elif _ui_update_ok:
                             if _protected_portal_jump:
                                 if not mark_portal_entry:
-                                    self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
-                                        self._append_log(f"🔎 보호포탈 좌표 재확인 확정: ({px},{py})→({cx},{cy})"))
+                                    self._schedule_ui_log(
+                                        f"🔎 보호포탈 좌표 재확인 확정: ({prev_x},{prev_y})→({current_x},{current_y})",
+                                        dedupe_key="generic_portal_jump_confirm",
+                                        dedupe_window=0.2,
+                                    )
                             else:
                                 if not mark_portal_entry:
-                                    self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, st=_suspicious_jump_streak:
-                                        self._append_log(f"🔎 좌표 점프 재확인 확정: ({px},{py})→({cx},{cy}) 반복={st}"))
+                                    self._schedule_ui_log(
+                                        f"🔎 좌표 점프 재확인 확정: ({prev_x},{prev_y})→({current_x},{current_y}) 반복={_suspicious_jump_streak}",
+                                        dedupe_key="generic_coord_jump_confirm",
+                                        dedupe_window=0.2,
+                                    )
                         logger.info(
                             f"[전환추적] 점프확정 후 분기진입: prev=({prev_x},{prev_y}) "
                             f"curr=({current_x},{current_y}) jump={jump} target_idx={target_idx} "
@@ -5658,8 +5672,12 @@ class GameModeDialog(ctk.CTkToplevel):
                             _jump_confirm_hits, _jump_confirm_samples = _confirm_coordinate_pair(current_x, current_y, tries=3, wait_s=0.02)
                         if _jump_confirm_hits < 2:
                             if _ui_update_ok:
-                                self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y, ss=list(_jump_confirm_samples):
-                                    self._append_log(f"⚠️ 맵핑 점프 재확인 실패 무시: ({px},{py})→({cx},{cy}) 재확인={ss}"))
+                                self._schedule_ui_log(
+                                    f"⚠️ 맵핑 점프 재확인 실패 무시: ({prev_x},{prev_y})→({current_x},{current_y}) "
+                                    f"재확인={list(_jump_confirm_samples)}",
+                                    dedupe_key="mapping_jump_reconfirm_ignore",
+                                    dedupe_window=0.2,
+                                )
                             self._stop_event.wait(0.05)
                             continue
                     if jump >= 30:
@@ -5688,8 +5706,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
                                     _portal_protected.add(_portal_tile)
                                     if _ui_update_ok:
-                                        self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
-                                            self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                                        self._schedule_ui_log(
+                                            f"🚪 맵핑 중 포탈 감지: ({prev_x},{prev_y})→({current_x},{current_y}) — {_portal_tile} 벽 등록",
+                                            dedupe_key="mapping_portal_detect",
+                                            dedupe_window=0.2,
+                                        )
                                 try:
                                     logger.info(
                                         f"[전환추적] 맵핑 포탈이탈 critical save 시작: "
@@ -5699,9 +5720,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                     logger.info("[전환추적] 맵핑 포탈이탈 critical save 완료")
                                 except Exception as _save_e:
                                     logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
-                                self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
+                                self._ui_post(lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
                                     self._append_log(f"🛑 맵핑 중 포탈 이탈: ({px},{py})→({cx},{cy}) — 현재 테스트 중지"))
-                                self.after(0, self._stop_execution)
+                                self._ui_post(self._stop_execution)
                                 return
                             # 비정상 좌표 점프: portal_grace/mark_portal_entry로 처리 안 된 점프
                             if (current_x, current_y) == _jump_reject_coord:
@@ -5709,7 +5730,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if _jump_reject_count >= 4:
                                     # 동일 좌표 4회 반복 = 실제 좌표 변경이지만 예상된 포탈 아님
                                     # → 맵 오염 방지를 위해 실행 중지
-                                    self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
+                                    self._ui_post(lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
                                         self._append_log(f"🛑 비정상 좌표 점프: ({px},{py})→({cx},{cy}) 거리={j} — 실행 중지"))
                                     self._stop_event.set()
                                     break
@@ -5717,8 +5738,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                 _jump_reject_coord = (current_x, current_y)
                                 _jump_reject_count = 1
                             if _ui_update_ok:
-                                self.after(0, lambda cx=current_x, cy=current_y, px=prev_x, py=prev_y, j=jump:
-                                    self._append_log(f"⚠️ 좌표 점프 무시: ({px},{py})→({cx},{cy}) 거리={j}"))
+                                self._schedule_ui_log(
+                                    f"⚠️ 좌표 점프 무시: ({prev_x},{prev_y})→({current_x},{current_y}) 거리={jump}",
+                                    dedupe_key="generic_coord_jump_skip",
+                                    dedupe_window=0.2,
+                                )
                             self._stop_event.wait(0.1)
                             continue
                     elif (_mapping_guard_active() or _local_explore_phase) and jump >= 5:
@@ -5729,15 +5753,18 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._game_map.mark_blocked(_portal_tile[0], _portal_tile[1])
                             _portal_protected.add(_portal_tile)
                             if _ui_update_ok:
-                                self.after(0, lambda pt=_portal_tile, cx=current_x, cy=current_y, px=prev_x, py=prev_y:
-                                    self._append_log(f"🚪 맵핑 중 포탈 감지: ({px},{py})→({cx},{cy}) — {pt} 벽 등록"))
+                                self._schedule_ui_log(
+                                    f"🚪 맵핑 중 포탈 감지: ({prev_x},{prev_y})→({current_x},{current_y}) — {_portal_tile} 벽 등록",
+                                    dedupe_key="mapping_guard_portal_detect",
+                                    dedupe_window=0.2,
+                                )
                         try:
                             self._auto_save_map(critical=True)
                         except Exception as _save_e:
                             logger.debug(f"[맵핑] 포탈 이탈 저장 실패(무시): {_save_e}")
-                        self.after(0, lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
+                        self._ui_post(lambda px=prev_x, py=prev_y, cx=current_x, cy=current_y:
                             self._append_log(f"🛑 맵핑 중 포탈 이탈: ({px},{py})→({cx},{cy}) — 현재 테스트 중지"))
-                        self.after(0, self._stop_execution)
+                        self._ui_post(self._stop_execution)
                         return
                     else:
                         _jump_reject_coord = None
@@ -6110,7 +6137,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             else:
                                 self._game_map.end_pos = None
                         if not self._switch_segment_map(target_idx, skip_save=_no_save):
-                            self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                            self._schedule_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="segment_switch_fail", dedupe_window=0.2)
                             self._stop_event.wait(0.05)
                             continue
                         pathfinder = SimplePathfinder(self._game_map)  # 새 맵으로 pathfinder 갱신
@@ -6118,7 +6145,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         target_x, target_y = _pick_target(target_idx)
                         seg_name = all_targets[target_idx][2]
                         prev_seg = all_targets[target_idx - 1][2]
-                        self.after(0, lambda tx=target_x, ty=target_y, sn=seg_name: self._append_log(f"▶ 다음: ({tx},{ty}) [{sn}]"))
+                        self._ui_post(lambda tx=target_x, ty=target_y, sn=seg_name: self._append_log(f"▶ 다음: ({tx},{ty}) [{sn}]"))
                         # 테스트 실행 모드: 경유지 도착 알림 (비블로킹) — 부분실행/재생에서는 표시 안 함
                         if not getattr(self, '_is_mapping', False) and not getattr(self, '_auto_run', False):
                             self._ui_post(lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
@@ -6185,7 +6212,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 boss_pre_teleport = True
                                 mapping_on = False
                                 mark_portal_entry = False
-                                self.after(0, lambda: self._append_log("⏳ 보스 던전 포탈 대기..."))
+                                self._schedule_ui_log("⏳ 보스 던전 포탈 대기...", dedupe_key="boss_portal_wait", dedupe_window=0.2)
                         else:
                             boss_pre_teleport = False
                             mapping_on = not _no_save
@@ -6280,7 +6307,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             logger.warning(
                                 f"[전환추적] 포탈 전환 맵교체 실패: current_idx={target_idx} next_idx={next_segment}"
                             )
-                            self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                            self._schedule_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="portal_switch_fail", dedupe_window=0.2)
                             self._stop_event.wait(0.05)
                             continue
                         logger.info(
@@ -8568,15 +8595,40 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 막힌 간선을 재시도하지 않고 우회할 수 있다.
                         _remaining = 0
                         if _boss_chasing:
-                            pathfinder.set_goal(_move_target)
-                            direction = pathfinder.get_next_direction(
+                            # 보스 추적도 순찰처럼 최근 실패 방향/보호 포탈을 회피해
+                            # 같은 간선을 장기 재시도하는 상황을 줄인다.
+                            _cleanup_blocked_dirs(iteration)
+                            _chase_avoid = set()
+                            for _cd, (_cdx, _cdy) in DIRECTIONS_4.items():
+                                if _is_dir_blocked(current_x, current_y, _cd, iteration):
+                                    _chase_avoid.add((current_x + _cdx, current_y + _cdy))
+                            for _ppx, _ppy in _portal_protected:
+                                if (_ppx, _ppy) != current_pos_tuple and (_ppx, _ppy) != _move_target:
+                                    _chase_avoid.add((_ppx, _ppy))
+                            _chase_result = pathfinder.find_path(
                                 current_pos_tuple,
+                                _move_target,
                                 allow_unknown=True,
                                 stop_event=self._stop_event,
                                 max_iterations=5000,
-                                respect_blocked_edges=False)
+                                allow_soft_blocked=False,
+                                respect_blocked_edges=True,
+                                avoid_set=(_chase_avoid if _chase_avoid else None),
+                            )
+                            if not (_chase_result.found and _chase_result.directions):
+                                _chase_result = pathfinder.find_path(
+                                    current_pos_tuple,
+                                    _move_target,
+                                    allow_unknown=True,
+                                    stop_event=self._stop_event,
+                                    max_iterations=5000,
+                                    allow_soft_blocked=True,
+                                    respect_blocked_edges=True,
+                                    avoid_set=(_chase_avoid if _chase_avoid else None),
+                                )
+                            direction = _chase_result.directions[0] if (_chase_result.found and _chase_result.directions) else None
                             if direction:
-                                _remaining = len(pathfinder.get_remaining_path())
+                                _remaining = max(0, len(_chase_result.path) - 1)
                         else:
                             _move_path_goal = _move_target
                             _active_patrol_detour = _get_active_goal_detour(_move_target, current_pos_tuple)

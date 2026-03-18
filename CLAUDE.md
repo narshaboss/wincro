@@ -904,3 +904,11 @@ wincro/
   - `APP_VERSION` `1.0.143` -> `1.0.144`
 - 상시스킬 확인
   - `auto_skill_enabled=False`면 실행부에서 상시스킬 입력이 발생하지 않음을 코드상 확인
+
+### 2026-03-18: Generic transition UI queue hardening + boss chase reroute (v1.0.145)
+- `player_view.py`
+  - Generic jump-confirm / portal-transition UI logs no longer call `after(0, ...)` directly from the worker path.
+  - Transition logs now go through `_schedule_ui_log()` / `_ui_post()` to reduce UI queue pressure outside boss rooms.
+  - Boss chase now uses `blocked_dirs`, `portal_protected`, `avoid_set`, and `respect_blocked_edges=True` like patrol mode, reducing repeated retries on the same blocked edge.
+- `config.py`
+  - `APP_VERSION` `1.0.144` -> `1.0.145`

@@ -1757,3 +1757,16 @@ self._mini_total_repeat = 1
 
 ---
 
+
+### 2026-03-18: Generic transition UI queue hardening + boss chase reroute (v1.0.145)
+
+- **Symptom:** Non-boss transitions could still freeze the WinCro window around jump-confirm / portal-transition, and boss chase could long-stall on the same blocked edge.
+- **Fix:**
+  - `src/ui/player_view.py`
+    - Generic jump-confirm / portal-transition UI messages were moved off direct `after(0, ...)` calls and into `_schedule_ui_log()` / `_ui_post()`.
+    - Boss chase pathing now reuses blocked-direction avoidance and protected-portal avoidance with `respect_blocked_edges=True`.
+- **Verification:**
+  - `player_view.py` `py_compile` passed.
+- **APP_VERSION:** `1.0.144` -> `1.0.145`
+
+---
