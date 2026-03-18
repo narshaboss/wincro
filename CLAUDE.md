@@ -927,3 +927,10 @@ wincro/
 - Image-mode auto-skill exceptions no longer fall back to pressing the skill key.
 - `config.py`
   - `APP_VERSION` `1.0.146` -> `1.0.147`
+
+### 2026-03-18: Auto-skill runtime rollback after parity check (v1.0.148)
+- Re-checked developer-mode vs deployed/frozen execution and confirmed there is no additional execution-path split in the core game-mode / playback path.
+- The recent `match_binary()` unification for auto-skill runtime was a regression because both developer and deployed runs stopped using auto-skill reliably.
+- Rolled auto-skill runtime detection back to the prior `cv2.matchTemplate(..., TM_CCOEFF_NORMED)` path in `src/ui/player_view.py` and `src/player/rule_executor.py`.
+- `config.py`
+  - `APP_VERSION` `1.0.147` -> `1.0.148`

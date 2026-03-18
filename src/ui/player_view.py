@@ -3989,20 +3989,14 @@ class GameModeDialog(ctk.CTkToplevel):
         auto_skill_cd_region = getattr(self._config, 'auto_skill_cd_region', None)  # [x1,y1,x2,y2]
         # 쿨타임 이미지 미리 로드 (매번 imread 방지)
         _auto_skill_cd_tmpl = None
-        _auto_skill_tm = None
         if auto_skill_cd_image:
-            try:
-                from ..analyzer.template_matcher import TemplateMatcher as _AutoSkillTM
-                _auto_skill_tm = _AutoSkillTM()
-            except Exception:
-                _auto_skill_tm = None
             try:
                 import cv2 as _ascv_init
                 _auto_skill_cd_tmpl = _ascv_init.imread(auto_skill_cd_image)
             except Exception:
                 pass
         if auto_skill_enabled and auto_skill_key:
-            _as_mode = "이미지" if _auto_skill_tm is not None else f"타이머({auto_skill_cooldown}초)"
+            _as_mode = "이미지" if _auto_skill_cd_tmpl is not None else f"타이머({auto_skill_cooldown}초)"
             self.after(0, lambda k=auto_skill_key, m=_as_mode:
                 self._append_log(f"🔄 상시스킬: 키={k}, 쿨타임={m}"))
 
@@ -6818,7 +6812,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 _t_skill = time.time()
                 if auto_skill_enabled and auto_skill_key and not self._stop_event.is_set():
                     _use_skill = False
-                    if _auto_skill_tm is not None and auto_skill_cd_image:
+                    if _auto_skill_cd_tmpl is not None:
                         # 이미지 기반: OCR 스크린샷 재사용 (추가 스크린샷 불필요)
                         try:
                             import cv2 as _ascv
@@ -6831,11 +6825,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _as_scr = _ascv.cvtColor(_asnp.array(_as_cropped), _ascv.COLOR_RGB2BGR)
                                 else:
                                     _as_scr = _ascv.cvtColor(_asnp.array(_as_pil), _ascv.COLOR_RGB2BGR)
-                                _as_res = _auto_skill_tm.match_binary(_as_scr, auto_skill_cd_image, threshold=0.8)
-                                if not getattr(_as_res, 'found', False):
+                                _as_res = _ascv.matchTemplate(_as_scr, _auto_skill_cd_tmpl, _ascv.TM_CCOEFF_NORMED)
+                                _, _as_max_val, _, _ = _ascv.minMaxLoc(_as_res)
+                                if _as_max_val < 0.8:
                                     _use_skill = True
                         except Exception:
-                            _use_skill = False
+                            _use_skill = True
                     else:
                         # 이미지 미설정: 매 반복 사용
                         _use_skill = True

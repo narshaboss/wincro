@@ -1790,3 +1790,15 @@ self._mini_total_repeat = 1
   - `APP_VERSION` `1.0.146` -> `1.0.147`
 
 ---
+
+### 2026-03-18: Auto-skill runtime rollback after parity check (v1.0.148)
+- Re-checked developer-mode vs deployed/frozen execution and confirmed there is no additional execution-path split in the core game-mode / playback path.
+- The recent `match_binary()` unification for auto-skill runtime was identified as a regression because both developer and deployed runs stopped using auto-skill reliably.
+- Rolled auto-skill runtime detection back to the prior `cv2.matchTemplate(..., TM_CCOEFF_NORMED)` path in:
+  - `src/ui/player_view.py`
+  - `src/player/rule_executor.py`
+- This keeps the existing runtime behavior aligned again between developer runs and deployed runs.
+- `config.py`
+  - `APP_VERSION` `1.0.147` -> `1.0.148`
+
+---

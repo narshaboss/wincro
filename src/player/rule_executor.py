@@ -3269,13 +3269,7 @@ class RuleExecutor:
             auto_skill_cd_image = ''
         auto_skill_cd_region = getattr(config, 'auto_skill_cd_region', None)
         _auto_skill_cd_tmpl = None
-        _auto_skill_tm = None
         if auto_skill_cd_image:
-            try:
-                from ..analyzer.template_matcher import TemplateMatcher as _AutoSkillTM
-                _auto_skill_tm = _AutoSkillTM()
-            except Exception:
-                _auto_skill_tm = None
             try:
                 _auto_skill_cd_tmpl = cv2.imread(auto_skill_cd_image)
             except Exception:
@@ -3294,7 +3288,7 @@ class RuleExecutor:
 
         import keyboard
         if auto_skill_enabled and auto_skill_key:
-            _as_mode = "image" if _auto_skill_tm is not None else f"timer({auto_skill_cooldown}s)"
+            _as_mode = "image" if _auto_skill_cd_tmpl is not None else f"timer({auto_skill_cooldown}s)"
             logger.info(f"[coordinate-mode] auto-skill: key={auto_skill_key}, cooldown={_as_mode}")
         _escape_hotkey_id = keyboard.add_hotkey('escape', self._stop_event.set)
         logger.info("[좌표모드] ESC 키로 중지 가능")
@@ -3764,7 +3758,7 @@ class RuleExecutor:
                 # 3.4. auto skill check (aligned with editor mode)
                 if auto_skill_enabled and auto_skill_key and not self._stop_event.is_set():
                     _use_skill = False
-                    if _auto_skill_tm is not None and auto_skill_cd_image:
+                    if _auto_skill_cd_tmpl is not None:
                         try:
                             _as_pil = getattr(matcher, '_last_screenshot', None)
                             if _as_pil is not None:
@@ -3772,11 +3766,12 @@ class RuleExecutor:
                                     _rx1, _ry1, _rx2, _ry2 = auto_skill_cd_region
                                     _as_pil = _as_pil.crop((_rx1, _ry1, _rx2, _ry2))
                                 _as_scr = cv2.cvtColor(np.array(_as_pil), cv2.COLOR_RGB2BGR)
-                                _as_res = _auto_skill_tm.match_binary(_as_scr, auto_skill_cd_image, threshold=0.8)
-                                if not getattr(_as_res, 'found', False):
+                                _as_res = cv2.matchTemplate(_as_scr, _auto_skill_cd_tmpl, cv2.TM_CCOEFF_NORMED)
+                                _, _as_max_val, _, _ = cv2.minMaxLoc(_as_res)
+                                if _as_max_val < 0.8:
                                     _use_skill = True
                         except Exception:
-                            _use_skill = False
+                            _use_skill = True
                     else:
                         _use_skill = True
 
