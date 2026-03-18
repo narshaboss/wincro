@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 분석 화면 모듈
 
 프리미엄 카드 기반 UI 디자인
@@ -25,6 +25,7 @@ from ..analyzer import get_video_analyzer, AnalysisProgress
 from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from ..database import get_db, Recording, Sequence
 from .main_window import BaseView, COLORS
+from .ui_batcher import UiCallbackDispatcher
 
 logger = get_logger(__name__)
 
@@ -1983,16 +1984,49 @@ class AnalyzerView(BaseView):
         self._automation_plan_event = threading.Event()
         self._last_automation_plan: Optional[AutomationPlan] = None
 
-        self._plan_modified_cache = {}  # plan_id → modified 캐시
-        self._plan_lock_cache = {}  # plan_id → locked 캐시
-        self._plans_load_generation: int = 0  # async/sync 플랜 로드 경쟁 방지
+        self._plan_modified_cache = {}  # plan_id ? modified ??
+        self._plan_lock_cache = {}  # plan_id ? locked ??
+        self._plans_load_generation: int = 0  # async/sync plan load generation guard
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=72)
 
         self._setup_ui()
-        self.after(0, self._deferred_load)  # UI 렌더 후 데이터 로드
+        self.after(0, self._deferred_load)  # UI ?? ? ??? ??
+
+    def after(self, ms, func=None, *args):
+        """AnalyzerView? worker-thread after() ??? ????? dispatcher? ????."""
+        if func is None:
+            return super().after(ms)
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is None or threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+
+        def _schedule_on_main():
+            try:
+                if not self.winfo_exists():
+                    return
+                super(AnalyzerView, self).after(ms, func, *args)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        dispatcher.post(_schedule_on_main)
+        return None
+
+    def _analyzer_ui_post(self, callback) -> None:
+        try:
+            dispatcher = getattr(self, "_ui_dispatcher", None)
+            if dispatcher is not None:
+                dispatcher.post(callback)
+                return
+            if threading.current_thread() is threading.main_thread():
+                callback()
+                return
+            super(AnalyzerView, self).after(0, callback)
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _deferred_load(self):
-        """UI 표시 후 데이터 로드 (after(0) 콜백)"""
-        self._load_recordings()  # 내부에서 _build_plan_modified_cache() 호출
+        """UI ?? ? ??? ?? (after(0) ??)"""
+        self._load_recordings()  # ???? _build_plan_modified_cache() ??
         self._load_plans_async()
 
     def _build_plan_modified_cache(self):
@@ -2042,7 +2076,7 @@ class AnalyzerView(BaseView):
                         logger.error(f"계획 데이터 형식 오류: {plan_file} - {e}")
                     except Exception as e:
                         logger.error(f"계획 로드 실패: {plan_file} - {e}")
-            self.after(0, lambda: self._apply_plans(plans, current_gen))
+            self._analyzer_ui_post(lambda: self._apply_plans(plans, current_gen))
 
         threading.Thread(target=_load, daemon=True).start()
 
@@ -2754,7 +2788,7 @@ class AnalyzerView(BaseView):
         now = _time.time()
         if not hasattr(self, '_last_progress_time') or now - self._last_progress_time >= 0.2 or progress.current >= progress.total:
             self._last_progress_time = now
-            self.after(0, lambda: self._update_progress(progress))
+            self._analyzer_ui_post(lambda: self._update_progress(progress))
 
     def _update_progress(self, progress: AnalysisProgress):
         self._progress_label.configure(text=progress.message)
@@ -2774,7 +2808,7 @@ class AnalyzerView(BaseView):
                     logger.error(f"다이얼로그 표시 오류: {e}")
                     self._automation_plan_event.set()
 
-            self.after(0, show_dialog_wrapper)
+            self._analyzer_ui_post(show_dialog_wrapper)
 
             # 다이얼로그 완료 대기 (설정에서 타임아웃 값 가져오기)
             from ..utils.config import get_config
@@ -2810,7 +2844,7 @@ class AnalyzerView(BaseView):
                 pass
 
     def _on_analysis_complete(self, plan: Optional[AutomationPlan]):
-        self.after(0, lambda: self._show_analysis_result(plan))
+        self._analyzer_ui_post(lambda: self._show_analysis_result(plan))
 
     def _show_analysis_result(self, plan: Optional[AutomationPlan]):
         with self._analyze_lock:
@@ -2947,7 +2981,7 @@ class AnalyzerView(BaseView):
                     def _show_result():
                         messagebox.showinfo("정리 완료", f"미사용 이미지 {final_count}개를 삭제했습니다.")
                     try:
-                        self.after(0, _show_result)
+                        self._analyzer_ui_post(_show_result)
                     except (tk.TclError, RuntimeError):
                         pass
                     logger.info(f"이미지 정리 완료: {deleted_count}개 삭제")
@@ -2955,7 +2989,7 @@ class AnalyzerView(BaseView):
                 threading.Thread(target=_do_delete, daemon=True).start()
 
             try:
-                self.after(0, _confirm_and_delete)
+                self._analyzer_ui_post(_confirm_and_delete)
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -2967,5 +3001,9 @@ class AnalyzerView(BaseView):
         self._load_plans_async()
 
     def cleanup(self):
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.close()
         if self._is_analyzing:
             self._video_analyzer.cancel()
+

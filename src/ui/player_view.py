@@ -3178,6 +3178,25 @@ class GameModeDialog(ctk.CTkToplevel):
         if self._auto_run:
             self.after(300, self._start_execution)
 
+    def after(self, ms, func=None, *args):
+        """Worker thread의 after() 호출을 메인스레드 dispatcher로 우회한다."""
+        if func is None:
+            return super().after(ms)
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is None or threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+
+        def _schedule_on_main():
+            try:
+                if not self.winfo_exists():
+                    return
+                super(GameModeDialog, self).after(ms, func, *args)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        dispatcher.post(_schedule_on_main)
+        return None
+
     def _build_ui(self):
         """UI 구성"""
         main = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -9201,8 +9220,13 @@ class GameModeDialog(ctk.CTkToplevel):
                     seg_name = all_targets[target_idx][2]
                     mode_text = "🐢 감속접근" if is_slow else "이동중"
                     progress = f"[{target_idx+1}/{len(all_targets)}]"
-                    self.after(0, lambda cx=current_x, cy=current_y, d=dist, s=symbols.get(direction, direction), tx=target_x, ty=target_y, m=mode_text, p=progress:
-                        self._update_status(m, f"({cx},{cy})", f"({tx},{ty})", f"{d}칸 {p}", s))
+                    self._schedule_live_status(
+                        mode_text,
+                        f"({current_x},{current_y})",
+                        f"({target_x},{target_y})",
+                        f"{dist}칸 {progress}",
+                        symbols.get(direction, direction),
+                    )
 
                 # 경유지 근접 시 감속 (포탈 등 좌표 변경 대비)
                 if is_slow:
@@ -9508,6 +9532,32 @@ class GameModeDialog(ctk.CTkToplevel):
                 return
             self._boss_status_last_ts = _now
             self._boss_status_last_key = _key
+            self._ui_post(
+                lambda s=status, c=char, t=target, d=dist, dr=direction, x=dx, y=dy:
+                    self._update_status(s, c, t, d, dr, x, y)
+            )
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
+
+    def _schedule_live_status(self, status: str, char: str, target: str, dist: str, direction: str,
+                              dx: Optional[int] = None, dy: Optional[int] = None,
+                              min_interval: float = 0.10):
+        """일반/보스 공통 상태라벨 갱신을 짧게 coalesce한다."""
+        try:
+            try:
+                _pending = self._pending_ui_callbacks()
+                if _pending >= 96:
+                    return
+            except Exception:
+                pass
+            _now = time.time()
+            _last_ts = getattr(self, "_live_status_last_ts", 0.0)
+            _last_key = getattr(self, "_live_status_last_key", "")
+            _key = f"{status}|{char}|{target}|{dist}|{direction}|{dx}|{dy}"
+            if _key == _last_key and (_now - _last_ts) < max(0.0, float(min_interval)):
+                return
+            self._live_status_last_ts = _now
+            self._live_status_last_key = _key
             self._ui_post(
                 lambda s=status, c=char, t=target, d=dist, dr=direction, x=dx, y=dy:
                     self._update_status(s, c, t, d, dr, x, y)
@@ -17213,10 +17263,113 @@ class PlayerView(BaseView):
         self._selected_item_widget = None  # 선택된 항목 위젯
         self._plan_lock_cache: dict = {}  # plan_id → locked 캐시
         self._load_generation: int = 0  # async/sync 로드 경쟁 방지 카운터
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=72)
+        self._player_ui_lock = threading.Lock()
+        self._pending_plan_progress = None
+        self._plan_progress_scheduled = False
+        self._pending_playback_progress = None
+        self._playback_progress_scheduled = False
+        self._pending_action_text = None
+        self._action_text_scheduled = False
 
         self._setup_ui()
         self._setup_callbacks()
         self.after(0, self._deferred_load)  # UI 렌더 후 데이터 로드
+
+    def after(self, ms, func=None, *args):
+        """PlayerView의 worker-thread after() 호출을 메인스레드 dispatcher로 우회한다."""
+        if func is None:
+            return super().after(ms)
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is None or threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+
+        def _schedule_on_main():
+            try:
+                if not self.winfo_exists():
+                    return
+                super(PlayerView, self).after(ms, func, *args)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        dispatcher.post(_schedule_on_main)
+        return None
+
+    def _player_ui_post(self, callback) -> None:
+        try:
+            dispatcher = getattr(self, "_ui_dispatcher", None)
+            if dispatcher is not None:
+                dispatcher.post(callback)
+                return
+            if threading.current_thread() is threading.main_thread():
+                callback()
+                return
+            super(PlayerView, self).after(0, callback)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _queue_plan_progress_update(self, current: int, total: int, message: str) -> None:
+        should_post = False
+        with self._player_ui_lock:
+            self._pending_plan_progress = (current, total, message)
+            if not self._plan_progress_scheduled:
+                self._plan_progress_scheduled = True
+                should_post = True
+        if should_post:
+            self._player_ui_post(self._flush_plan_progress_update)
+
+    def _flush_plan_progress_update(self) -> None:
+        with self._player_ui_lock:
+            payload = self._pending_plan_progress
+            self._pending_plan_progress = None
+            self._plan_progress_scheduled = False
+        if payload is None or not self.winfo_exists():
+            return
+        self._update_plan_progress(*payload)
+
+    def _queue_playback_progress_update(self, progress: PlaybackProgress) -> None:
+        snapshot = (
+            progress.current_step,
+            progress.total_steps,
+            progress.progress_percent,
+        )
+        should_post = False
+        with self._player_ui_lock:
+            self._pending_playback_progress = snapshot
+            if not self._playback_progress_scheduled:
+                self._playback_progress_scheduled = True
+                should_post = True
+        if should_post:
+            self._player_ui_post(self._flush_playback_progress_update)
+
+    def _flush_playback_progress_update(self) -> None:
+        with self._player_ui_lock:
+            payload = self._pending_playback_progress
+            self._pending_playback_progress = None
+            self._playback_progress_scheduled = False
+        if payload is None or not self.winfo_exists():
+            return
+        current_step, total_steps, progress_percent = payload
+        self._update_progress_snapshot(current_step, total_steps, progress_percent)
+
+    def _queue_action_text_update(self, text: str) -> None:
+        should_post = False
+        with self._player_ui_lock:
+            self._pending_action_text = text
+            if not self._action_text_scheduled:
+                self._action_text_scheduled = True
+                should_post = True
+        if should_post:
+            self._player_ui_post(self._flush_action_text_update)
+
+    def _flush_action_text_update(self) -> None:
+        with self._player_ui_lock:
+            text = self._pending_action_text
+            self._pending_action_text = None
+            self._action_text_scheduled = False
+        if text is None or not self.winfo_exists():
+            return
+        self._current_action_label.configure(text=text)
 
     def _deferred_load(self):
         """UI 표시 후 데이터 로드 (after(0) 콜백)"""
@@ -17248,7 +17401,7 @@ class PlayerView(BaseView):
                 recording = self._db.get_recording_by_plan_id(plan.plan_id)
                 lock_cache[plan.plan_id] = recording.locked if recording else False
             try:
-                self.after(0, lambda: self._apply_loaded_data(sequences, plans, current_gen, lock_cache))
+                self._player_ui_post(lambda: self._apply_loaded_data(sequences, plans, current_gen, lock_cache))
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -18376,9 +18529,9 @@ class PlayerView(BaseView):
                     return
                 if success and chain_remaining:
                     self._rule_executor = None
-                    self.after(0, lambda: self._play_plan_rules(chain_remaining))
+                    self._player_ui_post(lambda: self._play_plan_rules(chain_remaining))
                 else:
-                    self.after(0, lambda s=success, m=message: self._show_plan_complete(s, m))
+                    self._player_ui_post(lambda s=success, m=message: self._show_plan_complete(s, m))
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -18393,13 +18546,10 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self.after(
-                0,
-                lambda: self._update_plan_progress(
-                    progress.current_step,
-                    progress.total_steps,
-                    progress.current_rule_description,
-                ),
+            self._queue_plan_progress_update(
+                progress.current_step,
+                progress.total_steps,
+                progress.current_rule_description,
             )
         except (tk.TclError, RuntimeError):
             pass
@@ -18409,7 +18559,7 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self.after(0, lambda: self._update_plan_progress(current, total, message))
+            self._queue_plan_progress_update(current, total, message)
         except (tk.TclError, RuntimeError):
             pass
 
@@ -18430,7 +18580,7 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self.after(0, lambda: self._show_plan_complete(success, message))
+            self._player_ui_post(lambda: self._show_plan_complete(success, message))
         except (tk.TclError, RuntimeError):
             pass
 
@@ -18577,7 +18727,7 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self.after(0, lambda: self._update_progress(progress))
+            self._queue_playback_progress_update(progress)
         except (tk.TclError, RuntimeError):
             pass
 
@@ -18586,10 +18736,22 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self._step_label.configure(
-                text=f"{PLAYER['current_step']}: {progress.current_step} / {progress.total_steps}"
+            self._update_progress_snapshot(
+                progress.current_step,
+                progress.total_steps,
+                progress.progress_percent,
             )
-            self._progress_bar.set(progress.progress_percent / 100)
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
+
+    def _update_progress_snapshot(self, current_step: int, total_steps: int, progress_percent: float) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+            self._step_label.configure(
+                text=f"{PLAYER['current_step']}: {current_step} / {total_steps}"
+            )
+            self._progress_bar.set(progress_percent / 100)
         except (tk.TclError, RuntimeError, AttributeError):
             pass
 
@@ -18598,7 +18760,7 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self.after(0, lambda: self._current_action_label.configure(text=str(action)))
+            self._queue_action_text_update(str(action))
         except (tk.TclError, RuntimeError):
             pass
 
@@ -18607,7 +18769,7 @@ class PlayerView(BaseView):
         try:
             if not self.winfo_exists():
                 return
-            self.after(0, lambda: self._show_complete(success, message))
+            self._player_ui_post(lambda: self._show_complete(success, message))
         except (tk.TclError, RuntimeError):
             pass
 
@@ -18680,6 +18842,12 @@ class PlayerView(BaseView):
             except Exception as e:
                 logger.warning(f"rule_executor 정리 오류: {e}")
             self._rule_executor = None
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is not None:
+            try:
+                dispatcher.close()
+            except Exception:
+                pass
 
 
 

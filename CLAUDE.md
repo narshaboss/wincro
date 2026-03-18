@@ -955,3 +955,23 @@ wincro/
   - real view-switch test passed (`recorder -> analyzer -> player`)
   - real `GameModeDialog` open/close test passed
 - Re-checked developer vs deployed UI execution differences and found no extra hidden split beyond expected packaging-specific branches.
+
+### 2026-03-18: Player-mode UI dispatcher expansion + AnalyzerView thread-safe UI dispatch (v1.0.150)
+- Extended the UI-only refactor without touching backend logic, pathfinding, mapping, or plan/map data.
+- `src/ui/player_view.py`
+  - Expanded `UiCallbackDispatcher` usage from `GameModeDialog` into `PlayerView`.
+  - Coalesced plan progress, playback progress, and action-text updates.
+  - Routed worker-thread `after(...)` calls for both `PlayerView` and `GameModeDialog` back through the main-thread dispatcher.
+  - Added coalesced live-status scheduling for hot playback updates.
+- `src/ui/analyzer_view.py`
+  - Added a thread-safe `after(...)` override and `_analyzer_ui_post(...)` helper.
+  - Moved async plan-load completion, analysis progress, plan-review dialog launch, analysis-complete handling, and cleanup dialog callbacks onto the dispatcher.
+  - Added dispatcher shutdown in `cleanup()`.
+- Verification:
+  - `py_compile` passed for `src/ui/ui_batcher.py`, `src/ui/main_window.py`, `src/ui/log_view.py`, `src/ui/player_view.py`, and `src/ui/analyzer_view.py`
+  - real app startup test passed
+  - real view-switch test passed (`recorder -> analyzer -> player`)
+  - real `GameModeDialog` open/close test passed
+  - real destroy-time test passed after switching into `AnalyzerView`, with no late worker-thread Tk exception
+- `config.py`
+  - `APP_VERSION` `1.0.149` -> `1.0.150`
