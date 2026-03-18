@@ -1736,3 +1736,24 @@ self._mini_total_repeat = 1
 
 ---
 
+### 2026-03-18: 보스방 응답없음 완화 + 상시스킬 on/off 확인 (v1.0.144)
+
+- **증상:** 보스 경유지에서 순찰/추적/보스처치 직후 WinCro 창 자체가 `응답없음`으로 멈추거나, 정상 완료 직전에 재생이 중간 종료됨
+- **원인 정리:**
+  1. 보스 후보 감지/추적/순찰/타이밍 로그와 상태라벨 갱신이 메인 UI에 과도하게 누적됨
+  2. 보스 완료 후 `_on_arrival()`과 `_stop_execution()`이 경쟁해 정상 완료가 끊길 수 있었음
+  3. 일부 보스 분기에서 worker thread -> Tk 직접 호출 경로가 남아 있었음
+- **수정:**
+  - `src/ui/player_view.py`
+    - `_ui_post()`, `_drain_ui_call_queue()`, `_flush_log_buffer()`로 UI 호출 메인스레드화
+    - `_queue_normal_completion()` 추가로 정상 완료 예약 시 `finally`의 stop 처리와 경쟁하지 않도록 수정
+    - `_schedule_boss_ui_log()`, `_schedule_boss_status()` 추가
+    - 보스방의 후보감지/추적/순찰/방향없음/타이밍/완료/전환 로그를 보스 전용 dedupe 경로로 통일
+    - 보스 전용 UI 큐 백프레셔 추가
+- **검증:**
+  - `player_view.py` `py_compile` 통과
+  - `auto_skill_enabled`가 `False`일 때 `player_view.py`, `rule_executor.py` 모두 상시스킬 입력 분기에 진입하지 않음을 확인
+- **APP_VERSION:** `1.0.143` -> `1.0.144`
+
+---
+

@@ -6,6 +6,7 @@ WinCro 실행 화면 모듈
 
 import customtkinter as ctk
 from typing import Optional, List
+from collections import deque
 from pathlib import Path
 import json
 import math
@@ -3116,6 +3117,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._refresh_callback = refresh_callback
         self._thumbnail_refs = []
         self._is_running = False
+        self._completed_normally = False
         self._stop_event = threading.Event()
         self._map_save_lock = threading.Lock()
         self._segment_switch_in_progress = False
@@ -3129,6 +3131,8 @@ class GameModeDialog(ctk.CTkToplevel):
         self._auto_run = auto_run
         self._wp_empty_label = None
         self._config_rule_id = config_rule_id  # None이면 새 특화모드
+        self._ui_call_queue = deque()
+        self._ui_call_queue_lock = threading.Lock()
 
         from ..analyzer.automation_models import GameModeConfig
         if config_rule_id and config_rule_id in plan.game_modes:
@@ -3157,6 +3161,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         self._build_ui()
         self._update_previews()
+        self.after(25, self._drain_ui_call_queue)
 
         # UI 구성 완료 → 저장된 위치로 이동 + 포커스
         self.after(50, self._restore_and_focus)
@@ -3509,6 +3514,7 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception as e:
             logger.error(f"[실행] 설정 적용 오류: {e}")
         self._is_running = True
+        self._completed_normally = False
         self._stop_event.clear()
         self._key_press_count = 0
         # 일반 전체 테스트에서는 맵 저장/기록 안 함
@@ -3597,6 +3603,9 @@ class GameModeDialog(ctk.CTkToplevel):
             # 새 스레드가 이미 시작됐으면 이전 스레드의 정리를 스킵 (레이스 컨디션 방지)
             if getattr(self, '_run_thread', None) is not _my_thread:
                 logger.debug("[실행루프] 새 스레드 감지 → 이전 스레드 정리 스킵")
+                return
+            if getattr(self, "_completed_normally", False):
+                logger.debug("[실행루프] 정상 완료 예약됨 → stop_execution 생략")
                 return
             self._stop_event.set()
             try:
@@ -3721,12 +3730,16 @@ class GameModeDialog(ctk.CTkToplevel):
         import random as _rand
 
         def _pick_target(tidx):
-            """도착좌표가 여러 개면 랜덤 선택, 없으면 기본 wp 좌표"""
+            """경유지의 실제 이동 목표를 선택한다.
+
+            route_ends가 있으면 기본적으로 그중 하나를 사용한다.
+            """
+            _wpx, _wpy = all_targets[tidx][0], all_targets[tidx][1]
             _re = all_targets[tidx][7] if len(all_targets[tidx]) > 7 else []
             if _re:
                 tx, ty = _rand.choice(_re)
             else:
-                tx, ty = all_targets[tidx][0], all_targets[tidx][1]
+                tx, ty = _wpx, _wpy
             return tx, ty
 
         target_x, target_y = _pick_target(target_idx)
@@ -4005,6 +4018,10 @@ class GameModeDialog(ctk.CTkToplevel):
         blocked_dirs = {}  # (x, y, dir) -> expire_iteration
         DIR_BLOCK_TTL_MIN = 6
         DIR_BLOCK_TTL_MAX = 36
+        _arrival_exact_stable_key = None
+        _arrival_exact_stable_hits = 0
+        _arrival_jump_wait_key = None
+        _arrival_jump_wait_logged = False
 
         def _dir_key(x, y, d):
             return (int(x), int(y), str(d))
@@ -4036,6 +4053,21 @@ class GameModeDialog(ctk.CTkToplevel):
             for i, pos in enumerate(current_path):
                 if pos not in path_pos_index:
                     path_pos_index[pos] = i
+
+        def _wait_for_actual_jump(_seg_idx):
+            """탈출/포탈형 경유지는 좌표 점프로 전환이 확인된 뒤에만 완료 처리한다."""
+            _name = ""
+            if 0 <= _seg_idx < len(all_targets):
+                _name = str(all_targets[_seg_idx][2] or "")
+            _arr_keys = all_targets[_seg_idx][6] if 0 <= _seg_idx < len(all_targets) and len(all_targets[_seg_idx]) > 6 else []
+            _route_ends = all_targets[_seg_idx][7] if 0 <= _seg_idx < len(all_targets) and len(all_targets[_seg_idx]) > 7 else []
+            if bool(_arr_keys) and bool(_route_ends) and "탈출" in _name:
+                return True
+            if _seg_idx < len(all_targets) - 1:
+                _next_starts = all_targets[_seg_idx + 1][8] if len(all_targets[_seg_idx + 1]) > 8 else []
+                if _next_starts and not bool(_arr_keys):
+                    return True
+            return False
 
         def _clear_boss_patrol_route_cache():
             nonlocal _boss_patrol_route, _boss_patrol_route_goal, _boss_patrol_route_index
@@ -4621,7 +4653,11 @@ class GameModeDialog(ctk.CTkToplevel):
                         _fail_msg = f"⚠️ 최단경로 실패 ({cx},{cy})→({tx},{ty}) sp={_sp} nb=[{_nb_str}] avoid={_avoid_str} p={len(self._game_map.passable)} blk={self._game_map.is_blocked(cx,cy)}"
                         logger.info(f"[특화모드] {_fail_msg}")
                         if _ui_update_ok:
-                            self.after(0, lambda m=_fail_msg: self._append_log(m))
+                            self._schedule_ui_log(
+                                _fail_msg,
+                                dedupe_key=f"pathfail:{cx}:{cy}:{tx}:{ty}",
+                                dedupe_window=0.5,
+                            )
                 if _route_result.found and _route_result.directions:
                     _ndx0, _ndy0 = DIRECTIONS_4.get(_d0, (0, 0))
                     if _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
@@ -5950,15 +5986,47 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 도착좌표가 여러 개면 어느 하나라도 밟으면 도착 처리
                 _cur_route_ends = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
                 _arr_keys_cur = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+                _arrival_requires_exact = bool(_arr_keys_cur) and bool(_cur_route_ends)
                 if _cur_route_ends:
                     _arrived_exact = any(current_x == ex and current_y == ey for ex, ey in _cur_route_ends)
-                    # 탈출/키입력형 경유지는 포탈 패드 위에서 OCR이 1칸 흔들리는 경우가 있어
-                    # route_ends + arrival_keys 조합일 때만 1칸 근접 도착을 허용한다.
+                    # 탈출/도착키 경유지는 실제 route_end를 밟았을 때만 도착 처리한다.
+                    # 근접 판정은 포탈 점프 감지 전용으로만 유지한다.
                     _arrived_near = any(abs(current_x - ex) + abs(current_y - ey) <= 1 for ex, ey in _cur_route_ends)
-                    _arrived = _arrived_exact or (bool(_arr_keys_cur) and _arrived_near)
+                    if _arrival_requires_exact and _arrived_exact:
+                        _stable_key = (int(target_idx), int(current_x), int(current_y))
+                        if _arrival_exact_stable_key == _stable_key:
+                            _arrival_exact_stable_hits += 1
+                        else:
+                            _arrival_exact_stable_key = _stable_key
+                            _arrival_exact_stable_hits = 1
+                        _arrived = _arrival_exact_stable_hits >= 2
+                    else:
+                        _arrival_exact_stable_key = None
+                        _arrival_exact_stable_hits = 0
+                        _arrived = _arrived_exact
                 else:
-                    _arrived = (abs(current_x - target_x) + abs(current_y - target_y) == 0)
-                if _arrived and not is_boss_dungeon and portal_grace <= 0:
+                    _arrived_exact = (abs(current_x - target_x) + abs(current_y - target_y) == 0)
+                    _arrived_near = _arrived_exact
+                    _arrival_exact_stable_key = None
+                    _arrival_exact_stable_hits = 0
+                    _arrived = _arrived_exact
+                _need_actual_jump = _wait_for_actual_jump(target_idx)
+                if _need_actual_jump and _arrived_exact and not is_boss_dungeon:
+                    _wait_key = (int(target_idx), int(current_x), int(current_y))
+                    if _arrival_jump_wait_key != _wait_key:
+                        _arrival_jump_wait_key = _wait_key
+                        _arrival_jump_wait_logged = False
+                    if not _arrival_jump_wait_logged:
+                        self.after(0, lambda cx=current_x, cy=current_y:
+                            self._append_log(f"🌀 도착좌표 밟음 ({cx},{cy}) → 경유지 전환 확인 대기"))
+                        _arrival_jump_wait_logged = True
+                    prev_x, prev_y = current_x, current_y
+                    self._stop_event.wait(0.05)
+                    continue
+                _arrival_jump_wait_key = None
+                _arrival_jump_wait_logged = False
+                _arrival_grace_ok = portal_grace <= 0 or (_arrival_requires_exact and _arrived_exact)
+                if _arrived and not is_boss_dungeon and _arrival_grace_ok and not _need_actual_jump:
                     _block_advance, _block_frontier, _block_reason = _should_block_mapping_segment_advance(current_x, current_y)
                     if _block_advance:
                         _restore_start_based_full_mapping(
@@ -6021,13 +6089,13 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _arr_keys and not self._stop_event.is_set():
                         self._exec_arrival_keys(_arr_keys)
                         _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                        self.after(0, lambda k=_kn, cx=current_x, cy=current_y:
+                        self._ui_post(lambda k=_kn, cx=current_x, cy=current_y:
                             self._append_log(f"🔑 도착 키 입력: {k} ({cx},{cy})"))
                     target_idx += 1
                     _clear_segment_completion_commit()
                     if target_idx >= len(all_targets):
-                        self.after(0, lambda: self._append_log(f"🎯 도착! ({current_x},{current_y})"))
-                        self.after(0, self._on_arrival)
+                        self._ui_post(lambda: self._append_log(f"🎯 도착! ({current_x},{current_y})"))
+                        self._queue_normal_completion()
                         return
                     else:
                         # 구간 맵 전환 (중지 요청 시 건너뜀)
@@ -6053,7 +6121,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         self.after(0, lambda tx=target_x, ty=target_y, sn=seg_name: self._append_log(f"▶ 다음: ({tx},{ty}) [{sn}]"))
                         # 테스트 실행 모드: 경유지 도착 알림 (비블로킹) — 부분실행/재생에서는 표시 안 함
                         if not getattr(self, '_is_mapping', False) and not getattr(self, '_auto_run', False):
-                            self.after(0, lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
+                            self._ui_post(lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
                                 self._show_notification(
                                     "경유지 도착",
                                     f"'{ps}' 도착! ({ti}/{total})\n\n"
@@ -6171,10 +6239,10 @@ class GameModeDialog(ctk.CTkToplevel):
                             )
                             self._exec_arrival_keys(_arr_keys)
                             _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                            self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
-                        self.after(0, lambda jd=jump_dist, px=prev_x, py=prev_y:
+                            self._ui_post(lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                        self._ui_post(lambda jd=jump_dist, px=prev_x, py=prev_y:
                             self._append_log(f"🌀 포탈 감지 → 도착! (점프 {jd}칸, ({px},{py}))"))
-                        self.after(0, self._on_arrival)
+                        self._queue_normal_completion()
                         return
                     elif jump_dist >= portal_threshold and was_near_target and not is_boss_dungeon and not (_mapping_guard_active() or _local_explore_phase) and target_idx < len(all_targets) - 1:
                         # 도착 키 입력
@@ -6190,7 +6258,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             )
                             self._exec_arrival_keys(_arr_keys)
                             _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                            self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                            self._ui_post(lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
                         # 구간 맵 전환 (현재 맵 저장 → 다음 구간 맵 로드)
                         if self._stop_event.is_set():
                             break
@@ -6225,11 +6293,11 @@ class GameModeDialog(ctk.CTkToplevel):
                         target_x, target_y = _pick_target(target_idx)
                         seg_name = all_targets[target_idx][2]
                         prev_seg = all_targets[target_idx - 1][2]
-                        self.after(0, lambda jd=jump_dist, tx=target_x, ty=target_y, sn=seg_name:
+                        self._ui_post(lambda jd=jump_dist, tx=target_x, ty=target_y, sn=seg_name:
                             self._append_log(f"🌀 포탈 감지! (점프 {jd}칸) → {sn} 목표: ({tx},{ty})"))
                         # 테스트 실행 모드: 포탈 도착 알림 (비블로킹) — 부분실행/재생에서는 표시 안 함
                         if not getattr(self, '_is_mapping', False) and not getattr(self, '_auto_run', False):
-                            self.after(0, lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
+                            self._ui_post(lambda ps=prev_seg, sn=seg_name, ti=target_idx, total=len(all_targets):
                                 self._show_notification(
                                     "포탈 감지",
                                     f"'{ps}' -> '{sn}' 이동! ({ti}/{total})\n\n"
@@ -7694,15 +7762,15 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     if not self._stop_event.is_set():
                                                         self._exec_arrival_keys(_arr_keys_fm)
                                                         _kn_fm = ",".join(kd.get("key","") for kd in _arr_keys_fm)
-                                                        self.after(0, lambda k=_kn_fm: self._append_log(f"🔑 도착 키 입력: {k}"))
+                                                        self._ui_post(lambda k=_kn_fm: self._append_log(f"🔑 도착 키 입력: {k}"))
                                                 _prev_boss3 = all_targets[target_idx][3]
                                                 target_idx += 1
                                                 _clear_segment_completion_commit()
                                                 if target_idx >= len(all_targets):
                                                     self._boss_segment_active = False
-                                                    self.after(0, lambda cx=current_x, cy=current_y:
+                                                    self._ui_post(lambda cx=current_x, cy=current_y:
                                                         self._append_log(f"🎯 맵핑테스트 완료! ({cx},{cy})"))
-                                                    self.after(0, self._on_arrival)
+                                                    self._queue_normal_completion()
                                                     return
                                                 if self._stop_event.is_set():
                                                     break
@@ -7808,14 +7876,14 @@ class GameModeDialog(ctk.CTkToplevel):
                                             prev_x, prev_y = current_x, current_y
                                             time.sleep(0.05)
                                             continue
-                                        self.after(0, lambda: self._append_log("✅ 맵 탐색 완료 → 다음 경유지"))
+                                        self._ui_post(lambda: self._append_log("✅ 맵 탐색 완료 → 다음 경유지"))
                                         # 다음 경유지로 전환
                                         _prev_boss3 = all_targets[target_idx][3] if len(all_targets[target_idx]) > 3 else False
                                         target_idx += 1
                                         _clear_segment_completion_commit()
                                         if target_idx >= len(all_targets):
                                             self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
-                                            self.after(0, self._on_arrival)
+                                            self._queue_normal_completion()
                                             return
                                         if self._stop_event.is_set():
                                             break
@@ -7823,7 +7891,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         # 맵핑테스트: (0,0) 경유지도 맵 데이터 저장 (유실 방지)
                                         _skip_save3b = (_prev_boss3 and not _is_mapping_test) or _no_save
                                         if not self._switch_segment_map(target_idx, skip_save=_skip_save3b):
-                                            self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                            self._ui_post(lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
                                             self._stop_event.wait(0.05)
                                             continue
                                         pathfinder = SimplePathfinder(self._game_map)
@@ -7913,8 +7981,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self._key_press_count += 1
                                     last_boss_skill_time = _now
                                     if _ui_update_ok:
-                                        self.after(0, lambda cx=current_x, cy=current_y, k=boss_skill_key:
-                                            self._append_log(f"⚔️ 보스 스킬! ({cx},{cy}) 키={k}"))
+                                        self._schedule_boss_ui_log(
+                                            f"⚔️ 보스 스킬! ({current_x},{current_y}) 키={boss_skill_key}",
+                                            dedupe_key="boss-skill-log",
+                                            dedupe_window=0.5,
+                                        )
                                 except Exception as _e:
                                     logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
 
@@ -7961,8 +8032,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                             # UI 오탐 (고정 UI 이름 요소) → 보스 사라진 것으로 처리
                                             _appr_boss_visible = False
                                             if _ui_update_ok:
-                                                self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
-                                                    self._append_log(f"✅ 보스 사라짐 ({cx},{cy}) 거리={td}타일 — UI 오탐"))
+                                                self._schedule_boss_ui_log(
+                                                    f"✅ 보스 사라짐 ({current_x},{current_y}) 거리={_td3}타일 — UI 오탐",
+                                                    dedupe_key="boss-disappear-ui-noise",
+                                                    dedupe_window=0.8,
+                                                )
                                         elif _char_det3 and (_td3 > 1 or _pix3 > 16):
                                             # 보스가 다시 멀어짐 → 다시 추적 (X/Y 둘 다 반영)
                                             _chase_tx = current_x + _det3.get("dx_tiles", 0)
@@ -7991,8 +8065,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                             self._appr_dy3 = None  # approaching 상태 정리
                                             boss_mode = "patrolling"
                                             if _ui_update_ok:
-                                                self.after(0, lambda cx=current_x, cy=current_y, td=_td3:
-                                                    self._append_log(f"🏃 보스 멀어짐 ({cx},{cy}) 거리={td}타일 → 재추적 유지"))
+                                                self._schedule_boss_ui_log(
+                                                    f"🏃 보스 멀어짐 ({current_x},{current_y}) 거리={_td3}타일 → 재추적 유지",
+                                                    dedupe_key="boss-far-rechase",
+                                                    dedupe_window=0.5,
+                                                )
                                             self._stop_event.wait(0.05)
                                             continue
                             except Exception:
@@ -8022,8 +8099,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         pass
                                     break
                             if _ui_update_ok:
-                                self.after(0, lambda cx=current_x, cy=current_y:
-                                    self._update_status("보스스킬", f"({cx},{cy})", "", "전투중", "⚔️"))
+                                self._schedule_boss_status("보스스킬", f"({current_x},{current_y})", "", "전투중", "⚔️")
                         else:
                             if _appr_detection_attempted:
                                 boss_appr_miss += 1
@@ -8037,8 +8113,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             boss_appr_miss = 0
                             # 10회 연속 미감지 → 보스 처치 판정
                             _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
-                            self.after(0, lambda cx=current_x, cy=current_y, nk=len(_arr_keys):
-                                self._append_log(f"✅ 보스 처치! ({cx},{cy}) → 다음 경유지 (키{nk}개)"))
+                            self._schedule_boss_ui_log(
+                                f"✅ 보스 처치! ({current_x},{current_y}) → 다음 경유지 (키{len(_arr_keys)}개)",
+                                dedupe_key="boss-kill-complete",
+                                dedupe_window=1.0,
+                            )
                             logger.info(f"[좌표모드] 보스 처치 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
                             # 보스 사망 애니메이션 대기
                             self._stop_event.wait(2.0)
@@ -8046,7 +8125,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             if _arr_keys and not self._stop_event.is_set():
                                 self._exec_arrival_keys(_arr_keys)
                                 _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                                self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                                self._schedule_boss_ui_log(
+                                    f"🔑 도착 키 입력: {_kn}",
+                                    dedupe_key="boss-arrival-keys",
+                                    dedupe_window=1.0,
+                                )
                             _arm_boss_transition_cooldown(2.0)
                             _clear_boss_patrol_route_cache()
                             _prev_idx = target_idx
@@ -8054,8 +8137,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             _clear_segment_completion_commit()
                             if target_idx >= len(all_targets):
                                 self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
-                                self.after(0, lambda: self._append_log(f"🎯 전체 완료!"))
-                                self.after(0, self._on_arrival)
+                                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
+                                self._queue_normal_completion()
                                 return
                             if self._stop_event.is_set():
                                 break
@@ -8070,7 +8153,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self._game_map.end_pos = None
                             self._boss_segment_active = False
                             if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss and not _is_mapping_test) or _no_save):
-                                self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
                                 _arm_boss_transition_cooldown(3.0)
                                 self._stop_event.wait(0.05)
                                 continue
@@ -8078,8 +8161,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._map_pathfinder = pathfinder
                             target_x, target_y = _pick_target(target_idx)
                             seg_name = all_targets[target_idx][2]
-                            self.after(0, lambda sn=seg_name, ti=target_idx, total=len(all_targets):
-                                self._append_log(f"▶ 다음 경유지: [{sn}] ({ti}/{total})"))
+                            self._schedule_boss_ui_log(
+                                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
+                                dedupe_key="boss-next-segment",
+                                dedupe_window=1.0,
+                            )
                             stuck_count = 0
                             total_stuck_count = 0
                             current_path = []
@@ -8203,8 +8289,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _char_detected = bool(_det.get("char_found"))
                                         if not _char_detected:
                                             if _ui_update_ok:
-                                                self.after(0, lambda conf=_res.confidence:
-                                                    self._append_log(f"👀 보스 후보 감지 (신뢰도={conf:.1%}) — 캐릭터 인식 대기"))
+                                                self._schedule_boss_ui_log(
+                                                    f"👀 보스 후보 감지 (신뢰도={_res.confidence:.1%}) — 캐릭터 인식 대기",
+                                                    dedupe_key="boss-candidate-detect",
+                                                    dedupe_window=0.6,
+                                                )
                                             _boss_found = False
                                         else:
                                             dx_pixel = _det.get("dx_px", 0)
@@ -8217,8 +8306,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                             # 20타일 초과 → UI 요소 오탐, 무시
                                             if tile_dist > 20:
                                                 if _ui_update_ok:
-                                                    self.after(0, lambda dx=dx_pixel, dy=dy_pixel, td=tile_dist:
-                                                        self._append_log(f"⚠️ 보스 감지 무시 (거리={td}타일, dx={dx}px, dy={dy}px) — UI 오탐 추정"))
+                                                    self._schedule_boss_ui_log(
+                                                        f"⚠️ 보스 감지 무시 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px) — UI 오탐 추정",
+                                                        dedupe_key="boss-candidate-ignore",
+                                                        dedupe_window=0.8,
+                                                    )
                                                 _boss_found = False  # UI 오탐 → 감지 아님 처리
 
                                             # 충분히 근접 → approaching
@@ -8250,10 +8342,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     except Exception:
                                                         pass
                                                 if _ui_update_ok:
-                                                    self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
-                                                               cx=current_x, cy=current_y, dx=dx_pixel, dy=dy_pixel,
-                                                               td=tile_dist:
-                                                        self._append_log(f"🎯 보스 근접! ({cx},{cy}) dx={dx}px dy={dy}px 거리={td}타일 {s}회 → 접근 완료 (신뢰도={conf:.1%})"))
+                                                    self._schedule_boss_ui_log(
+                                                        f"🎯 보스 근접! ({current_x},{current_y}) dx={dx_pixel}px dy={dy_pixel}px 거리={tile_dist}타일 {boss_approach_steps}회 → 접근 완료 (신뢰도={_res.confidence:.1%})",
+                                                        dedupe_key="boss-approach-complete",
+                                                        dedupe_window=0.5,
+                                                    )
                                                 prev_x, prev_y = current_x, current_y
                                                 time.sleep(0.05)
                                                 continue
@@ -8286,12 +8379,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                         if _found_chase:
                                                             break
                                                 if _ui_update_ok:
-                                                    self.after(0, lambda conf=_res.confidence, s=boss_approach_steps,
-                                                               cx=current_x, cy=current_y,
-                                                               dx=dx_pixel, dy=dy_pixel,
-                                                               tx=_chase_tx, ty=_chase_ty,
-                                                               td=tile_dist:
-                                                        self._append_log(f"🎯 보스 추적! dx={dx}px dy={dy}px ({cx},{cy})→({tx},{ty}) 거리={td}타일 ({s}회)"))
+                                                    self._schedule_boss_ui_log(
+                                                        f"🎯 보스 추적! dx={dx_pixel}px dy={dy_pixel}px ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={tile_dist}타일 ({boss_approach_steps}회)",
+                                                        dedupe_key="boss-chase-detect",
+                                                        dedupe_window=0.35,
+                                                    )
                                                 _move_target = (_chase_tx, _chase_ty)
                                 except Exception as _e:
                                     logger.debug(f"[순찰] 보스 이미지 검색 오류: {_e}")
@@ -8306,8 +8398,11 @@ class GameModeDialog(ctk.CTkToplevel):
                         # ── 순찰 1바퀴 완료 체크 → 다음 경유지 ──
                         # 보스 감지를 한 반복에서만 완료 판정 (감지 안 한 반복에서 넘어가면 보스 놓침)
                         if not _boss_chasing and boss_patrol is not None and boss_patrol.is_completed and _check_boss_image:
-                            self.after(0, lambda cx=current_x, cy=current_y:
-                                self._append_log(f"🔄 순찰 1바퀴 완료 ({cx},{cy}) 보스 없음 → 다음 경유지"))
+                            self._schedule_boss_ui_log(
+                                f"🔄 순찰 1바퀴 완료 ({current_x},{current_y}) 보스 없음 → 다음 경유지",
+                                dedupe_key="boss-patrol-complete",
+                                dedupe_window=1.0,
+                            )
                             # 이동 애니메이션 대기 후 도착 키 입력
                             _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                             if _arr_keys and not self._stop_event.is_set():
@@ -8315,7 +8410,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if not self._stop_event.is_set():
                                     self._exec_arrival_keys(_arr_keys)
                                     _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                                    self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                                    self._schedule_boss_ui_log(
+                                        f"🔑 도착 키 입력: {_kn}",
+                                        dedupe_key="boss-arrival-keys",
+                                        dedupe_window=1.0,
+                                    )
                             _arm_boss_transition_cooldown(2.0)
                             _clear_boss_patrol_route_cache()
                             _prev_idx2 = target_idx
@@ -8323,8 +8422,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             _clear_segment_completion_commit()
                             if target_idx >= len(all_targets):
                                 self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
-                                self.after(0, lambda: self._append_log(f"🎯 전체 완료!"))
-                                self.after(0, self._on_arrival)
+                                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
+                                self._queue_normal_completion()
                                 return
                             if self._stop_event.is_set():
                                 break
@@ -8339,7 +8438,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self._game_map.end_pos = None
                             self._boss_segment_active = False
                             if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss2 and not _is_mapping_test) or _no_save):
-                                self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
                                 _arm_boss_transition_cooldown(3.0)
                                 self._stop_event.wait(0.05)
                                 continue
@@ -8348,8 +8447,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             target_x, target_y = _pick_target(target_idx)
                             seg_name = all_targets[target_idx][2]
                             prev_seg = all_targets[target_idx - 1][2]
-                            self.after(0, lambda sn=seg_name, ti=target_idx, total=len(all_targets):
-                                self._append_log(f"▶ 다음 경유지: [{sn}] ({ti}/{total})"))
+                            self._schedule_boss_ui_log(
+                                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
+                                dedupe_key="boss-next-segment",
+                                dedupe_window=1.0,
+                            )
                             stuck_count = 0
                             total_stuck_count = 0
                             current_path = []
@@ -8423,8 +8525,16 @@ class GameModeDialog(ctk.CTkToplevel):
                         else:
                             _move_target_raw = boss_patrol.get_next_target(current_pos_tuple)
                             if _move_target_raw is None:
+                                if boss_patrol.is_completed:
+                                    prev_x, prev_y = current_x, current_y
+                                    self._stop_event.wait(0.05)
+                                    continue
                                 if _ui_update_ok:
-                                    self.after(0, lambda: self._append_log("⚠️ 순찰 좌표 없음 → 탐색 복귀"))
+                                    self._schedule_boss_ui_log(
+                                        "⚠️ 순찰 좌표 없음 → 탐색 복귀",
+                                        dedupe_key="boss-patrol-empty",
+                                        dedupe_window=0.8,
+                                    )
                                 boss_mode = "exploring"
                                 boss_patrol = None
                                 _clear_boss_patrol_route_cache()
@@ -8536,13 +8646,17 @@ class GameModeDialog(ctk.CTkToplevel):
 
                         if direction and not self._stop_event.is_set() and _ui_update_ok:
                             if _boss_chasing:
-                                self.after(0, lambda cx=current_x, cy=current_y, d=direction,
-                                           tx=_move_target[0], ty=_move_target[1], pl=_remaining:
-                                    self._append_log(f"🏃 추적 ({cx},{cy})→({tx},{ty}) {d} ({pl}칸)"))
+                                self._schedule_boss_ui_log(
+                                    f"🏃 추적 ({current_x},{current_y})→({_move_target[0]},{_move_target[1]}) {direction} ({_remaining}칸)",
+                                    dedupe_key="boss-chase-route",
+                                    dedupe_window=0.25,
+                                )
                             else:
-                                self.after(0, lambda cx=current_x, cy=current_y, d=direction,
-                                           tx=_move_target[0], ty=_move_target[1], pl=_remaining:
-                                    self._append_log(f"🚶 순찰 ({cx},{cy})→({tx},{ty}) {d} ({pl}칸)"))
+                                self._schedule_boss_ui_log(
+                                    f"🚶 순찰 ({current_x},{current_y})→({_move_target[0]},{_move_target[1]}) {direction} ({_remaining}칸)",
+                                    dedupe_key="boss-patrol-route",
+                                    dedupe_window=0.25,
+                                )
 
                         if direction is None:
                             if _boss_chasing and not self._stop_event.is_set():
@@ -8616,8 +8730,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                         except Exception:
                                                             pass
                                                     if _ui_update_ok:
-                                                        self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
-                                                            self._append_log(f"🎯 추적→접근! ({cx},{cy}) 거리={td}타일 → approaching"))
+                                                        self._schedule_boss_ui_log(
+                                                            f"🎯 추적→접근! ({current_x},{current_y}) 거리={_td2}타일 → approaching",
+                                                            dedupe_key="boss-chase-to-approach",
+                                                            dedupe_window=0.4,
+                                                        )
                                                     prev_x, prev_y = current_x, current_y
                                                     time.sleep(0.05)
                                                     continue
@@ -8651,16 +8768,21 @@ class GameModeDialog(ctk.CTkToplevel):
                                                         # 다음번엔 반대 방향 스캔
                                                         self._boss_x_scan_dir *= -1
                                                         if _ui_update_ok:
-                                                            self.after(0, lambda cx=current_x, cy=current_y,
-                                                                       tx=_chase_tx, ty=_chase_ty, td=_td2, dy=_dy2:
-                                                                self._append_log(f"🔄 Y근접({td}타일) X탐색 → ({tx},{ty})"))
+                                                            self._schedule_boss_ui_log(
+                                                                f"🔄 Y근접({_td2}타일) X탐색 → ({_chase_tx},{_chase_ty})",
+                                                                dedupe_key="boss-y-near-scan",
+                                                                dedupe_window=0.35,
+                                                            )
                                                     else:
                                                         # 우회 불가 → 미감지 처리 (miss 누적 → 15회 시 순찰 복귀)
                                                         _rechk_found = False
                                                         self._boss_x_scan_dir *= -1  # 방향 전환
                                                         if _ui_update_ok:
-                                                            self.after(0, lambda cx=current_x, cy=current_y, td=_td2, dy=_dy2:
-                                                                self._append_log(f"⚠️ Y근접({td}타일) X탐색 실패+우회불가"))
+                                                            self._schedule_boss_ui_log(
+                                                                f"⚠️ Y근접({_td2}타일) X탐색 실패+우회불가",
+                                                                dedupe_key="boss-y-near-fail",
+                                                                dedupe_window=0.6,
+                                                            )
                                             else:
                                                 _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
                                                 _chase_ty = current_y + _edy2
@@ -8672,9 +8794,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     _chase_ty += _rchk_dy_sign
                                                 _boss_chase_miss = 0
                                                 if _ui_update_ok:
-                                                    self.after(0, lambda cx=current_x, cy=current_y,
-                                                               tx=_chase_tx, ty=_chase_ty, td=_td2:
-                                                        self._append_log(f"🔄 재감지! ({cx},{cy})→({tx},{ty}) 거리={td}타일"))
+                                                    self._schedule_boss_ui_log(
+                                                        f"🔄 재감지! ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={_td2}타일",
+                                                        dedupe_key="boss-reacquire",
+                                                        dedupe_window=0.35,
+                                                    )
                                 except Exception:
                                     pass
                                 if not _rechk_found and not self._stop_event.is_set():
@@ -8686,22 +8810,29 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _move_dist = abs(current_x - _move_target[0]) + abs(current_y - _move_target[1])
                                         _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                                         if _move_dist <= 1:
-                                            self.after(0, lambda cx=current_x, cy=current_y, nk=len(_arr_keys):
-                                                self._append_log(f"✅ 보스 추적 종료! ({cx},{cy}) 재감지 실패 지속 → 다음 경유지 (키{nk}개)"))
+                                            self._schedule_boss_ui_log(
+                                                f"✅ 보스 추적 종료! ({current_x},{current_y}) 재감지 실패 지속 → 다음 경유지 (키{len(_arr_keys)}개)",
+                                                dedupe_key="boss-chase-complete",
+                                                dedupe_window=1.0,
+                                            )
                                             logger.info(f"[좌표모드] 보스 추적 종료 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
                                             self._stop_event.wait(2.0)
                                             if _arr_keys and not self._stop_event.is_set():
                                                 self._exec_arrival_keys(_arr_keys)
                                                 _kn = ",".join(kd.get("key", "") for kd in _arr_keys)
-                                                self.after(0, lambda k=_kn: self._append_log(f"🔑 도착 키 입력: {k}"))
+                                                self._schedule_boss_ui_log(
+                                                    f"🔑 도착 키 입력: {_kn}",
+                                                    dedupe_key="boss-arrival-keys",
+                                                    dedupe_window=1.0,
+                                                )
                                             _arm_boss_transition_cooldown(2.0)
                                             _prev_idx = target_idx
                                             target_idx += 1
                                             _clear_segment_completion_commit()
                                             if target_idx >= len(all_targets):
                                                 self._boss_segment_active = False
-                                                self.after(0, lambda: self._append_log("🎯 전체 완료!"))
-                                                self.after(0, self._on_arrival)
+                                                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
+                                                self._queue_normal_completion()
                                                 return
                                             if self._stop_event.is_set():
                                                 break
@@ -8714,7 +8845,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     self._game_map.end_pos = None
                                             self._boss_segment_active = False
                                             if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss and not _is_mapping_test) or _no_save):
-                                                self.after(0, lambda: self._append_log("⚠️ 맵 구간 전환 실패"))
+                                                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
                                                 _arm_boss_transition_cooldown(3.0)
                                                 self._stop_event.wait(0.05)
                                                 continue
@@ -8722,8 +8853,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                             self._map_pathfinder = pathfinder
                                             target_x, target_y = _pick_target(target_idx)
                                             seg_name = all_targets[target_idx][2]
-                                            self.after(0, lambda sn=seg_name, ti=target_idx, total=len(all_targets):
-                                                self._append_log(f"▶ 다음 경유지: [{sn}] ({ti}/{total})"))
+                                            self._schedule_boss_ui_log(
+                                                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
+                                                dedupe_key="boss-next-segment",
+                                                dedupe_window=1.0,
+                                            )
                                             stuck_count = 0
                                             total_stuck_count = 0
                                             current_path = []
@@ -8791,23 +8925,32 @@ class GameModeDialog(ctk.CTkToplevel):
                                             continue
                                         boss_mode = "patrolling"
                                         if _ui_update_ok:
-                                            self.after(0, lambda cx=current_x, cy=current_y:
-                                                self._append_log(f"🔍 보스 미감지 → 기존 순찰 재개 ({cx},{cy})"))
+                                            self._schedule_boss_ui_log(
+                                                f"🔍 보스 미감지 → 기존 순찰 재개 ({current_x},{current_y})",
+                                                dedupe_key="boss-repatrol",
+                                                dedupe_window=0.7,
+                                            )
                                         stuck_count = 0
                                         total_stuck_count = 0
                                         last_dir = None
                                     else:
                                         if _ui_update_ok:
-                                            self.after(0, lambda tx=_move_target[0], ty=_move_target[1], m=_boss_chase_miss:
-                                                self._append_log(f"⚠️ 추적 ({tx},{ty}) 재감지 실패 ({m}/15)"))
+                                            self._schedule_boss_ui_log(
+                                                f"⚠️ 추적 ({_move_target[0]},{_move_target[1]}) 재감지 실패 ({_boss_chase_miss}/15)",
+                                                dedupe_key="boss-chase-miss",
+                                                dedupe_window=0.35,
+                                            )
                                         self._stop_event.wait(0.05)
                             else:
                                 _clear_boss_patrol_route_cache()
                                 boss_patrol.skip_current_target()
                                 patrol_skip_count += 1
                                 if _ui_update_ok:
-                                    self.after(0, lambda tx=_move_target[0], ty=_move_target[1]:
-                                        self._append_log(f"⚠️ 순찰 ({tx},{ty}) 도달 불가 → 스킵"))
+                                    self._schedule_boss_ui_log(
+                                        f"⚠️ 순찰 ({_move_target[0]},{_move_target[1]}) 도달 불가 → 스킵",
+                                        dedupe_key="boss-patrol-skip",
+                                        dedupe_window=0.4,
+                                    )
                                 patrol_total = len(self._game_map.patrol_points)
                                 skip_threshold = min(patrol_total, 15)
                                 if patrol_skip_count >= skip_threshold and patrol_total > 0:
@@ -8831,8 +8974,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                     boss_approach_steps = 0
                                     boss_appr_miss = 0
                                     if _ui_update_ok:
-                                        self.after(0, lambda ps=patrol_skip_count:
-                                            self._append_log(f"🔄 순찰 {ps}개 연속 도달불가 → 탐색모드 복귀"))
+                                        self._schedule_boss_ui_log(
+                                            f"🔄 순찰 {patrol_skip_count}개 연속 도달불가 → 탐색모드 복귀",
+                                            dedupe_key="boss-patrol-fallback",
+                                            dedupe_window=0.8,
+                                        )
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
@@ -8843,17 +8989,22 @@ class GameModeDialog(ctk.CTkToplevel):
 
                         if not self._stop_event.is_set() and _ui_update_ok:
                             if _boss_chasing:
-                                self.after(0, lambda cx=current_x, cy=current_y, d=direction,
-                                           tx=_move_target[0], ty=_move_target[1]:
-                                    self._update_status("보스추적", f"({cx},{cy})",
-                                        f"→({tx},{ty})", f"{d}", "🎯"))
+                                self._schedule_boss_status(
+                                    "보스추적",
+                                    f"({current_x},{current_y})",
+                                    f"→({_move_target[0]},{_move_target[1]})",
+                                    f"{direction}",
+                                    "🎯",
+                                )
                             else:
                                 progress = boss_patrol.get_progress()
-                                self.after(0, lambda cx=current_x, cy=current_y, p=progress, d=direction,
-                                           tx=_move_target[0], ty=_move_target[1]:
-                                    self._update_status("순찰중", f"({cx},{cy})",
-                                        f"→({tx},{ty})",
-                                        f"{p['visited']}/{p['total']} → {d}", "🔍"))
+                                self._schedule_boss_status(
+                                    "순찰중",
+                                    f"({current_x},{current_y})",
+                                    f"→({_move_target[0]},{_move_target[1]})",
+                                    f"{progress['visited']}/{progress['total']} → {direction}",
+                                    "🔍",
+                                )
 
                     if _phase2_reprobe_requested and _is_mapping_test and not _mt_has_starts and not _segment_map_locked:
                         _restart_local_reprobe(current_x, current_y, _phase2_stall_count, _phase2_reprobe_reason or "repeat")
@@ -8861,8 +9012,11 @@ class GameModeDialog(ctk.CTkToplevel):
 
                     if direction is None:
                         if not self._stop_event.is_set() and _ui_update_ok:
-                            self.after(0, lambda cx=current_x, cy=current_y, m=boss_mode:
-                                self._append_log(f"⏸ ({cx},{cy}) 보스던전 방향 없음 ({m})"))
+                            self._schedule_boss_ui_log(
+                                f"⏸ ({current_x},{current_y}) 보스던전 방향 없음 ({boss_mode})",
+                                dedupe_key=f"boss-none:{current_x}:{current_y}:{boss_mode}",
+                                dedupe_window=0.5,
+                            )
                         # 방향 없음 연속 → 벽 해제 없이 방향차단/경로 상태만 리셋
                         none_dir_streak += 1
                         stuck_count += 1
@@ -8872,8 +9026,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if blocked_dirs.pop(_dir_key(current_x, current_y, _d), None) is not None:
                                     _cleared += 1
                             if _ui_update_ok:
-                                self.after(0, lambda c=_cleared, cx=current_x, cy=current_y:
-                                    self._append_log(f"🧭 방향없음 복구 ({cx},{cy}) → 차단초기화 {c}개 (벽해제없음)"))
+                                self._schedule_ui_log(
+                                    f"🧭 방향없음 복구 ({current_x},{current_y}) → 차단초기화 {_cleared}개 (벽해제없음)",
+                                    dedupe_key=f"none-recover-boss:{current_x}:{current_y}",
+                                    dedupe_window=0.5,
+                                )
                             stuck_count = 0
                             total_stuck_count = 0
                             none_dir_streak = 0
@@ -8888,7 +9045,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} boss:{_t_boss_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음[{boss_mode}]"
                         logger.debug(f"[타이밍] {_timing_msg}")
                         if _ui_update_ok:
-                            self.after(0, lambda m=_timing_msg: self._append_log(m))
+                            self._schedule_boss_ui_log(_timing_msg, dedupe_key="boss-timing-none", dedupe_window=0.4)
                         self._stop_event.wait(0.1)
                         # direction=None은 이동 시도가 없으므로 실패 판정 누적 방지
                         prev_x, prev_y = None, None
@@ -8902,8 +9059,11 @@ class GameModeDialog(ctk.CTkToplevel):
                     # 보스던전 방향 로그 (10회마다)
                     none_dir_streak = 0
                     if iteration % 10 == 0 and not self._stop_event.is_set() and _ui_update_ok:
-                        self.after(0, lambda cx=current_x, cy=current_y, d=direction, m=boss_mode:
-                            self._append_log(f"🎮 [{m}] ({cx},{cy}) → {d}"))
+                        self._schedule_boss_ui_log(
+                            f"🎮 [{boss_mode}] ({current_x},{current_y}) → {direction}",
+                            dedupe_key="boss-direction",
+                            dedupe_window=0.25,
+                        )
 
                     _t_path_ms = int((time.time() - _t_iter_start) * 1000) - _t_ocr_ms - _t_boss_ms
                     _t_key_start = time.time()
@@ -8914,7 +9074,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} boss:{_t_boss_ms} A*:{_t_path_ms} key:{_t_key_ms} iv:{int(interval*1000)} 총:{_t_iter_total}ms ({current_x},{current_y})→{direction} [{boss_mode}]"
                     logger.debug(f"[타이밍] {_timing_msg}")
                     if _ui_update_ok:
-                        self.after(0, lambda m=_timing_msg: self._append_log(m))
+                        self._schedule_boss_ui_log(_timing_msg, dedupe_key="boss-timing-move", dedupe_window=0.4)
                     last_dir = direction
                     prev_x, prev_y = current_x, current_y
                     continue
@@ -8951,10 +9111,13 @@ class GameModeDialog(ctk.CTkToplevel):
                     _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} A*:{_t_path_ms} 총:{_t_iter_total}ms ({current_x},{current_y}) 방향없음"
                     logger.debug(f"[타이밍] {_timing_msg}")
                     if _ui_update_ok:
-                        self.after(0, lambda m=_timing_msg: self._append_log(m))
+                        self._ui_post(lambda m=_timing_msg: self._append_log(m))
                     if not self._stop_event.is_set() and _ui_update_ok:
-                        self.after(0, lambda cx=current_x, cy=current_y:
-                            self._append_log(f"⏸ ({cx},{cy}) 방향 없음"))
+                        self._schedule_ui_log(
+                            f"⏸ ({current_x},{current_y}) 방향 없음",
+                            dedupe_key=f"none-dir:{current_x}:{current_y}",
+                            dedupe_window=0.5,
+                        )
                     self._stop_event.wait(0.1)
                     prev_x, prev_y = None, None
                     last_dir = None
@@ -9119,6 +9282,68 @@ class GameModeDialog(ctk.CTkToplevel):
 
     _gm_log_counter = 0
 
+    def _ui_post(self, callback):
+        """백그라운드 스레드에서 Tk를 직접 건드리지 않도록 메인스레드 큐에 태운다."""
+        try:
+            if threading.current_thread() is threading.main_thread():
+                callback()
+                return
+            with self._ui_call_queue_lock:
+                self._ui_call_queue.append(callback)
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
+
+    def _drain_ui_call_queue(self):
+        """메인스레드에서 대기 중인 UI 콜백을 실행한다."""
+        try:
+            _pending = []
+            with self._ui_call_queue_lock:
+                while self._ui_call_queue and len(_pending) < 64:
+                    _pending.append(self._ui_call_queue.popleft())
+            for _cb in _pending:
+                try:
+                    _cb()
+                except Exception as e:
+                    logger.debug(f"무시된 예외: {e}")
+        finally:
+            try:
+                if self.winfo_exists():
+                    self.after(25, self._drain_ui_call_queue)
+            except Exception:
+                pass
+
+    def _flush_log_buffer(self):
+        """누적된 로그를 한 번에 UI 위젯에 반영한다."""
+        try:
+            _lock = getattr(self, "_ui_log_buffer_lock", None)
+            if _lock is None:
+                _lock = threading.Lock()
+                self._ui_log_buffer_lock = _lock
+            with _lock:
+                _buffer = getattr(self, "_ui_log_buffer", None) or []
+                if not _buffer:
+                    self._ui_log_flush_scheduled = False
+                    return
+                self._ui_log_buffer = []
+                self._ui_log_flush_scheduled = False
+            self._log_text.configure(state="normal")
+            self._log_text.insert("end", "".join(_buffer))
+            self._log_line_counter += len(_buffer)
+            if self._log_line_counter >= 20:
+                self._log_line_counter = 0
+                line_count = int(self._log_text.index("end-1c").split(".")[0])
+                if line_count > 500:
+                    self._log_text.delete("1.0", f"{line_count - 500}.0")
+            self._log_text.see("end")
+            self._log_text.configure(state="disabled")
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
+
+    def _queue_normal_completion(self):
+        """정상 완료를 예약하고 메인스레드에서 도착 처리를 실행한다."""
+        self._completed_normally = True
+        self._ui_post(self._on_arrival)
+
     def _append_log(self, message: str, force: bool = False):
         """로그 텍스트에 메시지 추가 (최대 500줄 제한) + 일반 로그에도 출력"""
         try:
@@ -9135,17 +9360,83 @@ class GameModeDialog(ctk.CTkToplevel):
                 logger.info(f"[특화모드] {message}")
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self._log_text.configure(state="normal")
-            self._log_text.insert("end", f"[{timestamp}] {message}\n")
-            # 줄 수 체크를 20회마다만 수행 (위젯 연산 절약)
-            self._log_line_counter += 1
-            if self._log_line_counter >= 20:
-                self._log_line_counter = 0
-                line_count = int(self._log_text.index("end-1c").split(".")[0])
-                if line_count > 500:
-                    self._log_text.delete("1.0", f"{line_count - 500}.0")
-            self._log_text.see("end")
-            self._log_text.configure(state="disabled")
+            _line = f"[{timestamp}] {message}\n"
+            _lock = getattr(self, "_ui_log_buffer_lock", None)
+            if _lock is None:
+                _lock = threading.Lock()
+                self._ui_log_buffer_lock = _lock
+            with _lock:
+                _buffer = getattr(self, "_ui_log_buffer", None)
+                if _buffer is None:
+                    _buffer = []
+                    self._ui_log_buffer = _buffer
+                _buffer.append(_line)
+                _needs_schedule = not getattr(self, "_ui_log_flush_scheduled", False)
+                if _needs_schedule:
+                    self._ui_log_flush_scheduled = True
+            if _needs_schedule:
+                self._ui_post(self._flush_log_buffer)
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
+
+    def _schedule_ui_log(self, message: str, force: bool = False, dedupe_key: Optional[str] = None, dedupe_window: float = 0.25):
+        """반복 메시지가 UI 이벤트 큐를 잠그지 않도록 after 등록을 짧게 dedupe한다."""
+        try:
+            if force:
+                self._ui_post(lambda m=message: self._append_log(m, force=True))
+                return
+            _now = time.time()
+            _store = getattr(self, "_ui_log_dedupe_store", None)
+            if _store is None:
+                _store = {}
+                self._ui_log_dedupe_store = _store
+            _key = dedupe_key or message
+            _last_ts = _store.get(_key, 0.0)
+            if (_now - _last_ts) < max(0.0, float(dedupe_window)):
+                return
+            _store[_key] = _now
+            if len(_store) > 256:
+                _expire_before = _now - 5.0
+                self._ui_log_dedupe_store = {k: v for k, v in _store.items() if v >= _expire_before}
+            self._ui_post(lambda m=message: self._append_log(m))
+        except Exception as e:
+            logger.debug(f"무시된 예외: {e}")
+
+    def _schedule_boss_ui_log(self, message: str, dedupe_key: Optional[str] = None, dedupe_window: float = 0.35):
+        """보스 경유지에서 반복 UI 로그가 메인스레드를 잠그지 않도록 짧게 dedupe한다."""
+        try:
+            with self._ui_call_queue_lock:
+                _pending = len(self._ui_call_queue)
+            if _pending >= 96:
+                return
+        except Exception:
+            pass
+        self._schedule_ui_log(message, dedupe_key=dedupe_key, dedupe_window=dedupe_window)
+
+    def _schedule_boss_status(self, status: str, char: str, target: str, dist: str, direction: str,
+                              dx: Optional[int] = None, dy: Optional[int] = None,
+                              min_interval: float = 0.15):
+        """보스 경유지 상태라벨 갱신을 짧게 coalesce한다."""
+        try:
+            try:
+                with self._ui_call_queue_lock:
+                    _pending = len(self._ui_call_queue)
+                if _pending >= 96:
+                    return
+            except Exception:
+                pass
+            _now = time.time()
+            _last_ts = getattr(self, "_boss_status_last_ts", 0.0)
+            _last_key = getattr(self, "_boss_status_last_key", "")
+            _key = f"{status}|{char}|{target}|{dist}|{direction}|{dx}|{dy}"
+            if _key == _last_key and (_now - _last_ts) < max(0.0, float(min_interval)):
+                return
+            self._boss_status_last_ts = _now
+            self._boss_status_last_key = _key
+            self._ui_post(
+                lambda s=status, c=char, t=target, d=dist, dr=direction, x=dx, y=dy:
+                    self._update_status(s, c, t, d, dr, x, y)
+            )
         except Exception as e:
             logger.debug(f"무시된 예외: {e}")
 
