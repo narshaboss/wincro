@@ -1866,3 +1866,21 @@ self._mini_total_repeat = 1
   - `APP_VERSION` `1.0.150` -> `1.0.151`
 
 ---
+
+### 2026-03-19: MainWindow UI dispatch guard + auto-skill template-load fallback + boss step watchdog (v1.0.152)
+- Kept the scope tight to UI/playback safety and auto-skill template loading only; backend algorithms, mapping, and plan/map data were not changed.
+- `src/ui/main_window.py`
+  - Added a root-level `UiCallbackDispatcher`.
+  - Routed worker-thread `after(...)` calls through the main-thread dispatcher to harden play/miniplayer UI scheduling.
+- `src/ui/player_view.py`
+  - Added an OpenCV template-loading fallback for auto-skill cooldown images so deployment/runtime can load the template even when `cv2.imread(...)` returns `None`.
+  - Added a boss step watchdog that logs OCR delay / input-follow-up timeout and resets only the local live movement state when the step confirmation stalls.
+- `src/player/rule_executor.py`
+  - Added the same auto-skill template-loading fallback for playback/runtime execution.
+- Verification:
+  - `py_compile` passed for `src/ui/main_window.py`, `src/ui/player_view.py`, `src/player/rule_executor.py`, and `src/utils/config.py`.
+  - Existing `SyntaxWarning` lines in `player_view.py` remained unchanged.
+- `config.py`
+  - `APP_VERSION` `1.0.151` -> `1.0.152`
+
+---

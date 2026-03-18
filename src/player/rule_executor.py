@@ -3261,6 +3261,27 @@ class RuleExecutor:
         escape_skill_wait_after = getattr(config, 'escape_skill_wait_after', 0.5)
         escape_skill_cooldown = getattr(config, 'escape_skill_cooldown', 10.0)
         last_escape_time = 0
+        def _load_cv_template_image(path_str):
+            """배포 환경에서도 한글/윈도우 경로를 안정적으로 읽는다."""
+            if not path_str:
+                return None
+            try:
+                _img = cv2.imread(path_str)
+                if _img is not None:
+                    return _img
+            except Exception:
+                pass
+            try:
+                _raw = Path(path_str).read_bytes()
+                if not _raw:
+                    return None
+                _buf = np.frombuffer(_raw, dtype=np.uint8)
+                if _buf.size == 0:
+                    return None
+                return cv2.imdecode(_buf, cv2.IMREAD_COLOR)
+            except Exception:
+                return None
+
         auto_skill_enabled = getattr(config, 'auto_skill_enabled', False)
         auto_skill_key = getattr(config, 'auto_skill_key', '') or ''
         auto_skill_cooldown = getattr(config, 'auto_skill_cooldown', 5.0)
@@ -3271,7 +3292,7 @@ class RuleExecutor:
         _auto_skill_cd_tmpl = None
         if auto_skill_cd_image:
             try:
-                _auto_skill_cd_tmpl = cv2.imread(auto_skill_cd_image)
+                _auto_skill_cd_tmpl = _load_cv_template_image(auto_skill_cd_image)
             except Exception:
                 _auto_skill_cd_tmpl = None
         _auto_skill_diag_last_sig = None

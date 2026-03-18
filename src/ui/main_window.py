@@ -484,6 +484,7 @@ class MainWindow(ctk.CTk):
             self.minsize(1000, 700)
 
         self.configure(fg_color=COLORS["bg_dark"])
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
 
         # 테마 설정
         ctk.set_appearance_mode("dark")
@@ -519,6 +520,25 @@ class MainWindow(ctk.CTk):
         setup_window_position(self, window_id)
 
         logger.info("메인 윈도우 초기화 완료")
+
+    def after(self, ms, func=None, *args):
+        """백그라운드 스레드의 after() 호출을 메인스레드 dispatcher로 우회한다."""
+        if func is None:
+            return super().after(ms)
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is None or threading.current_thread() is threading.main_thread():
+            return super().after(ms, func, *args)
+
+        def _schedule_on_main():
+            try:
+                if not self.winfo_exists():
+                    return
+                super(MainWindow, self).after(ms, func, *args)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        dispatcher.post(_schedule_on_main)
+        return None
 
     def _setup_ui(self):
         # 메인 컨테이너

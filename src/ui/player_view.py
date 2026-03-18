@@ -3994,6 +3994,13 @@ class GameModeDialog(ctk.CTkToplevel):
         _boss_patrol_route_goal = None # 순찰 캐시 경로의 목표 좌표
         _boss_patrol_route_index = {}  # 순찰 캐시 경로 역매핑
         _boss_transition_cooldown_until = 0.0  # 보스 처치/키입력 직후 재순찰 차단
+        _step_watchdog_kind = None
+        _step_watchdog_dir = None
+        _step_watchdog_from = None
+        _step_watchdog_target = None
+        _step_watchdog_started_at = 0.0
+        _step_watchdog_log_bucket = -1
+        _step_watchdog_timeout = 2.8
 
 
         # 탈출 스킬 설정
@@ -4004,6 +4011,27 @@ class GameModeDialog(ctk.CTkToplevel):
         escape_skill_wait_after = getattr(self._config, 'escape_skill_wait_after', 0.5)
         escape_skill_cooldown = getattr(self._config, 'escape_skill_cooldown', 10.0)
         last_escape_time = 0
+
+        def _load_cv_template_image(path_str):
+            """배포 환경에서도 한글/윈도우 경로를 안정적으로 읽는다."""
+            if not path_str:
+                return None
+            try:
+                _img = cv2.imread(path_str)
+                if _img is not None:
+                    return _img
+            except Exception:
+                pass
+            try:
+                _raw = Path(path_str).read_bytes()
+                if not _raw:
+                    return None
+                _buf = np.frombuffer(_raw, dtype=np.uint8)
+                if _buf.size == 0:
+                    return None
+                return cv2.imdecode(_buf, cv2.IMREAD_COLOR)
+            except Exception:
+                return None
 
         # 상시 스킬 설정
         auto_skill_enabled = getattr(self._config, 'auto_skill_enabled', False)
@@ -4018,10 +4046,9 @@ class GameModeDialog(ctk.CTkToplevel):
         _auto_skill_cd_tmpl = None
         if auto_skill_cd_image:
             try:
-                import cv2 as _ascv_init
-                _auto_skill_cd_tmpl = _ascv_init.imread(auto_skill_cd_image)
+                _auto_skill_cd_tmpl = _load_cv_template_image(auto_skill_cd_image)
             except Exception:
-                pass
+                _auto_skill_cd_tmpl = None
         _auto_skill_diag_last_sig = None
         _auto_skill_diag_last_time = 0.0
         def _log_auto_skill_diag(sig, msg, force=False):
@@ -4171,6 +4198,105 @@ class GameModeDialog(ctk.CTkToplevel):
                 return
             _temporary_goal_detour = None
             _temporary_goal_detour_origin = None
+
+        def _clear_step_watchdog():
+            nonlocal _step_watchdog_kind, _step_watchdog_dir, _step_watchdog_from
+            nonlocal _step_watchdog_target, _step_watchdog_started_at, _step_watchdog_log_bucket
+            _step_watchdog_kind = None
+            _step_watchdog_dir = None
+            _step_watchdog_from = None
+            _step_watchdog_target = None
+            _step_watchdog_started_at = 0.0
+            _step_watchdog_log_bucket = -1
+
+        def _arm_step_watchdog(kind, from_pos, direction, target=None):
+            nonlocal _step_watchdog_kind, _step_watchdog_dir, _step_watchdog_from
+            nonlocal _step_watchdog_target, _step_watchdog_started_at, _step_watchdog_log_bucket
+            _step_watchdog_kind = str(kind or "")
+            _step_watchdog_dir = str(direction or "")
+            _step_watchdog_from = tuple(from_pos) if from_pos is not None else None
+            _step_watchdog_target = tuple(target) if target is not None else None
+            _step_watchdog_started_at = time.time()
+            _step_watchdog_log_bucket = -1
+
+        def _log_step_watchdog(msg, *, dedupe_key=None, dedupe_window=0.6):
+            logger.info(f"[순찰watchdog] {msg}")
+            if not _ui_update_ok or self._stop_event.is_set():
+                return
+            if _step_watchdog_kind and _step_watchdog_kind.startswith("boss-"):
+                self._schedule_boss_ui_log(
+                    f"🧭 {msg}",
+                    dedupe_key=(dedupe_key or "boss-step-watchdog"),
+                    dedupe_window=dedupe_window,
+                )
+            else:
+                self._schedule_ui_log(
+                    f"🧭 {msg}",
+                    dedupe_key=(dedupe_key or "step-watchdog"),
+                    dedupe_window=dedupe_window,
+                )
+
+        def _tick_step_watchdog(coord=None, coord_failed=False):
+            nonlocal current_path, path_index, path_pos_index, last_dir, prev_x, prev_y
+            nonlocal _last_probe_target, boss_patrol, patrol_skip_count, pathfinder
+            nonlocal _step_watchdog_log_bucket
+
+            if not _step_watchdog_kind or _step_watchdog_started_at <= 0:
+                return False
+
+            _elapsed = time.time() - _step_watchdog_started_at
+            _bucket = int(_elapsed)
+            if _elapsed >= 1.2 and _bucket != _step_watchdog_log_bucket:
+                _step_watchdog_log_bucket = _bucket
+                _msg = (
+                    f"입력 후 좌표확인 지연 {_elapsed:.1f}s "
+                    f"kind={_step_watchdog_kind} from={_step_watchdog_from} dir={_step_watchdog_dir} "
+                    f"target={_step_watchdog_target}"
+                )
+                _log_step_watchdog(_msg, dedupe_key="step-watchdog-delay", dedupe_window=0.8)
+
+            if coord is not None and _step_watchdog_from is not None and tuple(coord) != _step_watchdog_from:
+                _clear_step_watchdog()
+                return False
+
+            if _elapsed < _step_watchdog_timeout:
+                return False
+
+            _msg = (
+                f"입력 후 좌표확인 timeout {_elapsed:.1f}s "
+                f"kind={_step_watchdog_kind} from={_step_watchdog_from} dir={_step_watchdog_dir} "
+                f"target={_step_watchdog_target} → local reset"
+            )
+            _log_step_watchdog(_msg, dedupe_key="step-watchdog-timeout", dedupe_window=1.2)
+
+            try:
+                if _step_watchdog_dir:
+                    _stuck_key = self._config.move_keys.get(_step_watchdog_dir, _step_watchdog_dir)
+                    pyautogui.keyUp(_stuck_key)
+            except Exception:
+                pass
+
+            if _step_watchdog_kind.startswith("boss-"):
+                _clear_boss_patrol_route_cache()
+                patrol_skip_count = 0
+                if boss_patrol is not None and _step_watchdog_kind == "boss-patrolling":
+                    try:
+                        boss_patrol.clear_stuck_count()
+                    except Exception:
+                        pass
+
+            current_path = []
+            path_index = 0
+            path_pos_index = {}
+            _last_probe_target = None
+            last_dir = None
+            prev_x, prev_y = None, None
+            try:
+                pathfinder.invalidate_path()
+            except Exception:
+                pass
+            _clear_step_watchdog()
+            return bool(coord_failed)
 
         def _get_active_goal_detour(_goal, _current_pos):
             nonlocal _temporary_goal_detour, _temporary_goal_detour_origin
@@ -5495,12 +5621,21 @@ class GameModeDialog(ctk.CTkToplevel):
                     stop_event=self._stop_event
                 )
                 _t_ocr_ms = int((time.time() - _t_ocr_start) * 1000)
+                if _step_watchdog_kind and _t_ocr_ms >= 1200:
+                    _log_step_watchdog(
+                        f"OCR 지연 {_t_ocr_ms}ms kind={_step_watchdog_kind} from={_step_watchdog_from} dir={_step_watchdog_dir}",
+                        dedupe_key="step-watchdog-ocr-lag",
+                        dedupe_window=1.0,
+                    )
 
                 # 좌표 읽기 후 중지 재확인
                 if self._stop_event.is_set():
                     break
 
                 if current_x is None or current_y is None:
+                    if _tick_step_watchdog(coord_failed=True):
+                        self._stop_event.wait(0.05)
+                        continue
                     coord_fail_count += 1
                     if coord_fail_count >= max_coord_fails:
                         self.after(0, lambda: self._append_log(f"❌ 좌표 읽기 연속 {max_coord_fails}회 실패 → 중단"))
@@ -5517,6 +5652,9 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 좌표를 정수로 확실하게 변환
                 current_x = int(current_x)
                 current_y = int(current_y)
+                if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):
+                    self._stop_event.wait(0.05)
+                    continue
 
                 # OCR 오독 가드: 목표가 0,0이 아닌데 좌표가 갑자기 (0,0)으로 튀면 무시
                 # (구간 전환/포탈 직후 일시 오독으로 도착/전환 판정이 깨지는 현상 방지)
@@ -9210,6 +9348,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     _t_key_start = time.time()
                     _last_probe_target = _pending_probe_target
                     press_key(direction)
+                    _arm_step_watchdog(f"boss-{boss_mode}", (current_x, current_y), direction, _move_target)
                     _t_key_ms = int((time.time() - _t_key_start) * 1000)
                     _t_iter_total = int((time.time() - _t_iter_start) * 1000)
                     _timing_msg = f"⏱ #{iteration} OCR:{_t_ocr_ms} sk:{_t_skill_ms} boss:{_t_boss_ms} A*:{_t_path_ms} key:{_t_key_ms} iv:{int(interval*1000)} 총:{_t_iter_total}ms ({current_x},{current_y})→{direction} [{boss_mode}]"

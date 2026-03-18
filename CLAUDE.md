@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.143
+**현재 버전:** 1.0.152
 
 ---
 
@@ -975,6 +975,25 @@ wincro/
   - real destroy-time test passed after switching into `AnalyzerView`, with no late worker-thread Tk exception
 - `config.py`
   - `APP_VERSION` `1.0.149` -> `1.0.150`
+
+### 2026-03-19: MainWindow UI dispatch guard + auto-skill template-load fallback + boss step watchdog (v1.0.152)
+- Tightened UI-only safety around the play/miniplayer path without touching backend logic, pathfinding, mapping, or plan/map data.
+- `src/ui/main_window.py`
+  - Added a root-level `UiCallbackDispatcher`.
+  - Routed worker-thread `after(...)` calls back through the main-thread dispatcher so play/miniplayer callbacks no longer schedule Tk work directly from background threads.
+- `src/ui/player_view.py`
+  - Added a safe OpenCV template-loading fallback for auto-skill cooldown images:
+    - try `cv2.imread(...)`
+    - if it fails, retry via `Path.read_bytes() + np.frombuffer() + cv2.imdecode(...)`
+  - Added a boss patrol/chase step watchdog for the "last movement log then no next coordinate" freeze pattern.
+  - Watchdog now logs OCR delay / post-input coordinate timeout and performs a local movement reset only for the live step state.
+- `src/player/rule_executor.py`
+  - Applied the same auto-skill template-loading fallback so playback/runtime matches the special-mode path.
+- Verification:
+  - `py_compile` passed for `src/ui/main_window.py`, `src/ui/player_view.py`, `src/player/rule_executor.py`, and `src/utils/config.py`
+  - Existing `SyntaxWarning` lines in `player_view.py` remained unchanged; no new syntax errors were introduced.
+- `config.py`
+  - `APP_VERSION` `1.0.151` -> `1.0.152`
 
 ### 2026-03-19: Auto-skill runtime diagnostic logging (v1.0.151)
 - Added throttled runtime diagnostic logs for auto-skill without changing the decision logic.
