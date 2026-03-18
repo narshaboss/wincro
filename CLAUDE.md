@@ -919,3 +919,11 @@ wincro/
 - Verified the cooldown template file exists and image mode remains active when the template is present.
 - `config.py`
   - `APP_VERSION` `1.0.145` -> `1.0.146`
+
+### 2026-03-18: Developer/deploy runtime parity audit + auto-skill matcher unification (v1.0.147)
+- Audited developer-mode vs frozen/deployed execution paths and confirmed there is no `sys.frozen` split in the core execution path used by special mode or playback.
+- Frozen-only branches remain in relaunch, updater, startup registration, and resource-root resolution.
+- Unified auto-skill runtime image matching with the same `TemplateMatcher.match_binary()` path used by the image test in `src/ui/player_view.py` and `src/player/rule_executor.py`.
+- Image-mode auto-skill exceptions no longer fall back to pressing the skill key.
+- `config.py`
+  - `APP_VERSION` `1.0.146` -> `1.0.147`

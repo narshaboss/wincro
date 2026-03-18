@@ -1780,3 +1780,13 @@ self._mini_total_repeat = 1
 - **APP_VERSION:** `1.0.145` -> `1.0.146`
 
 ---
+
+### 2026-03-18: Developer/deploy runtime parity audit + auto-skill matcher unification (v1.0.147)
+- Audited developer-mode vs frozen/deployed execution paths and confirmed there is no `sys.frozen` split in the core special-mode / playback execution path.
+- Frozen-only branches remain limited to relaunch, updater flow, startup registration, and resource-root resolution.
+- Unified auto-skill runtime cooldown detection with the same `TemplateMatcher.match_binary()` path used by the image test in `src/ui/player_view.py` and `src/player/rule_executor.py`.
+- Image-mode auto-skill exceptions no longer fall back to pressing the skill key.
+- `config.py`
+  - `APP_VERSION` `1.0.146` -> `1.0.147`
+
+---
