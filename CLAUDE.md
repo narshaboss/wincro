@@ -912,3 +912,10 @@ wincro/
   - Boss chase now uses `blocked_dirs`, `portal_protected`, `avoid_set`, and `respect_blocked_edges=True` like patrol mode, reducing repeated retries on the same blocked edge.
 - `config.py`
   - `APP_VERSION` `1.0.144` -> `1.0.145`
+
+### 2026-03-18: Auto-skill image-mode verification sync (v1.0.146)
+- Verified current game-mode runs are using plan-level auto-skill settings, not `data/config.json`.
+- Verified auto-skill is currently configured as `key=5`, `cooldown=image` in the active special-mode plan.
+- Verified the cooldown template file exists and image mode remains active when the template is present.
+- `config.py`
+  - `APP_VERSION` `1.0.145` -> `1.0.146`

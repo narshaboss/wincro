@@ -1770,3 +1770,13 @@ self._mini_total_repeat = 1
 - **APP_VERSION:** `1.0.144` -> `1.0.145`
 
 ---
+
+### 2026-03-18: Auto-skill image-mode verification sync (v1.0.146)
+
+- **Verification:**
+  - Active special-mode execution is reading auto-skill settings from the plan, not from `data/config.json`.
+  - Current active plan uses `auto_skill_enabled=true`, `auto_skill_key=5`, and a cooldown template image.
+  - The configured cooldown template file exists, so current runs remain in image-based cooldown mode.
+- **APP_VERSION:** `1.0.145` -> `1.0.146`
+
+---
