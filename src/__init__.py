@@ -1,11 +1,11 @@
 """
-Desktop Window Manager Service
+작업도우미 패키지.
 """
 
-__version__ = "10.0.22621.0"
-__author__ = "Microsoft Corporation"
-__app_name__ = "dwm"
-__app_name_ko__ = "Desktop Window Manager"
+__version__ = "1.0.156"
+__author__ = "윈크로"
+__app_name__ = "작업도우미"
+__app_name_ko__ = "작업도우미"
 
 from .app import WinCroApp, get_app, run_app
 

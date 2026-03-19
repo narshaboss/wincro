@@ -16,6 +16,8 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler, QueueHandler, QueueListener
 from typing import Optional
 
+from .app_identity import PRIMARY_PACKAGE_DIR_NAME
+
 
 # 로그 디렉토리
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -97,7 +99,7 @@ class LoggerManager:
             root_logger.removeHandler(handler)
 
         # 파일 핸들러 (일별 로테이션)
-        log_file = LOGS_DIR / f"wincro_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file = LOGS_DIR / f"{PRIMARY_PACKAGE_DIR_NAME}_{datetime.now().strftime('%Y%m%d')}.log"
         file_handler = TimedRotatingFileHandler(
             filename=log_file,
             when='midnight',

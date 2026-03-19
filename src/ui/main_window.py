@@ -22,6 +22,7 @@ from pynput import keyboard
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
+from ..utils.app_identity import get_effective_app_name
 from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
@@ -29,30 +30,6 @@ from ..player.rule_executor import RuleExecutor
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
 
 PLANS_DIR = DATA_DIR / "plans"
-
-# 랜덤 이름 목록 (100개) - 순수 한글
-RANDOM_NAMES = [
-    "글쓰기", "그림판", "달력", "시계", "계산",
-    "설정", "도움말", "찾기", "열기", "닫기",
-    "저장", "불러오기", "내보내기", "가져오기", "인쇄",
-    "복사", "붙여넣기", "잘라내기", "되돌리기", "다시실행",
-    "새로만들기", "삭제", "이름바꾸기", "속성", "정보",
-    "화면", "소리", "알림", "전원", "절전",
-    "밝기", "어둡게", "밤모드", "조용히", "끄기",
-    "켜기", "잠금", "해제", "숨기기", "보이기",
-    "확대", "축소", "전체화면", "창모드", "나가기",
-    "돌아가기", "앞으로", "뒤로", "위로", "아래로",
-    "왼쪽", "오른쪽", "가운데", "맞춤", "정렬",
-    "글꼴", "굵게", "기울임", "밑줄", "취소선",
-    "빨강", "파랑", "초록", "노랑", "검정",
-    "흰색", "회색", "주황", "보라", "분홍",
-    "문서", "사진", "영상", "음악", "내려받기",
-    "올리기", "공유", "연결", "끊기", "다시연결",
-    "새로고침", "동기화", "백업", "복원", "초기화",
-    "검사", "치료", "정리", "최적화", "분석",
-    "기록", "통계", "보고서", "요약", "상세",
-    "시작", "중지", "일시정지", "계속", "완료",
-]
 
 logger = get_logger(__name__)
 
@@ -459,12 +436,8 @@ class MainWindow(ctk.CTk):
 
         self._config = get_config()
 
-        # 윈도우 설정 - 랜덤 이름 모드 적용
-        import random
-        if self._config.ui.random_name_mode:
-            app_name = random.choice(RANDOM_NAMES)
-        else:
-            app_name = self._config.ui.app_name or "Desktop"
+        # 윈도우 설정 - 세션 일관 랜덤 이름/사용자 지정 이름 적용
+        app_name = get_effective_app_name(self._config.ui, save_callback=save_config)
         self._app_name = app_name  # 로고에서도 사용
         self.title(f"{app_name}")
 
@@ -1383,9 +1356,37 @@ class MainWindow(ctk.CTk):
         self._mini_status.configure(text=message)
         self._mini_play_btn.configure(state="normal")
 
+    def _ensure_arduino_ready_for_mini(self, context_label: str) -> bool:
+        """미니 플레이어 재생 시작 전 Arduino 연결 확인"""
+        from tkinter import messagebox
+        from ..utils.input_controller import ensure_arduino_ready
+
+        ok, detail = ensure_arduino_ready(force_connect=True)
+        if ok:
+            logger.info(f"[아두이노가드][mini] {context_label} 가능: {detail}")
+            return True
+
+        logger.warning(f"[아두이노가드][mini] {context_label} 차단: {detail}")
+        try:
+            self._mini_status.configure(text="⚠ 아두이노 연결 필요")
+        except Exception:
+            pass
+        message = f"아두이노가 연결되지 않아 {context_label}을 시작할 수 없습니다.\n\n사유: {detail}"
+        try:
+            messagebox.showerror("아두이노 연결 필요", message, parent=self)
+        except TypeError:
+            messagebox.showerror("아두이노 연결 필요", message)
+        return False
+
     def _mini_start_execution(self, selected_plan, repeat_count: int):
         """Mini player start entrypoint."""
         try:
+            if not self._ensure_arduino_ready_for_mini("미니 플레이어 재생"):
+                self._mini_play_btn.configure(state="normal")
+                self._mini_pause_btn.configure(state="disabled", text="pause")
+                self._mini_stop_btn.configure(state="disabled")
+                self._is_running = False
+                return
             logger.info(f"[mini-player] start, repeat={repeat_count}")
             self._mini_active_plan = selected_plan
             self._mini_remaining_rules = []
@@ -1478,6 +1479,9 @@ class MainWindow(ctk.CTk):
         if config_rule_id not in active_plan.game_modes:
             self._mini_on_game_mode_complete(False, "missing game mode")
             return
+        if not self._ensure_arduino_ready_for_mini("미니 플레이어 특화모드"):
+            self._mini_on_game_mode_complete(False, "아두이노 연결 필요")
+            return
 
         from .player_view import GameModeDialog
 
@@ -1544,6 +1548,9 @@ class MainWindow(ctk.CTk):
         self._mini_run_plan_via_executor(partial_plan, chain_remaining=chain_remaining)
 
     def _mini_run_plan_via_executor(self, plan_to_run, chain_remaining=None):
+        if not self._ensure_arduino_ready_for_mini("미니 플레이어 재생"):
+            self._mini_on_repeat_complete(False, "아두이노 연결 필요")
+            return
         self._rule_executor = RuleExecutor()
 
         def on_complete(success: bool, message: str):

@@ -15,6 +15,7 @@ import time
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
+from ..utils.input_controller import get_input_controller
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
 from ..player import get_action_player, PlayerState, PlaybackProgress
@@ -1661,6 +1662,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._on_game_mode_complete(False, "특화모드 설정 없음")
             return
 
+        if not self._ensure_arduino_ready_for_playback("특화모드 실행"):
+            if self._is_running:
+                self._on_execution_complete()
+            return
+
         # 실행 중 상태 표시 (PlanDetailDialog에서 관리)
         self._is_running = True
         self.title("▶ 특화모드 실행 중... (ESC로 중지)")
@@ -1771,6 +1777,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
         from ..analyzer.automation_models import AutomationPlan
         import threading
 
+        if not self._ensure_arduino_ready_for_playback("재생 실행"):
+            if self._is_running:
+                self._on_execution_complete()
+            return
+
         partial_plan = AutomationPlan(
             name=f"{self._plan.name} (이어서 실행)",
             description=f"특화모드 이후 {len(rules_to_run)}개 액션",
@@ -1850,6 +1861,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 이미 실행 중이면 중지
         if self._is_running:
+            self._mark_manual_stop_context("manual_partial_rule_stop", f"_test_run_rule rule_id={rule.rule_id}")
             self._stop_execution()
             return
 
@@ -3078,6 +3090,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """닫기"""
         # 실행 중이면 먼저 중지
         if self._is_running:
+            self._mark_manual_stop_context("dialog_close_stop", "_on_close while running")
             self._stop_execution()
         # Cancel GameMode polling
         _gm_after = getattr(self, '_gm_check_after_id', None)
@@ -3135,6 +3148,10 @@ class GameModeDialog(ctk.CTkToplevel):
         self._stop_reason = ""
         self._stop_detail = ""
         self._stop_marked_at = 0.0
+        self._recent_runtime_issue = ""
+        self._recent_runtime_issue_detail = ""
+        self._recent_runtime_issue_at = 0.0
+        self._recent_runtime_issue_hits = 0
         self._ui_call_queue = deque()
         self._ui_call_queue_lock = threading.Lock()
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
@@ -3217,6 +3234,65 @@ class GameModeDialog(ctk.CTkToplevel):
             )
         except Exception as e:
             logger.debug(f"[중단추적] 기록 실패: {e}")
+
+    def _remember_runtime_issue(self, issue, detail="", overwrite=False):
+        """실행 중 발견한 최근 이상 징후를 기록한다."""
+        try:
+            _issue = str(issue or "unknown_issue")
+            _detail = str(detail or "")
+            _now = time.time()
+            _same_issue = (
+                getattr(self, "_recent_runtime_issue", "") == _issue and
+                getattr(self, "_recent_runtime_issue_detail", "") == _detail
+            )
+            if overwrite or not getattr(self, "_recent_runtime_issue", "") or not _same_issue:
+                self._recent_runtime_issue = _issue
+                self._recent_runtime_issue_detail = _detail
+                self._recent_runtime_issue_at = _now
+                self._recent_runtime_issue_hits = 1
+            else:
+                self._recent_runtime_issue_at = _now
+                self._recent_runtime_issue_hits = int(getattr(self, "_recent_runtime_issue_hits", 0) or 0) + 1
+            logger.info(
+                f"[이상징후] issue={self._recent_runtime_issue or _issue} "
+                f"detail={self._recent_runtime_issue_detail or _detail} "
+                f"hits={self._recent_runtime_issue_hits}"
+            )
+        except Exception as e:
+            logger.debug(f"[이상징후] 기록 실패: {e}")
+
+    def _get_recent_runtime_issue(self, max_age_s=8.0):
+        """최근 이상 징후가 유효하면 반환한다."""
+        try:
+            _issue = getattr(self, "_recent_runtime_issue", "")
+            if not _issue:
+                return None
+            _ts = float(getattr(self, "_recent_runtime_issue_at", 0.0) or 0.0)
+            _age = time.time() - _ts
+            if _age > max(0.1, float(max_age_s or 0.0)):
+                return None
+            return {
+                "issue": _issue,
+                "detail": getattr(self, "_recent_runtime_issue_detail", "") or "",
+                "age": _age,
+                "hits": int(getattr(self, "_recent_runtime_issue_hits", 0) or 0),
+            }
+        except Exception:
+            return None
+
+    def _mark_manual_stop_context(self, source_reason, source_detail):
+        """수동/외부 stop 시 직전 이상 징후를 우선 보존한다."""
+        _recent_issue = self._get_recent_runtime_issue(max_age_s=12.0)
+        if _recent_issue:
+            self._mark_stop_reason(
+                "manual_stop_after_recent_issue",
+                f"source={source_reason} detail={source_detail} "
+                f"recent_issue={_recent_issue['issue']} recent_detail={_recent_issue['detail']} "
+                f"age={_recent_issue['age']:.2f}s hits={_recent_issue['hits']}",
+                overwrite=True,
+            )
+            return
+        self._mark_stop_reason(source_reason, source_detail, overwrite=True)
 
     def _request_stop_execution(self, reason, detail="", ui_log=None, overwrite=False):
         """중단 사유를 남기고 안전하게 stop_execution을 예약한다."""
@@ -3497,7 +3573,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
                 return
-            self._mark_stop_reason("manual_stop_button", "_toggle_execution pressed while running", overwrite=True)
+            self._mark_manual_stop_context("manual_stop_button", "_toggle_execution pressed while running")
             self._stop_execution()
         else:
             self._single_waypoint_mode = False
@@ -3519,7 +3595,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
                 return
-            self._mark_stop_reason("manual_stop_button", "_toggle_mapping_test pressed while running", overwrite=True)
+            self._mark_manual_stop_context("manual_stop_button", "_toggle_mapping_test pressed while running")
             self._stop_execution()
         else:
             self._single_waypoint_mode = False
@@ -3542,10 +3618,12 @@ class GameModeDialog(ctk.CTkToplevel):
                     self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
             elif getattr(self, '_is_mapping_test', False) and prev_idx == idx:
                 # 같은 카드 클릭 → 토글 (중지만)
+                self._mark_manual_stop_context("manual_mapping_card_stop", f"_run_single_mapping_test same idx={idx}")
                 self._stop_execution()
                 return
             else:
                 # 다른 테스트 실행 중 → 중지 후 새 테스트 스케줄
+                self._mark_manual_stop_context("manual_mapping_switch", f"_run_single_mapping_test switch prev_idx={prev_idx} next_idx={idx}")
                 self._stop_execution()
                 self._single_waypoint_mode = True
                 self._single_waypoint_idx = idx
@@ -3569,6 +3647,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._is_running = False
                 self._stop_event.set()
             else:
+                self._mark_manual_stop_context("manual_waypoint_switch", f"_run_single_waypoint idx={idx}")
                 self._stop_execution()
                 return
         self._single_waypoint_mode = True
@@ -3576,7 +3655,35 @@ class GameModeDialog(ctk.CTkToplevel):
         # 이전 스레드 finally 정리 대기 후 시작
         self.after(300, self._start_execution)
 
+    def _ensure_arduino_ready_for_execution(self, context_label: str) -> bool:
+        """특화모드 실행 전 Arduino 연결 확인"""
+        from tkinter import messagebox
+        from ..utils.input_controller import ensure_arduino_ready
+
+        ok, detail = ensure_arduino_ready(force_connect=True)
+        if ok:
+            logger.info(f"[아두이노가드] {context_label} 가능: {detail}")
+            return True
+
+        logger.warning(f"[아두이노가드] {context_label} 차단: {detail}")
+        try:
+            self._status_label.configure(text="상태: 아두이노 연결 필요", text_color="#d08770")
+        except Exception:
+            pass
+        try:
+            self._append_log(f"⚠️ 아두이노 연결 필요: {detail}")
+        except Exception:
+            pass
+        message = f"아두이노가 연결되지 않아 {context_label}을 시작할 수 없습니다.\n\n사유: {detail}"
+        try:
+            messagebox.showerror("아두이노 연결 필요", message, parent=self)
+        except TypeError:
+            messagebox.showerror("아두이노 연결 필요", message)
+        return False
+
     def _start_execution(self):
+        if not self._ensure_arduino_ready_for_execution("특화모드 실행"):
+            return
         try:
             self._apply_settings()
         except Exception as e:
@@ -3586,6 +3693,10 @@ class GameModeDialog(ctk.CTkToplevel):
         self._stop_reason = ""
         self._stop_detail = ""
         self._stop_marked_at = 0.0
+        self._recent_runtime_issue = ""
+        self._recent_runtime_issue_detail = ""
+        self._recent_runtime_issue_at = 0.0
+        self._recent_runtime_issue_hits = 0
         self._stop_event.clear()
         self._key_press_count = 0
         # 일반 전체 테스트에서는 맵 저장/기록 안 함
@@ -3616,7 +3727,17 @@ class GameModeDialog(ctk.CTkToplevel):
         was_mapping = getattr(self, '_is_mapping', False)
         mapping_seg = getattr(self, '_current_segment_idx', -1)
         if not getattr(self, "_stop_reason", ""):
-            self._mark_stop_reason("manual_or_external_stop", "_stop_execution entered without prior reason", overwrite=True)
+            _recent_issue = self._get_recent_runtime_issue(max_age_s=12.0)
+            if _recent_issue:
+                self._mark_stop_reason(
+                    "manual_or_external_stop_after_recent_issue",
+                    f"_stop_execution entered without prior reason "
+                    f"recent_issue={_recent_issue['issue']} recent_detail={_recent_issue['detail']} "
+                    f"age={_recent_issue['age']:.2f}s hits={_recent_issue['hits']}",
+                    overwrite=True,
+                )
+            else:
+                self._mark_stop_reason("manual_or_external_stop", "_stop_execution entered without prior reason", overwrite=True)
         logger.info(
             f"[중단추적] stop_execution enter reason={self._stop_reason or 'unknown'} "
             f"detail={self._stop_detail or '-'} key_count={self._key_press_count}"
@@ -3709,7 +3830,10 @@ class GameModeDialog(ctk.CTkToplevel):
             self._request_stop_execution("templates_incomplete", f"missing={missing}")
             return
 
-        _escape_hotkey_id = keyboard.add_hotkey('escape', lambda: self._mark_stop_reason("escape_hotkey", "keyboard ESC hotkey", overwrite=True) or self._stop_event.set())
+            _escape_hotkey_id = keyboard.add_hotkey(
+                'escape',
+                lambda: self._mark_manual_stop_context("escape_hotkey", "keyboard ESC hotkey") or self._stop_event.set()
+            )
         self._key_press_count = 0
 
         # 설정값
@@ -3900,6 +4024,8 @@ class GameModeDialog(ctk.CTkToplevel):
         _jump_reject_count = 0  # 연속 거부 횟수
         _suspicious_jump_candidate = None  # OCR 의심 점프 후보
         _suspicious_jump_streak = 0  # 동일 OCR 의심 점프 반복 횟수
+        _last_suspicious_confirm = None  # 최근 확정된 OCR 의심 점프
+        _last_suspicious_confirm_at = 0.0
         _pending_start_pos = None  # 포탈 전환 후 등록된 출발지 (교정용)
         self._start_registered = False  # 시작 위치 등록 1회 제한 플래그
         # 전체맵핑: 목표 좌표 없이 현재 위치에서 바로 프런티어 탐색
@@ -4326,7 +4452,7 @@ class GameModeDialog(ctk.CTkToplevel):
             try:
                 if _step_watchdog_dir:
                     _stuck_key = self._config.move_keys.get(_step_watchdog_dir, _step_watchdog_dir)
-                    pyautogui.keyUp(_stuck_key)
+                    get_input_controller().key_up(_stuck_key)
             except Exception:
                 pass
 
@@ -4465,7 +4591,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 _orig_pause = pyautogui.PAUSE
                 pyautogui.PAUSE = 0
                 try:
-                    pyautogui.press(key)
+                    get_input_controller().press(key)
                 finally:
                     pyautogui.PAUSE = _orig_pause
                 self._key_press_count += 1
@@ -5654,19 +5780,23 @@ class GameModeDialog(ctk.CTkToplevel):
                 return
 
             iteration = 0
-            max_iterations = 50000 if _is_mapping_mode else 5000
+            max_stagnation_iterations = 50000 if _is_mapping_mode else 5000
+            max_target_total_iterations = 200000 if _is_mapping_mode else 20000
             _guard_target_idx = target_idx
-            _guard_iterations = 0
+            _guard_stagnation_iterations = 0
+            _guard_target_total_iterations = 0
+            _guard_best_distance = None
+            _guard_stop_reason = ""
+            _guard_stop_detail = ""
             coord_fail_count = 0
             max_coord_fails = 50  # 연속 50회 실패 시 중단
             while not self._stop_event.is_set():
                 iteration += 1
                 if target_idx != _guard_target_idx:
                     _guard_target_idx = target_idx
-                    _guard_iterations = 0
-                _guard_iterations += 1
-                if _guard_iterations > max_iterations:
-                    break
+                    _guard_stagnation_iterations = 0
+                    _guard_target_total_iterations = 0
+                    _guard_best_distance = None
                 _ui_update_ok = (iteration % 10 == 0)  # UI 업데이트는 10회당 1번 (Tkinter 큐 폭주 방지)
                 _t_iter_start = time.time()
 
@@ -5714,6 +5844,33 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 좌표를 정수로 확실하게 변환
                 current_x = int(current_x)
                 current_y = int(current_y)
+
+                _guard_target_total_iterations += 1
+                _current_target_distance = abs(current_x - target_x) + abs(current_y - target_y)
+                if _guard_best_distance is None or _current_target_distance < _guard_best_distance:
+                    _guard_best_distance = _current_target_distance
+                    _guard_stagnation_iterations = 0
+                else:
+                    _guard_stagnation_iterations += 1
+
+                if _guard_target_total_iterations > max_target_total_iterations:
+                    _guard_stop_reason = "max_iterations_reached"
+                    _guard_stop_detail = (
+                        f"target_idx={target_idx} target_total_iteration={_guard_target_total_iterations - 1}/"
+                        f"{max_target_total_iterations} total_iteration={iteration - 1} "
+                        f"best_distance={_guard_best_distance} current_distance={_current_target_distance}"
+                    )
+                    break
+
+                if _guard_stagnation_iterations > max_stagnation_iterations:
+                    _guard_stop_reason = "max_stagnation_reached"
+                    _guard_stop_detail = (
+                        f"target_idx={target_idx} stagnation_iteration={_guard_stagnation_iterations - 1}/"
+                        f"{max_stagnation_iterations} target_total_iteration={_guard_target_total_iterations - 1} "
+                        f"best_distance={_guard_best_distance} current_distance={_current_target_distance}"
+                    )
+                    break
+
                 if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):
                     self._stop_event.wait(0.05)
                     continue
@@ -5865,6 +6022,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         _is_mapping_test and _mt_has_starts and jump >= 5 and
                         (((prev_x, prev_y) in _portal_protected) or ((current_x, current_y) in _portal_protected))
                     )
+                    _was_near_target_before_jump = abs(prev_x - target_x) + abs(prev_y - target_y) <= 1
+                    if not _was_near_target_before_jump:
+                        _candidate_re = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                        if _candidate_re:
+                            _was_near_target_before_jump = any(
+                                abs(prev_x - ex) + abs(prev_y - ey) <= 1 for ex, ey in _candidate_re
+                            )
                     if _digit_drop_jump or _axis_mismatch_jump or _protected_portal_jump:
                         _candidate = (prev_x, prev_y, current_x, current_y, last_dir)
                         if _candidate == _suspicious_jump_candidate:
@@ -5877,6 +6041,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         _required_streak = 1 if _protected_portal_jump else 2
                         # 한 번 읽힌 좌표를 맹신하지 않도록, 최소 2/3 재확인 + 같은 패턴 2회 반복 전에는 무시
                         if _jump_confirm_hits < _required_hits or _suspicious_jump_streak < _required_streak:
+                            if (not _protected_portal_jump) and jump >= 10 and not mark_portal_entry and not boss_pre_teleport and not _was_near_target_before_jump:
+                                self._remember_runtime_issue(
+                                    "coord_ocr_jump_instability",
+                                    f"phase=ignore prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) "
+                                    f"jump={jump} last_dir={last_dir} hits={_jump_confirm_hits}/{_required_hits} "
+                                    f"streak={_suspicious_jump_streak}/{_required_streak} samples={list(_jump_confirm_samples)}",
+                                )
                             if _ui_update_ok:
                                 if _protected_portal_jump:
                                     self._schedule_ui_log(
@@ -5909,6 +6080,39 @@ class GameModeDialog(ctk.CTkToplevel):
                                         dedupe_key="generic_coord_jump_confirm",
                                         dedupe_window=0.2,
                                     )
+                        _oscillation_blocked = False
+                        if (not _protected_portal_jump) and jump >= 10 and not mark_portal_entry and not boss_pre_teleport and not _was_near_target_before_jump:
+                            self._remember_runtime_issue(
+                                "coord_ocr_jump_instability",
+                                f"phase=confirm prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) "
+                                f"jump={jump} last_dir={last_dir} hits={_jump_confirm_hits}/{_required_hits} "
+                                f"streak={_suspicious_jump_streak}/{_required_streak} samples={list(_jump_confirm_samples)}",
+                            )
+                            if _last_suspicious_confirm is not None and (time.time() - _last_suspicious_confirm_at) <= 1.5:
+                                _lpx, _lpy, _lcx, _lcy = _last_suspicious_confirm
+                                _reverse_like = (
+                                    abs(_lpx - current_x) + abs(_lpy - current_y) <= 1 and
+                                    abs(_lcx - prev_x) + abs(_lcy - prev_y) <= 1
+                                )
+                                if _reverse_like:
+                                    _oscillation_blocked = True
+                                    self._remember_runtime_issue(
+                                        "coord_ocr_jump_oscillation",
+                                        f"prev=({prev_x},{prev_y}) curr=({current_x},{current_y}) "
+                                        f"last_confirm=({_lpx},{_lpy})->({_lcx},{_lcy}) jump={jump} last_dir={last_dir}",
+                                        overwrite=True,
+                                    )
+                                    if _ui_update_ok:
+                                        self._schedule_ui_log(
+                                            f"⚠️ 좌표 OCR 점프 왕복 차단: ({prev_x},{prev_y})→({current_x},{current_y})",
+                                            dedupe_key="coord_jump_oscillation_block",
+                                            dedupe_window=0.2,
+                                        )
+                        if _oscillation_blocked:
+                            self._stop_event.wait(0.05)
+                            continue
+                        _last_suspicious_confirm = (prev_x, prev_y, current_x, current_y)
+                        _last_suspicious_confirm_at = time.time()
                         logger.info(
                             f"[전환추적] 점프확정 후 분기진입: prev=({prev_x},{prev_y}) "
                             f"curr=({current_x},{current_y}) jump={jump} target_idx={target_idx} "
@@ -7009,11 +7213,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._append_log(f"🚀 탈출 스킬 발동! (연속 정체 {tc}회)"))
 
                             try:
-                                pyautogui.keyDown(escape_skill_key)
+                                get_input_controller().key_down(escape_skill_key)
                                 try:
                                     time.sleep(0.05)
                                 finally:
-                                    pyautogui.keyUp(escape_skill_key)
+                                    get_input_controller().key_up(escape_skill_key)
                             except Exception as e:
                                 logger.error(f"[좌표모드] 탈출 스킬 키 입력 실패: {e}")
                                 last_escape_time = time.time()  # 실패해도 쿨다운 적용 (tight loop 방지)
@@ -7033,7 +7237,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             direction_key = self._config.move_keys.get(dir_name, dir_name)
 
                             for _ in range(escape_skill_direction_count):
-                                pyautogui.press(direction_key)
+                                get_input_controller().press(direction_key)
                                 time.sleep(0.05)
 
                             self._stop_event.wait(escape_skill_wait_after)
@@ -7134,9 +7338,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             _orig_pause = pyautogui.PAUSE
                             pyautogui.PAUSE = 0
                             try:
-                                pyautogui.keyDown(auto_skill_key)
+                                get_input_controller().key_down(auto_skill_key)
                                 time.sleep(0.015)
-                                pyautogui.keyUp(auto_skill_key)
+                                get_input_controller().key_up(auto_skill_key)
                             finally:
                                 pyautogui.PAUSE = _orig_pause
                             self._key_press_count += 1
@@ -8304,11 +8508,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             _now = time.time()
                             if _now - last_boss_skill_time >= boss_skill_cooldown:
                                 try:
-                                    pyautogui.keyDown(boss_skill_key)
+                                    get_input_controller().key_down(boss_skill_key)
                                     try:
                                         time.sleep(0.05)
                                     finally:
-                                        pyautogui.keyUp(boss_skill_key)
+                                        get_input_controller().key_up(boss_skill_key)
                                     self._key_press_count += 1
                                     last_boss_skill_time = _now
                                     if _ui_update_ok:
@@ -8663,11 +8867,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 # 즉시 보스 스킬 사용
                                                 if boss_skill_enabled and boss_skill_key:
                                                     try:
-                                                        pyautogui.keyDown(boss_skill_key)
+                                                        get_input_controller().key_down(boss_skill_key)
                                                         try:
                                                             time.sleep(0.05)
                                                         finally:
-                                                            pyautogui.keyUp(boss_skill_key)
+                                                            get_input_controller().key_up(boss_skill_key)
                                                         self._key_press_count += 1
                                                         last_boss_skill_time = time.time()
                                                     except Exception:
@@ -9076,11 +9280,11 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     self._appr_x_max = 2  # 한 방향 최대 스텝
                                                     if boss_skill_enabled and boss_skill_key:
                                                         try:
-                                                            pyautogui.keyDown(boss_skill_key)
+                                                            get_input_controller().key_down(boss_skill_key)
                                                             try:
                                                                 time.sleep(0.05)
                                                             finally:
-                                                                pyautogui.keyUp(boss_skill_key)
+                                                                get_input_controller().key_up(boss_skill_key)
                                                             self._key_press_count += 1
                                                             last_boss_skill_time = time.time()
                                                         except Exception:
@@ -9550,7 +9754,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     _orig_pause = pyautogui.PAUSE
                     pyautogui.PAUSE = 0
                     try:
-                        pyautogui.press(key)
+                        get_input_controller().press(key)
                     finally:
                         pyautogui.PAUSE = _orig_pause
                     self._key_press_count += 1
@@ -9573,10 +9777,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _ui_update_ok:
                     self.after(0, lambda m=_timing_msg: self._append_log(m))
 
-            if _guard_iterations > max_iterations and not self._stop_event.is_set():
+            if _guard_stop_reason and not self._stop_event.is_set():
                 self._mark_stop_reason(
-                    "max_iterations_reached",
-                    f"target_idx={target_idx} iteration={_guard_iterations - 1}/{max_iterations} total_iteration={iteration - 1}",
+                    _guard_stop_reason,
+                    _guard_stop_detail,
                     overwrite=True,
                 )
             elif self._stop_event.is_set() and not getattr(self, "_stop_reason", ""):
@@ -9631,10 +9835,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 while time.time() - start_time < interval and not self._stop_event.is_set():
                     self._key_press_count += 1
                     for key in keys:
-                        pyautogui.keyDown(key)
+                        get_input_controller().key_down(key)
                     time.sleep(0.015)  # 15ms 누르기
                     for key in keys:
-                        pyautogui.keyUp(key)
+                        get_input_controller().key_up(key)
                     time.sleep(0.005)  # 5ms 간격
             finally:
                 pyautogui.PAUSE = original_pause
@@ -12023,13 +12227,13 @@ class GameModeDialog(ctk.CTkToplevel):
             if isinstance(keys, list):
                 # 대각선: 두 키 동시 누름
                 for key in keys:
-                    pyautogui.keyDown(key)
+                    get_input_controller().key_down(key)
                 time.sleep(0.05)
                 for key in keys:
-                    pyautogui.keyUp(key)
+                    get_input_controller().key_up(key)
             else:
                 # 단일 키
-                pyautogui.press(keys)
+                get_input_controller().press(keys)
 
         except Exception as e:
             logger.error(f"[미니맵] 키 입력 오류: {e}")
@@ -12047,7 +12251,7 @@ class GameModeDialog(ctk.CTkToplevel):
             original_pause = pyautogui.PAUSE
             pyautogui.PAUSE = 0
             try:
-                pyautogui.press(key)
+                get_input_controller().press(key)
                 self._key_press_count += 1
             finally:
                 pyautogui.PAUSE = original_pause
@@ -12062,14 +12266,14 @@ class GameModeDialog(ctk.CTkToplevel):
                     while time.time() - start_time < follow_interval:
                         if stop_event is not None and stop_event.is_set():
                             break
-                        pyautogui.keyDown(key)
+                        get_input_controller().key_down(key)
                         time.sleep(0.015)
-                        pyautogui.keyUp(key)
+                        get_input_controller().key_up(key)
                         self._key_press_count += 1
                         time.sleep(0.005)
                 else:
-                    pyautogui.press(key)
-                    pyautogui.press(key)
+                    get_input_controller().press(key)
+                    get_input_controller().press(key)
                     self._key_press_count += 2
                     sleep_until = time.time() + follow_interval
                     while time.time() < sleep_until:
@@ -13970,9 +14174,9 @@ class GameModeDialog(ctk.CTkToplevel):
                     break
                 try:
                     # keyDown + hold + keyUp (게임이 즉시 press를 씹는 경우 방지)
-                    pyautogui.keyDown(key_name)
+                    get_input_controller().key_down(key_name)
                     time.sleep(0.05)
-                    pyautogui.keyUp(key_name)
+                    get_input_controller().key_up(key_name)
                     self._key_press_count += 1
                     logger.info(f"[전환추적] 도착키 입력 완료: key={key_name} rep={rep+1}/{repeat_count}")
                 except Exception as _ke:
@@ -15228,7 +15432,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 try:
                     if current_key:
                         import pyautogui
-                        pyautogui.keyUp(current_key)
+                        get_input_controller().key_up(current_key)
                         try:
                             self.after(0, lambda k=current_key: self._append_log(f"[보스테스트] 이동키 해제: {k} (종료)", force=True))
                         except (tk.TclError, RuntimeError):
@@ -15257,7 +15461,7 @@ class GameModeDialog(ctk.CTkToplevel):
             return
         try:
             import pyautogui
-            pyautogui.keyUp(current_key)
+            get_input_controller().key_up(current_key)
         except Exception:
             pass
         self._bosstest_current_key = None
@@ -15587,6 +15791,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         _was_running = self._is_running
         if _was_running:
+            self._mark_manual_stop_context("dialog_close_stop", "_shutdown while running")
             self._stop_execution()
 
         # 워커 스레드 종료 대기 (최대 2초)
@@ -18587,6 +18792,32 @@ class PlayerView(BaseView):
         plan.game_modes = game_modes
         return plan
 
+    def _ensure_arduino_ready_for_playback(self, context_label: str) -> bool:
+        """재생 시작 전 Arduino 연결 보장"""
+        from tkinter import messagebox
+        from ..utils.input_controller import ensure_arduino_ready
+
+        ok, detail = ensure_arduino_ready(force_connect=True)
+        if ok:
+            logger.info(f"[아두이노가드] {context_label} 가능: {detail}")
+            return True
+
+        logger.warning(f"[아두이노가드] {context_label} 차단: {detail}")
+        try:
+            self._status_label.configure(text="⚠ 아두이노 연결 필요", text_color=COLORS["warning"])
+        except Exception:
+            pass
+        try:
+            self._append_log(f"⚠️ 아두이노 연결 필요: {detail}")
+        except Exception:
+            pass
+        message = f"아두이노가 연결되지 않아 {context_label}을 시작할 수 없습니다.\n\n사유: {detail}"
+        try:
+            messagebox.showerror("아두이노 연결 필요", message, parent=self)
+        except TypeError:
+            messagebox.showerror("아두이노 연결 필요", message)
+        return False
+
     def _on_play(self) -> None:
         """실행 시작"""
         print("[버튼] 실행 버튼 클릭됨")
@@ -18600,6 +18831,9 @@ class PlayerView(BaseView):
         # 일반 재생 실행
         if not self._selected_sequence:
             print("[실행] 선택된 재생 없음")
+            return
+
+        if not self._ensure_arduino_ready_for_playback("일반 재생"):
             return
 
         try:
@@ -18638,6 +18872,9 @@ class PlayerView(BaseView):
 
         if not self._selected_plan:
             print("[실행] 선택된 계획 없음")
+            return
+
+        if not self._ensure_arduino_ready_for_playback("자동화 재생"):
             return
 
         # 실행 전 최신 버전의 계획을 파일에서 다시 로드
@@ -19142,6 +19379,8 @@ class PlayerView(BaseView):
                 dispatcher.close()
             except Exception:
                 pass
+
+
 
 
 

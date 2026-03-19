@@ -11,7 +11,14 @@ import atexit
 import threading
 
 from .utils.logger import get_logger, set_log_level, apply_performance_config
-from .utils.config import get_config, save_config, DATA_DIR
+from .utils.config import (
+    get_config,
+    save_config,
+    DATA_DIR,
+    get_config_load_status,
+    get_config_load_error,
+    is_startup_config_save_safe,
+)
 from pathlib import Path
 from .database import get_db
 
@@ -40,7 +47,7 @@ def get_thread_pool() -> ThreadPoolExecutor:
             if _thread_pool is None:
                 config = get_config()
                 pool_size = getattr(config.performance, 'thread_pool_size', 4)
-                _thread_pool = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="wincro_bg")
+                _thread_pool = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="task_bg")
                 atexit.register(_shutdown_thread_pool)
     return _thread_pool
 
@@ -81,7 +88,7 @@ class WinCroApp:
         self._settings_view: Optional['SettingsView'] = None
         self._guide_view: Optional['GuideView'] = None
 
-        logger.info("WinCro 애플리케이션 초기화")
+        logger.info("작업도우미 애플리케이션 초기화")
         logger.debug(f"[설정 로드] window_mode={self._config.ui.window_mode}, auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}")
 
     def initialize(self) -> bool:
@@ -93,13 +100,19 @@ class WinCroApp:
         """
         try:
             # 설정 업데이트
+            startup_save_safe = is_startup_config_save_safe()
             self._config.last_opened = datetime.now().isoformat()
             if self._config.first_run:
                 self._config.first_run = False
                 logger.info("첫 실행 감지")
 
-            if not save_config():
-                logger.warning("설정 저장 실패 - 기본 설정으로 계속")
+            if startup_save_safe:
+                if not save_config():
+                    logger.warning("설정 저장 실패 - 기본 설정으로 계속")
+            else:
+                logger.warning(
+                    f"[config] startup save skipped: status={get_config_load_status()} error={get_config_load_error()}"
+                )
 
             # 업데이트 후 플랜 파일 병합 (plans_user_backup이 있으면)
             self._merge_user_plans()
@@ -423,7 +436,7 @@ class WinCroApp:
 chcp 65001 >nul
 echo.
 echo ========================================
-echo   WinCro 자동 업데이트 v{version}
+echo   작업도우미 자동 업데이트 v{version}
 echo ========================================
 echo.
 
@@ -508,6 +521,9 @@ if not exist "{app_dir}\\_internal" (
 )
 
 echo [6/8] 설정 파일 복원 중...
+if exist "{data_backup}\\작업도우미.db" (
+    copy /y "{data_backup}\\작업도우미.db" "{app_dir}\\_internal\\data\\작업도우미.db" >nul 2>&1
+)
 if exist "{data_backup}\\wincro.db" (
     copy /y "{data_backup}\\wincro.db" "{app_dir}\\_internal\\data\\wincro.db" >nul 2>&1
 )
@@ -569,7 +585,7 @@ del "%~f0"
 chcp 65001 >nul
 echo.
 echo ========================================
-echo   WinCro 복구 도구
+echo   작업도우미 복구 도구
 echo ========================================
 echo.
 

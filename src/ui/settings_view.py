@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 설정 화면 모듈
 
 애플리케이션 설정을 위한 UI를 제공합니다.
@@ -13,6 +13,13 @@ from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, config_manager
+from ..utils.app_identity import (
+    PRIMARY_APP_NAME,
+    clear_random_app_name,
+    ensure_random_app_name,
+    get_effective_app_name,
+    get_startup_entry_name,
+)
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
 
@@ -126,7 +133,7 @@ class SettingsView(BaseView):
         app_name_entry = ctk.CTkEntry(
             name_frame,
             textvariable=self._app_name_var,
-            placeholder_text="Desktop",
+            placeholder_text=PRIMARY_APP_NAME,
             width=200,
             height=32,
             fg_color=COLORS["bg_dark"],
@@ -149,6 +156,7 @@ class SettingsView(BaseView):
             name_frame,
             text="랜덤 이름 모드",
             variable=self._random_name_var,
+            command=self._on_random_name_mode_changed,
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
             fg_color=COLORS["accent"],
@@ -157,6 +165,27 @@ class SettingsView(BaseView):
             checkmark_color="white",
         )
         random_name_check.pack(side="left", padx=10)
+
+        self._random_name_refresh_btn = ctk.CTkButton(
+            name_frame,
+            text="새 이름",
+            command=self._regenerate_random_name,
+            width=70,
+            height=28,
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["accent"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11),
+        )
+        self._random_name_refresh_btn.pack(side="left", padx=(0, 8))
+
+        self._random_name_preview = ctk.CTkLabel(
+            scroll_frame,
+            text=f"현재 표시 이름: {PRIMARY_APP_NAME}",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        )
+        self._random_name_preview.pack(anchor="w", padx=12, pady=(0, 6))
 
         # 창 모드 섹션
         mode_label = ctk.CTkLabel(
@@ -303,6 +332,18 @@ class SettingsView(BaseView):
         # 자동 연결
         self._arduino_auto_var = ctk.BooleanVar()
         self._create_checkbox(arduino_options, "시작 시 자동 연결", self._arduino_auto_var)
+
+        self._arduino_require_playback_var = ctk.BooleanVar()
+        self._create_checkbox_with_help(
+            arduino_options, "아두이노 활성시 재생", self._arduino_require_playback_var,
+            help_text="켜면 아두이노가 연결되지 않은 상태에서는 재생을 시작하지 않습니다"
+        )
+
+        self._arduino_strict_var = ctk.BooleanVar()
+        self._create_checkbox_with_help(
+            arduino_options, "아두이노 전용 입력", self._arduino_strict_var,
+            help_text="클릭/키/스크롤은 소프트웨어 fallback 없이 Arduino HID를 우선 사용합니다. 마우스 이동은 현재 소프트웨어 이동을 유지합니다"
+        )
 
         # COM 포트 설정 그리드
         arduino_grid = ctk.CTkFrame(scroll_frame, fg_color="transparent")
@@ -1690,7 +1731,7 @@ class SettingsView(BaseView):
 chcp 65001 >nul
 echo.
 echo ========================================
-echo   WinCro 업데이트 v{version}
+echo   작업도우미 업데이트 v{version}
 echo ========================================
 echo.
 
@@ -1717,6 +1758,9 @@ if errorlevel 1 (
 )
 
 echo [5/6] 설정 파일 복원 중...
+if exist "{data_backup}\\작업도우미.db" (
+    copy /y "{data_backup}\\작업도우미.db" "{app_dir}\\_internal\\data\\작업도우미.db" >nul 2>&1
+)
 if exist "{data_backup}\\wincro.db" (
     copy /y "{data_backup}\\wincro.db" "{app_dir}\\_internal\\data\\wincro.db" >nul 2>&1
 )
@@ -2065,6 +2109,8 @@ del "%~f0"
         # 아두이노 설정
         self._arduino_enabled_var.set(config.arduino.enabled)
         self._arduino_auto_var.set(config.arduino.auto_connect)
+        self._arduino_require_playback_var.set(getattr(config.arduino, "require_for_playback", True))
+        self._arduino_strict_var.set(getattr(config.arduino, "strict_mode", True))
         self._arduino_port_var.set(config.arduino.com_port)
         self._arduino_baud_var.set(str(config.arduino.baud_rate))
 
@@ -2113,6 +2159,7 @@ del "%~f0"
             else SETTINGS["theme_light"]
         )
         self._language_var.set("한국어")
+        self._update_random_name_preview()
 
         # 업데이트 설정 (GitHub)
         self._github_repo_var.set(config.update.github_repo)
@@ -2145,6 +2192,8 @@ del "%~f0"
         # 아두이노 설정
         config.arduino.enabled = self._arduino_enabled_var.get()
         config.arduino.auto_connect = self._arduino_auto_var.get()
+        config.arduino.require_for_playback = self._arduino_require_playback_var.get()
+        config.arduino.strict_mode = self._arduino_strict_var.get()
         config.arduino.com_port = self._arduino_port_var.get()
         baud_rate = self._parse_int(self._arduino_baud_var.get(), 300, 115200, "Baud Rate")
         if baud_rate is not None:
@@ -2190,15 +2239,17 @@ del "%~f0"
         old_auto_start = config.ui.auto_start
         config.ui.auto_start = new_auto_start
 
-        # 자동 시작 설정이 변경되면 레지스트리 업데이트
-        if new_auto_start != old_auto_start:
-            self._update_auto_start_registry(new_auto_start)
-
         # 외관 설정
         app_name = self._app_name_var.get().strip()
         if app_name:
             config.ui.app_name = app_name
-        config.ui.random_name_mode = self._random_name_var.get()
+        old_random_name_mode = getattr(config.ui, "random_name_mode", False)
+        new_random_name_mode = self._random_name_var.get()
+        config.ui.random_name_mode = new_random_name_mode
+        if not new_random_name_mode:
+            clear_random_app_name(config.ui)
+        else:
+            ensure_random_app_name(config.ui, save_callback=None)
         config.ui.theme = (
             "dark" if self._theme_var.get() == SETTINGS["theme_dark"] else "light"
         )
@@ -2212,10 +2263,12 @@ del "%~f0"
         # 저장
         if save_config():
             logger.info("설정 저장 완료")
-            # 창 제목 즉시 반영
-            if app_name:
-                top = self.winfo_toplevel()
-                top.title(f"{app_name} - 자동화 도우미")
+            if new_auto_start != old_auto_start or new_random_name_mode != old_random_name_mode:
+                self._update_auto_start_registry(new_auto_start)
+            top = self.winfo_toplevel()
+            if hasattr(top, "update_title"):
+                top.update_title()
+            self._update_random_name_preview()
             self._show_message(MESSAGES["success"], SETTINGS["changes_saved"])
         else:
             logger.error("설정 저장 실패")
@@ -2245,12 +2298,44 @@ del "%~f0"
             logger.warning(f"{field_name} 변환 실패: {value}")
             return None
 
+    def _update_random_name_preview(self) -> None:
+        config = get_config()
+        effective_name = get_effective_app_name(config.ui, save_callback=None)
+        if hasattr(self, "_random_name_preview"):
+            self._random_name_preview.configure(text=f"현재 표시 이름: {effective_name}")
+        if hasattr(self, "_random_name_refresh_btn"):
+            self._random_name_refresh_btn.configure(
+                state="normal" if self._random_name_var.get() else "disabled"
+            )
+
+    def _on_random_name_mode_changed(self) -> None:
+        config = get_config()
+        if self._random_name_var.get():
+            ensure_random_app_name(config.ui, save_callback=save_config)
+        self._update_random_name_preview()
+
+    def _regenerate_random_name(self) -> None:
+        config = get_config()
+        clear_random_app_name(config.ui)
+        ensure_random_app_name(config.ui, save_callback=save_config)
+        self._update_random_name_preview()
+
+    def _get_auto_start_entry_candidates(self) -> list[str]:
+        config = get_config()
+        candidates = {
+            PRIMARY_APP_NAME,
+            (config.ui.app_name or "").strip(),
+            (getattr(config.ui, "random_name_alias", "") or "").strip(),
+            get_startup_entry_name(config.ui),
+            "WinCro",
+        }
+        return sorted(name for name in candidates if name)
+
     def _update_auto_start_registry(self, enable: bool) -> None:
         """윈도우 시작시 자동실행 레지스트리 설정"""
         import sys
         import winreg
 
-        app_name = "WinCro"
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
         try:
@@ -2274,16 +2359,17 @@ del "%~f0"
 
             if enable:
                 # 시작프로그램에 추가
-                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
-                logger.info(f"[자동시작] 레지스트리 등록: {exe_path}")
+                entry_name = get_startup_entry_name(get_config().ui, save_callback=None)
+                winreg.SetValueEx(key, entry_name, 0, winreg.REG_SZ, exe_path)
+                logger.info(f"[자동시작] 레지스트리 등록: {entry_name} -> {exe_path}")
             else:
                 # 시작프로그램에서 제거
-                try:
-                    winreg.DeleteValue(key, app_name)
-                    logger.info("[자동시작] 레지스트리에서 제거됨")
-                except FileNotFoundError:
-                    # 이미 없는 경우
-                    pass
+                for candidate in self._get_auto_start_entry_candidates():
+                    try:
+                        winreg.DeleteValue(key, candidate)
+                        logger.info(f"[자동시작] 레지스트리에서 제거됨: {candidate}")
+                    except FileNotFoundError:
+                        pass
 
             winreg.CloseKey(key)
 

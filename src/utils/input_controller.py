@@ -1,60 +1,67 @@
-"""
-WinCro 입력 컨트롤러
+﻿"""
+Unified input controller.
 
-pyautogui와 Arduino HID를 추상화하여 설정에 따라 적절한 입력 방식을 사용합니다.
+Mouse move currently stays on pyautogui.
+Mouse click / button / keyboard / scroll can use Arduino HID when enabled.
 """
 
+import math
 import time
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple
+
 import pyautogui
 
-from .logger import get_logger
 from .config import get_config
+from .logger import get_logger
 
 logger = get_logger(__name__)
 
-# 전역 Arduino HID 인스턴스 (지연 로딩)
 _arduino_hid = None
-_arduino_load_failed = False  # 로드 실패 플래그
+_arduino_load_failed = False
+_strict_move_warned = False
+_input_controller: Optional['InputController'] = None
+_MOVE_VERIFY_TOLERANCE = 2
+_MOVE_MAX_CORRECTIONS = 24
+_MOVE_STEP_LIMIT = 18
+_MOVE_MIN_STEP_LIMIT = 4
+_MOVE_MIN_HUMAN_DURATION = 0.08
+_MOVE_MAX_HUMAN_DURATION = 0.28
+_MOVE_MIN_STEP_DELAY = 0.006
+_MOVE_MAX_STEP_DELAY = 0.03
 
 
 def _get_arduino():
-    """Arduino HID 인스턴스 반환 (지연 로딩, 재시도 지원)"""
+    """Return Arduino HID singleton with lazy import."""
     global _arduino_hid, _arduino_load_failed
 
-    # 이미 연결되어 있으면 반환
     if _arduino_hid is not None:
         return _arduino_hid
-
-    # 이전에 모듈 로드 자체가 실패했으면 None 반환 (ImportError는 재시도 의미 없음)
     if _arduino_load_failed:
         return None
 
     try:
         from .arduino_hid import get_arduino_hid
+
         _arduino_hid = get_arduino_hid()
     except ImportError:
-        logger.warning("Arduino HID 모듈을 불러올 수 없습니다")
+        logger.warning("Arduino HID module is not available")
         _arduino_load_failed = True
         _arduino_hid = None
     except Exception as e:
-        # 연결 실패는 다음에 재시도 가능
-        logger.debug(f"Arduino HID 초기화 실패 (재시도 가능): {e}")
+        logger.debug(f"Arduino HID initialization failed, retry allowed: {e}")
         _arduino_hid = None
 
     return _arduino_hid
 
 
 def reset_arduino_connection():
-    """Arduino 연결 상태 초기화 (재연결 시도용)"""
-    global _arduino_hid, _arduino_load_failed
+    """Reset cached Arduino connection state."""
+    global _arduino_hid
     _arduino_hid = None
-    # ImportError가 아닌 경우에만 재시도 허용
-    # _arduino_load_failed는 그대로 유지
 
 
 def is_arduino_enabled() -> bool:
-    """Arduino 입력이 활성화되어 있는지 확인"""
+    """True when Arduino HID input is enabled and connected."""
     config = get_config()
     if not config.arduino.enabled:
         return False
@@ -63,171 +70,362 @@ def is_arduino_enabled() -> bool:
     return arduino is not None and arduino.is_connected
 
 
-class InputController:
-    """
-    통합 입력 컨트롤러
+def is_arduino_strict_enabled() -> bool:
+    """True when software fallback must not be used for click/key/scroll."""
+    config = get_config()
+    return bool(config.arduino.enabled and getattr(config.arduino, "strict_mode", False))
 
-    Arduino가 활성화되면 Arduino HID를 사용하고,
-    그렇지 않으면 pyautogui를 사용합니다.
-    """
+
+def ensure_arduino_ready(force_connect: bool = True) -> Tuple[bool, str]:
+    """Verify Arduino is ready before playback starts."""
+    config = get_config()
+    if not getattr(config.arduino, "require_for_playback", True):
+        return True, "Arduino playback guard is disabled."
+    if not config.arduino.enabled:
+        return False, "Arduino input is disabled in settings."
+
+    com_port = (config.arduino.com_port or "").strip()
+    if not com_port:
+        return False, "Arduino COM port is not configured."
+
+    arduino = _get_arduino()
+    if arduino is None:
+        return False, "Arduino HID backend is unavailable."
+
+    try:
+        if arduino.is_connected:
+            return True, f"{com_port} connected"
+    except Exception as e:
+        logger.warning(f"[ArduinoGuard] connection check failed: {e}")
+
+    if not force_connect:
+        return False, f"{com_port} is not connected."
+
+    try:
+        logger.info(f"[ArduinoGuard] connect attempt: port={com_port}, baud={config.arduino.baud_rate}")
+        if arduino.connect(com_port, config.arduino.baud_rate) and arduino.is_connected:
+            logger.info(f"[ArduinoGuard] connected: {com_port}")
+            return True, f"{com_port} connected"
+    except Exception as e:
+        logger.error(f"[ArduinoGuard] connect failed: {e}")
+        return False, f"{com_port} connect failed: {e}"
+
+    return False, f"{com_port} connection failed."
+
+
+class InputController:
+    """Unified input controller with optional Arduino HID priority."""
 
     def __init__(self):
         self._config = get_config()
 
     def _use_arduino(self) -> bool:
-        """Arduino 사용 여부"""
         return is_arduino_enabled()
 
-    def _with_arduino_fallback(self, arduino_fn, fallback_fn):
-        """
-        Arduino가 활성화되면 arduino_fn 실행, 아니면 fallback_fn 실행.
-        Arduino 인스턴스가 None이면 fallback_fn으로 폴백.
-        """
+    def _strict_mode(self) -> bool:
+        return is_arduino_strict_enabled()
+
+    def _warn_software_move_if_strict(self) -> None:
+        global _strict_move_warned
+        if self._strict_mode() and not _strict_move_warned:
+            _strict_move_warned = True
+            logger.warning(
+                "[ArduinoStrict] mouse move software fallback blocked or firmware lacks MM support"
+            )
+
+    def _arduino_move_relative(self, dx: int, dy: int) -> bool:
+        arduino = _get_arduino()
+        if arduino is None or not arduino.supports_mouse_move():
+            return False
+        try:
+            return bool(arduino.mouse_move(int(dx), int(dy)))
+        except Exception as e:
+            logger.error(f"[ArduinoInput] mouse_move failed: {e}")
+            return False
+
+    def _get_cursor_pos(self) -> Optional[Tuple[int, int]]:
+        try:
+            pos = pyautogui.position()
+            return int(pos[0]), int(pos[1])
+        except Exception as e:
+            logger.error(f"[SoftwareInput] cursor position read failed: {e}")
+            return None
+
+    def _compute_human_move_duration(self, distance: float, duration: float) -> float:
+        if duration and duration > 0:
+            return max(_MOVE_MIN_HUMAN_DURATION, min(_MOVE_MAX_HUMAN_DURATION, duration))
+        auto_duration = 0.06 + min(distance / 900.0, 0.22)
+        return max(_MOVE_MIN_HUMAN_DURATION, min(_MOVE_MAX_HUMAN_DURATION, auto_duration))
+
+    def _arduino_move_to(self, x: int, y: int, duration: float = 0.0) -> bool:
+        target_x = int(round(x))
+        target_y = int(round(y))
+        current = self._get_cursor_pos()
+        if current is None:
+            return False
+
+        distance = math.hypot(target_x - current[0], target_y - current[1])
+        effective_duration = self._compute_human_move_duration(distance, duration)
+        step_budget = max(4, min(_MOVE_MAX_CORRECTIONS, int(distance / 7) + 1))
+        step_delay = max(_MOVE_MIN_STEP_DELAY, min(_MOVE_MAX_STEP_DELAY, effective_duration / max(1, step_budget)))
+
+        for attempt in range(_MOVE_MAX_CORRECTIONS):
+            current_x, current_y = current
+            dx = target_x - current_x
+            dy = target_y - current_y
+
+            if abs(dx) <= _MOVE_VERIFY_TOLERANCE and abs(dy) <= _MOVE_VERIFY_TOLERANCE:
+                return True
+
+            progress = min(1.0, attempt / max(1, step_budget - 1))
+            ease = 1.0 - abs(2.0 * progress - 1.0)
+            max_step = int(round(_MOVE_MIN_STEP_LIMIT + (_MOVE_STEP_LIMIT - _MOVE_MIN_STEP_LIMIT) * ease))
+            max_step = max(_MOVE_MIN_STEP_LIMIT, min(_MOVE_STEP_LIMIT, max_step))
+
+            step_x = max(-max_step, min(max_step, dx))
+            step_y = max(-max_step, min(max_step, dy))
+            if step_x == 0 and dx != 0:
+                step_x = 1 if dx > 0 else -1
+            if step_y == 0 and dy != 0:
+                step_y = 1 if dy > 0 else -1
+
+            if not self._arduino_move_relative(step_x, step_y):
+                return False
+
+            # 시작/끝은 조금 더 여유 있게, 중간은 상대적으로 빠르게 움직인다.
+            edge_weight = 0.65 - (0.35 * ease)
+            time.sleep(max(_MOVE_MIN_STEP_DELAY, min(_MOVE_MAX_STEP_DELAY, step_delay * edge_weight)))
+
+            current = self._get_cursor_pos()
+            if current is None:
+                return False
+
+        final_pos = self._get_cursor_pos()
+        if final_pos is None:
+            return False
+        final_x, final_y = final_pos
+        ok = abs(final_x - target_x) <= _MOVE_VERIFY_TOLERANCE and abs(final_y - target_y) <= _MOVE_VERIFY_TOLERANCE
+        if not ok:
+            logger.warning(
+                f"[ArduinoInput] move_to verify failed target=({target_x},{target_y}) actual=({final_x},{final_y})"
+            )
+        return ok
+
+    def _with_arduino_fallback(self, action_name, arduino_fn, fallback_fn):
         if self._use_arduino():
             arduino = _get_arduino()
             if arduino is not None:
-                return arduino_fn(arduino)
-        return fallback_fn()
+                try:
+                    result = arduino_fn(arduino)
+                    return True if result is None else bool(result)
+                except Exception as e:
+                    logger.error(f"[ArduinoInput] {action_name} failed via Arduino: {e}")
+                    if self._strict_mode():
+                        logger.warning(f"[ArduinoStrict] blocked software fallback for {action_name}")
+                        return False
 
-    # ==================== 마우스 동작 ====================
-    # 마우스 이동: 소프트웨어 (pyautogui)
-    # 마우스 클릭/버튼: 하드웨어 (Arduino)
+        if self._strict_mode():
+            logger.warning(f"[ArduinoStrict] blocked software fallback for {action_name}")
+            return False
 
-    def _move_before_action(self, x: Optional[int], y: Optional[int],
-                            duration: float = 0.0) -> None:
-        """액션 전 마우스 이동 (공통 로직)"""
+        try:
+            result = fallback_fn()
+            return True if result is None else bool(result)
+        except Exception as e:
+            logger.error(f"[SoftwareInput] {action_name} failed: {e}")
+            return False
+
+    def _move_before_action(self, x: Optional[int], y: Optional[int], duration: float = 0.0) -> bool:
         if x is not None and y is not None:
-            pyautogui.moveTo(x, y, duration=duration)
+            if not self.move_to(x, y, duration=duration):
+                return False
             time.sleep(0.05)
+        return True
 
-    def move_to(self, x: int, y: int, duration: float = 0.0) -> None:
-        """마우스를 절대 좌표로 이동 (항상 소프트웨어)"""
-        pyautogui.moveTo(x, y, duration=duration)
+    # Mouse operations
+    def move_to(self, x: int, y: int, duration: float = 0.0) -> bool:
+        arduino = _get_arduino()
+        if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
+            if self._arduino_move_to(x, y, duration=duration):
+                return True
+            if self._strict_mode():
+                self._warn_software_move_if_strict()
+                return False
+        if self._strict_mode():
+            self._warn_software_move_if_strict()
+            return False
+        self._warn_software_move_if_strict()
+        try:
+            pyautogui.moveTo(x, y, duration=duration)
+            return True
+        except Exception as e:
+            logger.error(f"[SoftwareInput] move_to failed: {e}")
+            return False
 
-    def move(self, dx: int, dy: int) -> None:
-        """마우스를 상대적으로 이동 (항상 소프트웨어)"""
-        pyautogui.move(dx, dy)
+    def move(self, dx: int, dy: int) -> bool:
+        arduino = _get_arduino()
+        if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
+            if self._arduino_move_relative(dx, dy):
+                return True
+            if self._strict_mode():
+                self._warn_software_move_if_strict()
+                return False
+        if self._strict_mode():
+            self._warn_software_move_if_strict()
+            return False
+        self._warn_software_move_if_strict()
+        try:
+            pyautogui.move(dx, dy)
+            return True
+        except Exception as e:
+            logger.error(f"[SoftwareInput] move failed: {e}")
+            return False
 
-    def click(self, x: Optional[int] = None, y: Optional[int] = None,
-              button: str = 'left', duration: float = 0.0) -> None:
-        """마우스 클릭 (이동: 소프트웨어, 클릭: 하드웨어)"""
-        self._move_before_action(x, y, duration)
-        self._with_arduino_fallback(
+    def click(self, x: Optional[int] = None, y: Optional[int] = None, button: str = 'left', duration: float = 0.0) -> bool:
+        if not self._move_before_action(x, y, duration):
+            return False
+        return self._with_arduino_fallback(
+            f"click:{button}",
             lambda a: a.mouse_click(button),
-            lambda: pyautogui.click(button=button)
+            lambda: pyautogui.click(button=button),
         )
 
-    def double_click(self, x: Optional[int] = None, y: Optional[int] = None,
-                     duration: float = 0.0) -> None:
-        """마우스 더블 클릭 (이동: 소프트웨어, 클릭: 하드웨어)"""
-        self._move_before_action(x, y, duration)
-        self._with_arduino_fallback(
+    def double_click(self, x: Optional[int] = None, y: Optional[int] = None, duration: float = 0.0) -> bool:
+        if not self._move_before_action(x, y, duration):
+            return False
+        return self._with_arduino_fallback(
+            "double_click",
             lambda a: a.mouse_double_click(),
-            lambda: pyautogui.doubleClick()
+            lambda: pyautogui.doubleClick(),
         )
 
-    def right_click(self, x: Optional[int] = None, y: Optional[int] = None,
-                    duration: float = 0.0) -> None:
-        """마우스 우클릭 (이동: 소프트웨어, 클릭: 하드웨어)"""
-        self._move_before_action(x, y, duration)
-        self._with_arduino_fallback(
+    def right_click(self, x: Optional[int] = None, y: Optional[int] = None, duration: float = 0.0) -> bool:
+        if not self._move_before_action(x, y, duration):
+            return False
+        return self._with_arduino_fallback(
+            "right_click",
             lambda a: a.mouse_click('right'),
-            lambda: pyautogui.rightClick()
+            lambda: pyautogui.rightClick(),
         )
 
-    def mouse_down(self, button: str = 'left') -> None:
-        """마우스 버튼 누르기 (하드웨어)"""
-        self._with_arduino_fallback(
+    def mouse_down(self, button: str = 'left') -> bool:
+        return self._with_arduino_fallback(
+            f"mouse_down:{button}",
             lambda a: a.mouse_press(button),
-            lambda: pyautogui.mouseDown(button=button)
+            lambda: pyautogui.mouseDown(button=button),
         )
 
-    def mouse_up(self, button: str = 'left') -> None:
-        """마우스 버튼 떼기 (하드웨어)"""
-        self._with_arduino_fallback(
+    def mouse_up(self, button: str = 'left') -> bool:
+        return self._with_arduino_fallback(
+            f"mouse_up:{button}",
             lambda a: a.mouse_release(button),
-            lambda: pyautogui.mouseUp(button=button)
+            lambda: pyautogui.mouseUp(button=button),
         )
 
-    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int,
-             duration: float = 0.5, button: str = 'left') -> None:
-        """마우스 드래그 (이동: 소프트웨어, 버튼: 하드웨어)"""
-        pyautogui.moveTo(start_x, start_y)
-        time.sleep(0.05)
+    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.5, button: str = 'left') -> bool:
+        arduino = _get_arduino()
+        if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
+                try:
+                    if not self._arduino_move_to(start_x, start_y):
+                        return False
+                    time.sleep(0.05)
+                    arduino.mouse_press(button)
+                    time.sleep(0.05)
+                    if not self._arduino_move_to(end_x, end_y, duration=duration):
+                        arduino.mouse_release(button)
+                        return False
+                    time.sleep(0.05)
+                    arduino.mouse_release(button)
+                    return True
+                except Exception as e:
+                    logger.error(f"[ArduinoInput] drag failed: {e}")
+                    if self._strict_mode():
+                        logger.warning("[ArduinoStrict] blocked software drag fallback")
+                        return False
 
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
-                arduino.mouse_press(button)
-                time.sleep(0.05)
-                pyautogui.moveTo(end_x, end_y, duration=duration)
-                time.sleep(0.05)
-                arduino.mouse_release(button)
-                return
+        if self._strict_mode():
+            logger.warning("[ArduinoStrict] blocked software drag fallback")
+            return False
 
-        dx = end_x - start_x
-        dy = end_y - start_y
-        pyautogui.drag(dx, dy, duration=duration, button=button)
+        self._warn_software_move_if_strict()
+        try:
+            pyautogui.moveTo(start_x, start_y)
+            time.sleep(0.05)
+        except Exception as e:
+            logger.error(f"[SoftwareInput] drag move-to-start failed: {e}")
+            return False
 
-    def scroll(self, amount: int, x: Optional[int] = None, y: Optional[int] = None) -> None:
-        """마우스 스크롤 (이동: 소프트웨어, 스크롤: 하드웨어)"""
-        self._move_before_action(x, y)
-        self._with_arduino_fallback(
+        try:
+            dx = end_x - start_x
+            dy = end_y - start_y
+            pyautogui.drag(dx, dy, duration=duration, button=button)
+            return True
+        except Exception as e:
+            logger.error(f"[SoftwareInput] drag failed: {e}")
+            return False
+
+    def scroll(self, amount: int, x: Optional[int] = None, y: Optional[int] = None) -> bool:
+        if not self._move_before_action(x, y):
+            return False
+        return self._with_arduino_fallback(
+            f"scroll:{amount}",
             lambda a: a.mouse_scroll(amount),
-            lambda: pyautogui.scroll(amount)
+            lambda: pyautogui.scroll(amount),
         )
 
-    # ==================== 키보드 동작 ====================
-
-    def press(self, key: str) -> None:
-        """키 누르고 떼기"""
-        self._with_arduino_fallback(
+    # Keyboard operations
+    def press(self, key: str) -> bool:
+        return self._with_arduino_fallback(
+            f"press:{key}",
             lambda a: a.key_tap(key),
-            lambda: pyautogui.press(key)
+            lambda: pyautogui.press(key),
         )
 
-    def key_down(self, key: str) -> None:
-        """키 누르기"""
-        self._with_arduino_fallback(
+    def key_down(self, key: str) -> bool:
+        return self._with_arduino_fallback(
+            f"key_down:{key}",
             lambda a: a.key_press(key),
-            lambda: pyautogui.keyDown(key)
+            lambda: pyautogui.keyDown(key),
         )
 
-    def key_up(self, key: str) -> None:
-        """키 떼기"""
-        self._with_arduino_fallback(
+    def key_up(self, key: str) -> bool:
+        return self._with_arduino_fallback(
+            f"key_up:{key}",
             lambda a: a.key_release(key),
-            lambda: pyautogui.keyUp(key)
+            lambda: pyautogui.keyUp(key),
         )
 
-    def hotkey(self, *keys) -> None:
-        """단축키 조합"""
-        self._with_arduino_fallback(
+    def hotkey(self, *keys) -> bool:
+        combo = "+".join(keys)
+        return self._with_arduino_fallback(
+            f"hotkey:{combo}",
             lambda a: a.hotkey(*keys),
-            lambda: pyautogui.hotkey(*keys)
+            lambda: pyautogui.hotkey(*keys),
         )
 
-    def type_text(self, text: str, interval: float = 0.0) -> None:
-        """텍스트 입력 (ASCII만)"""
-        self._with_arduino_fallback(
+    def type_text(self, text: str, interval: float = 0.0) -> bool:
+        return self._with_arduino_fallback(
+            "type_text",
             lambda a: a.type_text(text, interval),
-            lambda: pyautogui.write(text, interval=interval)
+            lambda: pyautogui.write(text, interval=interval),
         )
+
+    def typewrite(self, text, interval: float = 0.0) -> bool:
+        if isinstance(text, (list, tuple)):
+            return self.type_text("".join(str(part) for part in text), interval=interval)
+        return self.type_text(str(text), interval=interval)
 
     def release_all(self) -> None:
-        """모든 키/버튼 떼기"""
         if self._use_arduino():
             arduino = _get_arduino()
             if arduino is not None:
-                arduino.release_all()
-
-
-# 전역 인스턴스
-_input_controller: Optional[InputController] = None
+                try:
+                    arduino.release_all()
+                except Exception as e:
+                    logger.error(f"[ArduinoInput] release_all failed: {e}")
 
 
 def get_input_controller() -> InputController:
-    """입력 컨트롤러 인스턴스 반환"""
     global _input_controller
     if _input_controller is None:
         _input_controller = InputController()

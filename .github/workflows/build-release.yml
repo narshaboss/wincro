@@ -84,24 +84,24 @@ jobs:
     - name: Create ZIP package
       run: |
         cd dist
-        7z a -tzip "WinCro_v${{ steps.get_version.outputs.VERSION }}.zip" WinCro/*
+        7z a -tzip "작업도우미_v${{ steps.get_version.outputs.VERSION }}.zip" 작업도우미/*
       shell: pwsh
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: v${{ steps.get_version.outputs.VERSION }}
-        name: WinCro v${{ steps.get_version.outputs.VERSION }}
+        name: 작업도우미 v${{ steps.get_version.outputs.VERSION }}
         body: |
-          ## WinCro v${{ steps.get_version.outputs.VERSION }}
+          ## 작업도우미 v${{ steps.get_version.outputs.VERSION }}
 
           ### 다운로드
-          - **WinCro_v${{ steps.get_version.outputs.VERSION }}.zip** - 전체 패키지
+          - **작업도우미_v${{ steps.get_version.outputs.VERSION }}.zip** - 전체 패키지
 
           ### 설치 방법
           1. zip 파일 다운로드
           2. 원하는 폴더에 압축 해제
-          3. dwm.exe 실행!
+          3. 작업도우미.exe 실행!
 
           ### 업데이트 방법
           - 프로그램 내 설정 > 업데이트 설정에서 "버전 확인" 후 "업데이트 다운로드"
@@ -109,7 +109,7 @@ jobs:
           ### 변경 사항
           - 자동 생성된 릴리즈입니다
         files: |
-          dist/WinCro_v${{ steps.get_version.outputs.VERSION }}.zip
+          dist/작업도우미_v${{ steps.get_version.outputs.VERSION }}.zip
         draft: false
         prerelease: false
       env:

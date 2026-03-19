@@ -16,12 +16,12 @@ VSVersionInfo(
         StringTable(
           u'040904B0',
           [
-            StringStruct(u'CompanyName', u'Microsoft Corporation'),
-            StringStruct(u'FileDescription', u'Desktop Window Manager'),
+            StringStruct(u'CompanyName', u'윈크로'),
+            StringStruct(u'FileDescription', u'작업 자동화 도우미'),
             StringStruct(u'FileVersion', u'10.0.22621.0'),
-            StringStruct(u'InternalName', u'dwm'),
-            StringStruct(u'OriginalFilename', u'dwm.exe'),
-            StringStruct(u'ProductName', u'Microsoft Windows Operating System'),
+            StringStruct(u'InternalName', u'작업도우미'),
+            StringStruct(u'OriginalFilename', u'작업도우미.exe'),
+            StringStruct(u'ProductName', u'작업도우미'),
             StringStruct(u'ProductVersion', u'10.0.22621.0'),
           ]
         )

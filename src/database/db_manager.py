@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 
+from ..utils.app_identity import PRIMARY_PACKAGE_DIR_NAME
 from ..utils.logger import get_logger
 from ..utils.config import DATA_DIR
 from .models import Sequence, ActionTemplate, ExecutionLog, Recording, Action
@@ -19,7 +20,9 @@ from .models import Sequence, ActionTemplate, ExecutionLog, Recording, Action
 logger = get_logger(__name__)
 
 # 데이터베이스 파일 경로
-DB_PATH = DATA_DIR / "wincro.db"
+PRIMARY_DB_PATH = DATA_DIR / f"{PRIMARY_PACKAGE_DIR_NAME}.db"
+LEGACY_DB_PATH = DATA_DIR / "wincro.db"
+DB_PATH = PRIMARY_DB_PATH if PRIMARY_DB_PATH.exists() or not LEGACY_DB_PATH.exists() else LEGACY_DB_PATH
 
 
 class DatabaseManager:

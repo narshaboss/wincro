@@ -32,7 +32,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='dwm',
+    name='작업도우미',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -53,5 +53,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='WinCro',
+    name='작업도우미',
 )

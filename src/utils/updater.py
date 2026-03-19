@@ -156,7 +156,7 @@ def check_for_update(repo: str, current_version: str, force: bool = False) -> Op
     try:
         api_url = f"https://api.github.com/repos/{repo}/releases/latest"
         headers = {
-            'User-Agent': 'WinCro-Updater',
+            'User-Agent': 'TaskAssistant-Updater',
             'Accept': 'application/vnd.github.v3+json'
         }
 
@@ -234,7 +234,7 @@ def get_remote_recordings(repo: str) -> List[Dict[str, Any]]:
         # recordings 태그가 붙은 릴리즈 찾기
         api_url = f"https://api.github.com/repos/{repo}/releases"
         headers = {
-            'User-Agent': 'WinCro-Updater',
+            'User-Agent': 'TaskAssistant-Updater',
             'Accept': 'application/vnd.github.v3+json'
         }
 
@@ -289,7 +289,7 @@ def download_recording(url: str, filename: str, progress_callback=None) -> bool:
         temp_path = RECORDINGS_DIR / f"{filename}.tmp"
 
         headers = {
-            'User-Agent': 'WinCro-Updater',
+            'User-Agent': 'TaskAssistant-Updater',
             'Accept': 'application/octet-stream'
         }
 

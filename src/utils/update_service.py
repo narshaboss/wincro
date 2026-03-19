@@ -21,7 +21,7 @@ from .config import get_config, save_config
 logger = get_logger(__name__)
 
 # 요청 헤더
-_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WinCro-Updater/1.0'}
+_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TaskAssistant-Updater/1.0'}
 
 
 def _get_ssl_context(verify: bool = True):
@@ -216,9 +216,9 @@ def get_update_paths():
         "exe_name": exe_name,
         "temp_dir": temp_dir,
         "data_dir": data_dir,
-        "extract_dir": os.path.join(temp_dir, "wincro_update_extract"),
-        "data_backup": os.path.join(temp_dir, "wincro_data_backup"),
-        "batch_path": os.path.join(temp_dir, "wincro_update.bat"),
+        "extract_dir": os.path.join(temp_dir, "taskassistant_update_extract"),
+        "data_backup": os.path.join(temp_dir, "taskassistant_data_backup"),
+        "batch_path": os.path.join(temp_dir, "taskassistant_update.bat"),
     }
 
 

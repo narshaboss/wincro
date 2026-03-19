@@ -25,7 +25,7 @@ def main() -> int:
         from src.utils.logger import get_logger, set_log_level
         logger = get_logger(__name__)
         logger.info("=" * 50)
-        logger.info("WinCro 시작")
+        logger.info("작업도우미 시작")
         logger.info("=" * 50)
 
         # 의존성 확인

@@ -8,10 +8,10 @@ from typing import Dict
 
 # 애플리케이션 정보
 APP_INFO: Dict[str, str] = {
-    "app_name": "Desktop",
-    "app_name_full": "Desktop Window Manager",
+    "app_name": "작업도우미",
+    "app_name_full": "작업 자동화 도우미",
     "version": "버전",
-    "copyright": "Copyright 2024. Microsoft Corporation.",
+    "copyright": "Copyright 2026. 윈크로.",
 }
 
 # 메인 메뉴

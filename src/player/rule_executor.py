@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 규칙 기반 실행 엔진
 
 조건 기반 자동화 규칙을 실행합니다.
@@ -23,7 +23,7 @@ from pathlib import Path
 import ctypes
 import ctypes.wintypes
 
-from ..utils.input_controller import get_input_controller
+from ..utils.input_controller import get_input_controller, is_arduino_enabled, is_arduino_strict_enabled
 
 # pynput 사용 시도 (멀티모니터 지원)
 try:
@@ -1294,19 +1294,23 @@ class RuleExecutor:
 
                     action_name = {"double_click": "더블클릭", "right_click": "우클릭"}.get(action_type, "클릭")
 
-                    # Arduino HID가 활성화되어 있으면 Arduino HID 사용
-                    from ..utils.input_controller import is_arduino_enabled
-                    if is_arduino_enabled():
+                    # Arduino strict/enabled 모드에서는 입력 경로를 통일한다.
+                    if is_arduino_enabled() or is_arduino_strict_enabled():
                         input_ctrl = get_input_controller()
+                        click_ok = False
                         if action_type == "double_click":
-                            input_ctrl.double_click(click_x, click_y, duration=self._mouse_duration)
+                            click_ok = input_ctrl.double_click(click_x, click_y, duration=self._mouse_duration)
                         elif action_type == "right_click":
-                            input_ctrl.right_click(click_x, click_y, duration=self._mouse_duration)
+                            click_ok = input_ctrl.right_click(click_x, click_y, duration=self._mouse_duration)
                         else:
-                            input_ctrl.click(click_x, click_y, duration=self._mouse_duration)
-                        logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
-                        self._last_mouse_pos = (click_x, click_y)
-                        return self._make_result(rule, True, f"{action_type} 완료", start_time)
+                            click_ok = input_ctrl.click(click_x, click_y, duration=self._mouse_duration)
+                        if click_ok:
+                            logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
+                            self._last_mouse_pos = (click_x, click_y)
+                            return self._make_result(rule, True, f"{action_type} 완료", start_time)
+                        if is_arduino_strict_enabled():
+                            logger.error(f"{_RED}{self._step_prefix}[click] {action_name} failed (strict mode blocks software fallback){_RESET}")
+                            return self._make_result(rule, False, f"{action_type} 실패", start_time)
 
                     # 마우스 이동 시도 (로딩 등으로 마우스가 잠겨있을 수 있으므로 반복 시도)
                     max_move_attempts = MAX_MOVE_ATTEMPTS
@@ -2037,13 +2041,14 @@ class RuleExecutor:
 
     def _click_at(self, x: int, y: int) -> None:
         """지정된 위치 클릭 (멀티모니터 지원)"""
-        from ..utils.input_controller import is_arduino_enabled
-
-        # Arduino가 활성화되어 있으면 Arduino HID 사용
-        if is_arduino_enabled():
+        # Arduino strict/enabled 모드에서는 입력 경로를 통일한다.
+        if is_arduino_enabled() or is_arduino_strict_enabled():
             input_ctrl = get_input_controller()
-            input_ctrl.click(x, y, duration=self._mouse_duration)
-            return
+            if input_ctrl.click(x, y, duration=self._mouse_duration):
+                return
+            if is_arduino_strict_enabled():
+                logger.error(f"[click] strict mode blocked software fallback at ({x}, {y})")
+                return
 
         # pyautogui 사용
         pyautogui.moveTo(x, y, duration=self._mouse_duration)
@@ -2824,7 +2829,7 @@ class RuleExecutor:
                         logger.warning(f"[특화모드] 캐릭터 찾기 실패 (#{char_not_found_count})")
                     # 캐릭터 못 찾으면 키 해제
                     if current_key:
-                        pyautogui.keyUp(current_key)
+                        get_input_controller().key_up(current_key)
                         current_key = None
                         logger.info(f"[특화모드] 키 해제 (캐릭터 미발견)")
                     self._stop_event.wait(config.analysis_interval)
@@ -2843,7 +2848,7 @@ class RuleExecutor:
                         logger.warning(f"[특화모드] 목표 찾기 실패 (#{target_not_found_count})")
                     # 목표 못 찾으면 키 해제
                     if current_key:
-                        pyautogui.keyUp(current_key)
+                        get_input_controller().key_up(current_key)
                         current_key = None
                         logger.info(f"[특화모드] 키 해제 (목표 미발견)")
                     self._stop_event.wait(config.analysis_interval)
@@ -2865,7 +2870,7 @@ class RuleExecutor:
                 if distance < config.arrival_threshold:
                     # 도달하면 키 해제
                     if current_key:
-                        pyautogui.keyUp(current_key)
+                        get_input_controller().key_up(current_key)
                         current_key = None
                     logger.info(f"{_GREEN}[특화모드] ★★★ 목표 도달! (거리: {distance:.1f}px) ★★★{_RESET}")
                     return True
@@ -2894,11 +2899,11 @@ class RuleExecutor:
                 if new_key != current_key:
                     # 이전 키 해제
                     if current_key:
-                        pyautogui.keyUp(current_key)
+                        get_input_controller().key_up(current_key)
                         logger.info(f"[특화모드] keyUp: {current_key}")
                     # 새 키 누르기
                     logger.info(f"{_YELLOW}[특화모드] 방향전환: {direction} (키: {new_key}, 거리: {distance:.0f}px, dx={dx:.0f}, dy={dy:.0f}){_RESET}")
-                    pyautogui.keyDown(new_key)
+                    get_input_controller().key_down(new_key)
                     logger.info(f"[특화모드] keyDown: {new_key}")
                     current_key = new_key
 
@@ -2910,7 +2915,7 @@ class RuleExecutor:
 
             # 루프 종료 시 키 해제
             if current_key:
-                pyautogui.keyUp(current_key)
+                get_input_controller().key_up(current_key)
                 current_key = None
                 logger.info(f"[특화모드] 루프 종료 - 키 해제")
 
@@ -2925,7 +2930,7 @@ class RuleExecutor:
             # 키 해제 (ESC나 오류로 종료 시에도 확실히 해제)
             if current_key:
                 try:
-                    pyautogui.keyUp(current_key)
+                    get_input_controller().key_up(current_key)
                     logger.info(f"[특화모드] finally - 키 해제: {current_key}")
                 except Exception as e:
                     logger.warning(f"[특화모드] 키 해제 실패: {e}")
@@ -2965,16 +2970,16 @@ class RuleExecutor:
                         k = kd.get('key', '')
                         w = kd.get('wait_after', 0.3)
                         if k:
-                            pyautogui.press(k)
+                            get_input_controller().press(k)
                             time.sleep(max(0.1, w))
                     elif isinstance(kd, str) and kd.strip():
-                        pyautogui.press(kd.strip())
+                        get_input_controller().press(kd.strip())
                         time.sleep(0.1)
             elif isinstance(arr_keys, str):
                 for _ak in arr_keys.split(','):
                     _ak = _ak.strip()
                     if _ak:
-                        pyautogui.press(_ak)
+                        get_input_controller().press(_ak)
                         time.sleep(0.1)
 
         # 맵핑 시스템 초기화
@@ -3413,7 +3418,7 @@ class RuleExecutor:
             if smooth_move:
                 self._smooth_key_input([key], interval)
             else:
-                pyautogui.press(key)
+                get_input_controller().press(key)
                 # 중단 가능한 sleep
                 sleep_until = time.time() + interval
                 while time.time() < sleep_until:
@@ -3916,9 +3921,9 @@ class RuleExecutor:
                             _orig_pause = pyautogui.PAUSE
                             pyautogui.PAUSE = 0
                             try:
-                                pyautogui.keyDown(auto_skill_key)
+                                get_input_controller().key_down(auto_skill_key)
                                 time.sleep(0.015)
-                                pyautogui.keyUp(auto_skill_key)
+                                get_input_controller().key_up(auto_skill_key)
                             finally:
                                 pyautogui.PAUSE = _orig_pause
                             _score_suffix = f" score={_auto_skill_score:.3f}" if _auto_skill_score is not None else ""
@@ -3940,7 +3945,7 @@ class RuleExecutor:
                     logger.warning(f"{_YELLOW}[좌표모드] 탈출 스킬 발동! (연속 정체 {total_stuck_count}회){_RESET}")
 
                     try:
-                        pyautogui.press(escape_skill_key)
+                        get_input_controller().press(escape_skill_key)
                     except Exception as e:
                         logger.error(f"[좌표모드] 탈출 스킬 키 입력 실패: {e}")
                         total_stuck_count = 0
@@ -3958,7 +3963,7 @@ class RuleExecutor:
                     direction_key = config.move_keys.get(dir_name, dir_name)
 
                     for _ in range(escape_skill_direction_count):
-                        pyautogui.press(direction_key)
+                        get_input_controller().press(direction_key)
                         time.sleep(0.05)
 
                     time.sleep(escape_skill_wait_after)
@@ -4051,16 +4056,16 @@ class RuleExecutor:
                 start_time = time.time()
                 while time.time() - start_time < interval and not self._stop_event.is_set():
                     for key in keys:
-                        pyautogui.keyDown(key)
+                        get_input_controller().key_down(key)
                     time.sleep(0.015)  # 15ms 누르기
                     for key in keys:
-                        pyautogui.keyUp(key)
+                        get_input_controller().key_up(key)
                     time.sleep(0.005)  # 5ms 간격
             finally:
                 # 예외 시에도 키 해제 보장
                 for key in keys:
                     try:
-                        pyautogui.keyUp(key)
+                        get_input_controller().key_up(key)
                     except Exception:
                         pass
                 pyautogui.PAUSE = original_pause

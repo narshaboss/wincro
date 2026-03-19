@@ -1,8 +1,7 @@
 """
-WinCro Arduino HID 통신 모듈
+WinCro Arduino HID 통신 모듈.
 
-Arduino Leonardo를 통해 하드웨어 레벨의 마우스 클릭/키보드 입력을 생성합니다.
-마우스 이동은 소프트웨어(pyautogui)로 처리하고, 클릭/키보드만 Arduino HID 사용.
+Arduino Leonardo를 통해 하드웨어 레벨의 마우스/키보드 HID 입력을 생성합니다.
 """
 
 import time
@@ -49,7 +48,7 @@ KEY_CODES = {
 
 
 class ArduinoHID:
-    """Arduino Leonardo HID 컨트롤러 (클릭/키보드 전용)"""
+    """Arduino Leonardo HID 컨트롤러."""
 
     _instance: Optional['ArduinoHID'] = None
     _lock = threading.Lock()
@@ -70,10 +69,15 @@ class ArduinoHID:
         self._connected = False
         self._port = ""
         self._baud_rate = 115200
+        self._supports_mouse_move = False
 
     @property
     def is_connected(self) -> bool:
         return self._connected and self._serial and self._serial.is_open
+
+    def supports_mouse_move(self) -> bool:
+        """True when the connected firmware supports MM relative move commands."""
+        return self._supports_mouse_move
 
     def connect(self, port: str = None, baud_rate: int = None) -> bool:
         """아두이노에 연결"""
@@ -115,6 +119,7 @@ class ArduinoHID:
                     self._connected = True
                     self._port = port
                     self._baud_rate = baud_rate
+                    self._supports_mouse_move = self._probe_mouse_move_support()
                     logger.info(f"Arduino HID 연결 성공: {port}")
                     return True
                 else:
@@ -139,6 +144,7 @@ class ArduinoHID:
             logger.debug(f"연결 해제 중 오류 (무시): {e}")
         self._serial = None
         self._connected = False
+        self._supports_mouse_move = False
         logger.info("Arduino HID 연결 해제")
 
     def _ping(self) -> bool:
@@ -180,6 +186,19 @@ class ArduinoHID:
             logger.error(f"명령 전송 실패: {e}")
             return False
 
+    def _probe_mouse_move_support(self) -> bool:
+        """Probe MM support without moving the pointer."""
+        try:
+            supported = self._send_command("MM,0,0")
+            if supported:
+                logger.info("Arduino HID 마우스 이동 지원 확인")
+            else:
+                logger.warning("Arduino HID 마우스 이동 미지원 또는 구형 펌웨어")
+            return supported
+        except Exception as e:
+            logger.warning(f"Arduino HID 마우스 이동 지원 확인 실패: {e}")
+            return False
+
     def _read_response(self, timeout: float = 1.0) -> str:
         """응답 읽기"""
         if not self._serial:
@@ -194,6 +213,12 @@ class ArduinoHID:
             return ""
 
     # ==================== 마우스 클릭 (하드웨어) ====================
+
+    def mouse_move(self, dx: int, dy: int) -> bool:
+        """마우스 상대 이동."""
+        if not self.supports_mouse_move():
+            return False
+        return self._send_command(f"MM,{int(dx)},{int(dy)}")
 
     def mouse_click(self, button: str = 'left') -> bool:
         """마우스 클릭"""
