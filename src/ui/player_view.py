@@ -4114,7 +4114,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 _auto_skill_diag_last_time = _now_diag
         if auto_skill_enabled:
             _log_auto_skill_diag(
-                ("config", bool(auto_skill_key), bool(auto_skill_cd_image), bool(_auto_skill_cd_tmpl), tuple(auto_skill_cd_region) if isinstance(auto_skill_cd_region, (list, tuple)) else None),
+                ("config", bool(auto_skill_key), bool(auto_skill_cd_image), (_auto_skill_cd_tmpl is not None), tuple(auto_skill_cd_region) if isinstance(auto_skill_cd_region, (list, tuple)) else None),
                 f"설정 enabled={auto_skill_enabled} key={auto_skill_key or '-'} image={'Y' if auto_skill_cd_image else 'N'} tmpl={'Y' if _auto_skill_cd_tmpl is not None else 'N'} region={auto_skill_cd_region}",
                 force=True,
             )

@@ -3,7 +3,7 @@
 ## 프로젝트 개요
 영상 녹화 기반 업무 자동화 RPA 프로그램. 사용자가 화면을 녹화하면 입력 로그를 분석하여 마우스/키보드 동작을 추출하고, 이미지 매칭 기반으로 동작을 재현합니다.
 
-**현재 버전:** 1.0.153
+**현재 버전:** 1.0.154
 
 ---
 
@@ -1006,17 +1006,28 @@ wincro/
   - `py_compile` passed for `src/ui/player_view.py` and `src/player/rule_executor.py`
 - `config.py`
   - `APP_VERSION` `1.0.150` -> `1.0.151`
-
-
 ### 2026-03-19: GameModeDialog stop-reason tracing (v1.0.153)
 - Added stop-reason tracing for unexpected play-mode termination without touching backend logic, pathfinding, mapping, or plan/map data.
-- src/ui/player_view.py`r
-  - Added _mark_stop_reason(...) and _request_stop_execution(...).
+- `src/ui/player_view.py`
+  - Added `_mark_stop_reason(...)` and `_request_stop_execution(...)`.
   - Reset stop-trace state on each run start.
-  - Logged final stop reason inside _stop_execution() and appended 🧭 중단사유: ... to the special-mode log.
+  - Logged final stop reason inside `_stop_execution()` and appended `🧭 중단사유: ...` to the special-mode log.
   - Tagged key stop paths such as template-incomplete, initial wait interruption, coordinate-fail limit, abnormal coordinate jump, mapping portal exit, top-level loop exception, and unclassified thread exit.
 - Verification:
-  - py_compile passed for src/ui/player_view.py`r
-  - Existing SyntaxWarning lines remained unchanged.
-- config.py`r
-  - APP_VERSION 1.0.152 -> 1.0.153`r
+  - `py_compile` passed for `src/ui/player_view.py`
+  - Existing `SyntaxWarning` lines remained unchanged.
+- `config.py`
+  - `APP_VERSION` `1.0.152` -> `1.0.153`
+
+### 2026-03-19: Auto-skill diagnostic tuple fix (v1.0.154)
+- Fixed an immediate special-mode/playback stop regression introduced by the new auto-skill diagnostics.
+- Root cause:
+  - `src/ui/player_view.py` and `src/player/rule_executor.py` built the config diagnostic signature with `bool(_auto_skill_cd_tmpl)`.
+  - After the template-load fallback started returning a real OpenCV/numpy image array, `bool(ndarray)` raised `ValueError: The truth value of an array with more than one element is ambiguous`.
+- Fix:
+  - Replaced `bool(_auto_skill_cd_tmpl)` with `(_auto_skill_cd_tmpl is not None)` in both runtime paths.
+- Verification:
+  - `py_compile` passed for `src/ui/player_view.py`, `src/player/rule_executor.py`, and `src/utils/config.py`
+  - Targeted smoke test confirmed the new diagnostic tuple no longer calls object truthiness.
+- `config.py`
+  - `APP_VERSION` `1.0.153` -> `1.0.154`

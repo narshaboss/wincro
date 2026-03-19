@@ -3321,7 +3321,7 @@ class RuleExecutor:
             _as_mode = "image" if _auto_skill_cd_tmpl is not None else f"timer({auto_skill_cooldown}s)"
             logger.info(f"[coordinate-mode] auto-skill: key={auto_skill_key}, cooldown={_as_mode}")
             _log_auto_skill_diag(
-                ("config", bool(auto_skill_key), bool(auto_skill_cd_image), bool(_auto_skill_cd_tmpl), tuple(auto_skill_cd_region) if isinstance(auto_skill_cd_region, (list, tuple)) else None),
+                ("config", bool(auto_skill_key), bool(auto_skill_cd_image), (_auto_skill_cd_tmpl is not None), tuple(auto_skill_cd_region) if isinstance(auto_skill_cd_region, (list, tuple)) else None),
                 f"config enabled={auto_skill_enabled} key={auto_skill_key or '-'} image={'Y' if auto_skill_cd_image else 'N'} tmpl={'Y' if _auto_skill_cd_tmpl is not None else 'N'} region={auto_skill_cd_region}",
                 force=True,
             )
