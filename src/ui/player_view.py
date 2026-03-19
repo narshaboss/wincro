@@ -5655,10 +5655,18 @@ class GameModeDialog(ctk.CTkToplevel):
 
             iteration = 0
             max_iterations = 50000 if _is_mapping_mode else 5000
+            _guard_target_idx = target_idx
+            _guard_iterations = 0
             coord_fail_count = 0
             max_coord_fails = 50  # 연속 50회 실패 시 중단
-            while not self._stop_event.is_set() and iteration < max_iterations:
+            while not self._stop_event.is_set():
                 iteration += 1
+                if target_idx != _guard_target_idx:
+                    _guard_target_idx = target_idx
+                    _guard_iterations = 0
+                _guard_iterations += 1
+                if _guard_iterations > max_iterations:
+                    break
                 _ui_update_ok = (iteration % 10 == 0)  # UI 업데이트는 10회당 1번 (Tkinter 큐 폭주 방지)
                 _t_iter_start = time.time()
 
@@ -9565,10 +9573,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _ui_update_ok:
                     self.after(0, lambda m=_timing_msg: self._append_log(m))
 
-            if iteration >= max_iterations and not self._stop_event.is_set():
+            if _guard_iterations > max_iterations and not self._stop_event.is_set():
                 self._mark_stop_reason(
                     "max_iterations_reached",
-                    f"iteration={iteration}/{max_iterations}",
+                    f"target_idx={target_idx} iteration={_guard_iterations - 1}/{max_iterations} total_iteration={iteration - 1}",
                     overwrite=True,
                 )
             elif self._stop_event.is_set() and not getattr(self, "_stop_reason", ""):

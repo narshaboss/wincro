@@ -157,30 +157,70 @@ def _get_cached_template(image_path: str):
         return None
 
 
-def _perform_mouse_click(click_type: str = "click") -> None:
+def _perform_mouse_click(click_type: str = "click") -> bool:
     """마우스 클릭만 실행 (이동 없이, mouse_event 사용)"""
-    user32 = ctypes.windll.user32
-    if click_type == "double_click":
-        for _ in range(2):
+    try:
+        user32 = ctypes.windll.user32
+        if click_type == "double_click":
+            for _ in range(2):
+                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.02)
+                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.05)
+        elif click_type == "right_click":
+            user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+            time.sleep(0.02)
+            user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+        else:
             user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
             time.sleep(0.02)
             user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            time.sleep(0.05)
-    elif click_type == "right_click":
-        user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-        time.sleep(0.02)
-        user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
-    else:
-        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.02)
-        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        return True
+    except Exception as e:
+        logger.error(f"[클릭] 저수준 클릭 실패: {e}")
+        return False
+
+
+def _normalize_click_coord(value: Any, axis: str) -> int:
+    """Normalize click coordinates to plain ints before Win32 calls."""
+    if value is None:
+        raise TypeError(f"{axis} coordinate is None")
+
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            raise TypeError(f"{axis} coordinate array must contain exactly one value: {value!r}")
+        value = value.reshape(-1)[0]
+
+    if isinstance(value, np.generic):
+        value = value.item()
+
+    if isinstance(value, (list, tuple)):
+        if len(value) != 1:
+            raise TypeError(f"{axis} coordinate sequence must contain exactly one value: {value!r}")
+        value = value[0]
+        if isinstance(value, np.ndarray):
+            if value.size != 1:
+                raise TypeError(f"{axis} coordinate array must contain exactly one value: {value!r}")
+            value = value.reshape(-1)[0]
+        if isinstance(value, np.generic):
+            value = value.item()
+
+    try:
+        return int(round(float(value)))
+    except Exception as exc:
+        raise TypeError(f"{axis} coordinate is not numeric: {value!r}") from exc
+
+
+def _normalize_click_point(x: Any, y: Any) -> Tuple[int, int]:
+    """Normalize an (x, y) pair to Win32-safe ints."""
+    return _normalize_click_coord(x, "x"), _normalize_click_coord(y, "y")
 
 
 def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
     """
     멀티모니터 지원 마우스 이동 및 클릭 (pynput 우선, Win32 대체)
     """
-    x, y = int(x), int(y)
+    x, y = _normalize_click_point(x, y)
 
     # 마우스 캡처/클리핑 해제 - 게임 충돌 방지를 위해 비활성화
     # try:
@@ -223,8 +263,10 @@ def _win32_move_click(x: int, y: int, click_type: str = "click") -> bool:
         # 위치 확인
         actual_pos = pyautogui.position()
         if abs(actual_pos[0] - x) < PIXEL_TOLERANCE_SMALL and abs(actual_pos[1] - y) < PIXEL_TOLERANCE_SMALL:
-            _perform_mouse_click(click_type)
-            return True
+            if _perform_mouse_click(click_type):
+                return True
+            logger.debug(f"[Win32] low-level click failed after SetCursorPos: target=({x}, {y})")
+            return False
         else:
             logger.debug(f"[Win32] SetCursorPos 이동 실패: 목표=({x}, {y}), 실제={actual_pos}")
     except Exception as e:
@@ -307,6 +349,7 @@ def _win32_force_click_at(x: int, y: int, click_type: str = "click") -> bool:
     절대 좌표에 강제 클릭 (단순화된 버전)
     """
     try:
+        x, y = _normalize_click_point(x, y)
         user32 = ctypes.windll.user32
 
         # 마우스 캡처 해제 - 게임 충돌 방지를 위해 비활성화
@@ -318,7 +361,9 @@ def _win32_force_click_at(x: int, y: int, click_type: str = "click") -> bool:
         time.sleep(0.05)
 
         # 클릭 실행
-        _perform_mouse_click(click_type)
+        if not _perform_mouse_click(click_type):
+            logger.error(f"[클릭] force-click low-level failure: target=({x}, {y})")
+            return False
         time.sleep(0.05)
         logger.debug(f"[클릭] 완료 ({x}, {y})")
         return True
@@ -1302,19 +1347,29 @@ class RuleExecutor:
                             time.sleep(0.5)
 
                     if move_success:
-                        # 클릭 전 짧은 대기 (페이지 안정화)
+                        # Wait briefly before clicking after the move stabilizes.
                         time.sleep(0.1)
                         if _win32_force_click_at(click_x, click_y, action_type):
-                            logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
+                            logger.info(f"{_GREEN}{self._step_prefix}[click] {action_name} complete{_RESET}")
                             self._last_mouse_pos = (click_x, click_y)
-                            return self._make_result(rule, True, f"{action_type} 완료", start_time)
+                            return self._make_result(rule, True, f"{action_type} complete", start_time)
 
-                        # 절대 좌표 클릭 실패 시 기존 방식으로 폴백
-                        _perform_mouse_click(action_type)
+                        # If force-click failed, only retry a low-level click when the cursor is still near target.
+                        current_pos = pyautogui.position()
+                        if (
+                            abs(current_pos[0] - click_x) < PIXEL_TOLERANCE_SMALL
+                            and abs(current_pos[1] - click_y) < PIXEL_TOLERANCE_SMALL
+                            and _perform_mouse_click(action_type)
+                        ):
+                            logger.info(f"{_GREEN}{self._step_prefix}[click] {action_name} complete{_RESET}")
+                            self._last_mouse_pos = current_pos
+                            return self._make_result(rule, True, f"{action_type} complete", start_time)
 
-                        logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
-                        self._last_mouse_pos = pyautogui.position()
-                        return self._make_result(rule, True, f"{action_type} 완료", start_time)
+                        logger.error(
+                            f"{_RED}  [click] {action_name} failed{_RESET} "
+                            f"(move-success/click-fail target=({click_x}, {click_y}), current={current_pos})"
+                        )
+                        return self._make_result(rule, False, "click failed", start_time)
                     else:
                         # 마우스 이동 실패 - 강제 클릭 시도
                         if _win32_force_click_at(click_x, click_y, action_type):
@@ -3542,11 +3597,19 @@ class RuleExecutor:
         try:
             iteration = 0
             max_iterations = 5000
+            guard_target_idx = current_target_idx
+            guard_iterations = 0
             coord_fail_count = 0
             max_coord_fails = 50  # 연속 50회 실패 시 중단
 
-            while not self._stop_event.is_set() and iteration < max_iterations:
+            while not self._stop_event.is_set():
                 iteration += 1
+                if current_target_idx != guard_target_idx:
+                    guard_target_idx = current_target_idx
+                    guard_iterations = 0
+                guard_iterations += 1
+                if guard_iterations > max_iterations:
+                    break
 
                 # 1. 템플릿 매칭으로 현재 좌표 읽기
                 current_x, current_y = matcher.read_both_coordinates(
@@ -3943,8 +4006,11 @@ class RuleExecutor:
                 if is_slow:
                     time.sleep(0.3)
 
-            if iteration >= max_iterations:
-                logger.warning(f"{_YELLOW}[좌표모드] 최대 반복 횟수 초과 ({max_iterations}){_RESET}")
+            if guard_iterations > max_iterations:
+                logger.warning(
+                    f"{_YELLOW}[좌표모드] 현재 경유지 최대 반복 횟수 초과 "
+                    f"(target_idx={current_target_idx}, {guard_iterations - 1}/{max_iterations}, total={iteration - 1}){_RESET}"
+                )
 
             return False
 

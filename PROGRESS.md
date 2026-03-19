@@ -1,41 +1,41 @@
-# WinCro 개발 진행 상태
+﻿# WinCro 媛쒕컻 吏꾪뻾 ?곹깭
 
-## 현재 상태: 10단계 완료 (개발 완료!)
+## ?꾩옱 ?곹깭: 10?④퀎 ?꾨즺 (媛쒕컻 ?꾨즺!)
 
-## 단계별 진행 현황
+## ?④퀎蹂?吏꾪뻾 ?꾪솴
 
-| 단계 | 내용 | 상태 | 완료 시간 |
+| ?④퀎 | ?댁슜 | ?곹깭 | ?꾨즺 ?쒓컙 |
 |------|------|------|----------|
-| 1 | 프로젝트 기본 구조 생성 | ✅ 완료 | 2026-01-16 |
-| 2 | 유틸리티 모듈 개발 | ✅ 완료 | 2026-01-16 |
-| 3 | 데이터베이스 모듈 개발 | ✅ 완료 | 2026-01-16 |
-| 4 | 화면 녹화 모듈 개발 | ✅ 완료 | 2026-01-16 |
-| 5 | 영상 분석 모듈 개발 | ✅ 완료 | 2026-01-16 |
-| 6 | 동작 재현 모듈 개발 | ✅ 완료 | 2026-01-16 |
-| 7 | GUI 개발 | ✅ 완료 | 2026-01-16 |
-| 8 | 메인 앱 통합 | ✅ 완료 | 2026-01-16 |
-| 9 | 테스트 및 검증 | ✅ 완료 | 2026-01-16 |
-| 10 | 문서화 및 마무리 | ✅ 완료 | 2026-01-16 |
+| 1 | ?꾨줈?앺듃 湲곕낯 援ъ“ ?앹꽦 | ???꾨즺 | 2026-01-16 |
+| 2 | ?좏떥由ы떚 紐⑤뱢 媛쒕컻 | ???꾨즺 | 2026-01-16 |
+| 3 | ?곗씠?곕쿋?댁뒪 紐⑤뱢 媛쒕컻 | ???꾨즺 | 2026-01-16 |
+| 4 | ?붾㈃ ?뱁솕 紐⑤뱢 媛쒕컻 | ???꾨즺 | 2026-01-16 |
+| 5 | ?곸긽 遺꾩꽍 紐⑤뱢 媛쒕컻 | ???꾨즺 | 2026-01-16 |
+| 6 | ?숈옉 ?ы쁽 紐⑤뱢 媛쒕컻 | ???꾨즺 | 2026-01-16 |
+| 7 | GUI 媛쒕컻 | ???꾨즺 | 2026-01-16 |
+| 8 | 硫붿씤 ???듯빀 | ???꾨즺 | 2026-01-16 |
+| 9 | ?뚯뒪??諛?寃利?| ???꾨즺 | 2026-01-16 |
+| 10 | 臾몄꽌??諛?留덈Т由?| ???꾨즺 | 2026-01-16 |
 
-## 상태 범례
-- ⏳ 대기: 아직 시작 안 함
-- 🔄 진행중: 현재 작업 중
-- ✅ 완료: 작업 완료
-- ❌ 실패: 에러 발생 (아래 에러 로그 참조)
-- ⚠️ 부분완료: 일부만 완료
+## ?곹깭 踰붾?
+- ???湲? ?꾩쭅 ?쒖옉 ????
+- ?봽 吏꾪뻾以? ?꾩옱 ?묒뾽 以?
+- ???꾨즺: ?묒뾽 ?꾨즺
+- ???ㅽ뙣: ?먮윭 諛쒖깮 (?꾨옒 ?먮윭 濡쒓렇 李몄“)
+- ?좑툘 遺遺꾩셿猷? ?쇰?留??꾨즺
 
-## 현재 진행 중인 작업
+## ?꾩옱 吏꾪뻾 以묒씤 ?묒뾽
 
-없음 (모든 단계 완료)
+?놁쓬 (紐⑤뱺 ?④퀎 ?꾨즺)
 
-## 다음 해야 할 작업
+## ?ㅼ쓬 ?댁빞 ???묒뾽
 
-없음 (개발 완료)
+?놁쓬 (媛쒕컻 ?꾨즺)
 
-## 완료된 파일 목록
+## ?꾨즺???뚯씪 紐⑸줉
 
-### 1단계 - 프로젝트 기본 구조 생성
-- requirements.txt (의존성 목록)
+### 1?④퀎 - ?꾨줈?앺듃 湲곕낯 援ъ“ ?앹꽦
+- requirements.txt (?섏〈??紐⑸줉)
 - src/__init__.py
 - src/recorder/__init__.py
 - src/analyzer/__init__.py
@@ -50,54 +50,63 @@
 - logs/.gitkeep
 - tests/__init__.py
 
-### 2단계 - 유틸리티 모듈 개발
-- src/utils/config.py (설정 관리)
-- src/utils/security.py (암호화/보안)
-- src/utils/logger.py (로깅 설정)
-- src/i18n/ko.py (한글 번역)
+### 2?④퀎 - ?좏떥由ы떚 紐⑤뱢 媛쒕컻
+- src/utils/config.py (?ㅼ젙 愿由?
+- src/utils/security.py (?뷀샇??蹂댁븞)
+- src/utils/logger.py (濡쒓퉭 ?ㅼ젙)
+- src/i18n/ko.py (?쒓? 踰덉뿭)
 
-### 3단계 - 데이터베이스 모듈 개발
-- src/database/models.py (데이터 모델)
-- src/database/db_manager.py (DB 관리자)
+### 3?④퀎 - ?곗씠?곕쿋?댁뒪 紐⑤뱢 媛쒕컻
+- src/database/models.py (?곗씠??紐⑤뜽)
+- src/database/db_manager.py (DB 愿由ъ옄)
 
-### 4단계 - 화면 녹화 모듈 개발
-- src/recorder/screen_recorder.py (화면 캡처)
-- src/recorder/input_logger.py (입력 이벤트 로깅)
+### 4?④퀎 - ?붾㈃ ?뱁솕 紐⑤뱢 媛쒕컻
+- src/recorder/screen_recorder.py (?붾㈃ 罹≪쿂)
+- src/recorder/input_logger.py (?낅젰 ?대깽??濡쒓퉭)
 
-### 5단계 - 영상 분석 모듈 개발
-- src/analyzer/template_matcher.py (이미지 템플릿 매칭)
-- src/analyzer/action_extractor.py (액션 추출)
-- src/analyzer/video_analyzer.py (영상 분석)
+### 5?④퀎 - ?곸긽 遺꾩꽍 紐⑤뱢 媛쒕컻
+- src/analyzer/template_matcher.py (?대?吏 ?쒗뵆由?留ㅼ묶)
+- src/analyzer/action_extractor.py (?≪뀡 異붿텧)
+- src/analyzer/video_analyzer.py (?곸긽 遺꾩꽍)
 
-### 6단계 - 동작 재현 모듈 개발
-- src/player/action_player.py (액션 실행)
-- src/player/ai_intervention.py (AI 변수 대응)
+### 6?④퀎 - ?숈옉 ?ы쁽 紐⑤뱢 媛쒕컻
+- src/player/action_player.py (?≪뀡 ?ㅽ뻾)
+- src/player/ai_intervention.py (AI 蹂?????
 
-### 7단계 - GUI 개발
-- src/ui/main_window.py (메인 윈도우)
-- src/ui/recorder_view.py (녹화 화면)
-- src/ui/analyzer_view.py (분석 화면)
-- src/ui/player_view.py (실행 화면)
-- src/ui/settings_view.py (설정 화면)
+### 7?④퀎 - GUI 媛쒕컻
+- src/ui/main_window.py (硫붿씤 ?덈룄??
+- src/ui/recorder_view.py (?뱁솕 ?붾㈃)
+- src/ui/analyzer_view.py (遺꾩꽍 ?붾㈃)
+- src/ui/player_view.py (?ㅽ뻾 ?붾㈃)
+- src/ui/settings_view.py (?ㅼ젙 ?붾㈃)
 
-### 8단계 - 메인 앱 통합
-- src/main.py (앱 진입점)
-- src/app.py (메인 앱 클래스)
+### 8?④퀎 - 硫붿씤 ???듯빀
+- src/main.py (??吏꾩엯??
+- src/app.py (硫붿씤 ???대옒??
 
-### 9단계 - 테스트 및 검증
-- tests/test_recorder.py (녹화 모듈 테스트)
-- tests/test_analyzer.py (분석 모듈 테스트)
-- tests/test_player.py (동작 재현 모듈 테스트)
+### 9?④퀎 - ?뚯뒪??諛?寃利?
+- tests/test_recorder.py (?뱁솕 紐⑤뱢 ?뚯뒪??
+- tests/test_analyzer.py (遺꾩꽍 紐⑤뱢 ?뚯뒪??
+- tests/test_player.py (?숈옉 ?ы쁽 紐⑤뱢 ?뚯뒪??
 
-### 10단계 - 문서화 및 마무리
-- README.md (프로젝트 설명)
-- .env.example (환경변수 예시)
+### 10?④퀎 - 臾몄꽌??諛?留덈Т由?
+- README.md (?꾨줈?앺듃 ?ㅻ챸)
+- .env.example (?섍꼍蹂???덉떆)
 
-## 에러 로그
+## ?먮윭 濡쒓렇
 
-없음
+?놁쓬
 
-## 버그 수정 이력
+## 踰꾧렇 ?섏젙 ?대젰
+
+### 2026-03-19: 특화모드/좌표모드 반복 상한 경유지 기준화 + 클릭 안정화 (v1.0.155)
+
+- **반복 상한 오동작 수정:** 특화모드와 좌표모드가 전체 실행 누적 반복 수로 종료되지 않고, 현재 경유지에서만 반복 상한을 계산하도록 변경
+- **중단 사유 정밀화:** `max_iterations_reached` 로그에 `target_idx`, 현재 경유지 반복 수, 전체 반복 수를 함께 남기도록 보완
+- **클릭 좌표 정규화:** Win32 클릭 경로에 전달되는 좌표를 `plain int`로 정규화해 `argument 1 TypeError`를 방지
+- **실클릭 성공 검증:** 마우스가 근처로만 이동한 뒤 실제 클릭이 실패해도 성공 처리되던 분기를 제거하고, 클릭 실패를 명확히 로그/결과로 반환하도록 수정
+
+---
 
 ### 2026-03-17: ? ?? ??? + ??/??? ?? ??? + ?? ?? ?? (v1.0.142)
 
@@ -111,131 +120,131 @@
 
 ---
 
-### 2026-03-11: 맵 오염 차단 + 포탈 이탈 중단 + 저장 안정화 (v1.0.140)
+### 2026-03-11: 留??ㅼ뿼 李⑤떒 + ?ы깉 ?댄깉 以묐떒 + ????덉젙??(v1.0.140)
 
-- **좌표 오염 필터 추가:** 맵이 일정 크기 이상 쌓인 뒤 현재 맵 클러스터에서 과도하게 먼 좌표(예: 포탈 점프 좌표)가 `passable/blocked/soft_blocked`로 섞이지 않도록 sanity 필터 추가
-- **맵 저장 원자화:** 저장 전 `passable/blocked/soft_blocked`를 sanitize 하고, 임시 파일 저장 후 교체하도록 변경해 저장 중간 상태/헤더 손상 완화
-- **맵 로드/병합 정리:** 오염 좌표가 남아 있는 기존 맵도 load/load_and_merge 단계에서 정리 후 메모리에 반영
-- **출발 포탈 보호 강화:** 전체맵핑 중 출발 포탈 보호 타일을 탐색 후보, 경로 계산, 되돌아가기 후보에서 일관되게 제외
-- **맵핑 중 포탈 이탈 즉시 중단:** 포탈 점프가 감지되면 진입 방향만 벽으로 등록하고 현재 테스트를 즉시 중단해 다른 굴 좌표가 현재 맵에 저장되지 않도록 수정
-- **출발지 교정 오인 처리 방지:** 보호 포탈을 밟아 생긴 점프를 `출발지 교정`으로 삼키지 않고 별도 포탈 이탈로 처리
-- **벽 검증 집중화:** `probe_focus_target`을 도입해 의심 타일을 3회 기준으로 끝까지 검증하고, 중간에 다른 프런티어나 미탐색으로 새지 않도록 유지/복귀 로직 추가
-- **APP_VERSION:** `1.0.139` → `1.0.140`
-- **수정 파일:** `src/player/game_map.py`, `src/ui/player_view.py`, `src/utils/config.py`
+- **醫뚰몴 ?ㅼ뿼 ?꾪꽣 異붽?:** 留듭씠 ?쇱젙 ?ш린 ?댁긽 ?볦씤 ???꾩옱 留??대윭?ㅽ꽣?먯꽌 怨쇰룄?섍쾶 癒?醫뚰몴(?? ?ы깉 ?먰봽 醫뚰몴)媛 `passable/blocked/soft_blocked`濡??욎씠吏 ?딅룄濡?sanity ?꾪꽣 異붽?
+- **留?????먯옄??** ?????`passable/blocked/soft_blocked`瑜?sanitize ?섍퀬, ?꾩떆 ?뚯씪 ?????援먯껜?섎룄濡?蹂寃쏀빐 ???以묎컙 ?곹깭/?ㅻ뜑 ?먯긽 ?꾪솕
+- **留?濡쒕뱶/蹂묓빀 ?뺣━:** ?ㅼ뿼 醫뚰몴媛 ?⑥븘 ?덈뒗 湲곗〈 留듬룄 load/load_and_merge ?④퀎?먯꽌 ?뺣━ ??硫붾え由ъ뿉 諛섏쁺
+- **異쒕컻 ?ы깉 蹂댄샇 媛뺥솕:** ?꾩껜留듯븨 以?異쒕컻 ?ы깉 蹂댄샇 ??쇱쓣 ?먯깋 ?꾨낫, 寃쎈줈 怨꾩궛, ?섎룎?꾧?湲??꾨낫?먯꽌 ?쇨??섍쾶 ?쒖쇅
+- **留듯븨 以??ы깉 ?댄깉 利됱떆 以묐떒:** ?ы깉 ?먰봽媛 媛먯??섎㈃ 吏꾩엯 諛⑺뼢留?踰쎌쑝濡??깅줉?섍퀬 ?꾩옱 ?뚯뒪?몃? 利됱떆 以묐떒???ㅻⅨ 援?醫뚰몴媛 ?꾩옱 留듭뿉 ??λ릺吏 ?딅룄濡??섏젙
+- **異쒕컻吏 援먯젙 ?ㅼ씤 泥섎━ 諛⑹?:** 蹂댄샇 ?ы깉??諛잛븘 ?앷릿 ?먰봽瑜?`異쒕컻吏 援먯젙`?쇰줈 ?쇳궎吏 ?딄퀬 蹂꾨룄 ?ы깉 ?댄깉濡?泥섎━
+- **踰?寃利?吏묒쨷??** `probe_focus_target`???꾩엯???섏떖 ??쇱쓣 3??湲곗??쇰줈 ?앷퉴吏 寃利앺븯怨? 以묎컙???ㅻⅨ ?꾨윴?곗뼱??誘명깘?됱쑝濡??덉? ?딅룄濡??좎?/蹂듦? 濡쒖쭅 異붽?
+- **APP_VERSION:** `1.0.139` ??`1.0.140`
+- **?섏젙 ?뚯씪:** `src/player/game_map.py`, `src/ui/player_view.py`, `src/utils/config.py`
 
-### 2026-03-05: 맵핑 (0,0) 좌표 버그 + 특화모드 복사 수정 (v1.0.139)
+### 2026-03-05: 留듯븨 (0,0) 醫뚰몴 踰꾧렇 + ?뱁솕紐⑤뱶 蹂듭궗 ?섏젙 (v1.0.139)
 
-- **route_starts/ends/walls falsy-zero 필터**: `(int(x)!=0 or int(y)!=0)` 조건이 유효한 (0,0) 좌표 제거 → `is not None`만 체크
-- **도착지 벽 등록 → 맵핑 불가**: 맵핑테스트에서 도착지를 mark_blocked → 인접 unknown 프론티어 감지 불가 → passable + portal_protected로 변경 (3곳)
-- **프론티어 자기위치 제외**: `_find_nearest_frontier` BFS가 현재 위치를 프론티어 후보에서 제외 → 유일한 프론티어일 때 즉시 완료 → 조건 제거
-- **맵핑 기록 미저장 (boss segment)**: `_boss_segment_active`와 `skip_save`가 (0,0) 경유지를 보스로 판정 → 맵핑테스트에서 auto-save 차단 → `not _is_mapping_test` 조건 추가 (6곳)
-- **entry tile blocked + start_pos 보호**: 전체맵핑 시 entry tile을 blocked+start_pos 설정 → A*/BFS 경유 불가 → passable + start_pos=None으로 변경 (2곳)
-- **특화모드 복사 시 맵 미복사 + 잠금 미해제**: `_setup_copied_game_mode_maps` 헬퍼 추가 — 원본 맵 파일을 map_file로 참조 + map_locked 해제
+- **route_starts/ends/walls falsy-zero ?꾪꽣**: `(int(x)!=0 or int(y)!=0)` 議곌굔???좏슚??(0,0) 醫뚰몴 ?쒓굅 ??`is not None`留?泥댄겕
+- **?꾩갑吏 踰??깅줉 ??留듯븨 遺덇?**: 留듯븨?뚯뒪?몄뿉???꾩갑吏瑜?mark_blocked ???몄젒 unknown ?꾨줎?곗뼱 媛먯? 遺덇? ??passable + portal_protected濡?蹂寃?(3怨?
+- **?꾨줎?곗뼱 ?먭린?꾩튂 ?쒖쇅**: `_find_nearest_frontier` BFS媛 ?꾩옱 ?꾩튂瑜??꾨줎?곗뼱 ?꾨낫?먯꽌 ?쒖쇅 ???좎씪???꾨줎?곗뼱????利됱떆 ?꾨즺 ??議곌굔 ?쒓굅
+- **留듯븨 湲곕줉 誘몄???(boss segment)**: `_boss_segment_active`? `skip_save`媛 (0,0) 寃쎌쑀吏瑜?蹂댁뒪濡??먯젙 ??留듯븨?뚯뒪?몄뿉??auto-save 李⑤떒 ??`not _is_mapping_test` 議곌굔 異붽? (6怨?
+- **entry tile blocked + start_pos 蹂댄샇**: ?꾩껜留듯븨 ??entry tile??blocked+start_pos ?ㅼ젙 ??A*/BFS 寃쎌쑀 遺덇? ??passable + start_pos=None?쇰줈 蹂寃?(2怨?
+- **?뱁솕紐⑤뱶 蹂듭궗 ??留?誘몃났??+ ?좉툑 誘명빐??*: `_setup_copied_game_mode_maps` ?ы띁 異붽? ???먮낯 留??뚯씪??map_file濡?李몄“ + map_locked ?댁젣
 
-### 2026-03-03: v1.0.137 정밀분석 + 맵핑테스트 버그 수정 (v1.0.138)
+### 2026-03-03: v1.0.137 ?뺣?遺꾩꽍 + 留듯븨?뚯뒪??踰꾧렇 ?섏젙 (v1.0.138)
 
-**v1.0.137 정밀분석 수정 (8파일 36건):**
-- **[CRITICAL] 붙여넣기 AttributeError**: Action vs AutomationRule isinstance 분기 (player_view.py)
-- **보스방 GIL 누락 6곳**: match_binary 직후 `time.sleep(0)` 추가
-- **approaching→patrolling 상태 누수**: 6개 변수 초기화
-- **self.after 무가드 14곳**: `_ui_update_ok` 가드 적용
-- **모니터 스레드 TclError**: try/except 래핑
-- **배치렌더 타이머 미취소**: _on_close에서 after_cancel
-- **pyautogui.PAUSE 경쟁조건**: 전체 try 블록을 락 안으로 (rule_executor.py)
-- **rule_executor GIL/sleep/path_pos_index/stop_event/벽등록/탈출스킬** 6건 수정
-- **game_map falsy-zero 3곳**: save/load/merge에서 `is not None`
-- **enhanced_matcher 좌표역산 오류**: bottom/right -offset
-- **main_window GUILogHandler 누수**: _on_close에서 핸들러 제거
-- **analyzer_view 진행콜백 큐폭주**: 200ms 쓰로틀링
-- **action_player match_binary 미통일**: TM_CCOEFF_NORMED 직접 매칭
-- **is_fully_explored soft_blocked 미포함**: soft_blocked도 탐색완료 판정에 포함
-- **continue 전 sleep 추가 3곳** + **self.after 가드 7곳 추가** (player_view.py)
+**v1.0.137 ?뺣?遺꾩꽍 ?섏젙 (8?뚯씪 36嫄?:**
+- **[CRITICAL] 遺숈뿬?ｊ린 AttributeError**: Action vs AutomationRule isinstance 遺꾧린 (player_view.py)
+- **蹂댁뒪諛?GIL ?꾨씫 6怨?*: match_binary 吏곹썑 `time.sleep(0)` 異붽?
+- **approaching?뭦atrolling ?곹깭 ?꾩닔**: 6媛?蹂??珥덇린??
+- **self.after 臾닿???14怨?*: `_ui_update_ok` 媛???곸슜
+- **紐⑤땲???ㅻ젅??TclError**: try/except ?섑븨
+- **諛곗튂?뚮뜑 ??대㉧ 誘몄랬??*: _on_close?먯꽌 after_cancel
+- **pyautogui.PAUSE 寃쎌웳議곌굔**: ?꾩껜 try 釉붾줉?????덉쑝濡?(rule_executor.py)
+- **rule_executor GIL/sleep/path_pos_index/stop_event/踰쎈벑濡??덉텧?ㅽ궗** 6嫄??섏젙
+- **game_map falsy-zero 3怨?*: save/load/merge?먯꽌 `is not None`
+- **enhanced_matcher 醫뚰몴??궛 ?ㅻ쪟**: bottom/right -offset
+- **main_window GUILogHandler ?꾩닔**: _on_close?먯꽌 ?몃뱾???쒓굅
+- **analyzer_view 吏꾪뻾肄쒕갚 ?먰룺二?*: 200ms ?곕줈?留?
+- **action_player match_binary 誘명넻??*: TM_CCOEFF_NORMED 吏곸젒 留ㅼ묶
+- **is_fully_explored soft_blocked 誘명룷??*: soft_blocked???먯깋?꾨즺 ?먯젙???ы븿
+- **continue ??sleep 異붽? 3怨?* + **self.after 媛??7怨?異붽?** (player_view.py)
 
-**맵핑테스트 버그 수정:**
-- **포탈 감지 시 실행중지 → 탐색계속**: 벽 등록 후 continue (2곳)
-- **포탈 continue 후 prev_x/prev_y 미갱신 → 무한 재감지**: prev 갱신 추가
-- **_local_explore_phase: full_mapping_exploring = True 잔존 3곳**: 제거 (근처맵핑≠전체맵핑)
-- **_mt_has_map 조건으로 is_boss_dungeon=False → 프론티어 탐색 건너뜀**: full_mapping_exploring 직접 사용
-- **프론티어 반경 불일치 → 진동**: _find_nearest_frontier에 explore_center/explore_radius 필터 추가
-- **max_iterations 5000 제한**: 맵핑테스트 50000으로 증가
-- **보스구간 is_boss_dungeon 영구 True → 도착 불가**: _mt_explore_done 플래그 추가
-- **보스구간 (0,0) 도착지 착각**: 전체맵핑 완료 후 보스구간 즉시 다음 경유지/완료 처리
-- **Phase 1→2 전환 시 last_dir/stuck_count 미리셋**: 추가
+**留듯븨?뚯뒪??踰꾧렇 ?섏젙:**
+- **?ы깉 媛먯? ???ㅽ뻾以묒? ???먯깋怨꾩냽**: 踰??깅줉 ??continue (2怨?
+- **?ы깉 continue ??prev_x/prev_y 誘멸갚????臾댄븳 ?ш컧吏**: prev 媛깆떊 異붽?
+- **_local_explore_phase: full_mapping_exploring = True ?붿〈 3怨?*: ?쒓굅 (洹쇱쿂留듯븨?좎쟾泥대㏊??
+- **_mt_has_map 議곌굔?쇰줈 is_boss_dungeon=False ???꾨줎?곗뼱 ?먯깋 嫄대꼫?**: full_mapping_exploring 吏곸젒 ?ъ슜
+- **?꾨줎?곗뼱 諛섍꼍 遺덉씪移???吏꾨룞**: _find_nearest_frontier??explore_center/explore_radius ?꾪꽣 異붽?
+- **max_iterations 5000 ?쒗븳**: 留듯븨?뚯뒪??50000?쇰줈 利앷?
+- **蹂댁뒪援ш컙 is_boss_dungeon ?곴뎄 True ???꾩갑 遺덇?**: _mt_explore_done ?뚮옒洹?異붽?
+- **蹂댁뒪援ш컙 (0,0) ?꾩갑吏 李⑷컖**: ?꾩껜留듯븨 ?꾨즺 ??蹂댁뒪援ш컙 利됱떆 ?ㅼ쓬 寃쎌쑀吏/?꾨즺 泥섎━
+- **Phase 1?? ?꾪솚 ??last_dir/stuck_count 誘몃━??*: 異붽?
 
-**부분실행 game_mode RuleExecutor 라우팅 수정:**
-- game_mode 규칙 포함 시 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends 지원)
+**遺遺꾩떎??game_mode RuleExecutor ?쇱슦???섏젙:**
+- game_mode 洹쒖튃 ?ы븿 ??_run_remaining_rules 寃쎌쑀 (GameModeDialog ?ъ슜, route_ends 吏??
 
-**UI 개선:**
-- GameModeDialog 창 깜빡임 방지 (화면 밖 배치 후 이동)
-- 붙여넣기 시 하위 규칙 자동 접기
-- 특화모드 이름 수정 시 GameModeConfig.name 동기화
+**UI 媛쒖꽑:**
+- GameModeDialog 李?源쒕묀??諛⑹? (?붾㈃ 諛?諛곗튂 ???대룞)
+- 遺숈뿬?ｊ린 ???섏쐞 洹쒖튃 ?먮룞 ?묎린
+- ?뱁솕紐⑤뱶 ?대쫫 ?섏젙 ??GameModeConfig.name ?숆린??
 
-**수정된 파일:**
-- `src/ui/player_view.py` - 맵핑테스트 + 정밀분석 수정
-- `src/player/rule_executor.py` - GIL/sleep/경쟁조건 수정
-- `src/player/game_map.py` - falsy-zero 수정
-- `src/player/simple_pathfinder.py` - A* GIL 해제
-- `src/player/map_patroller.py` - nearest 순서 수정
-- `src/player/action_player.py` - match_binary 통일
-- `src/player/obstacle_avoidance.py` - pathfind_mode 누수 수정
-- `src/player/minimap_pathfinder.py` - max_iterations 전달
-- `src/player/map_explorer.py` - soft_blocked 탐색완료 포함
-- `src/analyzer/enhanced_matcher.py` - 좌표역산 수정
-- `src/ui/main_window.py` - GUILogHandler 누수 수정
-- `src/ui/analyzer_view.py` - 진행콜백 쓰로틀링
+**?섏젙???뚯씪:**
+- `src/ui/player_view.py` - 留듯븨?뚯뒪??+ ?뺣?遺꾩꽍 ?섏젙
+- `src/player/rule_executor.py` - GIL/sleep/寃쎌웳議곌굔 ?섏젙
+- `src/player/game_map.py` - falsy-zero ?섏젙
+- `src/player/simple_pathfinder.py` - A* GIL ?댁젣
+- `src/player/map_patroller.py` - nearest ?쒖꽌 ?섏젙
+- `src/player/action_player.py` - match_binary ?듭씪
+- `src/player/obstacle_avoidance.py` - pathfind_mode ?꾩닔 ?섏젙
+- `src/player/minimap_pathfinder.py` - max_iterations ?꾨떖
+- `src/player/map_explorer.py` - soft_blocked ?먯깋?꾨즺 ?ы븿
+- `src/analyzer/enhanced_matcher.py` - 醫뚰몴??궛 ?섏젙
+- `src/ui/main_window.py` - GUILogHandler ?꾩닔 ?섏젙
+- `src/ui/analyzer_view.py` - 吏꾪뻾肄쒕갚 ?곕줈?留?
 
 ---
 
-### 2026-02-25: 다중 특화모드 + 맵/경로 시스템 대규모 개선 (v1.0.137)
+### 2026-02-25: ?ㅼ쨷 ?뱁솕紐⑤뱶 + 留?寃쎈줈 ?쒖뒪???洹쒕え 媛쒖꽑 (v1.0.137)
 
-**다중 특화모드 지원:**
-- `automation_models.py`: `game_mode` 단일 → `game_modes: Dict[str, GameModeConfig]` 다중 지원
-- 구버전 `game_mode` JSON 자동 마이그레이션 (하위 호환)
-- `rule_executor.py`: rule_id 기반 config 조회로 변경
+**?ㅼ쨷 ?뱁솕紐⑤뱶 吏??**
+- `automation_models.py`: `game_mode` ?⑥씪 ??`game_modes: Dict[str, GameModeConfig]` ?ㅼ쨷 吏??
+- 援щ쾭??`game_mode` JSON ?먮룞 留덉씠洹몃젅?댁뀡 (?섏쐞 ?명솚)
+- `rule_executor.py`: rule_id 湲곕컲 config 議고쉶濡?蹂寃?
 
-**GameModeConfig 신규 필드:**
-- `auto_skill_cd_region`: 쿨타임 이미지 검색 영역
-- `move_skill_cooldown`, `auto_skill_cooldown`: 스킬 쿨타임 (초)
-- 경유지별 `character_image` 직렬화/역직렬화 추가
+**GameModeConfig ?좉퇋 ?꾨뱶:**
+- `auto_skill_cd_region`: 荑⑦????대?吏 寃???곸뿭
+- `move_skill_cooldown`, `auto_skill_cooldown`: ?ㅽ궗 荑⑦???(珥?
+- 寃쎌쑀吏蹂?`character_image` 吏곷젹????쭅?ы솕 異붽?
 
-**맵 시스템 개선:**
-- `game_map.py`: start_pos 보호 강화 (mark_passable에서 출발지 등록 차단)
-- `game_map.py`: `allow_promote` 파라미터 (부분실행/전체테스트에서 영구벽 승격 방지)
-- `game_map.py`: soft_blocked 비용 50→20 조정, 미탐색 타일 unknown_cost 파라미터 추가
-- `game_map.py`: `get_walkable_neighbors`에 `allow_soft_blocked` 파라미터 추가
-- `game_map.py`: `is_fully_explored`에서 soft_blocked 제외 (임시 장애물은 탐색 완료 판정에서 제외)
-- `game_map.py`: `load_and_merge`에서 start_pos → blocked 보장
-- `game_map.py`: `_find_main_cluster` 빈 리스트 방어
+**留??쒖뒪??媛쒖꽑:**
+- `game_map.py`: start_pos 蹂댄샇 媛뺥솕 (mark_passable?먯꽌 異쒕컻吏 ?깅줉 李⑤떒)
+- `game_map.py`: `allow_promote` ?뚮씪誘명꽣 (遺遺꾩떎???꾩껜?뚯뒪?몄뿉???곴뎄踰??밴꺽 諛⑹?)
+- `game_map.py`: soft_blocked 鍮꾩슜 50??0 議곗젙, 誘명깘?????unknown_cost ?뚮씪誘명꽣 異붽?
+- `game_map.py`: `get_walkable_neighbors`??`allow_soft_blocked` ?뚮씪誘명꽣 異붽?
+- `game_map.py`: `is_fully_explored`?먯꽌 soft_blocked ?쒖쇅 (?꾩떆 ?μ븷臾쇱? ?먯깋 ?꾨즺 ?먯젙?먯꽌 ?쒖쇅)
+- `game_map.py`: `load_and_merge`?먯꽌 start_pos ??blocked 蹂댁옣
+- `game_map.py`: `_find_main_cluster` 鍮?由ъ뒪??諛⑹뼱
 
-**경로탐색 개선:**
-- `simple_pathfinder.py`: `allow_soft_blocked`, `unknown_cost` 파라미터 전파
-- `simple_pathfinder.py`: 인접 목표 벽 도달 허용 (포탈 벽 등록된 경우 대응)
-- `simple_pathfinder.py`: `set_goal` 변경 시에만 경로 초기화, `invalidate_path()` 메서드 추가
-- `simple_pathfinder.py`: `get_next_direction`에 `stop_event`, `max_iterations` 전달
+**寃쎈줈?먯깋 媛쒖꽑:**
+- `simple_pathfinder.py`: `allow_soft_blocked`, `unknown_cost` ?뚮씪誘명꽣 ?꾪뙆
+- `simple_pathfinder.py`: ?몄젒 紐⑺몴 踰??꾨떖 ?덉슜 (?ы깉 踰??깅줉??寃쎌슦 ???
+- `simple_pathfinder.py`: `set_goal` 蹂寃??쒖뿉留?寃쎈줈 珥덇린?? `invalidate_path()` 硫붿꽌??異붽?
+- `simple_pathfinder.py`: `get_next_direction`??`stop_event`, `max_iterations` ?꾨떖
 
-**맵 캔버스 개선:**
-- `map_canvas.py`: 경로 출발/도착/벽 좌표 렌더링 (route_starts, route_ends, route_walls)
-- `map_canvas.py`: 좌클릭 드래그 편집 모드, delete 모드, start/end 토글
-- `map_canvas.py`: 우클릭 드래그 제거 (좌클릭 드래그로 통일)
+**留?罹붾쾭??媛쒖꽑:**
+- `map_canvas.py`: 寃쎈줈 異쒕컻/?꾩갑/踰?醫뚰몴 ?뚮뜑留?(route_starts, route_ends, route_walls)
+- `map_canvas.py`: 醫뚰겢由??쒕옒洹??몄쭛 紐⑤뱶, delete 紐⑤뱶, start/end ?좉?
+- `map_canvas.py`: ?고겢由??쒕옒洹??쒓굅 (醫뚰겢由??쒕옒洹몃줈 ?듭씪)
 
-**순찰 시스템 개선:**
-- `map_patroller.py`: reset 시 현재 위치 기준 가장 가까운 포인트부터 재순찰
-- `map_patroller.py`: 목표 도달 판정 ±1타일 허용
-- `map_patroller.py`: 래핑 탐색 (끝까지 간 후 처음부터도 탐색)
+**?쒖같 ?쒖뒪??媛쒖꽑:**
+- `map_patroller.py`: reset ???꾩옱 ?꾩튂 湲곗? 媛??媛源뚯슫 ?ъ씤?몃????ъ닚李?
+- `map_patroller.py`: 紐⑺몴 ?꾨떖 ?먯젙 짹1????덉슜
+- `map_patroller.py`: ?섑븨 ?먯깋 (?앷퉴吏 媛???泥섏쓬遺?곕룄 ?먯깋)
 
-**rule_executor 개선:**
-- 맵 파일명 `{seg_idx:02d}_{seg_name}_map.json` 형식 통일 + 구버전 마이그레이션
-- 공유 맵 파일 지원 (`map_file` 경유지 설정)
-- ESC 핫키 ID 기반 제거 (다른 핫키 보호)
-- `_smooth_key_input` 예외 시 키 해제 보장
+**rule_executor 媛쒖꽑:**
+- 留??뚯씪紐?`{seg_idx:02d}_{seg_name}_map.json` ?뺤떇 ?듭씪 + 援щ쾭??留덉씠洹몃젅?댁뀡
+- 怨듭쑀 留??뚯씪 吏??(`map_file` 寃쎌쑀吏 ?ㅼ젙)
+- ESC ?ロ궎 ID 湲곕컲 ?쒓굅 (?ㅻⅨ ?ロ궎 蹂댄샇)
+- `_smooth_key_input` ?덉쇅 ?????댁젣 蹂댁옣
 
-**기타:**
-- `constants.py`: 경유지 클립보드 (복사/붙여넣기)
-- `analyzer_view.py`: 마스크 자동 생성 제거
-- `digit_templates.py`: 겹침 판정 80%→50%로 완화, 스크린샷 캐시 추가
-- `player_view.py`: 대규모 UI/로직 개선 (+4694/-839줄)
+**湲고?:**
+- `constants.py`: 寃쎌쑀吏 ?대┰蹂대뱶 (蹂듭궗/遺숈뿬?ｊ린)
+- `analyzer_view.py`: 留덉뒪???먮룞 ?앹꽦 ?쒓굅
+- `digit_templates.py`: 寃뱀묠 ?먯젙 80%??0%濡??꾪솕, ?ㅽ겕由곗꺑 罹먯떆 異붽?
+- `player_view.py`: ?洹쒕え UI/濡쒖쭅 媛쒖꽑 (+4694/-839以?
 
-**수정된 파일 (10개):**
+**?섏젙???뚯씪 (10媛?:**
 - `src/analyzer/automation_models.py`
 - `src/player/game_map.py`
 - `src/player/map_canvas.py`
@@ -249,539 +258,539 @@
 
 ---
 
-### 2026-02-10: 모니터링 액션 로그 강화 (v1.0.136)
+### 2026-02-10: 紐⑤땲?곕쭅 ?≪뀡 濡쒓렇 媛뺥솕 (v1.0.136)
 
-**모니터링 액션 실행 추적 로그 개선**
+**紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 異붿쟻 濡쒓렇 媛쒖꽑**
 
-1. **모니터링 액션 실행 시작 로그**: debug→info 레벨 승격 + 워치 이미지명 표시
-2. **개별 액션 실행 전 로그 추가**: 액션 타입 + 대상(이미지명/키) 표시
-3. **성공/실패 로그 상세화**: 결과값(클릭 좌표, 키 이름 등) 포함
+1. **紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ?쒖옉 濡쒓렇**: debug?뭝nfo ?덈꺼 ?밴꺽 + ?뚯튂 ?대?吏紐??쒖떆
+2. **媛쒕퀎 ?≪뀡 ?ㅽ뻾 ??濡쒓렇 異붽?**: ?≪뀡 ???+ ????대?吏紐??? ?쒖떆
+3. **?깃났/?ㅽ뙣 濡쒓렇 ?곸꽭??*: 寃곌낵媛??대┃ 醫뚰몴, ???대쫫 ?? ?ы븿
 
-### 2026-02-10: 모니터링 교착 버그 수정 + 안전장치 (v1.0.135)
+### 2026-02-10: 紐⑤땲?곕쭅 援먯갑 踰꾧렇 ?섏젙 + ?덉쟾?μ튂 (v1.0.135)
 
-**전체재생 시 모니터링 최종타겟 이미지 인식 불가 버그 수정 (3건)**
+**?꾩껜?ъ깮 ??紐⑤땲?곕쭅 理쒖쥌?寃??대?吏 ?몄떇 遺덇? 踰꾧렇 ?섏젙 (3嫄?**
 
-1. **`monitoring_start` NameError 크래시**: 모니터링 타임아웃 제거 시 변수 정의도 삭제됨 → 10초 후 NameError 크래시. 변수 정의 복구
-2. **`final_ever_absent=False` 교착 상태**: 전체재생에서 이전 액션 후 final_image가 화면에 이미 존재 → "사라질 때까지 무한 대기" → 영원히 종료 불가. 15초 grace period 후 강제 해제
-3. **`pyautogui.FAILSAFE` 크래시**: 마우스가 화면 모서리 이동 시 fail-safe 에러. `FAILSAFE=False`로 변경 (rule_executor.py 2곳, action_player.py 1곳)
-4. **모니터링 안전 타임아웃 제거**: 1시간 제한 타임아웃 제거 (stop_event로만 중지)
+1. **`monitoring_start` NameError ?щ옒??*: 紐⑤땲?곕쭅 ??꾩븘???쒓굅 ??蹂???뺤쓽????젣????10珥???NameError ?щ옒?? 蹂???뺤쓽 蹂듦뎄
+2. **`final_ever_absent=False` 援먯갑 ?곹깭**: ?꾩껜?ъ깮?먯꽌 ?댁쟾 ?≪뀡 ??final_image媛 ?붾㈃???대? 議댁옱 ??"?щ씪吏??뚭퉴吏 臾댄븳 ?湲? ???곸썝??醫낅즺 遺덇?. 15珥?grace period ??媛뺤젣 ?댁젣
+3. **`pyautogui.FAILSAFE` ?щ옒??*: 留덉슦?ㅺ? ?붾㈃ 紐⑥꽌由??대룞 ??fail-safe ?먮윭. `FAILSAFE=False`濡?蹂寃?(rule_executor.py 2怨? action_player.py 1怨?
+4. **紐⑤땲?곕쭅 ?덉쟾 ??꾩븘???쒓굅**: 1?쒓컙 ?쒗븳 ??꾩븘???쒓굅 (stop_event濡쒕쭔 以묒?)
 
-### 2026-02-10: 코드 중복 제거 및 최적화 (v1.0.134)
+### 2026-02-10: 肄붾뱶 以묐났 ?쒓굅 諛?理쒖쟻??(v1.0.134)
 
-**전체 코드베이스 점검 후 중복 코드 제거 및 성능 최적화. 순 267줄 감소.**
+**?꾩껜 肄붾뱶踰좎씠???먭? ??以묐났 肄붾뱶 ?쒓굅 諛??깅뒫 理쒖쟻?? ??267以?媛먯냼.**
 
-**rule_executor.py 최적화:**
-- `_radius_to_region` 헬퍼 추출 → search_radius 변환 코드 5곳 중복 제거
-- `gc.collect()` 매 이미지 검색마다 호출 → 제거 (`del`만 유지)
-- `pyautogui.size()` → `_get_screen_size_cached()` 캐시 활용
-- `ImageGrab.grab()`으로 화면 크기만 얻는 낭비 제거
-- `_find_all_images_on_screen` RGB→BGR→GRAY 이중 변환 → 단일 변환
-- 미사용 코드 삭제: `EXECUTION_TIMEOUT`, `_monitor_loop`, `_check_trigger`
-- 중복 import 제거: `import pyautogui`, `from PIL import ImageGrab`
+**rule_executor.py 理쒖쟻??**
+- `_radius_to_region` ?ы띁 異붿텧 ??search_radius 蹂??肄붾뱶 5怨?以묐났 ?쒓굅
+- `gc.collect()` 留??대?吏 寃?됰쭏???몄텧 ???쒓굅 (`del`留??좎?)
+- `pyautogui.size()` ??`_get_screen_size_cached()` 罹먯떆 ?쒖슜
+- `ImageGrab.grab()`?쇰줈 ?붾㈃ ?ш린留??삳뒗 ??퉬 ?쒓굅
+- `_find_all_images_on_screen` RGB?묪GR?묰RAY ?댁쨷 蹂?????⑥씪 蹂??
+- 誘몄궗??肄붾뱶 ??젣: `EXECUTION_TIMEOUT`, `_monitor_loop`, `_check_trigger`
+- 以묐났 import ?쒓굅: `import pyautogui`, `from PIL import ImageGrab`
 
-**player_view.py 최적화:**
-- `convert_to_monitor_action` 3중 복제 → `_convert_action_to_monitor_dict` 통합 (~93줄 감소)
-- `collect_all_actions` 3중 복제 → constants.py import 활용
+**player_view.py 理쒖쟻??**
+- `convert_to_monitor_action` 3以?蹂듭젣 ??`_convert_action_to_monitor_dict` ?듯빀 (~93以?媛먯냼)
+- `collect_all_actions` 3以?蹂듭젣 ??constants.py import ?쒖슜
 
-**기타 파일 정리:**
-- action_player.py: gc.collect 제거, 미사용 변수/import 삭제
-- input_controller.py: 빈 함수 `_release_mouse_capture` + 호출부 삭제, 미사용 ctypes 삭제
-- constants.py: `click_type_map` 2중 정의 → 1회로 통합
-- recorder_view.py: dead code 3개 메서드 삭제, 중복 핸들러 통합
-- admin.py, updater.py, video_analyzer.py: 미사용 import 삭제
+**湲고? ?뚯씪 ?뺣━:**
+- action_player.py: gc.collect ?쒓굅, 誘몄궗??蹂??import ??젣
+- input_controller.py: 鍮??⑥닔 `_release_mouse_capture` + ?몄텧遺 ??젣, 誘몄궗??ctypes ??젣
+- constants.py: `click_type_map` 2以??뺤쓽 ??1?뚮줈 ?듯빀
+- recorder_view.py: dead code 3媛?硫붿꽌????젣, 以묐났 ?몃뱾???듯빀
+- admin.py, updater.py, video_analyzer.py: 誘몄궗??import ??젣
 
-**수정된 파일:** rule_executor.py, player_view.py, action_player.py, constants.py, recorder_view.py, input_controller.py, admin.py, updater.py, video_analyzer.py, config.py
+**?섏젙???뚯씪:** rule_executor.py, player_view.py, action_player.py, constants.py, recorder_view.py, input_controller.py, admin.py, updater.py, video_analyzer.py, config.py
 
-### 2026-02-10: 모니터링 즉시 종료 버그 수정 (v1.0.133)
+### 2026-02-10: 紐⑤땲?곕쭅 利됱떆 醫낅즺 踰꾧렇 ?섏젙 (v1.0.133)
 
-**문제:** 모니터링 액션 시작 시 최종 타겟 이미지가 이미 화면에 있어서 즉시 종료됨. 이전 액션이 모니터링의 target_image를 next_target_image로 기다려서, 모니터링 진입 시 이미 존재.
+**臾몄젣:** 紐⑤땲?곕쭅 ?≪뀡 ?쒖옉 ??理쒖쥌 ?寃??대?吏媛 ?대? ?붾㈃???덉뼱??利됱떆 醫낅즺?? ?댁쟾 ?≪뀡??紐⑤땲?곕쭅??target_image瑜?next_target_image濡?湲곕떎?ㅼ꽌, 紐⑤땲?곕쭅 吏꾩엯 ???대? 議댁옱.
 
-**수정 (3건):**
-- **rule_executor.py**: 다음 액션이 모니터링이면 next_target_image 체크 건너뛰기 (target_image는 종료 조건이므로)
-- **rule_executor.py**: 모니터링 시작 시 최종 이미지 이미 존재하면, 사라졌다 재출현할 때만 종료 (final_ever_absent 안전장치)
-- **rule_executor.py**: 감시 이미지 좌표 계산 falsy-zero 버그 수정 (`or` → `is None` 체크, 2곳)
+**?섏젙 (3嫄?:**
+- **rule_executor.py**: ?ㅼ쓬 ?≪뀡??紐⑤땲?곕쭅?대㈃ next_target_image 泥댄겕 嫄대꼫?곌린 (target_image??醫낅즺 議곌굔?대?濡?
+- **rule_executor.py**: 紐⑤땲?곕쭅 ?쒖옉 ??理쒖쥌 ?대?吏 ?대? 議댁옱?섎㈃, ?щ씪議뚮떎 ?ъ텧?꾪븷 ?뚮쭔 醫낅즺 (final_ever_absent ?덉쟾?μ튂)
+- **rule_executor.py**: 媛먯떆 ?대?吏 醫뚰몴 怨꾩궛 falsy-zero 踰꾧렇 ?섏젙 (`or` ??`is None` 泥댄겕, 2怨?
 
-**수정된 파일:**
+**?섏젙???뚯씪:**
 - `src/player/rule_executor.py`
-- `src/utils/config.py` - APP_VERSION 1.0.132 → 1.0.133
+- `src/utils/config.py` - APP_VERSION 1.0.132 ??1.0.133
 
-### 2026-02-10: 액션 전환/트리거/모니터링 흐름 버그 수정 (v1.0.132)
+### 2026-02-10: ?≪뀡 ?꾪솚/?몃━嫄?紐⑤땲?곕쭅 ?먮쫫 踰꾧렇 ?섏젙 (v1.0.132)
 
-**문제:** 액션 간 전환, 트리거 대기, 부분실행 등에서 런타임 버그 7건 발견.
+**臾몄젣:** ?≪뀡 媛??꾪솚, ?몃━嫄??湲? 遺遺꾩떎???깆뿉???고???踰꾧렇 7嫄?諛쒓껄.
 
-**수정 (7건):**
-- **rule_executor.py**: `skip_on_not_found=True` + `wait_after=0`일 때 무한대기 → 즉시 스킵으로 수정
-- **rule_executor.py**: `_wait_for_trigger` 시간 드리프트 (waited += interval → wall-clock 시간)
-- **rule_executor.py**: `_wait_for_trigger` 로그 하드코딩 "무제한" → timeout 반영
-- **rule_executor.py**: `_wait_for_trigger` 부동소수점 modulo → last_log_time 추적
-- **rule_executor.py**: `_wait_for_image` 일시정지(pause) 체크 누락 추가
-- **rule_executor.py**: `scroll_amount=0` 무의미 스크롤 성공 반환 → 에러 반환
-- **rule_executor.py**: 모니터링 첫 루프에서 최종 이미지 즉시 감지 → skip_first_final_check 추가
-- 데드코드 제거 (next_image 타임아웃 분기, execution_failed 미사용 변수)
+**?섏젙 (7嫄?:**
+- **rule_executor.py**: `skip_on_not_found=True` + `wait_after=0`????臾댄븳?湲???利됱떆 ?ㅽ궢?쇰줈 ?섏젙
+- **rule_executor.py**: `_wait_for_trigger` ?쒓컙 ?쒕━?꾪듃 (waited += interval ??wall-clock ?쒓컙)
+- **rule_executor.py**: `_wait_for_trigger` 濡쒓렇 ?섎뱶肄붾뵫 "臾댁젣?? ??timeout 諛섏쁺
+- **rule_executor.py**: `_wait_for_trigger` 遺?숈냼?섏젏 modulo ??last_log_time 異붿쟻
+- **rule_executor.py**: `_wait_for_image` ?쇱떆?뺤?(pause) 泥댄겕 ?꾨씫 異붽?
+- **rule_executor.py**: `scroll_amount=0` 臾댁쓽誘??ㅽ겕濡??깃났 諛섑솚 ???먮윭 諛섑솚
+- **rule_executor.py**: 紐⑤땲?곕쭅 泥?猷⑦봽?먯꽌 理쒖쥌 ?대?吏 利됱떆 媛먯? ??skip_first_final_check 異붽?
+- ?곕뱶肄붾뱶 ?쒓굅 (next_image ??꾩븘??遺꾧린, execution_failed 誘몄궗??蹂??
 
-**수정된 파일:**
+**?섏젙???뚯씪:**
 - `src/player/rule_executor.py`
-- `src/utils/config.py` - APP_VERSION 1.0.131 → 1.0.132
+- `src/utils/config.py` - APP_VERSION 1.0.131 ??1.0.132
 
 ---
 
-### 2026-02-09: v1.0.129~130 수정 검증 및 잔존 버그 수정 (v1.0.131)
+### 2026-02-09: v1.0.129~130 ?섏젙 寃利?諛??붿〈 踰꾧렇 ?섏젙 (v1.0.131)
 
-**문제:** v1.0.129~130 대규모 수정 후 런타임 버그 8건 잔존.
+**臾몄젣:** v1.0.129~130 ?洹쒕え ?섏젙 ???고???踰꾧렇 8嫄??붿〈.
 
-**수정 (8건):**
-- **rule_executor.py**: skip_timeout=0일 때 `remaining` 음수 로그 수정, 무제한 대기 시 "최대 0초" → "(무제한)" 표시
-- **action_player.py**: `_wait_for_image`에서 `elapsed` 미정의 NameError 수정
-- **map_canvas.py**: `auto_fit()`, `_calc_window_size()`, `_cleanup_outliers()` 3곳 스레드 안전 스냅샷 미적용 → `get_all_snapshots()`/`get_statistics()` 사용
-- **player_view.py**: `_remove_waypoint()`에서 `final_btn` KeyError 수정 (가드 체크 추가)
-- **screen_recorder.py**: `_loop_dxcam()` mss 폴백 시 `_pause_lock` 데드락 수정 (락 해제 후 호출)
+**?섏젙 (8嫄?:**
+- **rule_executor.py**: skip_timeout=0????`remaining` ?뚯닔 濡쒓렇 ?섏젙, 臾댁젣???湲???"理쒕? 0珥? ??"(臾댁젣??" ?쒖떆
+- **action_player.py**: `_wait_for_image`?먯꽌 `elapsed` 誘몄젙??NameError ?섏젙
+- **map_canvas.py**: `auto_fit()`, `_calc_window_size()`, `_cleanup_outliers()` 3怨??ㅻ젅???덉쟾 ?ㅻ깄??誘몄쟻????`get_all_snapshots()`/`get_statistics()` ?ъ슜
+- **player_view.py**: `_remove_waypoint()`?먯꽌 `final_btn` KeyError ?섏젙 (媛??泥댄겕 異붽?)
+- **screen_recorder.py**: `_loop_dxcam()` mss ?대갚 ??`_pause_lock` ?곕뱶???섏젙 (???댁젣 ???몄텧)
 
-**수정된 파일:**
+**?섏젙???뚯씪:**
 - `src/player/rule_executor.py`, `src/player/action_player.py`, `src/player/map_canvas.py`
 - `src/ui/player_view.py`, `src/recorder/screen_recorder.py`
-- `src/utils/config.py` - APP_VERSION 1.0.130 → 1.0.131
+- `src/utils/config.py` - APP_VERSION 1.0.130 ??1.0.131
 
 ---
 
-### 2026-02-09: 이미지 타임아웃 제거 + 이미지 매칭 오탐 수정 (v1.0.130)
+### 2026-02-09: ?대?吏 ??꾩븘???쒓굅 + ?대?吏 留ㅼ묶 ?ㅽ깘 ?섏젙 (v1.0.130)
 
-**수정 1 — 이미지 타임아웃 전부 제거:**
-- **의도**: 이미지가 안 나타나도 무한 대기 (stop_event로만 중단)
-- `rule_executor.py`: EXECUTION_TIMEOUT=0, 트리거/다음화면/target 이미지 검색 전부 무제한
-- `action_player.py`: target 이미지 타임아웃 제거, `_wait_for_image` 무제한
+**?섏젙 1 ???대?吏 ??꾩븘???꾨? ?쒓굅:**
+- **?섎룄**: ?대?吏媛 ???섑??섎룄 臾댄븳 ?湲?(stop_event濡쒕쭔 以묐떒)
+- `rule_executor.py`: EXECUTION_TIMEOUT=0, ?몃━嫄??ㅼ쓬?붾㈃/target ?대?吏 寃???꾨? 臾댁젣??
+- `action_player.py`: target ?대?吏 ??꾩븘???쒓굅, `_wait_for_image` 臾댁젣??
 
-**수정 2 — 이미지 매칭 TM_CCOEFF_NORMED로 복원:**
-- **문제**: v1.0.111에서 `_find_image_on_screen`이 `match_binary`(TM_SQDIFF_NORMED + Otsu mask)로 변경됨 → 금색 버튼 템플릿이 비슷한 색의 UI 요소에 89% 오탐
-- **수정**: `_find_image_on_screen`을 `TM_CCOEFF_NORMED` 직접 매칭으로 변경 (v1.0.108 방식 복원)
-- 3개 메서드 전부 `TM_CCOEFF_NORMED`: `_find_image_on_screen`, `_wait_for_trigger`, `_find_all_images_on_screen`
+**?섏젙 2 ???대?吏 留ㅼ묶 TM_CCOEFF_NORMED濡?蹂듭썝:**
+- **臾몄젣**: v1.0.111?먯꽌 `_find_image_on_screen`??`match_binary`(TM_SQDIFF_NORMED + Otsu mask)濡?蹂寃쎈맖 ??湲덉깋 踰꾪듉 ?쒗뵆由우씠 鍮꾩듂???됱쓽 UI ?붿냼??89% ?ㅽ깘
+- **?섏젙**: `_find_image_on_screen`??`TM_CCOEFF_NORMED` 吏곸젒 留ㅼ묶?쇰줈 蹂寃?(v1.0.108 諛⑹떇 蹂듭썝)
+- 3媛?硫붿꽌???꾨? `TM_CCOEFF_NORMED`: `_find_image_on_screen`, `_wait_for_trigger`, `_find_all_images_on_screen`
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - 이미지 타임아웃 제거 + TM_CCOEFF_NORMED 복원
-- `src/player/action_player.py` - 이미지 타임아웃 제거
-- `src/utils/config.py` - APP_VERSION 1.0.129 → 1.0.130
-
----
-
-### 2026-02-09: 전체 프리징/행 방지 대규모 최적화 (v1.0.129)
-
-**문제:** 15개 파일에서 UI 프리징, 스레드 교착, 타이트 루프, 무한 대기 등 31건의 성능/안정성 이슈 발견.
-
-**수정 (31건):**
-- **game_map.py**: RLock 추가로 스레드 안전성 확보 (mark_passable/blocked/soft_blocked, save/load 전부 보호)
-- **player_view.py**: undefined move_delay 수정, continue 전 sleep 12곳 추가, _find_nearest_frontier BFS 최적화, UI 업데이트 rate-limit, 락 타임아웃 축소 (5→2초, 3→1초), bare except 4곳 로깅 추가, _on_close sleep 축소
-- **action_player.py**: 일시정지 루프 탈출 불가 수정, _wait_for_image 타임아웃 체크, 스크린샷 로깅 경량화
-- **rule_executor.py**: 모니터링 기본 타임아웃 4시간→1시간, 스크린샷 스레드 누수 Semaphore(3) 제한, 파일체크 스레드→직접호출
-- **minimap_pathfinder.py**: A* max_iterations=5000 제한, _find_nearest_walkable BFS 최적화
-- **obstacle_avoidance.py**: BFS max_iterations=10000, DirectionMemory 1000개 초과 강제 정리
-- **map_explorer.py**: _backtrack() max_iterations=200 + 스택 클리어
-- **map_canvas.py**: 5000타일 초과 간소화 렌더링, 스레드 안전 스냅샷, 비메인스레드 차단
-- **enhanced_matcher.py**: 스크린 전처리 캐시 (shape+mean)
-- **updater.py**: SSL 폴백 전체 타임아웃 15초 캡, 다운로드 300→60초
-- **settings_view.py**: 버전체크 개별 20→8초 + 전체 20초 캡, 펌웨어체크 sleep 축소
-- **analyzer_view.py**: 위젯 파괴 O(N²)→O(N), JSON mtime 캐시, DB 쿼리 N→1 배치화
-- **recorder_view.py**: 폴링 30→10초, 적응형 인터벌
-- **screen_recorder.py**: _pause_lock으로 레이스 컨디션 해결
-- **db_manager.py**: SQLite timeout 30→10초
-- **window_position.py**: configure 이벤트 500ms 디바운스
-- **arduino_uploader.py**: 긴 작업 전 로그 + AVR 타임아웃 300→180초
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - ?대?吏 ??꾩븘???쒓굅 + TM_CCOEFF_NORMED 蹂듭썝
+- `src/player/action_player.py` - ?대?吏 ??꾩븘???쒓굅
+- `src/utils/config.py` - APP_VERSION 1.0.129 ??1.0.130
 
 ---
 
-### 2026-02-09: 조건 대기 중 최종 이미지로 모니터링 탈출하는 버그 수정 (v1.0.128)
+### 2026-02-09: ?꾩껜 ?꾨━吏???諛⑹? ?洹쒕え 理쒖쟻??(v1.0.129)
 
-**문제:** 모니터링에서 조건 이미지가 아직 있는 상태(점프 차단)인데, 최종 이미지가 화면에 나타나면 모니터링을 종료해버림. 점프가 실행되지 않아 화면 전환이 안 된 상태에서 자식 규칙이 실행 → 타겟 이미지 없음 → 300초 × 3회 = 15분 낭비.
+**臾몄젣:** 15媛??뚯씪?먯꽌 UI ?꾨━吏? ?ㅻ젅??援먯갑, ??댄듃 猷⑦봽, 臾댄븳 ?湲???31嫄댁쓽 ?깅뒫/?덉젙???댁뒋 諛쒓껄.
 
-**원인:** `rule_executor.py:2264`의 조건 `if not watch_found or condition_pending_watch is not None:`에서 `condition_pending_watch is not None` 때문에 조건 대기 중에도 최종 이미지 체크를 수행하여 모니터링 탈출.
-
-**수정:** 조건 대기 중(`condition_pending_watch` 설정)에는 최종 이미지로 탈출하지 않도록 변경. 조건이 해소(조건 이미지 사라짐 → 점프 실행)되거나 감시 이미지가 사라질 때까지 모니터링 유지.
-
-**수정된 파일:**
-- `src/player/rule_executor.py` - 최종 이미지 체크 조건에서 `condition_pending_watch` 분기 제거
-- `src/utils/config.py` - APP_VERSION 1.0.127 → 1.0.128
-
----
-
-### 2026-02-09: 로그 개편 + ANSI 색상 통일 (v1.0.127)
-
-**로그 개편 (rule_executor.py):**
-- 저수준 마우스 로그(pynput, Win32, SendInput) 22건 → debug 강등
-- 사용자 중심 메시지 재작성 27건 (이모지→텍스트, 경로→파일명, 분:초 포맷)
-- ANSI 색상 적용: ✓ 성공(_GREEN), ⏳ 대기(_YELLOW), ✗ 에러(_RED), 헤더(_CYAN)
-- 불필요 로그 5건 삭제 (빈 줄, 중복 스킵 메시지 등)
-- 색상 오류 수정 7건 (_RED→_YELLOW 경고용, _YELLOW→_GREEN 성공용)
-
-**ANSI 색상 통일 (main_window.py, log_view.py):**
-- LogPanel, LogView, MiniPlayer 3곳에 ansi_red/ansi_cyan 태그 누락 수정
-- _parse_ansi() 파서에 91(빨강), 96(청록) 코드 파싱 추가
-- 4개 로그 표시 위치(에디터 LogPanel, LogView, 플레이 미니플레이어, 플레이 _append_log) 모두 동일 5색 지원
-
-**수정된 파일:**
-- `src/player/rule_executor.py` - 로그 ~50건 개편
-- `src/ui/main_window.py` - LogPanel/MiniPlayer ANSI 색상 태그+파서 수정
-- `src/ui/log_view.py` - LogView ANSI 색상 태그+파서 수정
-- `src/utils/config.py` - APP_VERSION 1.0.126 → 1.0.127
+**?섏젙 (31嫄?:**
+- **game_map.py**: RLock 異붽?濡??ㅻ젅???덉쟾???뺣낫 (mark_passable/blocked/soft_blocked, save/load ?꾨? 蹂댄샇)
+- **player_view.py**: undefined move_delay ?섏젙, continue ??sleep 12怨?異붽?, _find_nearest_frontier BFS 理쒖쟻?? UI ?낅뜲?댄듃 rate-limit, ????꾩븘??異뺤냼 (5??珥? 3??珥?, bare except 4怨?濡쒓퉭 異붽?, _on_close sleep 異뺤냼
+- **action_player.py**: ?쇱떆?뺤? 猷⑦봽 ?덉텧 遺덇? ?섏젙, _wait_for_image ??꾩븘??泥댄겕, ?ㅽ겕由곗꺑 濡쒓퉭 寃쎈웾??
+- **rule_executor.py**: 紐⑤땲?곕쭅 湲곕낯 ??꾩븘??4?쒓컙???쒓컙, ?ㅽ겕由곗꺑 ?ㅻ젅???꾩닔 Semaphore(3) ?쒗븳, ?뚯씪泥댄겕 ?ㅻ젅?쒋넂吏곸젒?몄텧
+- **minimap_pathfinder.py**: A* max_iterations=5000 ?쒗븳, _find_nearest_walkable BFS 理쒖쟻??
+- **obstacle_avoidance.py**: BFS max_iterations=10000, DirectionMemory 1000媛?珥덇낵 媛뺤젣 ?뺣━
+- **map_explorer.py**: _backtrack() max_iterations=200 + ?ㅽ깮 ?대━??
+- **map_canvas.py**: 5000???珥덇낵 媛꾩냼???뚮뜑留? ?ㅻ젅???덉쟾 ?ㅻ깄?? 鍮꾨찓?몄뒪?덈뱶 李⑤떒
+- **enhanced_matcher.py**: ?ㅽ겕由??꾩쿂由?罹먯떆 (shape+mean)
+- **updater.py**: SSL ?대갚 ?꾩껜 ??꾩븘??15珥?罹? ?ㅼ슫濡쒕뱶 300??0珥?
+- **settings_view.py**: 踰꾩쟾泥댄겕 媛쒕퀎 20??珥?+ ?꾩껜 20珥?罹? ?뚯썾?댁껜??sleep 異뺤냼
+- **analyzer_view.py**: ?꾩젽 ?뚭눼 O(N짼)?뭀(N), JSON mtime 罹먯떆, DB 荑쇰━ N?? 諛곗튂??
+- **recorder_view.py**: ?대쭅 30??0珥? ?곸쓳???명꽣踰?
+- **screen_recorder.py**: _pause_lock?쇰줈 ?덉씠??而⑤뵒???닿껐
+- **db_manager.py**: SQLite timeout 30??0珥?
+- **window_position.py**: configure ?대깽??500ms ?붾컮?댁뒪
+- **arduino_uploader.py**: 湲??묒뾽 ??濡쒓렇 + AVR ??꾩븘??300??80珥?
 
 ---
 
-### 2026-02-08: 모니터링 액션 중복 실행 + NameError 크래시 수정 (v1.0.126)
+### 2026-02-09: 議곌굔 ?湲?以?理쒖쥌 ?대?吏濡?紐⑤땲?곕쭅 ?덉텧?섎뒗 踰꾧렇 ?섏젙 (v1.0.128)
 
-**문제 1:** 조건 미충족 시 감시 이미지가 화면에 계속 있으면 매 루프마다 모니터링 액션 반복 실행.
-**문제 2:** v1.0.125에서 `monitor_actions` 변수가 skip 분기에서 미정의 → NameError 크래시.
+**臾몄젣:** 紐⑤땲?곕쭅?먯꽌 議곌굔 ?대?吏媛 ?꾩쭅 ?덈뒗 ?곹깭(?먰봽 李⑤떒)?몃뜲, 理쒖쥌 ?대?吏媛 ?붾㈃???섑??섎㈃ 紐⑤땲?곕쭅??醫낅즺?대쾭由? ?먰봽媛 ?ㅽ뻾?섏? ?딆븘 ?붾㈃ ?꾪솚???????곹깭?먯꽌 ?먯떇 洹쒖튃???ㅽ뻾 ???寃??대?吏 ?놁쓬 ??300珥?횞 3??= 15遺???퉬.
 
-**수정:** `condition_pending_watch`로 조건 대기 중인 watch 추적 + `monitor_actions` 변수를 skip 분기 밖에서 항상 정의하도록 구조 변경.
+**?먯씤:** `rule_executor.py:2264`??議곌굔 `if not watch_found or condition_pending_watch is not None:`?먯꽌 `condition_pending_watch is not None` ?뚮Ц??議곌굔 ?湲?以묒뿉??理쒖쥌 ?대?吏 泥댄겕瑜??섑뻾?섏뿬 紐⑤땲?곕쭅 ?덉텧.
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - monitor_actions 스코프 수정 + 조건 대기 시 액션 건너뛰기
-- `src/utils/config.py` - APP_VERSION 1.0.125 → 1.0.126
+**?섏젙:** 議곌굔 ?湲?以?`condition_pending_watch` ?ㅼ젙)?먮뒗 理쒖쥌 ?대?吏濡??덉텧?섏? ?딅룄濡?蹂寃? 議곌굔???댁냼(議곌굔 ?대?吏 ?щ씪吏????먰봽 ?ㅽ뻾)?섍굅??媛먯떆 ?대?吏媛 ?щ씪吏??뚭퉴吏 紐⑤땲?곕쭅 ?좎?.
 
----
-
-### 2026-02-08: 모니터링 액션 중복 실행 버그 수정 (v1.0.125) - v1.0.126으로 대체됨
-
-**문제:** 조건 이미지가 미충족(점프 차단) 상태에서 감시 이미지가 화면에 계속 있으면, 매 루프마다 모니터링 액션을 반복 실행. 모니터링 액션은 "조건과 무관하게 항상 실행"이므로 키 입력/클릭이 무한 반복됨.
-
-**수정:** `condition_pending_watch` 추적 변수 도입. 조건 미충족으로 대기 중인 watch에 대해서는 다음 루프에서 모니터링 액션을 건너뛰고 조건만 재확인. 감시 이미지가 사라지거나 조건 충족 시 pending 상태 해제.
-
-**수정된 파일:**
-- `src/player/rule_executor.py` - `_execute_monitoring_mode` 모니터링 액션 중복 실행 방지
-- `src/utils/config.py` - APP_VERSION 1.0.124 → 1.0.125
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 理쒖쥌 ?대?吏 泥댄겕 議곌굔?먯꽌 `condition_pending_watch` 遺꾧린 ?쒓굅
+- `src/utils/config.py` - APP_VERSION 1.0.127 ??1.0.128
 
 ---
 
-### 2026-02-08: 모니터링 모드 버그 9건 일괄 수정 (v1.0.124)
+### 2026-02-09: 濡쒓렇 媛쒗렪 + ANSI ?됱긽 ?듭씪 (v1.0.127)
 
-**4개 에이전트 병렬 심층 분석으로 발견된 버그 전량 수정.**
+**濡쒓렇 媛쒗렪 (rule_executor.py):**
+- ??섏? 留덉슦??濡쒓렇(pynput, Win32, SendInput) 22嫄???debug 媛뺣벑
+- ?ъ슜??以묒떖 硫붿떆吏 ?ъ옉??27嫄?(?대え吏?믫뀓?ㅽ듃, 寃쎈줈?믫뙆?쇰챸, 遺?珥??щ㎎)
+- ANSI ?됱긽 ?곸슜: ???깃났(_GREEN), ???湲?_YELLOW), ???먮윭(_RED), ?ㅻ뜑(_CYAN)
+- 遺덊븘??濡쒓렇 5嫄???젣 (鍮?以? 以묐났 ?ㅽ궢 硫붿떆吏 ??
+- ?됱긽 ?ㅻ쪟 ?섏젙 7嫄?(_RED??YELLOW 寃쎄퀬?? _YELLOW??GREEN ?깃났??
 
-**Major 수정 5건:**
-1. **감시 처리 후 불필요한 0.5초 대기**: watch 처리 완료 후 대기 구간으로 빠지는 문제 → `continue` 추가
-2. **조건 미충족 3초 쿨다운 중 stop 불가**: `time.sleep(3.0)` → `self._stop_event.wait(timeout=3.0)` 변경
-3. **monitor_action 개별 confidence 무시**: rule 전체 confidence만 사용 → `monitor_action.get('confidence', confidence)` 적용
-4. **ExecutionState.MONITORING 미설정**: 모니터링 실행 중에도 RUNNING_INITIAL 상태 → 진입 시 MONITORING 설정, 종료 시 복원
-5. **stop() 후 재진입 경쟁 상태**: 이전 스레드 alive 체크 없이 새 스레드 시작 → join(5초) 후 진행
+**ANSI ?됱긽 ?듭씪 (main_window.py, log_view.py):**
+- LogPanel, LogView, MiniPlayer 3怨녹뿉 ansi_red/ansi_cyan ?쒓렇 ?꾨씫 ?섏젙
+- _parse_ansi() ?뚯꽌??91(鍮④컯), 96(泥?줉) 肄붾뱶 ?뚯떛 異붽?
+- 4媛?濡쒓렇 ?쒖떆 ?꾩튂(?먮뵒??LogPanel, LogView, ?뚮젅??誘몃땲?뚮젅?댁뼱, ?뚮젅??_append_log) 紐⑤몢 ?숈씪 5??吏??
 
-**Minor 수정 4건:**
-6. **대기 시간 로그 부정확**: `wait_count * 0.5` → `time.time() - monitoring_start` 실제 경과 시간 사용
-7. **step_prefix 혼용**: `self._step_prefix`와 지역변수 `step_prefix` 혼용 → `step_prefix`로 통일
-8. **goto 점프 후 sleep이 stop 무시**: `time.sleep(wait_time)` → `self._stop_event.wait(timeout=wait_time)` 변경
-9. **resume() 상태 복원 오류**: 일시정지 전 상태 저장(`_state_before_pause`) 후 resume 시 정확히 복원
-
-**수정된 파일:**
-- `src/player/rule_executor.py` - 모니터링 모드 전반 (9건)
-- `src/utils/config.py` - APP_VERSION 1.0.123 → 1.0.124
-
----
-
-### 2026-02-08: 이미지 오인식 수정 - 2차 매처 폴백 제거 (v1.0.123)
-
-**문제:** 감시 이미지가 화면에 없는데도 89%로 발견됨. 1차 마스크 매칭(match_binary)이 65%로 정확히 "없다"고 판정했지만, 2차 강화 매처(match_adaptive)가 6가지 방법 + 임계값 20% 하향으로 억지로 찾아내서 오인식 발생.
-
-**수정:** 2차 매처 폴백(match_with_roi/match_adaptive) 완전 제거. 1차 마스크 매칭만 사용하도록 변경. Otsu 이진화로 전경/배경 분리 후 전경 픽셀만 비교하는 정확한 단일 방식으로 통일.
-
-**수정된 파일:**
-- `src/player/rule_executor.py` - `_find_image_on_screen`에서 2차 매처 폴백 코드 제거
-- `src/utils/config.py` - APP_VERSION 1.0.122 → 1.0.123
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 濡쒓렇 ~50嫄?媛쒗렪
+- `src/ui/main_window.py` - LogPanel/MiniPlayer ANSI ?됱긽 ?쒓렇+?뚯꽌 ?섏젙
+- `src/ui/log_view.py` - LogView ANSI ?됱긽 ?쒓렇+?뚯꽌 ?섏젙
+- `src/utils/config.py` - APP_VERSION 1.0.126 ??1.0.127
 
 ---
 
-### 2026-02-08: 감시 이미지 발견 로그 수정 - 조건 있을 때 "점프" 대신 "조건 확인" (v1.0.122)
+### 2026-02-08: 紐⑤땲?곕쭅 ?≪뀡 以묐났 ?ㅽ뻾 + NameError ?щ옒???섏젙 (v1.0.126)
 
-**변경:** 조건 이미지가 설정된 감시 항목에서 감시 이미지 발견 시 "→ 액션 N로 점프"라고 로그 출력하던 것을 "→ 모니터링 액션 실행 후 조건 확인"으로 수정. 실제로는 조건 체크 후 점프 여부가 결정되는데 로그만 점프했다고 나와서 혼동 유발.
+**臾몄젣 1:** 議곌굔 誘몄땐議???媛먯떆 ?대?吏媛 ?붾㈃??怨꾩냽 ?덉쑝硫?留?猷⑦봽留덈떎 紐⑤땲?곕쭅 ?≪뀡 諛섎났 ?ㅽ뻾.
+**臾몄젣 2:** v1.0.125?먯꽌 `monitor_actions` 蹂?섍? skip 遺꾧린?먯꽌 誘몄젙????NameError ?щ옒??
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - 조건 이미지 유무에 따라 로그 메시지 분기
-- `src/utils/config.py` - APP_VERSION 1.0.121 → 1.0.122
+**?섏젙:** `condition_pending_watch`濡?議곌굔 ?湲?以묒씤 watch 異붿쟻 + `monitor_actions` 蹂?섎? skip 遺꾧린 諛뽰뿉????긽 ?뺤쓽?섎룄濡?援ъ“ 蹂寃?
 
----
-
-### 2026-02-08: 조건 이미지 로직 재수정 - 발견=점프차단이 정확 (v1.0.121)
-
-**변경:** v1.0.120에서 잘못 되돌린 조건 이미지 로직 재수정. 올바른 동작: "조건 이미지 발견 = 아직 조건 상태 = 점프 차단", "조건 이미지 없음 = 조건 해소 = 점프 실행".
-
-**수정된 파일:**
-- `src/player/rule_executor.py` - 조건 이미지 발견 시 condition_met=False(점프대기), 미발견 시 True(점프실행)
-- `src/utils/config.py` - APP_VERSION 1.0.120 → 1.0.121
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - monitor_actions ?ㅼ퐫???섏젙 + 議곌굔 ?湲????≪뀡 嫄대꼫?곌린
+- `src/utils/config.py` - APP_VERSION 1.0.125 ??1.0.126
 
 ---
 
-### 2026-02-08: 인식률 키보드 조절 + 재감지 confidence 버그 수정 (v1.0.119)
+### 2026-02-08: 紐⑤땲?곕쭅 ?≪뀡 以묐났 ?ㅽ뻾 踰꾧렇 ?섏젙 (v1.0.125) - v1.0.126?쇰줈 ?泥대맖
 
-**변경 1 - 키보드 조절:** 감시 이미지/조건 이미지 인식률 슬라이더에 키보드 좌우 화살표 지원 (1%씩 미세 조절).
+**臾몄젣:** 議곌굔 ?대?吏媛 誘몄땐議??먰봽 李⑤떒) ?곹깭?먯꽌 媛먯떆 ?대?吏媛 ?붾㈃??怨꾩냽 ?덉쑝硫? 留?猷⑦봽留덈떎 紐⑤땲?곕쭅 ?≪뀡??諛섎났 ?ㅽ뻾. 紐⑤땲?곕쭅 ?≪뀡? "議곌굔怨?臾닿??섍쾶 ??긽 ?ㅽ뻾"?대?濡????낅젰/?대┃??臾댄븳 諛섎났??
 
-**변경 2 - 재감지 버그:** 최종 이미지 감지 후 감시 이미지 재감지 시 watch별 개별 confidence를 무시하고 rule 기본값만 사용하던 버그 수정.
+**?섏젙:** `condition_pending_watch` 異붿쟻 蹂???꾩엯. 議곌굔 誘몄땐議깆쑝濡??湲?以묒씤 watch????댁꽌???ㅼ쓬 猷⑦봽?먯꽌 紐⑤땲?곕쭅 ?≪뀡??嫄대꼫?곌퀬 議곌굔留??ы솗?? 媛먯떆 ?대?吏媛 ?щ씪吏嫄곕굹 議곌굔 異⑹” ??pending ?곹깭 ?댁젣.
 
-**수정된 파일:**
-- `src/ui/monitoring_editor.py` - 슬라이더 Left/Right 키바인딩 추가 (감시+조건 모두)
-- `src/player/rule_executor.py` - recheck 시 watch.get('confidence', confidence) 사용
-- `src/utils/config.py` - APP_VERSION 1.0.118 → 1.0.119
-
----
-
-### 2026-02-08: 감시 이미지별 인식률 UI 복원 (v1.0.118)
-
-**변경:** v1.0.53에서 제거된 감시 이미지별 인식률(confidence) 슬라이더를 모니터링 편집기에 복원. 각 감시 항목마다 30~100% 범위로 개별 인식률 설정 가능.
-
-**수정된 파일:**
-- `src/ui/monitoring_editor.py` - 인식률 슬라이더 UI 추가, 데이터 로드/저장에 confidence 필드 복원
-- `src/player/rule_executor.py` - watch별 개별 confidence 사용 (없으면 rule confidence 폴백)
-- `src/utils/config.py` - APP_VERSION 1.0.117 → 1.0.118
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - `_execute_monitoring_mode` 紐⑤땲?곕쭅 ?≪뀡 以묐났 ?ㅽ뻾 諛⑹?
+- `src/utils/config.py` - APP_VERSION 1.0.124 ??1.0.125
 
 ---
 
-### 2026-02-08: 조건 이미지 오탐 방지 + 로그 개선 (v1.0.117)
+### 2026-02-08: 紐⑤땲?곕쭅 紐⑤뱶 踰꾧렇 9嫄??쇨큵 ?섏젙 (v1.0.124)
 
-**변경 1 - 조건 이미지 오탐:** 조건 이미지 기본 인식률을 65% → 80%로 상향. 로직 반전(발견=점프차단) 후 낮은 임계값이 오탐을 유발하여 점프가 계속 차단되던 문제 해결.
+**4媛??먯씠?꾪듃 蹂묐젹 ?ъ링 遺꾩꽍?쇰줈 諛쒓껄??踰꾧렇 ?꾨웾 ?섏젙.**
 
-**변경 2 - 로그 개선:** 조건 이미지 매칭 시 실제 매칭률과 설정 임계값을 함께 표시하여 디버깅 용이. 모니터링 액션 실행 시작/없음 로그를 info 레벨로 승격.
+**Major ?섏젙 5嫄?**
+1. **媛먯떆 泥섎━ ??遺덊븘?뷀븳 0.5珥??湲?*: watch 泥섎━ ?꾨즺 ???湲?援ш컙?쇰줈 鍮좎???臾몄젣 ??`continue` 異붽?
+2. **議곌굔 誘몄땐議?3珥?荑⑤떎??以?stop 遺덇?**: `time.sleep(3.0)` ??`self._stop_event.wait(timeout=3.0)` 蹂寃?
+3. **monitor_action 媛쒕퀎 confidence 臾댁떆**: rule ?꾩껜 confidence留??ъ슜 ??`monitor_action.get('confidence', confidence)` ?곸슜
+4. **ExecutionState.MONITORING 誘몄꽕??*: 紐⑤땲?곕쭅 ?ㅽ뻾 以묒뿉??RUNNING_INITIAL ?곹깭 ??吏꾩엯 ??MONITORING ?ㅼ젙, 醫낅즺 ??蹂듭썝
+5. **stop() ???ъ쭊??寃쎌웳 ?곹깭**: ?댁쟾 ?ㅻ젅??alive 泥댄겕 ?놁씠 ???ㅻ젅???쒖옉 ??join(5珥? ??吏꾪뻾
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - 기본 condition_confidence 0.65→0.80, 로그에 실제 신뢰도 표시, 모니터링 액션 로그 info 승격
-- `src/ui/monitoring_editor.py` - 기본 condition_confidence 0.65→0.80 (5곳)
-- `src/utils/config.py` - APP_VERSION 1.0.116 → 1.0.117
+**Minor ?섏젙 4嫄?**
+6. **?湲??쒓컙 濡쒓렇 遺?뺥솗**: `wait_count * 0.5` ??`time.time() - monitoring_start` ?ㅼ젣 寃쎄낵 ?쒓컙 ?ъ슜
+7. **step_prefix ?쇱슜**: `self._step_prefix`? 吏?????`step_prefix` ?쇱슜 ??`step_prefix`濡??듭씪
+8. **goto ?먰봽 ??sleep??stop 臾댁떆**: `time.sleep(wait_time)` ??`self._stop_event.wait(timeout=wait_time)` 蹂寃?
+9. **resume() ?곹깭 蹂듭썝 ?ㅻ쪟**: ?쇱떆?뺤? ???곹깭 ???`_state_before_pause`) ??resume ???뺥솗??蹂듭썝
 
----
-
-### 2026-02-08: 부분실행 rule_id 중복 수정 + 모니터링 조건 체크 순서 수정 (v1.0.116)
-
-**변경 1 - 부분실행 버그:** 하위액션 ▶ 클릭 시 상위액션부터 실행되는 버그 수정. 원인: 순차적 rule_id(rule_0000) 생성 시 중복 발생 → 첫 번째 매칭만 사용하여 잘못된 규칙 선택됨.
-- `_test_run_rule` 검색을 객체 동일성(`r is rule`)으로 변경 + 중복 ID 폴백 로직 추가
-- 순차 ID 생성(`rule_{len}:04d`) → UUID 기반 ID(`rule_{uuid}`)로 전부 교체
-
-**변경 2 - 모니터링 조건:** 조건 이미지 체크를 모니터링 액션 실행 후로 재배치. 모니터링 액션은 조건과 무관하게 항상 실행, 조건은 점프만 제어. 재감지 쿨다운 3초 적용.
-
-**수정된 파일:**
-- `src/ui/player_view.py` - 부분실행 검색 로직 개선 + UUID ID 생성
-- `src/analyzer/video_analyzer.py` - 녹화 시 UUID ID 생성
-- `src/player/rule_executor.py` - 조건 체크를 액션 후 점프 전으로 이동, 3초 쿨다운
-- `src/utils/config.py` - APP_VERSION 1.0.115 → 1.0.116
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 紐⑤땲?곕쭅 紐⑤뱶 ?꾨컲 (9嫄?
+- `src/utils/config.py` - APP_VERSION 1.0.123 ??1.0.124
 
 ---
 
-### 2026-02-08: 모니터링 조건 이미지 체크 시점 변경 (v1.0.115)
+### 2026-02-08: ?대?吏 ?ㅼ씤???섏젙 - 2李?留ㅼ쿂 ?대갚 ?쒓굅 (v1.0.123)
 
-**변경:** 조건 이미지 체크를 모니터링 액션 실행 후 → 실행 전으로 이동. 조건 미충족(조건 이미지 발견) 시 모니터링 액션+점프 모두 건너뛰고 모니터링 대기로 복귀.
+**臾몄젣:** 媛먯떆 ?대?吏媛 ?붾㈃???녿뒗?곕룄 89%濡?諛쒓껄?? 1李?留덉뒪??留ㅼ묶(match_binary)??65%濡??뺥솗??"?녿떎"怨??먯젙?덉?留? 2李?媛뺥솕 留ㅼ쿂(match_adaptive)媛 6媛吏 諛⑸쾿 + ?꾧퀎媛?20% ?섑뼢?쇰줈 ?듭?濡?李얠븘?댁꽌 ?ㅼ씤??諛쒖깮.
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - 조건 이미지 체크를 모니터링 액션 실행 전으로 이동
-- `src/utils/config.py` - APP_VERSION 1.0.114 → 1.0.115
+**?섏젙:** 2李?留ㅼ쿂 ?대갚(match_with_roi/match_adaptive) ?꾩쟾 ?쒓굅. 1李?留덉뒪??留ㅼ묶留??ъ슜?섎룄濡?蹂寃? Otsu ?댁쭊?붾줈 ?꾧꼍/諛곌꼍 遺꾨━ ???꾧꼍 ?쎌?留?鍮꾧탳?섎뒗 ?뺥솗???⑥씪 諛⑹떇?쇰줈 ?듭씪.
 
----
-
-### 2026-02-08: 검색범위 직사각형 모델 도입 (v1.0.114)
-
-**변경:** 검색범위를 center+radius(정사각형) 대신 [x1,y1,x2,y2] 직사각형으로 저장하도록 개선. 얇은 영역 선택 시 정사각형으로 뻥튀기되던 문제 해결.
-
-**수정된 파일:**
-- `src/analyzer/automation_models.py` - `search_region` 필드 추가 (Optional[List[int]])
-- `src/ui/analyzer_view.py` - 선택 영역을 search_region에 직사각형 그대로 저장, 버튼/표시 텍스트 개선
-- `src/player/rule_executor.py` - search_region 우선 사용 (3곳), _find_all_images_on_screen에 search_region 파라미터 추가
-- `src/utils/config.py` - APP_VERSION 1.0.113 → 1.0.114
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - `_find_image_on_screen`?먯꽌 2李?留ㅼ쿂 ?대갚 肄붾뱶 ?쒓굅
+- `src/utils/config.py` - APP_VERSION 1.0.122 ??1.0.123
 
 ---
 
-### 2026-02-08: 검색범위(ScreenRegionSelector) 좌표 버그 수정 (v1.0.113)
+### 2026-02-08: 媛먯떆 ?대?吏 諛쒓껄 濡쒓렇 ?섏젙 - 議곌굔 ?덉쓣 ??"?먰봽" ???"議곌굔 ?뺤씤" (v1.0.122)
 
-**수정된 버그:**
-1. **잘못된 DPI 스케일링 제거**: `GetDeviceCaps(hdc, 118/117)`은 멀티모니터 전체 데스크톱 크기를 반환하여 좌표가 2배+ 뻥튀기됨. tkinter와 ImageGrab 모두 논리 좌표를 사용하므로 DPI 스케일링 자체가 불필요
-2. **빨간선 시각적 확장 수정**: 5중 동심 사각형(offset 0~4, width=2) → 단일 사각형(width=3)으로 변경. 기존에는 ~10px 확장되어 실제 범위보다 크게 표시됨
-3. **중복 이벤트 바인딩 제거**: canvas와 window에 동일 마우스 이벤트를 이중 바인딩하고 있었음
+**蹂寃?** 議곌굔 ?대?吏媛 ?ㅼ젙??媛먯떆 ??ぉ?먯꽌 媛먯떆 ?대?吏 諛쒓껄 ??"???≪뀡 N濡??먰봽"?쇨퀬 濡쒓렇 異쒕젰?섎뜕 寃껋쓣 "??紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ??議곌굔 ?뺤씤"?쇰줈 ?섏젙. ?ㅼ젣濡쒕뒗 議곌굔 泥댄겕 ???먰봽 ?щ?媛 寃곗젙?섎뒗??濡쒓렇留??먰봽?덈떎怨??섏????쇰룞 ?좊컻.
 
-**수정된 파일:**
-- `src/ui/analyzer_view.py` - ScreenRegionSelector DPI 스케일링 제거, 빨간선 단일화, 중복 바인딩 정리
-- `src/utils/config.py` - APP_VERSION 1.0.112 → 1.0.113
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 議곌굔 ?대?吏 ?좊Т???곕씪 濡쒓렇 硫붿떆吏 遺꾧린
+- `src/utils/config.py` - APP_VERSION 1.0.121 ??1.0.122
 
 ---
 
-### 2026-02-08: 모니터링 타임아웃 확대 (v1.0.112)
+### 2026-02-08: 議곌굔 ?대?吏 濡쒖쭅 ?ъ닔??- 諛쒓껄=?먰봽李⑤떒???뺥솗 (v1.0.121)
 
-**변경:** 모니터링 모드 안전 타임아웃 2시간(7200초) → 4시간(14400초)으로 확대
+**蹂寃?** v1.0.120?먯꽌 ?섎せ ?섎룎由?議곌굔 ?대?吏 濡쒖쭅 ?ъ닔?? ?щ컮瑜??숈옉: "議곌굔 ?대?吏 諛쒓껄 = ?꾩쭅 議곌굔 ?곹깭 = ?먰봽 李⑤떒", "議곌굔 ?대?吏 ?놁쓬 = 議곌굔 ?댁냼 = ?먰봽 ?ㅽ뻾".
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - `monitoring_timeout` 기본값 7200 → 14400
-- `src/utils/config.py` - APP_VERSION 1.0.111 → 1.0.112
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 議곌굔 ?대?吏 諛쒓껄 ??condition_met=False(?먰봽?湲?, 誘몃컻寃???True(?먰봽?ㅽ뻾)
+- `src/utils/config.py` - APP_VERSION 1.0.120 ??1.0.121
 
 ---
 
-### 2026-02-08: 경로탐색 버그 3건 수정 + 전체맵핑 안정화 (v1.0.111)
+### 2026-02-08: ?몄떇瑜??ㅻ낫??議곗젅 + ?ш컧吏 confidence 踰꾧렇 ?섏젙 (v1.0.119)
 
-**수정된 버그:**
+**蹂寃?1 - ?ㅻ낫??議곗젅:** 媛먯떆 ?대?吏/議곌굔 ?대?吏 ?몄떇瑜??щ씪?대뜑???ㅻ낫??醫뚯슦 ?붿궡??吏??(1%??誘몄꽭 議곗젅).
 
-| 파일 | 버그 | 수정 내용 |
+**蹂寃?2 - ?ш컧吏 踰꾧렇:** 理쒖쥌 ?대?吏 媛먯? ??媛먯떆 ?대?吏 ?ш컧吏 ??watch蹂?媛쒕퀎 confidence瑜?臾댁떆?섍퀬 rule 湲곕낯媛믩쭔 ?ъ슜?섎뜕 踰꾧렇 ?섏젙.
+
+**?섏젙???뚯씪:**
+- `src/ui/monitoring_editor.py` - ?щ씪?대뜑 Left/Right ?ㅻ컮?몃뵫 異붽? (媛먯떆+議곌굔 紐⑤몢)
+- `src/player/rule_executor.py` - recheck ??watch.get('confidence', confidence) ?ъ슜
+- `src/utils/config.py` - APP_VERSION 1.0.118 ??1.0.119
+
+---
+
+### 2026-02-08: 媛먯떆 ?대?吏蹂??몄떇瑜?UI 蹂듭썝 (v1.0.118)
+
+**蹂寃?** v1.0.53?먯꽌 ?쒓굅??媛먯떆 ?대?吏蹂??몄떇瑜?confidence) ?щ씪?대뜑瑜?紐⑤땲?곕쭅 ?몄쭛湲곗뿉 蹂듭썝. 媛?媛먯떆 ??ぉ留덈떎 30~100% 踰붿쐞濡?媛쒕퀎 ?몄떇瑜??ㅼ젙 媛??
+
+**?섏젙???뚯씪:**
+- `src/ui/monitoring_editor.py` - ?몄떇瑜??щ씪?대뜑 UI 異붽?, ?곗씠??濡쒕뱶/??μ뿉 confidence ?꾨뱶 蹂듭썝
+- `src/player/rule_executor.py` - watch蹂?媛쒕퀎 confidence ?ъ슜 (?놁쑝硫?rule confidence ?대갚)
+- `src/utils/config.py` - APP_VERSION 1.0.117 ??1.0.118
+
+---
+
+### 2026-02-08: 議곌굔 ?대?吏 ?ㅽ깘 諛⑹? + 濡쒓렇 媛쒖꽑 (v1.0.117)
+
+**蹂寃?1 - 議곌굔 ?대?吏 ?ㅽ깘:** 議곌굔 ?대?吏 湲곕낯 ?몄떇瑜좎쓣 65% ??80%濡??곹뼢. 濡쒖쭅 諛섏쟾(諛쒓껄=?먰봽李⑤떒) ????? ?꾧퀎媛믪씠 ?ㅽ깘???좊컻?섏뿬 ?먰봽媛 怨꾩냽 李⑤떒?섎뜕 臾몄젣 ?닿껐.
+
+**蹂寃?2 - 濡쒓렇 媛쒖꽑:** 議곌굔 ?대?吏 留ㅼ묶 ???ㅼ젣 留ㅼ묶瑜좉낵 ?ㅼ젙 ?꾧퀎媛믪쓣 ?④퍡 ?쒖떆?섏뿬 ?붾쾭源??⑹씠. 紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ?쒖옉/?놁쓬 濡쒓렇瑜?info ?덈꺼濡??밴꺽.
+
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 湲곕낯 condition_confidence 0.65??.80, 濡쒓렇???ㅼ젣 ?좊ː???쒖떆, 紐⑤땲?곕쭅 ?≪뀡 濡쒓렇 info ?밴꺽
+- `src/ui/monitoring_editor.py` - 湲곕낯 condition_confidence 0.65??.80 (5怨?
+- `src/utils/config.py` - APP_VERSION 1.0.116 ??1.0.117
+
+---
+
+### 2026-02-08: 遺遺꾩떎??rule_id 以묐났 ?섏젙 + 紐⑤땲?곕쭅 議곌굔 泥댄겕 ?쒖꽌 ?섏젙 (v1.0.116)
+
+**蹂寃?1 - 遺遺꾩떎??踰꾧렇:** ?섏쐞?≪뀡 ???대┃ ???곸쐞?≪뀡遺???ㅽ뻾?섎뒗 踰꾧렇 ?섏젙. ?먯씤: ?쒖감??rule_id(rule_0000) ?앹꽦 ??以묐났 諛쒖깮 ??泥?踰덉㎏ 留ㅼ묶留??ъ슜?섏뿬 ?섎せ??洹쒖튃 ?좏깮??
+- `_test_run_rule` 寃?됱쓣 媛앹껜 ?숈씪??`r is rule`)?쇰줈 蹂寃?+ 以묐났 ID ?대갚 濡쒖쭅 異붽?
+- ?쒖감 ID ?앹꽦(`rule_{len}:04d`) ??UUID 湲곕컲 ID(`rule_{uuid}`)濡??꾨? 援먯껜
+
+**蹂寃?2 - 紐⑤땲?곕쭅 議곌굔:** 議곌굔 ?대?吏 泥댄겕瑜?紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ?꾨줈 ?щ같移? 紐⑤땲?곕쭅 ?≪뀡? 議곌굔怨?臾닿??섍쾶 ??긽 ?ㅽ뻾, 議곌굔? ?먰봽留??쒖뼱. ?ш컧吏 荑⑤떎??3珥??곸슜.
+
+**?섏젙???뚯씪:**
+- `src/ui/player_view.py` - 遺遺꾩떎??寃??濡쒖쭅 媛쒖꽑 + UUID ID ?앹꽦
+- `src/analyzer/video_analyzer.py` - ?뱁솕 ??UUID ID ?앹꽦
+- `src/player/rule_executor.py` - 議곌굔 泥댄겕瑜??≪뀡 ???먰봽 ?꾩쑝濡??대룞, 3珥?荑⑤떎??
+- `src/utils/config.py` - APP_VERSION 1.0.115 ??1.0.116
+
+---
+
+### 2026-02-08: 紐⑤땲?곕쭅 議곌굔 ?대?吏 泥댄겕 ?쒖젏 蹂寃?(v1.0.115)
+
+**蹂寃?** 議곌굔 ?대?吏 泥댄겕瑜?紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ?????ㅽ뻾 ?꾩쑝濡??대룞. 議곌굔 誘몄땐議?議곌굔 ?대?吏 諛쒓껄) ??紐⑤땲?곕쭅 ?≪뀡+?먰봽 紐⑤몢 嫄대꼫?곌퀬 紐⑤땲?곕쭅 ?湲곕줈 蹂듦?.
+
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - 議곌굔 ?대?吏 泥댄겕瑜?紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ?꾩쑝濡??대룞
+- `src/utils/config.py` - APP_VERSION 1.0.114 ??1.0.115
+
+---
+
+### 2026-02-08: 寃?됰쾾??吏곸궗媛곹삎 紐⑤뜽 ?꾩엯 (v1.0.114)
+
+**蹂寃?** 寃?됰쾾?꾨? center+radius(?뺤궗媛곹삎) ???[x1,y1,x2,y2] 吏곸궗媛곹삎?쇰줈 ??ν븯?꾨줉 媛쒖꽑. ?뉗? ?곸뿭 ?좏깮 ???뺤궗媛곹삎?쇰줈 六ν?湲곕릺??臾몄젣 ?닿껐.
+
+**?섏젙???뚯씪:**
+- `src/analyzer/automation_models.py` - `search_region` ?꾨뱶 異붽? (Optional[List[int]])
+- `src/ui/analyzer_view.py` - ?좏깮 ?곸뿭??search_region??吏곸궗媛곹삎 洹몃?濡???? 踰꾪듉/?쒖떆 ?띿뒪??媛쒖꽑
+- `src/player/rule_executor.py` - search_region ?곗꽑 ?ъ슜 (3怨?, _find_all_images_on_screen??search_region ?뚮씪誘명꽣 異붽?
+- `src/utils/config.py` - APP_VERSION 1.0.113 ??1.0.114
+
+---
+
+### 2026-02-08: 寃?됰쾾??ScreenRegionSelector) 醫뚰몴 踰꾧렇 ?섏젙 (v1.0.113)
+
+**?섏젙??踰꾧렇:**
+1. **?섎せ??DPI ?ㅼ??쇰쭅 ?쒓굅**: `GetDeviceCaps(hdc, 118/117)`? 硫?곕え?덊꽣 ?꾩껜 ?곗뒪?ы넲 ?ш린瑜?諛섑솚?섏뿬 醫뚰몴媛 2諛? 六ν?湲곕맖. tkinter? ImageGrab 紐⑤몢 ?쇰━ 醫뚰몴瑜??ъ슜?섎?濡?DPI ?ㅼ??쇰쭅 ?먯껜媛 遺덊븘??
+2. **鍮④컙???쒓컖???뺤옣 ?섏젙**: 5以??숈떖 ?ш컖??offset 0~4, width=2) ???⑥씪 ?ш컖??width=3)?쇰줈 蹂寃? 湲곗〈?먮뒗 ~10px ?뺤옣?섏뼱 ?ㅼ젣 踰붿쐞蹂대떎 ?ш쾶 ?쒖떆??
+3. **以묐났 ?대깽??諛붿씤???쒓굅**: canvas? window???숈씪 留덉슦???대깽?몃? ?댁쨷 諛붿씤?⑺븯怨??덉뿀??
+
+**?섏젙???뚯씪:**
+- `src/ui/analyzer_view.py` - ScreenRegionSelector DPI ?ㅼ??쇰쭅 ?쒓굅, 鍮④컙???⑥씪?? 以묐났 諛붿씤???뺣━
+- `src/utils/config.py` - APP_VERSION 1.0.112 ??1.0.113
+
+---
+
+### 2026-02-08: 紐⑤땲?곕쭅 ??꾩븘???뺣? (v1.0.112)
+
+**蹂寃?** 紐⑤땲?곕쭅 紐⑤뱶 ?덉쟾 ??꾩븘??2?쒓컙(7200珥? ??4?쒓컙(14400珥??쇰줈 ?뺣?
+
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - `monitoring_timeout` 湲곕낯媛?7200 ??14400
+- `src/utils/config.py` - APP_VERSION 1.0.111 ??1.0.112
+
+---
+
+### 2026-02-08: 寃쎈줈?먯깋 踰꾧렇 3嫄??섏젙 + ?꾩껜留듯븨 ?덉젙??(v1.0.111)
+
+**?섏젙??踰꾧렇:**
+
+| ?뚯씪 | 踰꾧렇 | ?섏젙 ?댁슜 |
 |------|------|----------|
-| `src/player/obstacle_avoidance.py` | BFS 경로탐색에서 큐에 전체 경로 저장 (O(N²) 메모리) | `came_from` dict + 역추적 패턴으로 O(N) 최적화 |
-| `src/player/simple_pathfinder.py` | `list.index()` 중복 좌표 시 첫 번째만 반환 → 경로 추적 오류 | 현재 인덱스 기준 순방향/역방향 탐색으로 정확한 위치 찾기 |
-| `src/player/obstacle_avoidance.py` | 대각선 방향 점수 계산에서 `dx==0`일 때 잘못된 방향에 +1 점수 | 축 정렬 시 중립 점수(0) 부여 |
+| `src/player/obstacle_avoidance.py` | BFS 寃쎈줈?먯깋?먯꽌 ?먯뿉 ?꾩껜 寃쎈줈 ???(O(N짼) 硫붾え由? | `came_from` dict + ??텛???⑦꽩?쇰줈 O(N) 理쒖쟻??|
+| `src/player/simple_pathfinder.py` | `list.index()` 以묐났 醫뚰몴 ??泥?踰덉㎏留?諛섑솚 ??寃쎈줈 異붿쟻 ?ㅻ쪟 | ?꾩옱 ?몃뜳??湲곗? ?쒕갑????갑???먯깋?쇰줈 ?뺥솗???꾩튂 李얘린 |
+| `src/player/obstacle_avoidance.py` | ?媛곸꽑 諛⑺뼢 ?먯닔 怨꾩궛?먯꽌 `dx==0`?????섎せ??諛⑺뼢??+1 ?먯닔 | 異??뺣젹 ??以묐┰ ?먯닔(0) 遺??|
 
-**전체맵핑 안정화:**
-- `full_mapping_exploring` 플래그로 전체맵핑 프런티어 탐색 정상 동작 확인
-- `is_boss_dungeon` 계산에 `full_mapping_exploring` 반영 (player_view.py)
-- 목표 도달 시 `continue`로 프런티어 탐색 진입 (target_idx 증가 건너뜀)
+**?꾩껜留듯븨 ?덉젙??**
+- `full_mapping_exploring` ?뚮옒洹몃줈 ?꾩껜留듯븨 ?꾨윴?곗뼱 ?먯깋 ?뺤긽 ?숈옉 ?뺤씤
+- `is_boss_dungeon` 怨꾩궛??`full_mapping_exploring` 諛섏쁺 (player_view.py)
+- 紐⑺몴 ?꾨떖 ??`continue`濡??꾨윴?곗뼱 ?먯깋 吏꾩엯 (target_idx 利앷? 嫄대꼫?)
 
-**기타:**
-- 맵 데이터 업데이트 (흑해골굴 1~9굴)
-- 빌드/배포 설정 업데이트
+**湲고?:**
+- 留??곗씠???낅뜲?댄듃 (?묓빐怨④뎬 1~9援?
+- 鍮뚮뱶/諛고룷 ?ㅼ젙 ?낅뜲?댄듃
 
-**수정된 파일:**
-- `src/player/obstacle_avoidance.py` - BFS came_from + 방향 점수 수정
-- `src/player/simple_pathfinder.py` - 경로 인덱스 추적 수정
-- `src/ui/player_view.py` - 전체맵핑 안정화
-- `src/utils/config.py` - APP_VERSION 1.0.110 → 1.0.111
-
----
-
-### 2026-02-07: 특화모드 저장 버그 수정 + 이미지 삭제 기능 (v1.0.110)
-
-**버그:** 저장 버튼 클릭 시 messagebox가 GameModeDialog 뒤에 숨어 프로그램이 멈춘 것처럼 보임
-
-**원인:** `_save_config()` → `_save_callback()` → `PlanDetailDialog._save_plan()` → `messagebox.showinfo()` 순서로 호출되는데, messagebox가 PlanDetailDialog에 parenting되어 GameModeDialog 뒤에 표시됨. 이미지 추가/삭제/편집 시에도 동일한 messagebox 반복 표시.
-
-**수정:**
-
-| 파일 | 변경 내용 |
-|------|----------|
-| `src/ui/player_view.py` | `_save_config()` → JSON 직접 저장 (messagebox 없이 silent save) |
-| `src/ui/player_view.py` | `_save_config_with_msg()` 추가 — 저장 버튼 전용, messagebox를 GameModeDialog에 parenting |
-| `src/ui/player_view.py` | `_delete_waypoint_image()` 추가 — 경유지 카드에서 이미지 삭제 |
-| `src/ui/player_view.py` | 경유지 카드에 이미지 삭제 버튼("X") 추가, `_update_card_image_status`에서 표시/숨김 |
-| `src/utils/config.py` | APP_VERSION 1.0.109 → 1.0.110 |
+**?섏젙???뚯씪:**
+- `src/player/obstacle_avoidance.py` - BFS came_from + 諛⑺뼢 ?먯닔 ?섏젙
+- `src/player/simple_pathfinder.py` - 寃쎈줈 ?몃뜳??異붿쟻 ?섏젙
+- `src/ui/player_view.py` - ?꾩껜留듯븨 ?덉젙??
+- `src/utils/config.py` - APP_VERSION 1.0.110 ??1.0.111
 
 ---
 
-### 2026-02-07: 경유지 이미지 시스템 리팩토링 + 안정성 개선 (v1.0.109)
+### 2026-02-07: ?뱁솕紐⑤뱶 ???踰꾧렇 ?섏젙 + ?대?吏 ??젣 湲곕뒫 (v1.0.110)
 
-**주요 변경:**
+**踰꾧렇:** ???踰꾪듉 ?대┃ ??messagebox媛 GameModeDialog ?ㅼ뿉 ?⑥뼱 ?꾨줈洹몃옩??硫덉텣 寃껋쿂??蹂댁엫
 
-| 파일 | 변경 내용 |
+**?먯씤:** `_save_config()` ??`_save_callback()` ??`PlanDetailDialog._save_plan()` ??`messagebox.showinfo()` ?쒖꽌濡??몄텧?섎뒗?? messagebox媛 PlanDetailDialog??parenting?섏뼱 GameModeDialog ?ㅼ뿉 ?쒖떆?? ?대?吏 異붽?/??젣/?몄쭛 ?쒖뿉???숈씪??messagebox 諛섎났 ?쒖떆.
+
+**?섏젙:**
+
+| ?뚯씪 | 蹂寃??댁슜 |
 |------|----------|
-| `src/analyzer/automation_models.py` | waypoints 직렬화/역직렬화 메서드 추가 (이미지 경로 ↔ 상대경로 변환) |
-| `src/ui/player_view.py` | 보스 이미지 대화상자 제거 → ImageCropDialog 기반으로 전환, 보스 스킬 UI 제거, 비동기 로드 경쟁 방지 |
-| `src/ui/analyzer_view.py` | 비동기 플랜 로드 경쟁 방지, 분석 취소 상태 정리, 이미지 정리 시 target_images 고려 |
-| `src/ui/main_window.py` | `_switch_view()` 안정화 — 새 뷰 준비 후에만 이전 뷰 숨기기 |
-| `src/ui/settings_view.py` | `import json` 모듈 레벨로 이동 |
-| `src/app.py` | `_cleanup()`에 settings_view, guide_view 리소스 정리 추가 |
-| `src/player/map_canvas.py` | 순찰 타일 오버레이 동작, 벽 배치 시 순찰 제거 |
-| `src/utils/config.py` | APP_VERSION 1.0.108 → 1.0.109 |
+| `src/ui/player_view.py` | `_save_config()` ??JSON 吏곸젒 ???(messagebox ?놁씠 silent save) |
+| `src/ui/player_view.py` | `_save_config_with_msg()` 異붽? ?????踰꾪듉 ?꾩슜, messagebox瑜?GameModeDialog??parenting |
+| `src/ui/player_view.py` | `_delete_waypoint_image()` 異붽? ??寃쎌쑀吏 移대뱶?먯꽌 ?대?吏 ??젣 |
+| `src/ui/player_view.py` | 寃쎌쑀吏 移대뱶???대?吏 ??젣 踰꾪듉("X") 異붽?, `_update_card_image_status`?먯꽌 ?쒖떆/?④? |
+| `src/utils/config.py` | APP_VERSION 1.0.109 ??1.0.110 |
 
 ---
 
-### 2026-02-07: UI 로딩 성능 최적화 (v1.0.108)
+### 2026-02-07: 寃쎌쑀吏 ?대?吏 ?쒖뒪??由ы뙥?좊쭅 + ?덉젙??媛쒖꽑 (v1.0.109)
 
-**문제:** 에디터 모드 진입 시 5개 뷰 동기 생성(2~5초 블로킹), 탭 전환 시 refresh() 자동 호출(DB+JSON 재로드+위젯 재생성)
+**二쇱슂 蹂寃?**
 
-**수정된 파일:**
-
-| 파일 | 변경 내용 |
+| ?뚯씪 | 蹂寃??댁슜 |
 |------|----------|
-| `src/app.py` | 뷰 지연 생성 — 팩토리 등록 방식, 탭 첫 클릭 시에만 생성 |
-| `src/ui/main_window.py` | `_switch_view()` 팩토리 지연 생성 + `refresh()` 자동 호출 제거 |
-| `src/ui/analyzer_view.py` | `__init__` 데이터 로드 → `after(0)` + 백그라운드 스레드, JSON I/O + DB 쿼리 → 캐시 |
-| `src/ui/player_view.py` | `__init__` 데이터 로드 → `after(0)` + 백그라운드 스레드, DB 쿼리 → 캐시, 썸네일 비동기화 |
-| `src/ui/recorder_view.py` | DB 로드 `after(0)` 지연 |
-| `src/ui/settings_view.py` | 설정 로드 `after(0)` 지연 |
-| `src/ui/monitoring_editor.py` | 글로벌 썸네일 캐시 적용 |
-| `src/utils/config.py` | APP_VERSION 1.0.107 → 1.0.108 |
-
-**핵심 패턴:**
-- 뷰 팩토리 (`register_view_factory`) — 탭 첫 접근 시에만 생성
-- `after(0)` 콜백 — UI 렌더 후 데이터 로드
-- 백그라운드 스레드 + `self.after(0, callback)` — JSON 파싱 메인 스레드 분리
-- 데이터 캐시 (`_plan_modified_cache`, `_plan_lock_cache`) — 루프 내 I/O 제거
-- 썸네일 비동기 로딩 — 플레이스홀더 → 백그라운드 로드 → UI 갱신
+| `src/analyzer/automation_models.py` | waypoints 吏곷젹????쭅?ы솕 硫붿꽌??異붽? (?대?吏 寃쎈줈 ???곷?寃쎈줈 蹂?? |
+| `src/ui/player_view.py` | 蹂댁뒪 ?대?吏 ??붿긽???쒓굅 ??ImageCropDialog 湲곕컲?쇰줈 ?꾪솚, 蹂댁뒪 ?ㅽ궗 UI ?쒓굅, 鍮꾨룞湲?濡쒕뱶 寃쎌웳 諛⑹? |
+| `src/ui/analyzer_view.py` | 鍮꾨룞湲??뚮옖 濡쒕뱶 寃쎌웳 諛⑹?, 遺꾩꽍 痍⑥냼 ?곹깭 ?뺣━, ?대?吏 ?뺣━ ??target_images 怨좊젮 |
+| `src/ui/main_window.py` | `_switch_view()` ?덉젙??????酉?以鍮??꾩뿉留??댁쟾 酉??④린湲?|
+| `src/ui/settings_view.py` | `import json` 紐⑤뱢 ?덈꺼濡??대룞 |
+| `src/app.py` | `_cleanup()`??settings_view, guide_view 由ъ냼???뺣━ 異붽? |
+| `src/player/map_canvas.py` | ?쒖같 ????ㅻ쾭?덉씠 ?숈옉, 踰?諛곗튂 ???쒖같 ?쒓굅 |
+| `src/utils/config.py` | APP_VERSION 1.0.108 ??1.0.109 |
 
 ---
 
-### 2026-02-03: 템플릿 전용 좌표 인식 시스템으로 전환
+### 2026-02-07: UI 濡쒕뵫 ?깅뒫 理쒖쟻??(v1.0.108)
 
-**목표:** OCR(EasyOCR, Tesseract) 폴백을 모두 제거하고 템플릿 매칭만 사용
+**臾몄젣:** ?먮뵒??紐⑤뱶 吏꾩엯 ??5媛?酉??숆린 ?앹꽦(2~5珥?釉붾줈??, ???꾪솚 ??refresh() ?먮룞 ?몄텧(DB+JSON ?щ줈???꾩젽 ?ъ깮??
 
-**삭제된 파일:**
-- `src/utils/ocr_utils.py` (353줄) - OCR 유틸리티 전체 삭제
+**?섏젙???뚯씪:**
 
-**수정된 파일:**
-
-| 파일 | 변경 내용 |
+| ?뚯씪 | 蹂寃??댁슜 |
 |------|----------|
-| `src/utils/digit_templates.py` | 슬라이딩 윈도우 방식으로 전환, `read_both_coordinates()` 추가 |
-| `src/ui/player_view.py` | OCR import/UI 제거, 템플릿 전용으로 변경 |
-| `src/player/rule_executor.py` | OCR 폴백 제거, 템플릿만 사용 |
+| `src/app.py` | 酉?吏???앹꽦 ???⑺넗由??깅줉 諛⑹떇, ??泥??대┃ ?쒖뿉留??앹꽦 |
+| `src/ui/main_window.py` | `_switch_view()` ?⑺넗由?吏???앹꽦 + `refresh()` ?먮룞 ?몄텧 ?쒓굅 |
+| `src/ui/analyzer_view.py` | `__init__` ?곗씠??濡쒕뱶 ??`after(0)` + 諛깃렇?쇱슫???ㅻ젅?? JSON I/O + DB 荑쇰━ ??罹먯떆 |
+| `src/ui/player_view.py` | `__init__` ?곗씠??濡쒕뱶 ??`after(0)` + 諛깃렇?쇱슫???ㅻ젅?? DB 荑쇰━ ??罹먯떆, ?몃꽕??鍮꾨룞湲고솕 |
+| `src/ui/recorder_view.py` | DB 濡쒕뱶 `after(0)` 吏??|
+| `src/ui/settings_view.py` | ?ㅼ젙 濡쒕뱶 `after(0)` 吏??|
+| `src/ui/monitoring_editor.py` | 湲濡쒕쾶 ?몃꽕??罹먯떆 ?곸슜 |
+| `src/utils/config.py` | APP_VERSION 1.0.107 ??1.0.108 |
 
-**digit_templates.py 주요 개선:**
+**?듭떖 ?⑦꽩:**
+- 酉??⑺넗由?(`register_view_factory`) ????泥??묎렐 ?쒖뿉留??앹꽦
+- `after(0)` 肄쒕갚 ??UI ?뚮뜑 ???곗씠??濡쒕뱶
+- 諛깃렇?쇱슫???ㅻ젅??+ `self.after(0, callback)` ??JSON ?뚯떛 硫붿씤 ?ㅻ젅??遺꾨━
+- ?곗씠??罹먯떆 (`_plan_modified_cache`, `_plan_lock_cache`) ??猷⑦봽 ??I/O ?쒓굅
+- ?몃꽕??鍮꾨룞湲?濡쒕뵫 ???뚮젅?댁뒪?????諛깃렇?쇱슫??濡쒕뱶 ??UI 媛깆떊
 
-#### 1. 슬라이딩 윈도우 방식 (컨투어 기반 → 템플릿 슬라이딩)
+---
+
+### 2026-02-03: ?쒗뵆由??꾩슜 醫뚰몴 ?몄떇 ?쒖뒪?쒖쑝濡??꾪솚
+
+**紐⑺몴:** OCR(EasyOCR, Tesseract) ?대갚??紐⑤몢 ?쒓굅?섍퀬 ?쒗뵆由?留ㅼ묶留??ъ슜
+
+**??젣???뚯씪:**
+- `src/utils/ocr_utils.py` (353以? - OCR ?좏떥由ы떚 ?꾩껜 ??젣
+
+**?섏젙???뚯씪:**
+
+| ?뚯씪 | 蹂寃??댁슜 |
+|------|----------|
+| `src/utils/digit_templates.py` | ?щ씪?대뵫 ?덈룄??諛⑹떇?쇰줈 ?꾪솚, `read_both_coordinates()` 異붽? |
+| `src/ui/player_view.py` | OCR import/UI ?쒓굅, ?쒗뵆由??꾩슜?쇰줈 蹂寃?|
+| `src/player/rule_executor.py` | OCR ?대갚 ?쒓굅, ?쒗뵆由용쭔 ?ъ슜 |
+
+**digit_templates.py 二쇱슂 媛쒖꽑:**
+
+#### 1. ?щ씪?대뵫 ?덈룄??諛⑹떇 (而⑦닾??湲곕컲 ???쒗뵆由??щ씪?대뵫)
 ```python
-# 기존: 컨투어로 숫자 영역 분리 후 개별 매칭 (불안정)
+# 湲곗〈: 而⑦닾?대줈 ?レ옄 ?곸뿭 遺꾨━ ??媛쒕퀎 留ㅼ묶 (遺덉븞??
 contours = cv2.findContours(binary, ...)
 for cnt in contours:
     digit = match_digit(crop)
 
-# 변경: 템플릿을 이미지 위에서 슬라이드하며 매칭 (안정적)
+# 蹂寃? ?쒗뵆由우쓣 ?대?吏 ?꾩뿉???щ씪?대뱶?섎ŉ 留ㅼ묶 (?덉젙??
 result = cv2.matchTemplate(binary, scaled_template, cv2.TM_CCOEFF_NORMED)
 locations = np.where(result >= threshold)
 ```
 
-#### 2. 다중 스케일 매칭
+#### 2. ?ㅼ쨷 ?ㅼ???留ㅼ묶
 ```python
-for scale in [0.9, 1.0, 1.1]:  # 3가지 크기로 시도
+for scale in [0.9, 1.0, 1.1]:  # 3媛吏 ?ш린濡??쒕룄
     scaled_template = cv2.resize(template, (new_w, new_h))
     result = cv2.matchTemplate(binary, scaled_template, ...)
 ```
 
-#### 3. 최대 자릿수 제한 (중복 인식 방지)
+#### 3. 理쒕? ?먮┸???쒗븳 (以묐났 ?몄떇 諛⑹?)
 ```python
 avg_tmpl_w, _ = self._get_template_size()
-max_digits = max(1, int(img_w / (avg_tmpl_w * 0.7)))  # 영역 너비 기준
+max_digits = max(1, int(img_w / (avg_tmpl_w * 0.7)))  # ?곸뿭 ?덈퉬 湲곗?
 ```
 
-#### 4. 범위 기반 NMS (Non-Maximum Suppression)
+#### 4. 踰붿쐞 湲곕컲 NMS (Non-Maximum Suppression)
 ```python
-# 기존: 중심점 거리만 비교 (17 → 172 오인식 발생)
+# 湲곗〈: 以묒떖??嫄곕━留?鍮꾧탳 (17 ??172 ?ㅼ씤??諛쒖깮)
 if abs(center_x - used_x) < width * 0.6:
 
-# 변경: 실제 x 범위(start~end)의 겹침 비율 계산
+# 蹂寃? ?ㅼ젣 x 踰붿쐞(start~end)??寃뱀묠 鍮꾩쑉 怨꾩궛
 overlap_start = max(new_start, start_x)
 overlap_end = min(new_end, end_x)
 overlap_width = max(0, overlap_end - overlap_start)
-if overlap_width > width * 0.5:  # 50% 이상 겹치면 제외
+if overlap_width > width * 0.5:  # 50% ?댁긽 寃뱀튂硫??쒖쇅
 ```
 
-#### 5. 인접 숫자 간격 검증
+#### 5. ?몄젒 ?レ옄 媛꾧꺽 寃利?
 ```python
-# 최종 결과에서 숫자 간 간격이 적절한지 추가 검증
+# 理쒖쥌 寃곌낵?먯꽌 ?レ옄 媛?媛꾧꺽???곸젅?쒖? 異붽? 寃利?
 gap = curr_x - (prev_x + prev_width)
-if gap >= -prev_width * 0.3:  # 간격이 너비의 -30% 이상이면 유효
+if gap >= -prev_width * 0.3:  # 媛꾧꺽???덈퉬??-30% ?댁긽?대㈃ ?좏슚
     validated_matches.append(final_matches[i])
 ```
 
-**UI 변경:**
-- "좌표 기반 (OCR)" → "좌표 기반 (템플릿)"
-- "📍 좌표 읽기 영역 (OCR)" → "📍 좌표 읽기 영역"
-- "📡 실시간 좌표 (OCR 테스트)" → "📡 실시간 좌표"
-- "OCR 원본" → "인식 상태"
-- Tesseract 설치 확인 버튼/상태 라벨 제거
+**UI 蹂寃?**
+- "醫뚰몴 湲곕컲 (OCR)" ??"醫뚰몴 湲곕컲 (?쒗뵆由?"
+- "?뱧 醫뚰몴 ?쎄린 ?곸뿭 (OCR)" ??"?뱧 醫뚰몴 ?쎄린 ?곸뿭"
+- "?뱻 ?ㅼ떆媛?醫뚰몴 (OCR ?뚯뒪??" ??"?뱻 ?ㅼ떆媛?醫뚰몴"
+- "OCR ?먮낯" ??"?몄떇 ?곹깭"
+- Tesseract ?ㅼ튂 ?뺤씤 踰꾪듉/?곹깭 ?쇰꺼 ?쒓굅
 
-**효과:**
-- Tesseract/EasyOCR 설치 불필요
-- 인식 속도 향상 (OCR 대비 빠름)
-- 게임 폰트에 최적화된 정확한 인식
-- 17 → 172 같은 중복 인식 문제 해결
+**?④낵:**
+- Tesseract/EasyOCR ?ㅼ튂 遺덊븘??
+- ?몄떇 ?띾룄 ?μ긽 (OCR ?鍮?鍮좊쫫)
+- 寃뚯엫 ?고듃??理쒖쟻?붾맂 ?뺥솗???몄떇
+- 17 ??172 媛숈? 以묐났 ?몄떇 臾몄젣 ?닿껐
 
 ---
 
-### 2026-01-31: SSL DLL 로드 오류 수정 (v1.0.104)
+### 2026-01-31: SSL DLL 濡쒕뱶 ?ㅻ쪟 ?섏젙 (v1.0.104)
 
-**증상:** "자동 업데이트 확인 오류: DLL load failed while importing _ssl: %1은(는) 올바른 Win32 응용 프로그램이 아닙니다"
+**利앹긽:** "?먮룞 ?낅뜲?댄듃 ?뺤씤 ?ㅻ쪟: DLL load failed while importing _ssl: %1?(?? ?щ컮瑜?Win32 ?묒슜 ?꾨줈洹몃옩???꾨떃?덈떎"
 
-**원인:** `updater.py`, `update_service.py` 모듈 최상단에 `import ssl`이 있어서, SSL DLL 로드 실패 시 모듈 전체 import가 실패함
+**?먯씤:** `updater.py`, `update_service.py` 紐⑤뱢 理쒖긽?⑥뿉 `import ssl`???덉뼱?? SSL DLL 濡쒕뱶 ?ㅽ뙣 ??紐⑤뱢 ?꾩껜 import媛 ?ㅽ뙣??
 
-**해결:**
+**?닿껐:**
 
-| 파일 | 변경 내용 |
+| ?뚯씪 | 蹂寃??댁슜 |
 |------|----------|
-| `updater.py` | `import ssl` 제거, `_get_ssl_context()` 함수로 지연 import |
-| `update_service.py` | `import ssl` 제거, `_get_ssl_context()` 함수로 지연 import |
+| `updater.py` | `import ssl` ?쒓굅, `_get_ssl_context()` ?⑥닔濡?吏??import |
+| `update_service.py` | `import ssl` ?쒓굅, `_get_ssl_context()` ?⑥닔濡?吏??import |
 
 ```python
 def _get_ssl_context(verify: bool = True):
-    """SSL 컨텍스트 생성 (SSL 모듈 로드 실패 시 None 반환)"""
+    """SSL 而⑦뀓?ㅽ듃 ?앹꽦 (SSL 紐⑤뱢 濡쒕뱶 ?ㅽ뙣 ??None 諛섑솚)"""
     try:
         import ssl
         ctx = ssl.create_default_context()
@@ -793,283 +802,283 @@ def _get_ssl_context(verify: bool = True):
         return None
 ```
 
-**효과:**
-- SSL DLL 로드 실패해도 프로그램 정상 실행
-- "SSL 없음" 방법으로 업데이트 확인 시도 가능
-- 일부 환경에서 HTTPS 연결이 안 될 수 있지만 프로그램은 크래시하지 않음
+**?④낵:**
+- SSL DLL 濡쒕뱶 ?ㅽ뙣?대룄 ?꾨줈洹몃옩 ?뺤긽 ?ㅽ뻾
+- "SSL ?놁쓬" 諛⑸쾿?쇰줈 ?낅뜲?댄듃 ?뺤씤 ?쒕룄 媛??
+- ?쇰? ?섍꼍?먯꽌 HTTPS ?곌껐?????????덉?留??꾨줈洹몃옩? ?щ옒?쒗븯吏 ?딆쓬
 
 ---
 
-### 2026-01-31: 업데이트 관련 버그 수정 (v1.0.103)
+### 2026-01-31: ?낅뜲?댄듃 愿??踰꾧렇 ?섏젙 (v1.0.103)
 
-**증상:**
-- 버전 확인 버튼 클릭 시 "버전확인중"만 표시되고 무한 대기
-- 업데이트 버튼 클릭 시 "릴리즈확인중"만 표시되고 무한 대기
-- 업데이트 완료 후 프로그램이 자동 재시작되지 않음
-- 수동으로 재시작해도 창이 나타나지 않음
+**利앹긽:**
+- 踰꾩쟾 ?뺤씤 踰꾪듉 ?대┃ ??"踰꾩쟾?뺤씤以?留??쒖떆?섍퀬 臾댄븳 ?湲?
+- ?낅뜲?댄듃 踰꾪듉 ?대┃ ??"由대━利덊솗?몄쨷"留??쒖떆?섍퀬 臾댄븳 ?湲?
+- ?낅뜲?댄듃 ?꾨즺 ???꾨줈洹몃옩???먮룞 ?ъ떆?묐릺吏 ?딆쓬
+- ?섎룞?쇰줈 ?ъ떆?묓빐??李쎌씠 ?섑??섏? ?딆쓬
 
-**원인 분석:**
+**?먯씤 遺꾩꽍:**
 
-| 문제 | 원인 |
+| 臾몄젣 | ?먯씤 |
 |------|------|
-| 버전 확인 무한 대기 | `_check_version_thread` 내부 예외 발생 시 UI 복구 코드 미실행 |
-| 릴리즈 확인 무한 대기 | `_fetch_latest_release_direct` 예외 발생 시 안전하게 처리 안 됨 |
-| 재시작 실패 | 배치 파일의 `start` 명령어가 공백 포함 경로에서 실패 |
+| 踰꾩쟾 ?뺤씤 臾댄븳 ?湲?| `_check_version_thread` ?대? ?덉쇅 諛쒖깮 ??UI 蹂듦뎄 肄붾뱶 誘몄떎??|
+| 由대━利??뺤씤 臾댄븳 ?湲?| `_fetch_latest_release_direct` ?덉쇅 諛쒖깮 ???덉쟾?섍쾶 泥섎━ ????|
+| ?ъ떆???ㅽ뙣 | 諛곗튂 ?뚯씪??`start` 紐낅졊?닿? 怨듬갚 ?ы븿 寃쎈줈?먯꽌 ?ㅽ뙣 |
 
-**해결:**
+**?닿껐:**
 
-#### 1. 버전 확인 스레드 예외 처리 (settings_view.py)
+#### 1. 踰꾩쟾 ?뺤씤 ?ㅻ젅???덉쇅 泥섎━ (settings_view.py)
 
 ```python
 def _check_version_thread(self, repo: str) -> None:
     try:
-        # 기존 로직 전체
+        # 湲곗〈 濡쒖쭅 ?꾩껜
         ...
     except Exception as e:
-        # 전체 스레드 예외 발생 시 UI 복구
-        logger.error(f"버전 확인 스레드 예외: {e}", exc_info=True)
-        self.after(0, lambda: self._update_check_failed("예기치 않은 오류"))
+        # ?꾩껜 ?ㅻ젅???덉쇅 諛쒖깮 ??UI 蹂듦뎄
+        logger.error(f"踰꾩쟾 ?뺤씤 ?ㅻ젅???덉쇅: {e}", exc_info=True)
+        self.after(0, lambda: self._update_check_failed("?덇린移??딆? ?ㅻ쪟"))
 ```
 
-#### 2. 릴리즈 정보 가져오기 예외 처리 (settings_view.py)
+#### 2. 由대━利??뺣낫 媛?몄삤湲??덉쇅 泥섎━ (settings_view.py)
 
 ```python
 def _fetch_latest_release_direct(self, repo: str) -> dict:
     try:
-        # 기존 로직 전체
+        # 湲곗〈 濡쒖쭅 ?꾩껜
         ...
         return None
     except Exception as e:
-        logger.error(f"릴리즈 정보 가져오기 전체 오류: {e}")
+        logger.error(f"由대━利??뺣낫 媛?몄삤湲??꾩껜 ?ㅻ쪟: {e}")
         return None
 ```
 
-#### 3. 배치 파일 재시작 명령어 수정 (app.py)
+#### 3. 諛곗튂 ?뚯씪 ?ъ떆??紐낅졊???섏젙 (app.py)
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| `start "" "{app_dir}\\{exe_name}"` | `cd /d "{app_dir}"` 후 `start "" "{exe_name}"` |
+| `start "" "{app_dir}\\{exe_name}"` | `cd /d "{app_dir}"` ??`start "" "{exe_name}"` |
 
-공백이 포함된 경로(예: `C:\Program Files\WinCro\WinCro.exe`)에서 `start` 명령어가 실패하는 문제 해결.
+怨듬갚???ы븿??寃쎈줈(?? `C:\Program Files\WinCro\WinCro.exe`)?먯꽌 `start` 紐낅졊?닿? ?ㅽ뙣?섎뒗 臾몄젣 ?닿껐.
 
-**수정된 파일:**
+**?섏젙???뚯씪:**
 - `src/ui/settings_view.py` - `_check_version_thread`, `_fetch_latest_release_direct`
-- `src/app.py` - 배치 파일 재시작 명령어 4곳 수정
+- `src/app.py` - 諛곗튂 ?뚯씪 ?ъ떆??紐낅졊??4怨??섏젙
 
 ---
 
-### 2026-01-31: 모니터링 모드 점프 조건 기능 추가 (v1.0.102)
+### 2026-01-31: 紐⑤땲?곕쭅 紐⑤뱶 ?먰봽 議곌굔 湲곕뒫 異붽? (v1.0.102)
 
-**기능:** 모니터링 모드에서 점프 실행 전 조건 이미지를 확인하여 조건부 점프 지원
+**湲곕뒫:** 紐⑤땲?곕쭅 紐⑤뱶?먯꽌 ?먰봽 ?ㅽ뻾 ??議곌굔 ?대?吏瑜??뺤씤?섏뿬 議곌굔遺 ?먰봽 吏??
 
-**동작 흐름:**
+**?숈옉 ?먮쫫:**
 ```
-감시 이미지 발견 → 모니터링 액션 실행 → 조건 이미지 확인
-                                          ├─ 조건 충족 → 점프 액션 실행 → 모니터링 복귀
-                                          └─ 조건 미충족 → 점프 건너뜀 → 모니터링 복귀
+媛먯떆 ?대?吏 諛쒓껄 ??紐⑤땲?곕쭅 ?≪뀡 ?ㅽ뻾 ??議곌굔 ?대?吏 ?뺤씤
+                                          ?쒋? 議곌굔 異⑹” ???먰봽 ?≪뀡 ?ㅽ뻾 ??紐⑤땲?곕쭅 蹂듦?
+                                          ?붴? 議곌굔 誘몄땐議????먰봽 嫄대꼫? ??紐⑤땲?곕쭅 蹂듦?
 ```
 
-**UI 변경:**
-| 파일 | 변경 내용 |
+**UI 蹂寃?**
+| ?뚯씪 | 蹂寃??댁슜 |
 |------|----------|
-| `monitoring_editor.py` | 감시 항목에 "조건" 버튼 추가 (점프 드롭다운 왼쪽) |
-| `monitoring_editor.py` | `_edit_condition()` 메서드 추가 - 조건 설정 다이얼로그 |
+| `monitoring_editor.py` | 媛먯떆 ??ぉ??"議곌굔" 踰꾪듉 異붽? (?먰봽 ?쒕∼?ㅼ슫 ?쇱そ) |
+| `monitoring_editor.py` | `_edit_condition()` 硫붿꽌??異붽? - 議곌굔 ?ㅼ젙 ?ㅼ씠?쇰줈洹?|
 
-**조건 설정 다이얼로그:**
-- 이미지 선택/미리보기
-- 검색 범위 지정 (ScreenRegionSelector)
-- 인식률 슬라이더 (30~100%, 기본 65%)
+**議곌굔 ?ㅼ젙 ?ㅼ씠?쇰줈洹?**
+- ?대?吏 ?좏깮/誘몃━蹂닿린
+- 寃??踰붿쐞 吏??(ScreenRegionSelector)
+- ?몄떇瑜??щ씪?대뜑 (30~100%, 湲곕낯 65%)
 
-**데이터 필드 (monitoring_watches 항목):**
+**?곗씠???꾨뱶 (monitoring_watches ??ぉ):**
 ```python
 {
-    "condition_image": str,           # 점프 조건 이미지 경로
-    "condition_search_region": list,  # 검색 범위 [x1, y1, x2, y2]
-    "condition_confidence": float,    # 인식률 (기본 0.65)
+    "condition_image": str,           # ?먰봽 議곌굔 ?대?吏 寃쎈줈
+    "condition_search_region": list,  # 寃??踰붿쐞 [x1, y1, x2, y2]
+    "condition_confidence": float,    # ?몄떇瑜?(湲곕낯 0.65)
 }
 ```
 
-**실행 로직 (rule_executor.py):**
+**?ㅽ뻾 濡쒖쭅 (rule_executor.py):**
 ```python
-# 조건 이미지 존재 시 확인
+# 議곌굔 ?대?吏 議댁옱 ???뺤씤
 condition_image = watch.get('condition_image')
-condition_met = True  # 조건 없으면 항상 충족
+condition_met = True  # 議곌굔 ?놁쑝硫???긽 異⑹”
 if condition_image and Path(condition_image).exists():
     result = self._find_image_on_screen(condition_image, condition_confidence,
                                         search_region=condition_search_region)
     condition_met = result is not None
 
-# 조건 충족 시에만 점프
+# 議곌굔 異⑹” ?쒖뿉留??먰봽
 if goto_index >= 0 and condition_met:
-    # 점프 액션 실행
+    # ?먰봽 ?≪뀡 ?ㅽ뻾
 ```
 
-**경로 변환 (automation_models.py):**
-- `to_dict()`: condition_image → 파일명만 저장
-- `from_dict()`: 파일명 → 절대 경로 복원
+**寃쎈줈 蹂??(automation_models.py):**
+- `to_dict()`: condition_image ???뚯씪紐낅쭔 ???
+- `from_dict()`: ?뚯씪紐????덈? 寃쎈줈 蹂듭썝
 
-**수정된 파일:**
-- `src/ui/monitoring_editor.py` - UI 및 _edit_condition 메서드
-- `src/player/rule_executor.py` - 조건 체크 로직
-- `src/analyzer/automation_models.py` - 경로 변환
+**?섏젙???뚯씪:**
+- `src/ui/monitoring_editor.py` - UI 諛?_edit_condition 硫붿꽌??
+- `src/player/rule_executor.py` - 議곌굔 泥댄겕 濡쒖쭅
+- `src/analyzer/automation_models.py` - 寃쎈줈 蹂??
 
 ---
 
-### 2026-01-30: 게임 모드 스무스 이동 및 스킬 기능 추가 (v1.0.86 ~ v1.0.101)
+### 2026-01-30: 寃뚯엫 紐⑤뱶 ?ㅻТ???대룞 諛??ㅽ궗 湲곕뒫 異붽? (v1.0.86 ~ v1.0.101)
 
-**기능:** 게임 특화 모드에 스무스 이동, 이동 스킬, 상시 스킬 기능 추가
+**湲곕뒫:** 寃뚯엫 ?뱁솕 紐⑤뱶???ㅻТ???대룞, ?대룞 ?ㅽ궗, ?곸떆 ?ㅽ궗 湲곕뒫 異붽?
 
-**스무스 이동 (smooth_move):**
-| 모드 | 방식 | 특징 |
+**?ㅻТ???대룞 (smooth_move):**
+| 紐⑤뱶 | 諛⑹떇 | ?뱀쭠 |
 |------|------|------|
-| OFF (기본) | 키 반복 | 호환성 좋음, 약간 로봇같음 |
-| ON | 울트라 탭 | 15ms 누름 + 5ms 간격, 자연스러움 |
+| OFF (湲곕낯) | ??諛섎났 | ?명솚??醫뗭쓬, ?쎄컙 濡쒕큸媛숈쓬 |
+| ON | ?명듃????| 15ms ?꾨쫫 + 5ms 媛꾧꺽, ?먯뿰?ㅻ윭? |
 
-**이동 스킬 (move_skill):**
-| 설정 | 설명 |
+**?대룞 ?ㅽ궗 (move_skill):**
+| ?ㅼ젙 | ?ㅻ챸 |
 |------|------|
-| `move_skill_key` | 이동 스킬 키 (예: "4") |
-| `move_skill_distance` | 스킬 사용 거리 (기본 150픽셀 이상) |
+| `move_skill_key` | ?대룞 ?ㅽ궗 ??(?? "4") |
+| `move_skill_distance` | ?ㅽ궗 ?ъ슜 嫄곕━ (湲곕낯 150?쎌? ?댁긽) |
 
-**상시 스킬 (auto_skill):**
-| 설정 | 설명 |
+**?곸떆 ?ㅽ궗 (auto_skill):**
+| ?ㅼ젙 | ?ㅻ챸 |
 |------|------|
-| `auto_skill_key` | 상시 사용 스킬 키 |
-| `auto_skill_cooldown_image` | 쿨타임 이미지 (없으면 스킬 사용) |
+| `auto_skill_key` | ?곸떆 ?ъ슜 ?ㅽ궗 ??|
+| `auto_skill_cooldown_image` | 荑⑦????대?吏 (?놁쑝硫??ㅽ궗 ?ъ슜) |
 
-**인식률 분리:**
-- `character_confidence`: 캐릭터 이미지 인식률
-- `target_confidence`: 목표 이미지 인식률
+**?몄떇瑜?遺꾨━:**
+- `character_confidence`: 罹먮┃???대?吏 ?몄떇瑜?
+- `target_confidence`: 紐⑺몴 ?대?吏 ?몄떇瑜?
 
-**수정된 파일:**
-- `src/analyzer/automation_models.py` - GameModeConfig 필드 추가
-- `src/ui/player_view.py` - 게임 모드 설정 UI
-- `src/player/rule_executor.py` - 스킬/이동 로직
+**?섏젙???뚯씪:**
+- `src/analyzer/automation_models.py` - GameModeConfig ?꾨뱶 異붽?
+- `src/ui/player_view.py` - 寃뚯엫 紐⑤뱶 ?ㅼ젙 UI
+- `src/player/rule_executor.py` - ?ㅽ궗/?대룞 濡쒖쭅
 
 ---
 
-### 2026-01-21: 녹화 시작/중지 버튼 UI 먹통 현상 수정
+### 2026-01-21: ?뱁솕 ?쒖옉/以묒? 踰꾪듉 UI 癒뱁넻 ?꾩긽 ?섏젙
 
-**증상:** 녹화 시작 또는 중지 버튼 클릭 시 프로그램이 먹통(UI 응답 없음)
+**利앹긽:** ?뱁솕 ?쒖옉 ?먮뒗 以묒? 踰꾪듉 ?대┃ ???꾨줈洹몃옩??癒뱁넻(UI ?묐떟 ?놁쓬)
 
-**원인 및 해결:**
+**?먯씤 諛??닿껐:**
 
-#### 1. 녹화 시작 시 블로킹 (screen_recorder.py)
+#### 1. ?뱁솕 ?쒖옉 ??釉붾줈??(screen_recorder.py)
 
-| 원인 | 해결 |
+| ?먯씤 | ?닿껐 |
 |------|------|
-| `cv2.VideoWriter` 초기화가 `start()` 메서드에서 실행되어 메인 스레드 블로킹 | `_record_loop()` 내부로 이동 (lazy init) |
-| 녹화 시작 타임아웃 2초 부족 | 5초로 증가 |
+| `cv2.VideoWriter` 珥덇린?붽? `start()` 硫붿꽌?쒖뿉???ㅽ뻾?섏뼱 硫붿씤 ?ㅻ젅??釉붾줈??| `_record_loop()` ?대?濡??대룞 (lazy init) |
+| ?뱁솕 ?쒖옉 ??꾩븘??2珥?遺議?| 5珥덈줈 利앷? |
 
 ```python
-# 변경 전: start()에서 VideoWriter 초기화
-self._writer = cv2.VideoWriter(...)  # 블로킹!
+# 蹂寃??? start()?먯꽌 VideoWriter 珥덇린??
+self._writer = cv2.VideoWriter(...)  # 釉붾줈??
 
-# 변경 후: _record_loop()에서 lazy 초기화
+# 蹂寃??? _record_loop()?먯꽌 lazy 珥덇린??
 def _record_loop(self):
-    self._writer = cv2.VideoWriter(...)  # 별도 스레드에서 실행
+    self._writer = cv2.VideoWriter(...)  # 蹂꾨룄 ?ㅻ젅?쒖뿉???ㅽ뻾
 ```
 
-#### 2. 녹화 시작 시 pynput 리스너 충돌 (input_logger.py - start)
+#### 2. ?뱁솕 ?쒖옉 ??pynput 由ъ뒪??異⑸룎 (input_logger.py - start)
 
-| 원인 | 해결 |
+| ?먯씤 | ?닿껐 |
 |------|------|
-| pynput 마우스/키보드 리스너 초기화가 동시에 실행되어 Windows 훅 충돌 | 각 리스너 초기화 후 대기 + 0.1초 딜레이 추가 |
-| 리스너 초기화 실패 시 에러 처리 미흡 | 개별 try/except 및 cleanup 추가 |
+| pynput 留덉슦???ㅻ낫??由ъ뒪??珥덇린?붽? ?숈떆???ㅽ뻾?섏뼱 Windows ??異⑸룎 | 媛?由ъ뒪??珥덇린?????湲?+ 0.1珥??쒕젅??異붽? |
+| 由ъ뒪??珥덇린???ㅽ뙣 ???먮윭 泥섎━ 誘명씉 | 媛쒕퀎 try/except 諛?cleanup 異붽? |
 
 ```python
-# 변경 후: 리스너 초기화 대기 및 딜레이
+# 蹂寃??? 由ъ뒪??珥덇린???湲?諛??쒕젅??
 self._mouse_listener.start()
-for _ in range(20):  # 최대 1초 대기
+for _ in range(20):  # 理쒕? 1珥??湲?
     if self._mouse_listener.running:
         break
     time.sleep(0.05)
 
-time.sleep(0.1)  # 훅 충돌 방지 딜레이
+time.sleep(0.1)  # ??異⑸룎 諛⑹? ?쒕젅??
 
 self._keyboard_listener.start()
-# ... 동일하게 대기
+# ... ?숈씪?섍쾶 ?湲?
 ```
 
-#### 3. 녹화 중지 시 블로킹 (input_logger.py - stop)
+#### 3. ?뱁솕 以묒? ??釉붾줈??(input_logger.py - stop)
 
-| 원인 | 해결 |
+| ?먯씤 | ?닿껐 |
 |------|------|
-| pynput `Listener.stop()`이 내부적으로 `join()`을 호출하여 블로킹 | 별도 스레드에서 stop() 실행 + 1초 타임아웃 |
+| pynput `Listener.stop()`???대??곸쑝濡?`join()`???몄텧?섏뿬 釉붾줈??| 蹂꾨룄 ?ㅻ젅?쒖뿉??stop() ?ㅽ뻾 + 1珥???꾩븘??|
 
 ```python
-# 변경 전: 직접 stop() 호출 (블로킹)
+# 蹂寃??? 吏곸젒 stop() ?몄텧 (釉붾줈??
 self._mouse_listener.stop()
 self._keyboard_listener.stop()
 
-# 변경 후: 별도 스레드 + 타임아웃
+# 蹂寃??? 蹂꾨룄 ?ㅻ젅??+ ??꾩븘??
 def stop_listeners():
     self._mouse_listener.stop()
     self._keyboard_listener.stop()
 
 stop_thread = threading.Thread(target=stop_listeners, daemon=True)
 stop_thread.start()
-stop_thread.join(timeout=1.0)  # 최대 1초만 대기
+stop_thread.join(timeout=1.0)  # 理쒕? 1珥덈쭔 ?湲?
 ```
 
-**수정된 파일:**
+**?섏젙???뚯씪:**
 - `src/recorder/screen_recorder.py` - start(), _record_loop()
 - `src/recorder/input_logger.py` - start(), stop()
 
 ---
 
-### 2026-01-21: 창 드래그 시 마우스 이동 캡처 안 되는 문제 수정
+### 2026-01-21: 李??쒕옒洹???留덉슦???대룞 罹≪쿂 ???섎뒗 臾몄젣 ?섏젙
 
-**증상:** 녹화 중 창 제목 표시줄을 드래그하면 마우스 이동이 캡처되지 않음, 분석에서도 드래그로 인식 안 됨
+**利앹긽:** ?뱁솕 以?李??쒕ぉ ?쒖떆以꾩쓣 ?쒕옒洹명븯硫?留덉슦???대룞??罹≪쿂?섏? ?딆쓬, 遺꾩꽍?먯꽌???쒕옒洹몃줈 ?몄떇 ????
 
-**원인:**
-Windows에서 창 제목 표시줄 드래그 시 "모달 드래그 루프"에 진입하여 pynput 훅에 마우스 이동 이벤트가 전달되지 않음. Win32 API도 이벤트 기반으로는 위치를 받지 못함.
+**?먯씤:**
+Windows?먯꽌 李??쒕ぉ ?쒖떆以??쒕옒洹???"紐⑤떖 ?쒕옒洹?猷⑦봽"??吏꾩엯?섏뿬 pynput ?낆뿉 留덉슦???대룞 ?대깽?멸? ?꾨떖?섏? ?딆쓬. Win32 API???대깽??湲곕컲?쇰줈???꾩튂瑜?諛쏆? 紐삵븿.
 
-**해결:**
-`_monitor_mouse_state()` 함수에 드래그 중 커서 위치 폴링 기능 추가
+**?닿껐:**
+`_monitor_mouse_state()` ?⑥닔???쒕옒洹?以?而ㅼ꽌 ?꾩튂 ?대쭅 湲곕뒫 異붽?
 
 ```python
-# 변경 전: 놓침 이벤트만 감지
+# 蹂寃??? ?볦묠 ?대깽?몃쭔 媛먯?
 def _monitor_mouse_state(self):
     if self._mouse_pressed and self._drag_start_pos:
         if not self._is_mouse_button_pressed():
-            # 놓침 이벤트 처리만 함
+            # ?볦묠 ?대깽??泥섎━留???
 
-# 변경 후: 드래그 중 위치도 폴링
+# 蹂寃??? ?쒕옒洹?以??꾩튂???대쭅
 def _monitor_mouse_state(self):
     if self._mouse_pressed and self._drag_start_pos:
-        current_pos = self._get_cursor_position()  # Win32 API로 위치 폴링
+        current_pos = self._get_cursor_position()  # Win32 API濡??꾩튂 ?대쭅
 
         if not self._is_mouse_button_pressed():
-            # 놓침 이벤트 처리
+            # ?볦묠 ?대깽??泥섎━
         else:
-            # 드래그 중 - 위치 업데이트 및 이벤트 기록
+            # ?쒕옒洹?以?- ?꾩튂 ?낅뜲?댄듃 諛??대깽??湲곕줉
             self._last_mouse_pos = current_pos
-            self._add_event(...)  # mouse_move 이벤트 추가
+            self._add_event(...)  # mouse_move ?대깽??異붽?
 ```
 
-**핵심 변경:**
-- 마우스 버튼이 눌린 동안 50ms 간격으로 Win32 API (`GetCursorPos`)로 커서 위치 폴링
-- 폴링된 위치를 `_last_mouse_pos`에 업데이트
-- `mouse_move` 이벤트로 기록하여 드래그 종료 시 정확한 거리 계산 가능
+**?듭떖 蹂寃?**
+- 留덉슦??踰꾪듉???뚮┛ ?숈븞 50ms 媛꾧꺽?쇰줈 Win32 API (`GetCursorPos`)濡?而ㅼ꽌 ?꾩튂 ?대쭅
+- ?대쭅???꾩튂瑜?`_last_mouse_pos`???낅뜲?댄듃
+- `mouse_move` ?대깽?몃줈 湲곕줉?섏뿬 ?쒕옒洹?醫낅즺 ???뺥솗??嫄곕━ 怨꾩궛 媛??
 
-**수정된 파일:**
+**?섏젙???뚯씪:**
 - `src/recorder/input_logger.py` - _monitor_mouse_state()
 
 ---
 
-### 2026-01-21: 드래그 기능 종합 개선
+### 2026-01-21: ?쒕옒洹?湲곕뒫 醫낇빀 媛쒖꽑
 
-**개선 내용:**
+**媛쒖꽑 ?댁슜:**
 
-#### 1. 우클릭/중간버튼 드래그 지원
+#### 1. ?고겢由?以묎컙踰꾪듉 ?쒕옒洹?吏??
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| 좌클릭만 드래그로 감지 | 좌/우/중간 버튼 모두 드래그 감지 |
+| 醫뚰겢由?쭔 ?쒕옒洹몃줈 媛먯? | 醫???以묎컙 踰꾪듉 紐⑤몢 ?쒕옒洹?媛먯? |
 
 ```python
-# _is_mouse_button_pressed() 함수 개선
+# _is_mouse_button_pressed() ?⑥닔 媛쒖꽑
 def _is_mouse_button_pressed(self, button: str = "left") -> bool:
     vk_map = {
         "left": 0x01,    # VK_LBUTTON
@@ -1081,35 +1090,35 @@ def _is_mouse_button_pressed(self, button: str = "left") -> bool:
     return (state & 0x8000) != 0
 ```
 
-#### 2. 드래그 임계값 설정 가능
+#### 2. ?쒕옒洹??꾧퀎媛??ㅼ젙 媛??
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| 하드코딩된 임계값 (25px, 0.15초) | config.py에서 설정 가능 |
+| ?섎뱶肄붾뵫???꾧퀎媛?(25px, 0.15珥? | config.py?먯꽌 ?ㅼ젙 媛??|
 
 ```python
 # config.py - RecordingConfig
 @dataclass
 class RecordingConfig:
-    drag_threshold_distance: int = 25  # 드래그 최소 이동 거리 (픽셀)
-    drag_threshold_time: float = 0.15  # 드래그 최소 누름 시간 (초)
+    drag_threshold_distance: int = 25  # ?쒕옒洹?理쒖냼 ?대룞 嫄곕━ (?쎌?)
+    drag_threshold_time: float = 0.15  # ?쒕옒洹?理쒖냼 ?꾨쫫 ?쒓컙 (珥?
 ```
 
-#### 3. 예외 처리 강화 (try-finally)
+#### 3. ?덉쇅 泥섎━ 媛뺥솕 (try-finally)
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| 예외 발생 시 상태 초기화 누락 가능 | try-finally로 상태 초기화 보장 |
+| ?덉쇅 諛쒖깮 ???곹깭 珥덇린???꾨씫 媛??| try-finally濡??곹깭 珥덇린??蹂댁옣 |
 
 ```python
 def _handle_mouse_release(self, x, y, button_name):
     try:
-        # 드래그/클릭 처리 로직
+        # ?쒕옒洹??대┃ 泥섎━ 濡쒖쭅
         ...
     except Exception as e:
-        logger.error(f"마우스 놓음 처리 중 오류: {e}")
+        logger.error(f"留덉슦???볦쓬 泥섎━ 以??ㅻ쪟: {e}")
     finally:
-        # 상태 초기화 (예외 발생 시에도 반드시 실행)
+        # ?곹깭 珥덇린??(?덉쇅 諛쒖깮 ?쒖뿉??諛섎뱶???ㅽ뻾)
         self._drag_start_pos = None
         self._drag_start_time = None
         self._drag_start_modifiers = []
@@ -1117,39 +1126,39 @@ def _handle_mouse_release(self, x, y, button_name):
         self._drag_path = []
 ```
 
-#### 4. 좌표 보정 로직 개선
+#### 4. 醫뚰몴 蹂댁젙 濡쒖쭅 媛쒖꽑
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| Win32 위치 vs pynput 중 거리가 큰 것 선택 | 폴링 위치 > Win32 > pynput 우선순위 |
+| Win32 ?꾩튂 vs pynput 以?嫄곕━媛 ??寃??좏깮 | ?대쭅 ?꾩튂 > Win32 > pynput ?곗꽑?쒖쐞 |
 
 ```python
-# 좌표 선택 우선순위 (개선)
-# 1. _last_mouse_pos: 드래그 중 50ms 간격 폴링된 최신 위치 (가장 신뢰도 높음)
-# 2. win32_pos: 마우스 놓는 순간 Win32 API 위치
-# 3. pynput 위치: 기본값 (Windows 창 드래그 시 부정확할 수 있음)
+# 醫뚰몴 ?좏깮 ?곗꽑?쒖쐞 (媛쒖꽑)
+# 1. _last_mouse_pos: ?쒕옒洹?以?50ms 媛꾧꺽 ?대쭅??理쒖떊 ?꾩튂 (媛???좊ː???믪쓬)
+# 2. win32_pos: 留덉슦???볥뒗 ?쒓컙 Win32 API ?꾩튂
+# 3. pynput ?꾩튂: 湲곕낯媛?(Windows 李??쒕옒洹???遺?뺥솗?????덉쓬)
 if self._last_mouse_pos and last_pos_dist > min_movement_threshold:
     end_x, end_y = self._last_mouse_pos
 elif win32_dist > pynput_dist and win32_dist > min_movement_threshold:
     end_x, end_y = win32_pos
 ```
 
-#### 5. 드래그 경로 정보 저장
+#### 5. ?쒕옒洹?寃쎈줈 ?뺣낫 ???
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| 시작/끝 좌표만 저장 | 전체 경로 포인트 저장 (x, y, timestamp) |
+| ?쒖옉/??醫뚰몴留????| ?꾩껜 寃쎈줈 ?ъ씤?????(x, y, timestamp) |
 
 ```python
-# InputEvent에 drag_path 필드 추가
+# InputEvent??drag_path ?꾨뱶 異붽?
 @dataclass
 class InputEvent:
     drag_path: Optional[List[Dict[str, Any]]] = None  # [{"x": int, "y": int, "t": float}, ...]
 
-# 드래그 중 경로 기록
+# ?쒕옒洹?以?寃쎈줈 湲곕줉
 self._drag_path.append({"x": current_pos[0], "y": current_pos[1], "t": current_time})
 
-# MOUSE_DRAG_END 이벤트에 경로 포함
+# MOUSE_DRAG_END ?대깽?몄뿉 寃쎈줈 ?ы븿
 drag_end = InputEvent(
     event_type=InputEventType.MOUSE_DRAG_END.value,
     drag_path=self._drag_path.copy(),
@@ -1157,361 +1166,361 @@ drag_end = InputEvent(
 )
 ```
 
-**수정된 파일:**
-- `src/recorder/input_logger.py` - 전체 드래그 로직 개선
-- `src/utils/config.py` - 드래그 임계값 설정 추가
+**?섏젙???뚯씪:**
+- `src/recorder/input_logger.py` - ?꾩껜 ?쒕옒洹?濡쒖쭅 媛쒖꽑
+- `src/utils/config.py` - ?쒕옒洹??꾧퀎媛??ㅼ젙 異붽?
 
 ---
 
-### 2026-01-21: 녹화 시작 시 프로그램 크래시/멈춤 현상 수정
+### 2026-01-21: ?뱁솕 ?쒖옉 ???꾨줈洹몃옩 ?щ옒??硫덉땄 ?꾩긽 ?섏젙
 
-**증상:** 녹화 시작 버튼 클릭 후 1~4분 내에 프로그램이 크래시되거나 멈춤
+**利앹긽:** ?뱁솕 ?쒖옉 踰꾪듉 ?대┃ ??1~4遺??댁뿉 ?꾨줈洹몃옩???щ옒?쒕릺嫄곕굹 硫덉땄
 
-**원인 분석:**
-1. **pynput 훅 충돌**: 동시에 너무 많은 Windows 입력 훅 등록
-   - `GlobalHotKeys` (F7 단축키)
-   - `mouse.Listener` (마우스 입력 기록)
-   - `keyboard.Listener` (키보드 입력 기록)
-   - `GetAsyncKeyState` 폴링 스레드 (F7 중복 감지)
+**?먯씤 遺꾩꽍:**
+1. **pynput ??異⑸룎**: ?숈떆???덈Т 留롮? Windows ?낅젰 ???깅줉
+   - `GlobalHotKeys` (F7 ?⑥텞??
+   - `mouse.Listener` (留덉슦???낅젰 湲곕줉)
+   - `keyboard.Listener` (?ㅻ낫???낅젰 湲곕줉)
+   - `GetAsyncKeyState` ?대쭅 ?ㅻ젅??(F7 以묐났 媛먯?)
 
-2. **중복 F7 감지 메커니즘**: GlobalHotKeys와 GetAsyncKeyState 폴링이 동시에 F7 감지
+2. **以묐났 F7 媛먯? 硫붿빱?덉쬁**: GlobalHotKeys? GetAsyncKeyState ?대쭅???숈떆??F7 媛먯?
 
-**해결책:**
+**?닿껐梨?**
 
-#### 1. GetAsyncKeyState 폴링 스레드 제거 (중복 감지 제거)
+#### 1. GetAsyncKeyState ?대쭅 ?ㅻ젅???쒓굅 (以묐났 媛먯? ?쒓굅)
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| GlobalHotKeys + GetAsyncKeyState 폴링 동시 사용 | GlobalHotKeys만 사용 (녹화 중에는 InputLogger에서 처리) |
+| GlobalHotKeys + GetAsyncKeyState ?대쭅 ?숈떆 ?ъ슜 | GlobalHotKeys留??ъ슜 (?뱁솕 以묒뿉??InputLogger?먯꽌 泥섎━) |
 
-제거된 함수:
+?쒓굅???⑥닔:
 - `_start_f7_monitor()`
 - `_monitor_f7_key()`
-- `_f7_monitor_running`, `_f7_monitor_thread` 변수
+- `_f7_monitor_running`, `_f7_monitor_thread` 蹂??
 
-#### 2. 녹화 중 GlobalHotKeys 일시 중지
+#### 2. ?뱁솕 以?GlobalHotKeys ?쇱떆 以묒?
 
-| 시점 | 동작 |
+| ?쒖젏 | ?숈옉 |
 |------|------|
-| 녹화 시작 시 | `GlobalHotKeys.stop()` → InputLogger의 keyboard.Listener에서 F7 처리 |
-| 녹화 종료 시 | `GlobalHotKeys` 재시작 |
+| ?뱁솕 ?쒖옉 ??| `GlobalHotKeys.stop()` ??InputLogger??keyboard.Listener?먯꽌 F7 泥섎━ |
+| ?뱁솕 醫낅즺 ??| `GlobalHotKeys` ?ъ떆??|
 
 ```python
 def _pause_global_hotkeys(self):
-    """GlobalHotKeys 일시 중지 (녹화 중 keyboard.Listener와 충돌 방지)"""
+    """GlobalHotKeys ?쇱떆 以묒? (?뱁솕 以?keyboard.Listener? 異⑸룎 諛⑹?)"""
     if hasattr(self, '_global_hotkeys') and self._global_hotkeys is not None:
         if not self._global_hotkeys_paused:
             self._global_hotkeys.stop()
             self._global_hotkeys_paused = True
 
 def _resume_global_hotkeys(self):
-    """GlobalHotKeys 재시작 (녹화 종료 후)"""
-    # GlobalHotKeys 새로 생성 및 시작
+    """GlobalHotKeys ?ъ떆??(?뱁솕 醫낅즺 ??"""
+    # GlobalHotKeys ?덈줈 ?앹꽦 諛??쒖옉
 ```
 
-#### 3. pynput 리스너 초기화 딜레이 증가
+#### 3. pynput 由ъ뒪??珥덇린???쒕젅??利앷?
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| 마우스→키보드 리스너 간 200ms 딜레이 | 500ms 딜레이 |
+| 留덉슦?ㅲ넂?ㅻ낫??由ъ뒪??媛?200ms ?쒕젅??| 500ms ?쒕젅??|
 
 ```python
 # input_logger.py
-time.sleep(0.5)  # 500ms로 증가 (pynput 훅 충돌 방지)
+time.sleep(0.5)  # 500ms濡?利앷? (pynput ??異⑸룎 諛⑹?)
 ```
 
-#### 4. InputLogger에서 F7 키 처리
+#### 4. InputLogger?먯꽌 F7 ??泥섎━
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| F7 키 무시 (`return`) | F7 감지 시 콜백 호출 |
+| F7 ??臾댁떆 (`return`) | F7 媛먯? ??肄쒕갚 ?몄텧 |
 
 ```python
 def _on_key_press(self, key) -> None:
-    # F7: 녹화 중지 단축키 - 콜백 호출
+    # F7: ?뱁솕 以묒? ?⑥텞??- 肄쒕갚 ?몄텧
     if key == keyboard.Key.f7:
-        logger.info("===== F7 감지 (InputLogger keyboard.Listener) =====")
+        logger.info("===== F7 媛먯? (InputLogger keyboard.Listener) =====")
         if self._on_f7_pressed:
             self._on_f7_pressed()
         return
 ```
 
-**수정된 파일:**
-- `src/ui/recorder_view.py` - F7 폴링 제거, GlobalHotKeys 일시 중지/재시작 로직 추가
-- `src/recorder/input_logger.py` - 딜레이 500ms 증가, F7 키 처리 추가
+**?섏젙???뚯씪:**
+- `src/ui/recorder_view.py` - F7 ?대쭅 ?쒓굅, GlobalHotKeys ?쇱떆 以묒?/?ъ떆??濡쒖쭅 異붽?
+- `src/recorder/input_logger.py` - ?쒕젅??500ms 利앷?, F7 ??泥섎━ 異붽?
 
 ---
 
-### 2026-01-21: dxcam(DirectX) 캡처 엔진 지원 추가
+### 2026-01-21: dxcam(DirectX) 罹≪쿂 ?붿쭊 吏??異붽?
 
-**기능:** 화면 캡처 성능 향상을 위한 dxcam(DirectX) 지원
+**湲곕뒫:** ?붾㈃ 罹≪쿂 ?깅뒫 ?μ긽???꾪븳 dxcam(DirectX) 吏??
 
-**구현 내용:**
+**援ы쁽 ?댁슜:**
 
-#### 1. dxcam 우선 사용, mss 자동 폴백
+#### 1. dxcam ?곗꽑 ?ъ슜, mss ?먮룞 ?대갚
 
-| 시도 순서 | 엔진 | 설명 |
+| ?쒕룄 ?쒖꽌 | ?붿쭊 | ?ㅻ챸 |
 |-----------|------|------|
-| 1차 | dxcam (DirectX) | GPU 가속 화면 캡처, 더 빠름 |
-| 2차 | mss (GDI) | 폴백, 호환성 높음 |
+| 1李?| dxcam (DirectX) | GPU 媛???붾㈃ 罹≪쿂, ??鍮좊쫫 |
+| 2李?| mss (GDI) | ?대갚, ?명솚???믪쓬 |
 
-#### 2. UI 블로킹 방지
+#### 2. UI 釉붾줈??諛⑹?
 
-모든 초기화 작업을 별도 스레드에서 수행:
-- VideoWriter 초기화
-- dxcam 임포트 (타임아웃 3초)
-- dxcam 카메라 생성 (타임아웃 3초)
-- 테스트 캡처 (타임아웃 2초)
+紐⑤뱺 珥덇린???묒뾽??蹂꾨룄 ?ㅻ젅?쒖뿉???섑뻾:
+- VideoWriter 珥덇린??
+- dxcam ?꾪룷??(??꾩븘??3珥?
+- dxcam 移대찓???앹꽦 (??꾩븘??3珥?
+- ?뚯뒪??罹≪쿂 (??꾩븘??2珥?
 
 ```python
 def _init_dxcam(self) -> bool:
-    """dxcam 초기화 (타임아웃 적용)"""
+    """dxcam 珥덇린??(??꾩븘???곸슜)"""
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(import_dxcam)
-        future.result(timeout=3.0)  # 타임아웃 적용
+        future.result(timeout=3.0)  # ??꾩븘???곸슜
 ```
 
-#### 3. 런타임 폴백
+#### 3. ?고????대갚
 
-dxcam 캡처 중 연속 10회 실패 시 자동으로 mss로 전환:
+dxcam 罹≪쿂 以??곗냽 10???ㅽ뙣 ???먮룞?쇰줈 mss濡??꾪솚:
 
 ```python
 if consecutive_failures >= max_failures:
-    logger.warning("dxcam 연속 10회 실패 - mss로 전환")
+    logger.warning("dxcam ?곗냽 10???ㅽ뙣 - mss濡??꾪솚")
     self._capture_loop_mss(frame_interval)
 ```
 
-#### 4. UI에 캡처 엔진 표시
+#### 4. UI??罹≪쿂 ?붿쭊 ?쒖떆
 
-녹화 중 상태 라벨에 현재 사용 중인 엔진 표시:
-- `🔴 녹화 중 (DirectX)` - dxcam 사용 중
-- `🔴 녹화 중 (GDI)` - mss 사용 중
+?뱁솕 以??곹깭 ?쇰꺼???꾩옱 ?ъ슜 以묒씤 ?붿쭊 ?쒖떆:
+- `?뵶 ?뱁솕 以?(DirectX)` - dxcam ?ъ슜 以?
+- `?뵶 ?뱁솕 以?(GDI)` - mss ?ъ슜 以?
 
-**수정된 파일:**
-- `src/recorder/screen_recorder.py` - dxcam 지원 추가, 타임아웃 및 폴백 로직
-- `src/ui/recorder_view.py` - 캡처 엔진 표시 추가
+**?섏젙???뚯씪:**
+- `src/recorder/screen_recorder.py` - dxcam 吏??異붽?, ??꾩븘??諛??대갚 濡쒖쭅
+- `src/ui/recorder_view.py` - 罹≪쿂 ?붿쭊 ?쒖떆 異붽?
 
 ---
 
-### 2026-01-21: dxcam COM 스레드 친화성 문제 수정
+### 2026-01-21: dxcam COM ?ㅻ젅??移쒗솕??臾몄젣 ?섏젙
 
-**증상:** dxcam(DirectX) 캡처 엔진 사용 시 녹화 시작 후 몇 초 뒤에 프로그램 멈춤
+**利앹긽:** dxcam(DirectX) 罹≪쿂 ?붿쭊 ?ъ슜 ???뱁솕 ?쒖옉 ??紐?珥??ㅼ뿉 ?꾨줈洹몃옩 硫덉땄
 
-**원인 분석:**
+**?먯씤 遺꾩꽍:**
 
-DirectX COM 객체는 **스레드 친화성(Thread Affinity)**이 있어서, COM 객체를 생성한 스레드에서만 사용해야 합니다.
+DirectX COM 媛앹껜??**?ㅻ젅??移쒗솕??Thread Affinity)**???덉뼱?? COM 媛앹껜瑜??앹꽦???ㅻ젅?쒖뿉?쒕쭔 ?ъ슜?댁빞 ?⑸땲??
 
-기존 코드에서 `_init_dxcam()` 메서드가 `ThreadPoolExecutor`를 사용하여 dxcam 초기화를 수행했습니다:
-- `ThreadPoolExecutor` 워커 스레드에서 `dxcam.create()` 실행 → COM 객체 생성
-- 녹화 스레드에서 `camera.grab()` 실행 → 다른 스레드에서 COM 객체 사용
+湲곗〈 肄붾뱶?먯꽌 `_init_dxcam()` 硫붿꽌?쒓? `ThreadPoolExecutor`瑜??ъ슜?섏뿬 dxcam 珥덇린?붾? ?섑뻾?덉뒿?덈떎:
+- `ThreadPoolExecutor` ?뚯빱 ?ㅻ젅?쒖뿉??`dxcam.create()` ?ㅽ뻾 ??COM 媛앹껜 ?앹꽦
+- ?뱁솕 ?ㅻ젅?쒖뿉??`camera.grab()` ?ㅽ뻾 ???ㅻⅨ ?ㅻ젅?쒖뿉??COM 媛앹껜 ?ъ슜
 
-이로 인해 DirectX COM 객체가 잘못된 스레드에서 접근되어 데드락 또는 크래시가 발생했습니다.
+?대줈 ?명빐 DirectX COM 媛앹껜媛 ?섎せ???ㅻ젅?쒖뿉???묎렐?섏뼱 ?곕뱶???먮뒗 ?щ옒?쒓? 諛쒖깮?덉뒿?덈떎.
 
-로그 분석:
+濡쒓렇 遺꾩꽍:
 ```
-12:05:49 | dxcam 초기화 성공 (ThreadPoolExecutor 워커 스레드)
-12:05:49 | 녹화 시작 신호 전송 (녹화 스레드)
-12:05:50 | _on_recording_started 호출 (메인 스레드)
-12:05:50 | (이후 UI 업데이트 로그 없음 - 멈춤)
-12:05:54 | 마우스 이벤트 감지 (입력 로거 스레드는 동작)
-12:07:04 | 앱 재시작 (사용자가 강제 종료 후)
+12:05:49 | dxcam 珥덇린???깃났 (ThreadPoolExecutor ?뚯빱 ?ㅻ젅??
+12:05:49 | ?뱁솕 ?쒖옉 ?좏샇 ?꾩넚 (?뱁솕 ?ㅻ젅??
+12:05:50 | _on_recording_started ?몄텧 (硫붿씤 ?ㅻ젅??
+12:05:50 | (?댄썑 UI ?낅뜲?댄듃 濡쒓렇 ?놁쓬 - 硫덉땄)
+12:05:54 | 留덉슦???대깽??媛먯? (?낅젰 濡쒓굅 ?ㅻ젅?쒕뒗 ?숈옉)
+12:07:04 | ???ъ떆??(?ъ슜?먭? 媛뺤젣 醫낅즺 ??
 ```
 
-**해결책:**
+**?닿껐梨?**
 
-#### 1. ThreadPoolExecutor 제거, 현재 스레드에서 직접 초기화
+#### 1. ThreadPoolExecutor ?쒓굅, ?꾩옱 ?ㅻ젅?쒖뿉??吏곸젒 珥덇린??
 
-| 변경 전 | 변경 후 |
+| 蹂寃???| 蹂寃???|
 |---------|---------|
-| `ThreadPoolExecutor`로 dxcam 초기화 (타임아웃용) | 녹화 스레드에서 직접 dxcam 초기화 |
+| `ThreadPoolExecutor`濡?dxcam 珥덇린??(??꾩븘?껋슜) | ?뱁솕 ?ㅻ젅?쒖뿉??吏곸젒 dxcam 珥덇린??|
 
 ```python
-# 변경 전: ThreadPoolExecutor 사용 (스레드 불일치 발생)
+# 蹂寃??? ThreadPoolExecutor ?ъ슜 (?ㅻ젅??遺덉씪移?諛쒖깮)
 def _init_dxcam(self) -> bool:
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(lambda: dxcam.create())
-        camera = future.result(timeout=3.0)  # 워커 스레드에서 생성!
-    self._dxcam_camera = camera  # 녹화 스레드에서 사용 → 문제!
+        camera = future.result(timeout=3.0)  # ?뚯빱 ?ㅻ젅?쒖뿉???앹꽦!
+    self._dxcam_camera = camera  # ?뱁솕 ?ㅻ젅?쒖뿉???ъ슜 ??臾몄젣!
 
-# 변경 후: 현재 스레드에서 직접 실행
+# 蹂寃??? ?꾩옱 ?ㅻ젅?쒖뿉??吏곸젒 ?ㅽ뻾
 def _init_dxcam(self) -> bool:
     """
-    중요: dxcam은 DirectX COM 객체를 사용하므로 스레드 친화성이 있습니다.
-    반드시 캡처 루프를 실행할 동일한 스레드에서 초기화해야 합니다.
+    以묒슂: dxcam? DirectX COM 媛앹껜瑜??ъ슜?섎?濡??ㅻ젅??移쒗솕?깆씠 ?덉뒿?덈떎.
+    諛섎뱶??罹≪쿂 猷⑦봽瑜??ㅽ뻾???숈씪???ㅻ젅?쒖뿉??珥덇린?뷀빐???⑸땲??
     """
     import dxcam
-    camera = dxcam.create(output_color="BGR")  # 녹화 스레드에서 직접 생성
-    test_frame = camera.grab()  # 동일 스레드에서 테스트
+    camera = dxcam.create(output_color="BGR")  # ?뱁솕 ?ㅻ젅?쒖뿉??吏곸젒 ?앹꽦
+    test_frame = camera.grab()  # ?숈씪 ?ㅻ젅?쒖뿉???뚯뒪??
     self._dxcam_camera = camera
 ```
 
-#### 2. dxcam 리소스 명시적 해제
+#### 2. dxcam 由ъ냼??紐낆떆???댁젣
 
 ```python
-# _cleanup()에서 dxcam 리소스 명시적 해제
+# _cleanup()?먯꽌 dxcam 由ъ냼??紐낆떆???댁젣
 if self._dxcam_camera is not None:
     import dxcam
     dxcam.delete(self._dxcam_camera)
     self._dxcam_camera = None
 ```
 
-**핵심 원칙:**
-- DirectX/COM 객체는 생성한 스레드에서만 사용해야 함
-- 멀티스레드 환경에서 COM 객체 공유 시 주의 필요
-- `ThreadPoolExecutor` 사용 시 COM 객체가 워커 스레드에서 생성됨에 주의
+**?듭떖 ?먯튃:**
+- DirectX/COM 媛앹껜???앹꽦???ㅻ젅?쒖뿉?쒕쭔 ?ъ슜?댁빞 ??
+- 硫?곗뒪?덈뱶 ?섍꼍?먯꽌 COM 媛앹껜 怨듭쑀 ??二쇱쓽 ?꾩슂
+- `ThreadPoolExecutor` ?ъ슜 ??COM 媛앹껜媛 ?뚯빱 ?ㅻ젅?쒖뿉???앹꽦?⑥뿉 二쇱쓽
 
-**수정된 파일:**
-- `src/recorder/screen_recorder.py` - `_init_dxcam()` 함수 수정, `_cleanup()` dxcam 해제 추가
+**?섏젙???뚯씪:**
+- `src/recorder/screen_recorder.py` - `_init_dxcam()` ?⑥닔 ?섏젙, `_cleanup()` dxcam ?댁젣 異붽?
 
-### 2026-01-26: 플레이 모드 경량화 (v1.0.63)
+### 2026-01-26: ?뚮젅??紐⑤뱶 寃쎈웾??(v1.0.63)
 
-**목적:** 저사양 PC에서 플레이 모드 메모리/CPU 점유율 감소
+**紐⑹쟻:** ??ъ뼇 PC?먯꽌 ?뚮젅??紐⑤뱶 硫붾え由?CPU ?먯쑀??媛먯냼
 
-**구현 내용:**
-- 플레이 모드에서 불필요한 뷰 모듈 지연 로딩
-- 에디터 모드에서만 로드되는 모듈:
-  - RecorderView (녹화) - dxcam, cv2, screen_recorder 등
-  - AnalyzerView (분석) - video_analyzer, template_matcher 등
-  - PlayerView (에디터 실행)
-  - SettingsView (설정)
-  - GuideView (가이드)
+**援ы쁽 ?댁슜:**
+- ?뚮젅??紐⑤뱶?먯꽌 遺덊븘?뷀븳 酉?紐⑤뱢 吏??濡쒕뵫
+- ?먮뵒??紐⑤뱶?먯꽌留?濡쒕뱶?섎뒗 紐⑤뱢:
+  - RecorderView (?뱁솕) - dxcam, cv2, screen_recorder ??
+  - AnalyzerView (遺꾩꽍) - video_analyzer, template_matcher ??
+  - PlayerView (?먮뵒???ㅽ뻾)
+  - SettingsView (?ㅼ젙)
+  - GuideView (媛?대뱶)
 
-**변경 방식:**
+**蹂寃?諛⑹떇:**
 ```python
-# 변경 전: 최상단에서 모두 import
+# 蹂寃??? 理쒖긽?⑥뿉??紐⑤몢 import
 from .ui import MainWindow, RecorderView, AnalyzerView, PlayerView, SettingsView, GuideView
 
-# 변경 후: MainWindow만 import, 나머지는 필요할 때 import
+# 蹂寃??? MainWindow留?import, ?섎㉧吏???꾩슂????import
 from .ui.main_window import MainWindow
 
-def _create_views(self):  # 에디터 모드에서만 호출
+def _create_views(self):  # ?먮뵒??紐⑤뱶?먯꽌留??몄텧
     from .ui.recorder_view import RecorderView
     from .ui.analyzer_view import AnalyzerView
     # ...
 ```
 
-**영향 없는 기능:**
-- 플레이 모드 실행 기능 (RuleExecutor)
-- 아두이노 마우스/키보드 (InputController, ArduinoHID)
-- 이미지 매칭 (EnhancedMatcher)
+**?곹뼢 ?녿뒗 湲곕뒫:**
+- ?뚮젅??紐⑤뱶 ?ㅽ뻾 湲곕뒫 (RuleExecutor)
+- ?꾨몢?대끂 留덉슦???ㅻ낫??(InputController, ArduinoHID)
+- ?대?吏 留ㅼ묶 (EnhancedMatcher)
 
-**수정된 파일:**
-- `src/app.py` - 지연 로딩 적용
-
----
-
-### 2026-01-26: 플레이 모드 재생횟수 저장/로드 수정 (v1.0.62)
-
-**문제:** 재생횟수를 4회로 저장하고 재시작하면 1회로 표시됨
-
-**원인:** UI 초기화 시 기본값 "1"로 설정, 저장된 값 불러오기 안 함
-
-**해결:**
-- 시작 시 선택된 플랜의 저장된 재생횟수 자동 로드
-- 플랜 변경 시 해당 플랜의 재생횟수 자동 로드
-- 드롭다운에 command 연결 추가
-
-**수정된 파일:**
-- `src/ui/main_window.py` - 초기 재생횟수 로드, 플랜 변경 시 로드
+**?섏젙???뚯씪:**
+- `src/app.py` - 吏??濡쒕뵫 ?곸슜
 
 ---
 
-### 2026-01-26: 프로그램 시작 시 자동 실행 기능 추가 (v1.0.60 ~ v1.0.61)
+### 2026-01-26: ?뚮젅??紐⑤뱶 ?ъ깮?잛닔 ???濡쒕뱶 ?섏젙 (v1.0.62)
 
-**기능:** 플레이 모드에서 프로그램 시작 시 지정한 플랜 자동 실행
+**臾몄젣:** ?ъ깮?잛닔瑜?4?뚮줈 ??ν븯怨??ъ떆?묓븯硫?1?뚮줈 ?쒖떆??
 
-**구현 내용:**
+**?먯씤:** UI 珥덇린????湲곕낯媛?"1"濡??ㅼ젙, ??λ맂 媛?遺덈윭?ㅺ린 ????
 
-#### 1. 설정 추가 (config.py - PlayerConfig)
-| 설정 | 설명 |
-|------|------|
-| `auto_run_enabled` | 자동 실행 활성화 여부 |
-| `auto_run_plan` | 자동 실행할 플랜 파일 경로 |
+**?닿껐:**
+- ?쒖옉 ???좏깮???뚮옖????λ맂 ?ъ깮?잛닔 ?먮룞 濡쒕뱶
+- ?뚮옖 蹂寃????대떦 ?뚮옖???ъ깮?잛닔 ?먮룞 濡쒕뱶
+- ?쒕∼?ㅼ슫??command ?곌껐 異붽?
 
-#### 2. 환경설정 UI (settings_view.py)
-- 재생 설정에 "프로그램 시작 시 자동 실행" 섹션 추가
-- 활성화 토글
-- 플랜 선택 드롭다운 (분석된 플랜 목록 표시)
-
-#### 3. 자동 실행 로직 (app.py, main_window.py)
-- **플레이 모드일 때만** 동작
-- 5초 후 실행 (업데이트 확인, 아두이노 연결 완료 대기)
-- 미니 플레이어에 설정된 **반복 횟수** 적용
-
-**사용법:**
-1. 환경설정 → 재생 → "프로그램 시작 시 자동 실행" 활성화
-2. 드롭다운에서 실행할 플랜 선택
-3. 미니 플레이어에서 반복 횟수 설정 (예: 4회)
-4. 창 모드를 "플레이 모드"로 변경
-5. 프로그램 재시작 → 5초 후 자동 실행 (설정한 횟수만큼 반복)
-
-**수정된 파일:**
-- `src/utils/config.py` - PlayerConfig에 auto_run_enabled, auto_run_plan 추가
-- `src/ui/settings_view.py` - 자동 실행 설정 UI 추가
-- `src/ui/main_window.py` - auto_run_plan() 메서드 추가
-- `src/app.py` - _auto_run_plan() 메서드 추가, 5초 후 실행 예약
+**?섏젙???뚯씪:**
+- `src/ui/main_window.py` - 珥덇린 ?ъ깮?잛닔 濡쒕뱶, ?뚮옖 蹂寃???濡쒕뱶
 
 ---
 
-### 2026-01-25: 인식률 설정 통일 및 "다음 화면 대기" 버그 수정 (v1.0.53 ~ v1.0.59)
+### 2026-01-26: ?꾨줈洹몃옩 ?쒖옉 ???먮룞 ?ㅽ뻾 湲곕뒫 異붽? (v1.0.60 ~ v1.0.61)
 
-**증상:**
-- 모니터링 액션을 **부분 실행**하면 인식률 97%로 정상 감지
-- 이전 액션에서 **순차 실행**으로 넘어오면 "인식률 부족: 0.49 < 0.65" 에러 발생
-- 사용자가 80% 인식률을 설정했는데 로그에는 0.65로 표시됨
+**湲곕뒫:** ?뚮젅??紐⑤뱶?먯꽌 ?꾨줈洹몃옩 ?쒖옉 ??吏?뺥븳 ?뚮옖 ?먮룞 ?ㅽ뻾
 
-**원인 분석:**
+**援ы쁽 ?댁슜:**
 
-#### 1. 용어 혼란 (v1.0.53)
-| 문제 | 해결 |
+#### 1. ?ㅼ젙 異붽? (config.py - PlayerConfig)
+| ?ㅼ젙 | ?ㅻ챸 |
 |------|------|
-| 로그에 "신뢰도", "임계값" 혼용 | 모든 로그를 "인식률"로 통일 |
+| `auto_run_enabled` | ?먮룞 ?ㅽ뻾 ?쒖꽦???щ? |
+| `auto_run_plan` | ?먮룞 ?ㅽ뻾???뚮옖 ?뚯씪 寃쎈줈 |
 
-#### 2. 중복된 인식률 설정 (v1.0.53)
-| 문제 | 해결 |
-|------|------|
-| `rule.confidence`, `watch.confidence`, `monitor_action.confidence` 3개 존재 | `rule.confidence`만 남기고 모두 제거 |
-| 어떤 설정이 실제로 적용되는지 혼란 | UI에서 감시 이미지 인식률 슬라이더 제거 |
+#### 2. ?섍꼍?ㅼ젙 UI (settings_view.py)
+- ?ъ깮 ?ㅼ젙??"?꾨줈洹몃옩 ?쒖옉 ???먮룞 ?ㅽ뻾" ?뱀뀡 異붽?
+- ?쒖꽦???좉?
+- ?뚮옖 ?좏깮 ?쒕∼?ㅼ슫 (遺꾩꽍???뚮옖 紐⑸줉 ?쒖떆)
 
-#### 3. 인식률 변경이 JSON에 저장 안 됨 (v1.0.55)
-| 문제 | 해결 |
+#### 3. ?먮룞 ?ㅽ뻾 濡쒖쭅 (app.py, main_window.py)
+- **?뚮젅??紐⑤뱶???뚮쭔** ?숈옉
+- 5珥????ㅽ뻾 (?낅뜲?댄듃 ?뺤씤, ?꾨몢?대끂 ?곌껐 ?꾨즺 ?湲?
+- 誘몃땲 ?뚮젅?댁뼱???ㅼ젙??**諛섎났 ?잛닔** ?곸슜
+
+**?ъ슜踰?**
+1. ?섍꼍?ㅼ젙 ???ъ깮 ??"?꾨줈洹몃옩 ?쒖옉 ???먮룞 ?ㅽ뻾" ?쒖꽦??
+2. ?쒕∼?ㅼ슫?먯꽌 ?ㅽ뻾???뚮옖 ?좏깮
+3. 誘몃땲 ?뚮젅?댁뼱?먯꽌 諛섎났 ?잛닔 ?ㅼ젙 (?? 4??
+4. 李?紐⑤뱶瑜?"?뚮젅??紐⑤뱶"濡?蹂寃?
+5. ?꾨줈洹몃옩 ?ъ떆????5珥????먮룞 ?ㅽ뻾 (?ㅼ젙???잛닔留뚰겮 諛섎났)
+
+**?섏젙???뚯씪:**
+- `src/utils/config.py` - PlayerConfig??auto_run_enabled, auto_run_plan 異붽?
+- `src/ui/settings_view.py` - ?먮룞 ?ㅽ뻾 ?ㅼ젙 UI 異붽?
+- `src/ui/main_window.py` - auto_run_plan() 硫붿꽌??異붽?
+- `src/app.py` - _auto_run_plan() 硫붿꽌??異붽?, 5珥????ㅽ뻾 ?덉빟
+
+---
+
+### 2026-01-25: ?몄떇瑜??ㅼ젙 ?듭씪 諛?"?ㅼ쓬 ?붾㈃ ?湲? 踰꾧렇 ?섏젙 (v1.0.53 ~ v1.0.59)
+
+**利앹긽:**
+- 紐⑤땲?곕쭅 ?≪뀡??**遺遺??ㅽ뻾**?섎㈃ ?몄떇瑜?97%濡??뺤긽 媛먯?
+- ?댁쟾 ?≪뀡?먯꽌 **?쒖감 ?ㅽ뻾**?쇰줈 ?섏뼱?ㅻ㈃ "?몄떇瑜?遺議? 0.49 < 0.65" ?먮윭 諛쒖깮
+- ?ъ슜?먭? 80% ?몄떇瑜좎쓣 ?ㅼ젙?덈뒗??濡쒓렇?먮뒗 0.65濡??쒖떆??
+
+**?먯씤 遺꾩꽍:**
+
+#### 1. ?⑹뼱 ?쇰? (v1.0.53)
+| 臾몄젣 | ?닿껐 |
 |------|------|
-| UI에서 인식률 변경 시 `_modified = True`만 설정 | `_save_plan()` 즉시 호출 추가 |
-| JSON 파일에는 이전 값 유지됨 | 변경 즉시 파일에 저장 |
+| 濡쒓렇??"?좊ː??, "?꾧퀎媛? ?쇱슜 | 紐⑤뱺 濡쒓렇瑜?"?몄떇瑜?濡??듭씪 |
+
+#### 2. 以묐났???몄떇瑜??ㅼ젙 (v1.0.53)
+| 臾몄젣 | ?닿껐 |
+|------|------|
+| `rule.confidence`, `watch.confidence`, `monitor_action.confidence` 3媛?議댁옱 | `rule.confidence`留??④린怨?紐⑤몢 ?쒓굅 |
+| ?대뼡 ?ㅼ젙???ㅼ젣濡??곸슜?섎뒗吏 ?쇰? | UI?먯꽌 媛먯떆 ?대?吏 ?몄떇瑜??щ씪?대뜑 ?쒓굅 |
+
+#### 3. ?몄떇瑜?蹂寃쎌씠 JSON?????????(v1.0.55)
+| 臾몄젣 | ?닿껐 |
+|------|------|
+| UI?먯꽌 ?몄떇瑜?蹂寃???`_modified = True`留??ㅼ젙 | `_save_plan()` 利됱떆 ?몄텧 異붽? |
+| JSON ?뚯씪?먮뒗 ?댁쟾 媛??좎???| 蹂寃?利됱떆 ?뚯씪?????|
 
 ```python
-# player_view.py 수정
+# player_view.py ?섏젙
 def save_confidence_only():
     rule.confidence = conf_var.get() / 100.0
-    logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
+    logger.info(f"?몃━嫄??대?吏 ?몄떇瑜???? {int(conf_var.get())}%")
     self._modified = True
-    self._save_plan()  # 추가: JSON 파일에 즉시 저장
+    self._save_plan()  # 異붽?: JSON ?뚯씪??利됱떆 ???
 ```
 
-#### 4. "다음 화면 대기" 하드코딩된 임계값 (v1.0.56~v1.0.59)
+#### 4. "?ㅼ쓬 ?붾㈃ ?湲? ?섎뱶肄붾뵫???꾧퀎媛?(v1.0.56~v1.0.59)
 
-**"다음 화면 대기"란?**
-- 현재 액션 완료 후, **다음 액션의 타겟 이미지**가 화면에 나타날 때까지 대기하는 기능
-- 화면 전환이 완료됐는지 확인하는 용도
+**"?ㅼ쓬 ?붾㈃ ?湲???**
+- ?꾩옱 ?≪뀡 ?꾨즺 ?? **?ㅼ쓬 ?≪뀡???寃??대?吏**媛 ?붾㈃???섑????뚭퉴吏 ?湲고븯??湲곕뒫
+- ?붾㈃ ?꾪솚???꾨즺?먮뒗吏 ?뺤씤?섎뒗 ?⑸룄
 
-| 문제 | 해결 |
+| 臾몄젣 | ?닿껐 |
 |------|------|
-| 하드코딩된 `0.65` 임계값 사용 | v1.0.56: `next_rule.confidence` 사용으로 변경 |
-| 검색 범위(`search_region`) 미적용 | v1.0.57: 다음 액션의 검색 범위 계산 및 전달 |
-| 사용자 인식률(80%)이 타겟 이미지에도 적용됨 | v1.0.58~59: **45% 고정**으로 변경 |
+| ?섎뱶肄붾뵫??`0.65` ?꾧퀎媛??ъ슜 | v1.0.56: `next_rule.confidence` ?ъ슜?쇰줈 蹂寃?|
+| 寃??踰붿쐞(`search_region`) 誘몄쟻??| v1.0.57: ?ㅼ쓬 ?≪뀡??寃??踰붿쐞 怨꾩궛 諛??꾨떖 |
+| ?ъ슜???몄떇瑜?80%)???寃??대?吏?먮룄 ?곸슜??| v1.0.58~59: **45% 怨좎젙**?쇰줈 蹂寃?|
 
-**핵심 문제:**
-- 사용자가 설정한 80%는 **감시 이미지** 감지용
-- "다음 화면 대기"는 **타겟 이미지** 확인용 (다른 목적)
-- 타겟 이미지가 46%로만 매칭되는데 80% 임계값 적용 → 실패
-- 부분 실행 시에는 "다음 화면 대기" 없이 바로 감시 모드 진입 → 정상 작동
+**?듭떖 臾몄젣:**
+- ?ъ슜?먭? ?ㅼ젙??80%??**媛먯떆 ?대?吏** 媛먯???
+- "?ㅼ쓬 ?붾㈃ ?湲???**?寃??대?吏** ?뺤씤??(?ㅻⅨ 紐⑹쟻)
+- ?寃??대?吏媛 46%濡쒕쭔 留ㅼ묶?섎뒗??80% ?꾧퀎媛??곸슜 ???ㅽ뙣
+- 遺遺??ㅽ뻾 ?쒖뿉??"?ㅼ쓬 ?붾㈃ ?湲? ?놁씠 諛붾줈 媛먯떆 紐⑤뱶 吏꾩엯 ???뺤긽 ?묐룞
 
 ```python
-# rule_executor.py - v1.0.59 최종 수정
-# "다음 화면 대기"는 화면 전환 확인용이므로 낮은 임계값(0.45) 사용
-next_confidence = 0.45  # 다음 화면 대기는 고정 45%
+# rule_executor.py - v1.0.59 理쒖쥌 ?섏젙
+# "?ㅼ쓬 ?붾㈃ ?湲????붾㈃ ?꾪솚 ?뺤씤?⑹씠誘濡???? ?꾧퀎媛?0.45) ?ъ슜
+next_confidence = 0.45  # ?ㅼ쓬 ?붾㈃ ?湲곕뒗 怨좎젙 45%
 
-# 다음 액션의 검색 범위 계산
+# ?ㅼ쓬 ?≪뀡??寃??踰붿쐞 怨꾩궛
 next_search_region = None
 if next_rule:
     next_search_radius = getattr(next_rule, 'search_radius', 0) or 0
@@ -1529,42 +1538,42 @@ if next_rule:
 location = self._find_image_on_screen(next_target_image, next_confidence, search_region=next_search_region)
 ```
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - "다음 화면 대기" 로직, 로그 메시지
-- `src/ui/player_view.py` - 인식률 저장 로직, 감시 이미지 슬라이더 제거
-- `src/ui/analyzer_view.py` - UI 라벨 변경
-- `src/i18n/ko.py` - "신뢰도" → "인식률" 번역 변경
-- `src/utils/config.py` - 버전 업데이트 (1.0.53 → 1.0.59)
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - "?ㅼ쓬 ?붾㈃ ?湲? 濡쒖쭅, 濡쒓렇 硫붿떆吏
+- `src/ui/player_view.py` - ?몄떇瑜????濡쒖쭅, 媛먯떆 ?대?吏 ?щ씪?대뜑 ?쒓굅
+- `src/ui/analyzer_view.py` - UI ?쇰꺼 蹂寃?
+- `src/i18n/ko.py` - "?좊ː?? ??"?몄떇瑜? 踰덉뿭 蹂寃?
+- `src/utils/config.py` - 踰꾩쟾 ?낅뜲?댄듃 (1.0.53 ??1.0.59)
 
-**교훈:**
-- 같은 "이미지 인식률"이라도 용도가 다르면 별도 설정이 필요
-- 하드코딩된 값은 나중에 문제 찾기 어려움
-- 부분 실행과 순차 실행의 코드 경로가 다를 수 있음
+**援먰썕:**
+- 媛숈? "?대?吏 ?몄떇瑜??대씪???⑸룄媛 ?ㅻⅤ硫?蹂꾨룄 ?ㅼ젙???꾩슂
+- ?섎뱶肄붾뵫??媛믪? ?섏쨷??臾몄젣 李얘린 ?대젮?
+- 遺遺??ㅽ뻾怨??쒖감 ?ㅽ뻾??肄붾뱶 寃쎈줈媛 ?ㅻ? ???덉쓬
 
 ---
 
-### 2026-01-29: 저사양 PC 메모리 해제 개선 (v1.0.89)
+### 2026-01-29: ??ъ뼇 PC 硫붾え由??댁젣 媛쒖꽑 (v1.0.89)
 
-**증상:** 플레이 모드에서 저사양 PC에서 WinCro가 아닌 다른 프로그램들이 간헐적으로 종료됨
+**利앹긽:** ?뚮젅??紐⑤뱶?먯꽌 ??ъ뼇 PC?먯꽌 WinCro媛 ?꾨땶 ?ㅻⅨ ?꾨줈洹몃옩?ㅼ씠 媛꾪뿉?곸쑝濡?醫낅즺??
 
-**원인 분석:**
-이미지 매칭 루프에서 화면 캡처 후 메모리가 즉시 해제되지 않아 메모리 누적 발생
+**?먯씤 遺꾩꽍:**
+?대?吏 留ㅼ묶 猷⑦봽?먯꽌 ?붾㈃ 罹≪쿂 ??硫붾え由ш? 利됱떆 ?댁젣?섏? ?딆븘 硫붾え由??꾩쟻 諛쒖깮
 
-**해결:**
+**?닿껐:**
 
-#### 1. 명시적 메모리 해제 추가
+#### 1. 紐낆떆??硫붾え由??댁젣 異붽?
 
-| 파일 | 함수 | 변경 내용 |
+| ?뚯씪 | ?⑥닔 | 蹂寃??댁슜 |
 |------|------|----------|
-| `action_player.py` | `_find_all_images_on_screen` | `del` + `gc.collect()` 추가 |
-| `action_player.py` | 이미지 대기 루프 | `del` 추가 (5초 로그용 스크린샷) |
-| `action_player.py` | `_wait_for_image` | `del screen` 추가 |
-| `rule_executor.py` | `_find_image_on_screen` | `del` + `gc.collect()` 추가 |
-| `rule_executor.py` | `_wait_for_trigger` | 루프 내 `del` 추가 |
-| `rule_executor.py` | `_find_all_images_on_screen` | `del` + `gc.collect()` 추가 |
+| `action_player.py` | `_find_all_images_on_screen` | `del` + `gc.collect()` 異붽? |
+| `action_player.py` | ?대?吏 ?湲?猷⑦봽 | `del` 異붽? (5珥?濡쒓렇???ㅽ겕由곗꺑) |
+| `action_player.py` | `_wait_for_image` | `del screen` 異붽? |
+| `rule_executor.py` | `_find_image_on_screen` | `del` + `gc.collect()` 異붽? |
+| `rule_executor.py` | `_wait_for_trigger` | 猷⑦봽 ??`del` 異붽? |
+| `rule_executor.py` | `_find_all_images_on_screen` | `del` + `gc.collect()` 異붽? |
 
 ```python
-# 예시: _find_all_images_on_screen
+# ?덉떆: _find_all_images_on_screen
 screenshot = None
 screenshot_np = None
 screenshot_gray = None
@@ -1572,73 +1581,73 @@ result = None
 try:
     screenshot = ImageGrab.grab()
     screenshot_np = np.array(screenshot)
-    # ... 이미지 매칭 ...
+    # ... ?대?吏 留ㅼ묶 ...
 finally:
-    # 메모리 해제 (저사양 PC 지원)
+    # 硫붾え由??댁젣 (??ъ뼇 PC 吏??
     del screenshot, screenshot_np, screenshot_gray, result
     gc.collect()
 ```
 
-**수정된 파일:**
-- `src/player/action_player.py` - gc import 추가, 메모리 해제 코드 추가
-- `src/player/rule_executor.py` - gc import 추가, 메모리 해제 코드 추가
+**?섏젙???뚯씪:**
+- `src/player/action_player.py` - gc import 異붽?, 硫붾え由??댁젣 肄붾뱶 異붽?
+- `src/player/rule_executor.py` - gc import 異붽?, 硫붾え由??댁젣 肄붾뱶 異붽?
 
 ---
 
-### 2026-01-29: 플레이 모드 반복 횟수 버그 수정 (v1.0.89)
+### 2026-01-29: ?뚮젅??紐⑤뱶 諛섎났 ?잛닔 踰꾧렇 ?섏젙 (v1.0.89)
 
-**증상:** 반복 횟수를 설정하고 저장 후 실행해도 1회만 실행되고 멈춤
+**利앹긽:** 諛섎났 ?잛닔瑜??ㅼ젙?섍퀬 ??????ㅽ뻾?대룄 1?뚮쭔 ?ㅽ뻾?섍퀬 硫덉땄
 
-**원인:** `rule_executor.py`의 `_execution_loop`에서 `plan.total_repeat_count`를 사용하지 않음
+**?먯씤:** `rule_executor.py`??`_execution_loop`?먯꽌 `plan.total_repeat_count`瑜??ъ슜?섏? ?딆쓬
 
-**해결:**
+**?닿껐:**
 
-#### 1. `_execution_loop`에 전체 반복 루프 추가
+#### 1. `_execution_loop`???꾩껜 諛섎났 猷⑦봽 異붽?
 
 ```python
 def _execution_loop(self) -> None:
-    # 전체 반복 횟수 (기본값 1)
+    # ?꾩껜 諛섎났 ?잛닔 (湲곕낯媛?1)
     total_repeat_count = getattr(plan, 'total_repeat_count', 1) or 1
     current_repeat = 0
 
-    # 전체 반복 루프
+    # ?꾩껜 諛섎났 猷⑦봽
     while current_repeat < total_repeat_count:
         current_repeat += 1
         if total_repeat_count > 1:
-            logger.info(f"▶ 반복 {current_repeat}/{total_repeat_count} 시작")
+            logger.info(f"??諛섎났 {current_repeat}/{total_repeat_count} ?쒖옉")
 
-        # 매 반복마다 결과 초기화
+        # 留?諛섎났留덈떎 寃곌낵 珥덇린??
         if current_repeat > 1:
             self._results.clear()
             self._progress.initial_completed = 0
 
-        # 모든 규칙 실행
+        # 紐⑤뱺 洹쒖튃 ?ㅽ뻾
         for i, (rule, step_num) in enumerate(all_rules_with_step):
-            # ... 기존 실행 로직 ...
+            # ... 湲곗〈 ?ㅽ뻾 濡쒖쭅 ...
 ```
 
-**수정된 파일:**
-- `src/player/rule_executor.py` - `_execution_loop()` 전체 반복 루프 추가
+**?섏젙???뚯씪:**
+- `src/player/rule_executor.py` - `_execution_loop()` ?꾩껜 諛섎났 猷⑦봽 異붽?
 
 ---
 
-### 2026-01-29: 에디터/플레이 모드 반복 횟수 동기화 (v1.0.89)
+### 2026-01-29: ?먮뵒???뚮젅??紐⑤뱶 諛섎났 ?잛닔 ?숆린??(v1.0.89)
 
-**증상:** 플레이 모드에서 반복 횟수 변경 시 에디터 모드 자동실행 설정에 반영 안 됨
+**利앹긽:** ?뚮젅??紐⑤뱶?먯꽌 諛섎났 ?잛닔 蹂寃????먮뵒??紐⑤뱶 ?먮룞?ㅽ뻾 ?ㅼ젙??諛섏쁺 ????
 
-**원인:**
-1. 에디터 모드 설정에서 플랜 파일의 최신 `total_repeat_count`를 읽지 않음
-2. 에디터 모드에서 반복 횟수 변경 시 플랜 파일에 저장 안 됨
-3. 미니 플레이어와 rule_executor에서 이중 반복 발생 가능
+**?먯씤:**
+1. ?먮뵒??紐⑤뱶 ?ㅼ젙?먯꽌 ?뚮옖 ?뚯씪??理쒖떊 `total_repeat_count`瑜??쎌? ?딆쓬
+2. ?먮뵒??紐⑤뱶?먯꽌 諛섎났 ?잛닔 蹂寃????뚮옖 ?뚯씪?????????
+3. 誘몃땲 ?뚮젅?댁뼱? rule_executor?먯꽌 ?댁쨷 諛섎났 諛쒖깮 媛??
 
-**해결:**
+**?닿껐:**
 
-#### 1. 에디터 모드 설정 로드 시 플랜 파일에서 최신 값 읽기
+#### 1. ?먮뵒??紐⑤뱶 ?ㅼ젙 濡쒕뱶 ???뚮옖 ?뚯씪?먯꽌 理쒖떊 媛??쎄린
 
 ```python
 # settings_view.py - _load_settings_to_ui
 for i, seq_path in enumerate(self._seq_plan_paths):
-    # 플랜 파일에서 최신 반복횟수 읽기
+    # ?뚮옖 ?뚯씪?먯꽌 理쒖떊 諛섎났?잛닔 ?쎄린
     repeat = 1
     try:
         if Path(seq_path).exists():
@@ -1650,11 +1659,11 @@ for i, seq_path in enumerate(self._seq_plan_paths):
     self._seq_plan_repeats.append(repeat)
 ```
 
-#### 2. 에디터 모드에서 반복 횟수 변경 시 플랜 파일에 저장
+#### 2. ?먮뵒??紐⑤뱶?먯꽌 諛섎났 ?잛닔 蹂寃????뚮옖 ?뚯씪?????
 
 ```python
 # settings_view.py - _seq_apply_repeat
-# 플랜 파일에도 반복횟수 저장 (플레이 모드와 동기화)
+# ?뚮옖 ?뚯씪?먮룄 諛섎났?잛닔 ???(?뚮젅??紐⑤뱶? ?숆린??
 try:
     if Path(plan_path).exists():
         with open(plan_path, "r", encoding="utf-8") as f:
@@ -1663,66 +1672,66 @@ try:
         with open(plan_path, "w", encoding="utf-8") as f:
             _json.dump(data, f, ensure_ascii=False, indent=2)
 except Exception as e:
-    logger.error(f"플랜 반복횟수 저장 실패: {e}")
+    logger.error(f"?뚮옖 諛섎났?잛닔 ????ㅽ뙣: {e}")
 ```
 
-#### 3. 미니 플레이어 이중 반복 방지
+#### 3. 誘몃땲 ?뚮젅?댁뼱 ?댁쨷 諛섎났 諛⑹?
 
 ```python
 # main_window.py
-# 플랜 객체에 반복횟수 설정 (rule_executor에서 사용)
+# ?뚮옖 媛앹껜??諛섎났?잛닔 ?ㅼ젙 (rule_executor?먯꽌 ?ъ슜)
 plan.total_repeat_count = repeat_count
-# 반복은 rule_executor에서 처리하므로 여기서는 1회만
+# 諛섎났? rule_executor?먯꽌 泥섎━?섎?濡??ш린?쒕뒗 1?뚮쭔
 self._mini_total_repeat = 1
 ```
 
-**동기화 흐름:**
+**?숆린???먮쫫:**
 ```
-플레이 모드 반복횟수 저장 → 플랜 JSON 파일
-                              ↓
-에디터 모드 설정 열기 → 플랜 JSON에서 읽기 → 자동실행 목록에 표시
-                              ↓
-에디터 모드 반복횟수 변경 → 플랜 JSON 파일 → 플레이 모드에서 반영
+?뚮젅??紐⑤뱶 諛섎났?잛닔 ??????뚮옖 JSON ?뚯씪
+                              ??
+?먮뵒??紐⑤뱶 ?ㅼ젙 ?닿린 ???뚮옖 JSON?먯꽌 ?쎄린 ???먮룞?ㅽ뻾 紐⑸줉???쒖떆
+                              ??
+?먮뵒??紐⑤뱶 諛섎났?잛닔 蹂寃????뚮옖 JSON ?뚯씪 ???뚮젅??紐⑤뱶?먯꽌 諛섏쁺
 ```
 
-**수정된 파일:**
-- `src/ui/settings_view.py` - 설정 로드/저장 시 플랜 파일 동기화
-- `src/ui/main_window.py` - 미니 플레이어 이중 반복 방지
+**?섏젙???뚯씪:**
+- `src/ui/settings_view.py` - ?ㅼ젙 濡쒕뱶/??????뚮옖 ?뚯씪 ?숆린??
+- `src/ui/main_window.py` - 誘몃땲 ?뚮젅?댁뼱 ?댁쨷 諛섎났 諛⑹?
 
 ---
 
-## 메모
+## 硫붾え
 
-- 개발 완료: 2026-01-16
-- 총 생성 파일: 28개
-- 총 테스트 파일: 3개
+- 媛쒕컻 ?꾨즺: 2026-01-16
+- 珥??앹꽦 ?뚯씪: 28媛?
+- 珥??뚯뒪???뚯씪: 3媛?
 
-- 프로젝트 시작 시간: 2026-01-16
+- ?꾨줈?앺듃 ?쒖옉 ?쒓컙: 2026-01-16
 - ??? ????: 2026-03-17 (? ?? ??? + ??/??? ?? ??? + ?? ?? ??)
 
-## 업데이트 규칙
+## ?낅뜲?댄듃 洹쒖튃
 
-- **전체 업데이트 시 포함할 파일:**
-  - 소스 코드 (`src/` 폴더)
+- **?꾩껜 ?낅뜲?댄듃 ???ы븿???뚯씪:**
+  - ?뚯뒪 肄붾뱶 (`src/` ?대뜑)
   - PROGRESS.md
-  - data/plans/*.json (사용자 플랜 파일)
-  - data/config.json (설정 파일)
-  - data/templates/*.png (템플릿 이미지 파일)
-  - data/triggers/*.png (트리거 이미지 파일)
+  - data/plans/*.json (?ъ슜???뚮옖 ?뚯씪)
+  - data/config.json (?ㅼ젙 ?뚯씪)
+  - data/templates/*.png (?쒗뵆由??대?吏 ?뚯씪)
+  - data/triggers/*.png (?몃━嫄??대?吏 ?뚯씪)
 
-- **전체 업데이트 절차:**
-  1. PROGRESS.md 업데이트 규칙 확인
-  2. 버전 업데이트 (src/utils/config.py - APP_VERSION)
-  3. PROGRESS.md 마지막 업데이트 날짜 갱신
-  4. 수정된 파일 구문 검사 (python -m py_compile)
-  5. 위 규칙의 모든 파일 git add
-  6. 커밋 (v버전: 설명)
-  7. 태그 생성 (v버전)
-  8. master + 태그 푸시
+- **?꾩껜 ?낅뜲?댄듃 ?덉감:**
+  1. PROGRESS.md ?낅뜲?댄듃 洹쒖튃 ?뺤씤
+  2. 踰꾩쟾 ?낅뜲?댄듃 (src/utils/config.py - APP_VERSION)
+  3. PROGRESS.md 留덉?留??낅뜲?댄듃 ?좎쭨 媛깆떊
+  4. ?섏젙???뚯씪 援щЦ 寃??(python -m py_compile)
+  5. ??洹쒖튃??紐⑤뱺 ?뚯씪 git add
+  6. 而ㅻ컠 (v踰꾩쟾: ?ㅻ챸)
+  7. ?쒓렇 ?앹꽦 (v踰꾩쟾)
+  8. master + ?쒓렇 ?몄떆
 
 ---
-이 파일은 Claude가 자동으로 업데이트합니다.
-세션이 중단되어도 이 파일을 읽고 작업을 이어갈 수 있습니다.
+???뚯씪? Claude媛 ?먮룞?쇰줈 ?낅뜲?댄듃?⑸땲??
+?몄뀡??以묐떒?섏뼱?????뚯씪???쎄퀬 ?묒뾽???댁뼱媛????덉뒿?덈떎.
 
 
 ### 2026-03-17: ? ?? ??? + ?? ??? ?? ?? + ?? ?? ?? ?? (v1.0.143)
@@ -1736,23 +1745,23 @@ self._mini_total_repeat = 1
 
 ---
 
-### 2026-03-18: 보스방 응답없음 완화 + 상시스킬 on/off 확인 (v1.0.144)
+### 2026-03-18: 蹂댁뒪諛??묐떟?놁쓬 ?꾪솕 + ?곸떆?ㅽ궗 on/off ?뺤씤 (v1.0.144)
 
-- **증상:** 보스 경유지에서 순찰/추적/보스처치 직후 WinCro 창 자체가 `응답없음`으로 멈추거나, 정상 완료 직전에 재생이 중간 종료됨
-- **원인 정리:**
-  1. 보스 후보 감지/추적/순찰/타이밍 로그와 상태라벨 갱신이 메인 UI에 과도하게 누적됨
-  2. 보스 완료 후 `_on_arrival()`과 `_stop_execution()`이 경쟁해 정상 완료가 끊길 수 있었음
-  3. 일부 보스 분기에서 worker thread -> Tk 직접 호출 경로가 남아 있었음
-- **수정:**
+- **利앹긽:** 蹂댁뒪 寃쎌쑀吏?먯꽌 ?쒖같/異붿쟻/蹂댁뒪泥섏튂 吏곹썑 WinCro 李??먯껜媛 `?묐떟?놁쓬`?쇰줈 硫덉텛嫄곕굹, ?뺤긽 ?꾨즺 吏곸쟾???ъ깮??以묎컙 醫낅즺??
+- **?먯씤 ?뺣━:**
+  1. 蹂댁뒪 ?꾨낫 媛먯?/異붿쟻/?쒖같/??대컢 濡쒓렇? ?곹깭?쇰꺼 媛깆떊??硫붿씤 UI??怨쇰룄?섍쾶 ?꾩쟻??
+  2. 蹂댁뒪 ?꾨즺 ??`_on_arrival()`怨?`_stop_execution()`??寃쎌웳???뺤긽 ?꾨즺媛 ?딄만 ???덉뿀??
+  3. ?쇰? 蹂댁뒪 遺꾧린?먯꽌 worker thread -> Tk 吏곸젒 ?몄텧 寃쎈줈媛 ?⑥븘 ?덉뿀??
+- **?섏젙:**
   - `src/ui/player_view.py`
-    - `_ui_post()`, `_drain_ui_call_queue()`, `_flush_log_buffer()`로 UI 호출 메인스레드화
-    - `_queue_normal_completion()` 추가로 정상 완료 예약 시 `finally`의 stop 처리와 경쟁하지 않도록 수정
-    - `_schedule_boss_ui_log()`, `_schedule_boss_status()` 추가
-    - 보스방의 후보감지/추적/순찰/방향없음/타이밍/완료/전환 로그를 보스 전용 dedupe 경로로 통일
-    - 보스 전용 UI 큐 백프레셔 추가
-- **검증:**
-  - `player_view.py` `py_compile` 통과
-  - `auto_skill_enabled`가 `False`일 때 `player_view.py`, `rule_executor.py` 모두 상시스킬 입력 분기에 진입하지 않음을 확인
+    - `_ui_post()`, `_drain_ui_call_queue()`, `_flush_log_buffer()`濡?UI ?몄텧 硫붿씤?ㅻ젅?쒗솕
+    - `_queue_normal_completion()` 異붽?濡??뺤긽 ?꾨즺 ?덉빟 ??`finally`??stop 泥섎━? 寃쎌웳?섏? ?딅룄濡??섏젙
+    - `_schedule_boss_ui_log()`, `_schedule_boss_status()` 異붽?
+    - 蹂댁뒪諛⑹쓽 ?꾨낫媛먯?/異붿쟻/?쒖같/諛⑺뼢?놁쓬/??대컢/?꾨즺/?꾪솚 濡쒓렇瑜?蹂댁뒪 ?꾩슜 dedupe 寃쎈줈濡??듭씪
+    - 蹂댁뒪 ?꾩슜 UI ??諛깊봽?덉뀛 異붽?
+- **寃利?**
+  - `player_view.py` `py_compile` ?듦낵
+  - `auto_skill_enabled`媛 `False`????`player_view.py`, `rule_executor.py` 紐⑤몢 ?곸떆?ㅽ궗 ?낅젰 遺꾧린??吏꾩엯?섏? ?딆쓬???뺤씤
 - **APP_VERSION:** `1.0.143` -> `1.0.144`
 
 ---
@@ -1888,7 +1897,7 @@ self._mini_total_repeat = 1
 - Added stop-reason tracing for unexpected special-mode termination without changing algorithms, mapping, or plan/map data.
 - `src/ui/player_view.py`
   - Added `_mark_stop_reason(...)` and `_request_stop_execution(...)`.
-  - Logged final stop reason in `_stop_execution()` and surfaced it to the UI log as `🧭 중단사유: ...`.
+  - Logged final stop reason in `_stop_execution()` and surfaced it to the UI log as `?㎛ 以묐떒?ъ쑀: ...`.
   - Covered template-incomplete, initial-wait interruption, coordinate-fail limit, abnormal jump, mapping portal exit, top-level loop exception, and unclassified loop exit.
 - Verification:
   - `py_compile` passed for `src/ui/player_view.py`.
