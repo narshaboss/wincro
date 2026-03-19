@@ -1756,7 +1756,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-if not exist "{app_dir}\\{new_exe_name}" (
+set "NEW_EXE_NAME="
+for %%F in ("{app_dir}\\*.exe") do set "NEW_EXE_NAME=%%~nxF"
+if not defined NEW_EXE_NAME (
     echo.
     echo [오류] 새 exe 파일이 없습니다: {new_exe_name}
     pause
@@ -1802,14 +1804,14 @@ echo   업데이트 완료! 재시작 중...
 echo ========================================
 timeout /t 2 /nobreak >nul
 
-start "" "{app_dir}\\{new_exe_name}"
+start "" "{app_dir}\\%NEW_EXE_NAME%"
 
 rd /s /q "{extract_dir}" 2>nul
 del /q "{temp_path}" 2>nul
 del "%~f0"
 '''
 
-            with open(batch_path, 'w', encoding='utf-8') as f:
+            with open(batch_path, 'w', encoding='utf-8-sig') as f:
                 f.write(batch_content)
 
             # 마지막 업데이트 시간 저장

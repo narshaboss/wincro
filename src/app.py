@@ -485,7 +485,9 @@ if errorlevel 1 (
 )
 
 echo [5/8] 새 파일 무결성 검사 중...
-if not exist "{app_dir}\\{new_exe_name}" (
+set "NEW_EXE_NAME="
+for %%F in ("{app_dir}\\*.exe") do set "NEW_EXE_NAME=%%~nxF"
+if not defined NEW_EXE_NAME (
     echo.
     echo [오류] exe 파일이 없습니다! 롤백 중...
     echo.
@@ -568,10 +570,10 @@ timeout /t 2 /nobreak >nul
 
 REM 프로그램 재시작 (작업 디렉토리 변경 후 실행)
 cd /d "{app_dir}"
-if exist "{new_exe_name}" (
-    start "" "{new_exe_name}"
+if defined NEW_EXE_NAME (
+    start "" "%NEW_EXE_NAME%"
 ) else (
-    echo [오류] exe 파일을 찾을 수 없습니다: {new_exe_name}
+    echo [오류] exe 파일을 찾을 수 없습니다: %NEW_EXE_NAME%
     pause
 )
 
@@ -641,13 +643,13 @@ if /i "%choice%"=="Y" (
 
             # 복구 배치 파일 저장 (앱 폴더에)
             try:
-                with open(recovery_bat, 'w', encoding='utf-8') as f:
+                with open(recovery_bat, 'w', encoding='utf-8-sig') as f:
                     f.write(recovery_content)
                 logger.info(f"복구 스크립트 생성: {recovery_bat}")
             except Exception as e:
                 logger.warning(f"복구 스크립트 생성 실패: {e}")
 
-            with open(batch_path, 'w', encoding='utf-8') as f:
+            with open(batch_path, 'w', encoding='utf-8-sig') as f:
                 f.write(batch_content)
 
             # 설정 저장
