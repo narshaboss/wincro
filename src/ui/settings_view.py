@@ -1,4 +1,4 @@
-﻿"""
+"""
 WinCro 설정 화면 모듈
 
 애플리케이션 설정을 위한 UI를 제공합니다.
@@ -1709,12 +1709,12 @@ class SettingsView(BaseView):
 
             # 압축 해제 및 exe 찾기
             try:
-                new_app_dir = extract_and_find_exe(temp_path, paths["extract_dir"])
+                new_app_dir, new_exe_name = extract_and_find_exe(temp_path, paths["extract_dir"])
             except FileNotFoundError:
                 self.after(0, lambda: self._update_failed("업데이트 파일에 exe가 없습니다"))
                 return
 
-            logger.info(f"새 앱 디렉토리: {new_app_dir}")
+            logger.info(f"새 앱 디렉토리: {new_app_dir}, 새 exe: {new_exe_name}")
             self.after(0, lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
 
             # 배치 파일 생성 (전체 폴더 교체)
@@ -1753,6 +1753,12 @@ xcopy /E /I /Y /Q "{new_app_dir}\\*" "{app_dir}\\" >nul 2>&1
 if errorlevel 1 (
     echo.
     echo [오류] 파일 복사 실패!
+    pause
+    exit /b 1
+)
+if not exist "{app_dir}\\{new_exe_name}" (
+    echo.
+    echo [오류] 새 exe 파일이 없습니다: {new_exe_name}
     pause
     exit /b 1
 )
@@ -1796,7 +1802,7 @@ echo   업데이트 완료! 재시작 중...
 echo ========================================
 timeout /t 2 /nobreak >nul
 
-start "" "{app_dir}\\{exe_name}"
+start "" "{app_dir}\\{new_exe_name}"
 
 rd /s /q "{extract_dir}" 2>nul
 del /q "{temp_path}" 2>nul

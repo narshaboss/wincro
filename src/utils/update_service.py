@@ -12,7 +12,7 @@ import zipfile
 import tempfile
 import urllib.request
 import urllib.error
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 from datetime import datetime
 
 from .logger import get_logger
@@ -148,7 +148,7 @@ def download_file(
     return downloaded
 
 
-def extract_and_find_exe(zip_path: str, extract_dir: str) -> str:
+def extract_and_find_exe(zip_path: str, extract_dir: str) -> Tuple[str, str]:
     """
     ZIP 파일을 압축 해제하고 exe가 포함된 폴더를 찾습니다.
 
@@ -157,7 +157,7 @@ def extract_and_find_exe(zip_path: str, extract_dir: str) -> str:
         extract_dir: 압축 해제 디렉토리
 
     Returns:
-        exe가 포함된 디렉토리 경로
+        (exe가 포함된 디렉토리 경로, exe 파일명)
 
     Raises:
         FileNotFoundError: exe를 찾을 수 없는 경우
@@ -177,10 +177,10 @@ def extract_and_find_exe(zip_path: str, extract_dir: str) -> str:
             for sub_item in os.listdir(item_path):
                 if sub_item.endswith(".exe"):
                     logger.info(f"exe 발견: {os.path.join(item_path, sub_item)}")
-                    return item_path
+                    return item_path, sub_item
         elif item.endswith(".exe"):
             logger.info(f"exe 발견: {os.path.join(extract_dir, item)}")
-            return extract_dir
+            return extract_dir, item
 
     raise FileNotFoundError("업데이트 파일에 exe가 없습니다")
 

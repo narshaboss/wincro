@@ -414,7 +414,7 @@ class WinCroApp:
 
             # 압축 해제 및 exe 찾기
             try:
-                new_app_dir = extract_and_find_exe(temp_path, paths["extract_dir"])
+                new_app_dir, new_exe_name = extract_and_find_exe(temp_path, paths["extract_dir"])
             except FileNotFoundError as e:
                 logger.error(str(e))
                 return
@@ -485,7 +485,7 @@ if errorlevel 1 (
 )
 
 echo [5/8] 새 파일 무결성 검사 중...
-if not exist "{app_dir}\\{exe_name}" (
+if not exist "{app_dir}\\{new_exe_name}" (
     echo.
     echo [오류] exe 파일이 없습니다! 롤백 중...
     echo.
@@ -568,10 +568,10 @@ timeout /t 2 /nobreak >nul
 
 REM 프로그램 재시작 (작업 디렉토리 변경 후 실행)
 cd /d "{app_dir}"
-if exist "{exe_name}" (
-    start "" "{exe_name}"
+if exist "{new_exe_name}" (
+    start "" "{new_exe_name}"
 ) else (
-    echo [오류] exe 파일을 찾을 수 없습니다: {exe_name}
+    echo [오류] exe 파일을 찾을 수 없습니다: {new_exe_name}
     pause
 )
 
