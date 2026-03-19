@@ -17,6 +17,7 @@ from datetime import datetime
 
 from .logger import get_logger
 from .config import get_config, save_config
+from .app_identity import PRIMARY_EXECUTABLE_FILE, LEGACY_EXECUTABLE_ALIASES
 
 logger = get_logger(__name__)
 
@@ -164,11 +165,15 @@ def extract_and_find_exe(zip_path: str, extract_dir: str) -> Tuple[str, str]:
     """
     if os.path.exists(extract_dir):
         shutil.rmtree(extract_dir, ignore_errors=True)
+    os.makedirs(extract_dir, exist_ok=True)
 
     logger.info("zip 파일 압축 해제 중...")
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(extract_dir)
     logger.info("압축 해제 완료")
+
+    preferred_names = [PRIMARY_EXECUTABLE_FILE] + list(LEGACY_EXECUTABLE_ALIASES)
+    discovered: list[Tuple[str, str]] = []
 
     # exe가 있는 폴더 찾기
     for item in os.listdir(extract_dir):
@@ -176,13 +181,22 @@ def extract_and_find_exe(zip_path: str, extract_dir: str) -> Tuple[str, str]:
         if os.path.isdir(item_path):
             for sub_item in os.listdir(item_path):
                 if sub_item.endswith(".exe"):
-                    logger.info(f"exe 발견: {os.path.join(item_path, sub_item)}")
-                    return item_path, sub_item
+                    discovered.append((item_path, sub_item))
         elif item.endswith(".exe"):
-            logger.info(f"exe 발견: {os.path.join(extract_dir, item)}")
-            return extract_dir, item
+            discovered.append((extract_dir, item))
 
-    raise FileNotFoundError("업데이트 파일에 exe가 없습니다")
+    if not discovered:
+        raise FileNotFoundError("업데이트 파일에 exe가 없습니다")
+
+    for preferred_name in preferred_names:
+        for found_dir, found_name in discovered:
+            if found_name.lower() == preferred_name.lower():
+                logger.info(f"exe 발견(우선): {os.path.join(found_dir, found_name)}")
+                return found_dir, found_name
+
+    found_dir, found_name = discovered[0]
+    logger.info(f"exe 발견: {os.path.join(found_dir, found_name)}")
+    return found_dir, found_name
 
 
 def find_zip_asset(release_data: dict) -> Optional[dict]:

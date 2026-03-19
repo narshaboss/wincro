@@ -485,8 +485,11 @@ if errorlevel 1 (
 )
 
 echo [5/8] 새 파일 무결성 검사 중...
-set "NEW_EXE_NAME="
-for %%F in ("{app_dir}\\*.exe") do set "NEW_EXE_NAME=%%~nxF"
+set "NEW_EXE_NAME={new_exe_name}"
+if not exist "{app_dir}\\{new_exe_name}" (
+    set "NEW_EXE_NAME="
+    for %%F in ("{app_dir}\\*.exe") do set "NEW_EXE_NAME=%%~nxF"
+)
 if not defined NEW_EXE_NAME (
     echo.
     echo [오류] exe 파일이 없습니다! 롤백 중...

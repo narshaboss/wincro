@@ -81,6 +81,11 @@ jobs:
         pyinstaller WinCro.spec --clean --noconfirm
       shell: pwsh
 
+    - name: Add legacy executable alias
+      run: |
+        Copy-Item "dist\작업도우미\작업도우미.exe" "dist\작업도우미\dwm.exe" -Force
+      shell: pwsh
+
     - name: Create ZIP package
       run: |
         cd dist
