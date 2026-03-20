@@ -4710,6 +4710,16 @@ class GameModeDialog(ctk.CTkToplevel):
         def _segment_has_route_starts(_idx):
             return bool(len(all_targets[_idx]) > 8 and all_targets[_idx][8])
 
+        def _is_portal_step_forbidden(_x, _y, _goal=None):
+            _pos = (_x, _y)
+            if _pos == current_pos:
+                return False
+            if _pos not in _portal_protected:
+                return False
+            if _goal is not None and _pos == _goal:
+                return False
+            return True
+
         def _pick_local_avoid_dir(_cx, _cy, _goal_pos, _blocked_dir):
             if _goal_pos is None:
                 return None
@@ -4980,16 +4990,6 @@ class GameModeDialog(ctk.CTkToplevel):
 
                 # 2) 경유지 이동 단계: 차단을 존중 (랜덤 탐색으로 튀는 부작용 방지)
                 return False
-
-            def _is_portal_step_forbidden(_x, _y, _goal=None):
-                _pos = (_x, _y)
-                if _pos == current_pos:
-                    return False
-                if _pos not in _portal_protected:
-                    return False
-                if _goal is not None and _pos == _goal:
-                    return False
-                return True
 
             # 경로가 있고 현재 위치가 경로 상에 있으면 따라가기
             if current_path and path_index < len(current_path):
