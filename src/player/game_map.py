@@ -150,6 +150,55 @@ class GameMap:
         }
         return passable, blocked, soft_blocked, patrol_points, start_pos, end_pos
 
+    @classmethod
+    def _decode_coord_item(cls, item) -> Optional[Tuple[int, int]]:
+        """좌표 항목을 (x, y) 튜플로 정규화한다.
+
+        호환 형식:
+        - [x, y]
+        - (x, y)
+        - {"value": [x, y], "Count": n}
+        - {"x": x, "y": y}
+        """
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            try:
+                return (int(item[0]), int(item[1]))
+            except (TypeError, ValueError):
+                return None
+
+        if isinstance(item, dict):
+            value = item.get("value")
+            if isinstance(value, (list, tuple)) and len(value) >= 2:
+                try:
+                    return (int(value[0]), int(value[1]))
+                except (TypeError, ValueError):
+                    return None
+            if "x" in item and "y" in item:
+                try:
+                    return (int(item["x"]), int(item["y"]))
+                except (TypeError, ValueError):
+                    return None
+
+        return None
+
+    @classmethod
+    def _decode_coord_set(cls, items) -> Set[Tuple[int, int]]:
+        decoded: Set[Tuple[int, int]] = set()
+        for item in items or []:
+            pos = cls._decode_coord_item(item)
+            if pos is not None:
+                decoded.add(pos)
+        return decoded
+
+    @classmethod
+    def _decode_coord_list(cls, items) -> List[Tuple[int, int]]:
+        decoded: List[Tuple[int, int]] = []
+        for item in items or []:
+            pos = cls._decode_coord_item(item)
+            if pos is not None:
+                decoded.append(pos)
+        return decoded
+
     def __init__(self, name: str = "Unknown"):
         self.name = name
         self._lock = threading.RLock()  # ??? ??: passable/blocked/soft_blocked ??
@@ -600,8 +649,10 @@ class GameMap:
                 data = json.load(f)
 
             new_name = data.get("name", "Unknown")
-            new_passable = set(tuple(p) for p in data.get("passable", []))
-            new_blocked = set(tuple(p) for p in data.get("blocked", []))
+            raw_passable = data.get("passable", [])
+            raw_blocked = data.get("blocked", [])
+            new_passable = self._decode_coord_set(raw_passable)
+            new_blocked = self._decode_coord_set(raw_blocked)
             raw_sb = data.get("soft_blocked", {})
             new_soft_blocked = {}
             for key, count in raw_sb.items():
@@ -612,7 +663,7 @@ class GameMap:
                         new_soft_blocked[pos] = count
                 except (ValueError, IndexError):
                     continue
-            new_patrol = [tuple(p) for p in data.get("patrol_points", [])]
+            new_patrol = self._decode_coord_list(data.get("patrol_points", []))
             raw_edges = data.get("blocked_edges", [])
             new_blocked_edges = set()
             for edge in raw_edges:
@@ -625,6 +676,14 @@ class GameMap:
             new_start = tuple(sp) if sp is not None else None
             ep = data.get("end_pos")
             new_end = tuple(ep) if ep is not None else None
+
+            _legacy_blocked = any(isinstance(item, dict) for item in raw_blocked)
+            if _legacy_blocked:
+                logger.warning(
+                    "[Map] blocked 레거시 형식 감지: %s (%d개)",
+                    filepath,
+                    len(raw_blocked),
+                )
 
             new_passable, new_blocked, new_soft_blocked, new_patrol, new_start, new_end = self._sanitize_state(
                 new_passable,
@@ -650,7 +709,7 @@ class GameMap:
             logger.info(f"[Map] ??: {filepath} (???? {len(new_passable)}?, ? {len(new_blocked)}?, ?? {len(new_patrol)}?)")
             return True
         except Exception as e:
-            logger.error(f"[Map] ?? ??: {e}")
+            logger.error(f"[????] ? ?? ??: {filepath} ({e})")
             return False
 
     def load_and_merge(self, filepath: str) -> bool:
@@ -663,8 +722,10 @@ class GameMap:
             with open(filepath, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
 
-            loaded_passable = set(tuple(p) for p in data.get("passable", []))
-            loaded_blocked = set(tuple(p) for p in data.get("blocked", []))
+            raw_passable = data.get("passable", [])
+            raw_blocked = data.get("blocked", [])
+            loaded_passable = self._decode_coord_set(raw_passable)
+            loaded_blocked = self._decode_coord_set(raw_blocked)
             raw_sb = data.get("soft_blocked", {})
             loaded_soft_blocked = {}
             for key, count in raw_sb.items():
@@ -675,7 +736,7 @@ class GameMap:
                         loaded_soft_blocked[pos] = count
                 except (ValueError, IndexError):
                     continue
-            loaded_patrol = [tuple(p) for p in data.get("patrol_points", [])]
+            loaded_patrol = self._decode_coord_list(data.get("patrol_points", []))
             raw_edges = data.get("blocked_edges", [])
             loaded_blocked_edges = set()
             for edge in raw_edges:
@@ -689,6 +750,14 @@ class GameMap:
             ep = data.get("end_pos")
             loaded_end = tuple(ep) if ep is not None else None
             loaded_name = data.get("name", "Unknown")
+
+            _legacy_blocked = any(isinstance(item, dict) for item in raw_blocked)
+            if _legacy_blocked:
+                logger.warning(
+                    "[Map] blocked 레거시 형식 감지(merge): %s (%d개)",
+                    filepath,
+                    len(raw_blocked),
+                )
 
             loaded_passable, loaded_blocked, loaded_soft_blocked, loaded_patrol, loaded_start, loaded_end = self._sanitize_state(
                 loaded_passable,
@@ -740,7 +809,7 @@ class GameMap:
             logger.info(f"[Map] ??: {before}? -> {after}?")
             return True
         except Exception as e:
-            logger.error(f"[Map] ?? ??: {e}")
+            logger.error(f"[????] ?? ?? ??: {filepath} ({e})")
             return False
 
     def cleanup_outliers(self) -> int:

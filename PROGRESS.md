@@ -2019,3 +2019,23 @@ self._mini_total_repeat = 1
   - `APP_VERSION` `1.0.153` -> `1.0.154`
 
 ---
+
+### 2026-03-20: Map blocked-format recovery and map-anomaly tracing (v1.0.170)
+- Restored `src/ui/player_view.py` back to the `v1.0.165` algorithm baseline and kept only dedicated mapping-anomaly logging on top of it.
+- `src/player/game_map.py`
+  - Added compatibility decoding for legacy `blocked` entries stored as dicts such as `{"value": [x, y], "Count": n}`.
+  - Added `[????]` warning logs when map load or merge-load fails.
+- `src/ui/player_view.py`
+  - Added `_log_map_anomaly(...)`.
+  - Added `[????]` / `?? ????:` logging when segment-switch or runtime-reload map loads fail or produce `tiles <= 1`.
+- `data/maps/*.json`
+  - Repaired legacy dict-shaped `blocked` payloads back to normal coordinate arrays across affected maps.
+- Tests and verification:
+  - `py_compile` passed for `src/player/game_map.py`, `src/ui/player_view.py`, `src/utils/config.py`, `src/__init__.py`, and `tests/test_game_map_legacy_blocked_format.py`.
+  - Added `tests/test_game_map_legacy_blocked_format.py`.
+  - Full map audit passed: `MAP_LOAD_TOTAL=535`, `MAP_LOAD_FAILED=0`, `MAP_LOAD_TILES_LE1=0`.
+  - `pytest -q` passed: `77 passed` (existing warnings only).
+- `config.py`
+  - `APP_VERSION` `1.0.169` -> `1.0.170`
+
+---
