@@ -148,6 +148,24 @@
 
 ---
 
+### 2026-03-20: Exploration flap fix scope reduction (v1.0.169)
+- Corrected the scope of the previous general-waypoint flap fix after it interfered with the base exploration/backtracking flow.
+- `src/ui/player_view.py`
+  - Reverted the direct use of `_maybe_block_explore_flap(...)` inside the smart explore (`🔍 탐색`) and backtracking (`↩ 되돌아가기`) branches.
+  - Kept the flap guard only on first-step acceptance for cached/known/unknown path results.
+  - Relaxed the helper so it can still block a short recent-tile re-entry even when `last_dir` is unavailable.
+- `tests/test_player_view_explore_flap_regression.py`
+  - Added coverage for recent-tile re-entry without `last_dir`.
+  - Added source-shape assertions to ensure the flap guard is not injected into explore/backtrack branches again.
+- Tests:
+  - `py_compile` passed.
+  - `pytest tests/test_player_view_local_avoid_regression.py tests/test_player_view_boss_chase_regression.py tests/test_player_view_explore_flap_regression.py -q`
+  - Result: `9 passed`
+- `config.py`
+  - `APP_VERSION` `1.0.168` -> `1.0.169`
+
+---
+
 ### 2026-03-20: General-waypoint exploration flap guard (v1.0.168)
 - Narrowed the fix to general waypoint exploration only; boss logic, mapping, and map data were not changed.
 - `src/ui/player_view.py`

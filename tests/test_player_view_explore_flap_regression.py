@@ -84,3 +84,32 @@ def test_explore_flap_does_not_block_outside_short_scope():
     assert calls["invalidated"] == 0
     assert calls["blocked"] == []
     assert explored_from == {}
+
+
+def test_explore_flap_blocks_recent_reentry_even_without_explicit_reverse_dir():
+    factory = _load_explore_flap_helper()
+    helper, calls, explored_from = factory(
+        recent_positions=[(21, 5), (20, 4), (19, 3), (18, 3), (17, 3), (16, 3), (17, 3), (18, 3)],
+        last_dir=None,
+        manhattan=11,
+        current_path_len=10,
+        cx=18,
+        cy=3,
+        tx=21,
+        ty=10,
+    )
+
+    blocked = helper("right", 19, 3)
+
+    assert blocked is True
+    assert calls["invalidated"] == 1
+    assert calls["blocked"] == [(18, 3, "right", 123, 8)]
+    assert explored_from[(18, 3)] == {"right"}
+
+
+def test_source_uses_explore_flap_guard_in_explore_and_backtrack_branches():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "if _maybe_block_explore_flap(_d0, cx + _ndx0, cy + _ndy0):" in text
+    assert "if _maybe_block_explore_flap(chosen, _nx, _ny):" not in text
+    assert "if _maybe_block_explore_flap(d, pos[0], pos[1]):" not in text

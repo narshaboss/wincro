@@ -4996,19 +4996,22 @@ class GameModeDialog(ctk.CTkToplevel):
                     return False
 
                 _opp_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
-                if not _opp_last or _d != _opp_last:
-                    return False
-
                 _tail6 = recent_positions[-6:]
                 _tail8 = recent_positions[-8:]
                 if (_nx, _ny) not in _tail6:
-                    return False
-                if len(set(_tail8)) > 4:
                     return False
 
                 _path_len = len(current_path) if current_path else 0
                 _short_scope = (_manhattan <= 14) or (_path_len and _path_len <= 14)
                 if not _short_scope:
+                    return False
+
+                from collections import Counter
+                _tail_counts = Counter(_tail8)
+                _recent_unique = len(_tail_counts)
+                _is_reverse = bool(_opp_last and _d == _opp_last)
+                _reentry_hits = _tail_counts.get((_nx, _ny), 0)
+                if not (_is_reverse or (_recent_unique <= 6 and _reentry_hits >= 1)):
                     return False
 
                 _register_dir_block(cx, cy, _d, iteration, ttl=8)

@@ -1044,3 +1044,19 @@ wincro/
   - Result: `7 passed`
 - `config.py`
   - `APP_VERSION` `1.0.167` -> `1.0.168`
+
+### 2026-03-20: Exploration flap fix scope reduction (v1.0.169)
+- Corrected the scope of the previous general-waypoint flap fix after it started to interfere with the base exploration/backtracking flow.
+- `src/ui/player_view.py`
+  - Reverted `_maybe_block_explore_flap(...)` from the smart explore (`🔍 탐색`) and backtracking (`↩ 되돌아가기`) branches.
+  - Kept the guard only where the code commits the first step of cached/known/unknown path results.
+  - Relaxed the helper so it can still block a short recent-tile re-entry even when `last_dir` is missing.
+- `tests/test_player_view_explore_flap_regression.py`
+  - Added regression coverage for recent-tile re-entry without `last_dir`.
+  - Added source-shape assertions so the guard is not reintroduced into explore/backtrack branches.
+- Verification:
+  - `py_compile` passed.
+  - `pytest tests/test_player_view_local_avoid_regression.py tests/test_player_view_boss_chase_regression.py tests/test_player_view_explore_flap_regression.py -q`
+  - Result: `9 passed`
+- `config.py`
+  - `APP_VERSION` `1.0.168` -> `1.0.169`
