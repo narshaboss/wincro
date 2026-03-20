@@ -4466,6 +4466,19 @@ class GameModeDialog(ctk.CTkToplevel):
                 if pos not in _boss_patrol_route_index:
                     _boss_patrol_route_index[pos] = i
 
+        def _coalesce_boss_chase_target(_new_tx, _new_ty, _cx, _cy):
+            """보스 추적 목표가 짧게 흔들릴 때는 기존 목표를 유지한다."""
+            if not _boss_chasing:
+                return int(_new_tx), int(_new_ty), False, None
+            _prev_target = (int(_chase_tx), int(_chase_ty))
+            _new_target = (int(_new_tx), int(_new_ty))
+            _target_shift = abs(_prev_target[0] - _new_target[0]) + abs(_prev_target[1] - _new_target[1])
+            _prev_dist = abs(_prev_target[0] - int(_cx)) + abs(_prev_target[1] - int(_cy))
+            _new_dist = abs(_new_target[0] - int(_cx)) + abs(_new_target[1] - int(_cy))
+            if _target_shift <= 3 and _new_dist >= (_prev_dist - 1):
+                return _prev_target[0], _prev_target[1], True, _target_shift
+            return _new_target[0], _new_target[1], False, _target_shift
+
         def _boss_transition_locked():
             return time.time() < _boss_transition_cooldown_until
 
@@ -9084,10 +9097,6 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 # ── 보스 추적: 추정 위치로 직행 (X/Y 둘 다 반영) ──
                                                 _boss_chase_miss = 0
                                                 _boss_chasing = True
-                                                stuck_count = 0
-                                                total_stuck_count = 0
-                                                last_dir = None
-                                                _clear_boss_patrol_route_cache()
                                                 prev_x, prev_y = current_x, current_y
                                                 _chase_tx = current_x + est_dx_tiles
                                                 _chase_ty = current_y + est_dy_tiles
@@ -9107,6 +9116,21 @@ class GameModeDialog(ctk.CTkToplevel):
                                                                 break
                                                         if _found_chase:
                                                             break
+                                                _chase_tx, _chase_ty, _reuse_chase_target, _chase_shift = _coalesce_boss_chase_target(
+                                                    _chase_tx, _chase_ty, current_x, current_y
+                                                )
+                                                if _reuse_chase_target:
+                                                    if _ui_update_ok and iteration % 10 == 0:
+                                                        self._schedule_boss_ui_log(
+                                                            f"🧲 추적목표 유지: ({_chase_tx},{_chase_ty}) shift={_chase_shift}",
+                                                            dedupe_key="boss-chase-hold",
+                                                            dedupe_window=0.4,
+                                                        )
+                                                else:
+                                                    stuck_count = 0
+                                                    total_stuck_count = 0
+                                                    last_dir = None
+                                                    _clear_boss_patrol_route_cache()
                                                 if _ui_update_ok:
                                                     self._schedule_boss_ui_log(
                                                         f"🎯 보스 추적! dx={dx_pixel}px dy={dy_pixel}px ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={tile_dist}타일 ({boss_approach_steps}회)",
@@ -9546,13 +9570,23 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     # start_pos면 Y방향으로 1타일 더 이동
                                                     _rchk_dy_sign = 1 if _edy2 >= 0 else -1
                                                     _chase_ty += _rchk_dy_sign
+                                                _chase_tx, _chase_ty, _reuse_chase_target, _chase_shift = _coalesce_boss_chase_target(
+                                                    _chase_tx, _chase_ty, current_x, current_y
+                                                )
                                                 _boss_chase_miss = 0
                                                 if _ui_update_ok:
-                                                    self._schedule_boss_ui_log(
-                                                        f"🔄 재감지! ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={_td2}타일",
-                                                        dedupe_key="boss-reacquire",
-                                                        dedupe_window=0.35,
-                                                    )
+                                                    if _reuse_chase_target:
+                                                        self._schedule_boss_ui_log(
+                                                            f"🧲 재감지 목표유지: ({_chase_tx},{_chase_ty}) shift={_chase_shift}",
+                                                            dedupe_key="boss-reacquire-hold",
+                                                            dedupe_window=0.4,
+                                                        )
+                                                    else:
+                                                        self._schedule_boss_ui_log(
+                                                            f"🔄 재감지! ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={_td2}타일",
+                                                            dedupe_key="boss-reacquire",
+                                                            dedupe_window=0.35,
+                                                        )
                                 except Exception:
                                     pass
                                 if not _rechk_found and not self._stop_event.is_set():
