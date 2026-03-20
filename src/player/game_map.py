@@ -596,7 +596,7 @@ class GameMap:
             return False
 
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
 
             new_name = data.get("name", "Unknown")
@@ -660,7 +660,7 @@ class GameMap:
             return False
 
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
 
             loaded_passable = set(tuple(p) for p in data.get("passable", []))

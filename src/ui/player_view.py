@@ -11473,7 +11473,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 return False
             if os.path.getsize(map_path) <= 2:
                 return False
-            with open(map_path, 'r', encoding='utf-8') as f:
+            with open(map_path, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 return False
@@ -12601,7 +12601,7 @@ class GameModeDialog(ctk.CTkToplevel):
         if not os.path.exists(map_path):
             return -1  # 미탐색
         try:
-            with open(map_path, 'r', encoding='utf-8') as f:
+            with open(map_path, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
             return len(data.get("passable", [])) + len(data.get("blocked", []))
         except Exception:
