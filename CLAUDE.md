@@ -1031,3 +1031,16 @@ wincro/
   - Targeted smoke test confirmed the new diagnostic tuple no longer calls object truthiness.
 - `config.py`
   - `APP_VERSION` `1.0.153` -> `1.0.154`
+
+### 2026-03-20: General-waypoint exploration flap guard (v1.0.168)
+- Narrowed the change to the general waypoint exploration branch without touching boss logic, mapping, or map data.
+- `src/ui/player_view.py`
+  - Added `_maybe_block_explore_flap(...)` to block short-range first-step flips where an exploration path immediately picks the opposite of `last_dir` and re-enters a very recent tile.
+  - Applied the guard before committing the first direction from cached-path follow, known-path, direct unknown-path, and exploration-path branches.
+  - Added the UI trace `🔁 탐색갈팡질팡 차단: ...` for this specific oscillation.
+- Verification:
+  - `py_compile` passed for `src/ui/player_view.py` and the related regression tests.
+  - `pytest tests/test_player_view_local_avoid_regression.py tests/test_player_view_boss_chase_regression.py tests/test_player_view_explore_flap_regression.py -q`
+  - Result: `7 passed`
+- `config.py`
+  - `APP_VERSION` `1.0.167` -> `1.0.168`

@@ -4981,6 +4981,47 @@ class GameModeDialog(ctk.CTkToplevel):
                         self._append_log(f"🔁 근접루프 차단: ({x},{y}) {d2}→({nx2},{ny2})"))
                 return True
 
+            def _maybe_block_explore_flap(_d, _nx, _ny):
+                """일반 경유지 탐색에서 첫 스텝이 직전 반대 방향으로 뒤집히며
+                최근 칸을 다시 밟는 경우를 짧게 차단한다.
+                몬스터 회피 뒤 최단경로 중간에서 좌우/상하 갈팡질팡하는 현상을 줄이기 위한 보정이다.
+                """
+                nonlocal current_path, path_index, path_pos_index
+
+                if _strict_route_mode or _frontier_probe_phase:
+                    return False
+                if (_nx, _ny) == target_pos:
+                    return False
+                if len(recent_positions) < 6:
+                    return False
+
+                _opp_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
+                if not _opp_last or _d != _opp_last:
+                    return False
+
+                _tail6 = recent_positions[-6:]
+                _tail8 = recent_positions[-8:]
+                if (_nx, _ny) not in _tail6:
+                    return False
+                if len(set(_tail8)) > 4:
+                    return False
+
+                _path_len = len(current_path) if current_path else 0
+                _short_scope = (_manhattan <= 14) or (_path_len and _path_len <= 14)
+                if not _short_scope:
+                    return False
+
+                _register_dir_block(cx, cy, _d, iteration, ttl=8)
+                explored_from.setdefault(current_pos, set()).add(_d)
+                current_path = []
+                path_index = 0
+                path_pos_index = {}
+                pathfinder.invalidate_path()
+                if _ui_update_ok:
+                    self.after(0, lambda x=cx, y=cy, d2=_d, nx2=_nx, ny2=_ny:
+                        self._append_log(f"🔁 탐색갈팡질팡 차단: ({x},{y}) {d2}→({nx2},{ny2})"))
+                return True
+
             def _can_take_path_dir(_d):
                 """경로 방향 사용 가능 여부.
                 맵핑 모드에서는 약한 방향차단(실패 누적 임계치 미만)을 경로 우선으로 무시해
@@ -5025,6 +5066,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             dy = next_pos[1] - cy
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 if ddx == dx and ddy == dy:
+                                    if _maybe_block_explore_flap(d, next_pos[0], next_pos[1]):
+                                        _blocked_primary_dir = d
+                                        break
                                     if _maybe_block_recent_reentry(d, next_pos[0], next_pos[1]):
                                         _blocked_primary_dir = d
                                         break
@@ -5332,7 +5376,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._append_log(f"🔍 직선 경로: {l}칸 (기존 우회 {kl}칸)"))
                         _d0 = _result_unknown.directions[0]
                         _ndx0, _ndy0 = DIRECTIONS_4.get(_d0, (0, 0))
-                        if _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
+                        if _maybe_block_explore_flap(_d0, cx + _ndx0, cy + _ndy0):
+                            _blocked_primary_dir = _d0
+                        elif _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
                             _blocked_primary_dir = _d0
                         elif _can_take_path_dir(_d0):
                             return _d0
@@ -5349,7 +5395,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             self.after(0, lambda l=len(_best_known.path), lb=_label: self._append_log(f"🛤️ {lb} 발견: {l}칸"))
                         _d0 = _best_known.directions[0]
                         _ndx0, _ndy0 = DIRECTIONS_4.get(_d0, (0, 0))
-                        if _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
+                        if _maybe_block_explore_flap(_d0, cx + _ndx0, cy + _ndy0):
+                            _blocked_primary_dir = _d0
+                        elif _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
                             _blocked_primary_dir = _d0
                         elif _can_take_path_dir(_d0):
                             return _d0
@@ -5364,7 +5412,9 @@ class GameModeDialog(ctk.CTkToplevel):
                         self.after(0, lambda l=len(_best_known.path): self._append_log(f"🛤️ 경로 발견: {l}칸"))
                     _d0 = _best_known.directions[0]
                     _ndx0, _ndy0 = DIRECTIONS_4.get(_d0, (0, 0))
-                    if _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
+                    if _maybe_block_explore_flap(_d0, cx + _ndx0, cy + _ndy0):
+                        _blocked_primary_dir = _d0
+                    elif _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
                         _blocked_primary_dir = _d0
                     elif _can_take_path_dir(_d0):
                         return _d0
@@ -5378,7 +5428,9 @@ class GameModeDialog(ctk.CTkToplevel):
                         self.after(0, lambda l=len(_result_unknown.path): self._append_log(f"🔍 탐색 경로: {l}칸 (미지 영역 포함)"))
                     _d0 = _result_unknown.directions[0]
                     _ndx0, _ndy0 = DIRECTIONS_4.get(_d0, (0, 0))
-                    if _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
+                    if _maybe_block_explore_flap(_d0, cx + _ndx0, cy + _ndy0):
+                        _blocked_primary_dir = _d0
+                    elif _maybe_block_recent_reentry(_d0, cx + _ndx0, cy + _ndy0):
                         _blocked_primary_dir = _d0
                     elif _can_take_path_dir(_d0):
                         return _d0

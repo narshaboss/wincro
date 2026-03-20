@@ -147,6 +147,24 @@
 - **濡ㅻ갚 ?ㅽ깘 諛⑹?:** 湲곗〈 ?ㅼ튂 exe ?대쫫怨???諛고룷 exe ?대쫫???щ씪??exe ?놁쓬?쇰줈 ?섎せ 濡ㅻ갚?섏? ?딅룄濡??섏젙
 
 ---
+
+### 2026-03-20: General-waypoint exploration flap guard (v1.0.168)
+- Narrowed the fix to general waypoint exploration only; boss logic, mapping, and map data were not changed.
+- `src/ui/player_view.py`
+  - Added `_maybe_block_explore_flap(...)` to suppress short-range first-step flips where an exploration path immediately chooses the opposite of `last_dir` and re-enters a very recent tile.
+  - Applied the guard before accepting the first direction from cached-path follow, known-path, direct unknown-path, and exploration-path branches.
+  - Added UI trace `🔁 탐색갈팡질팡 차단: ...` for the blocked flip case.
+- Tests:
+  - Added `tests/test_player_view_explore_flap_regression.py`
+  - Re-ran:
+    - `tests/test_player_view_local_avoid_regression.py`
+    - `tests/test_player_view_boss_chase_regression.py`
+    - `tests/test_player_view_explore_flap_regression.py`
+  - Result: `7 passed`
+- `config.py`
+  - `APP_VERSION` `1.0.167` -> `1.0.168`
+
+---
 ### 2026-03-19: ?낅뜲?댄듃 濡ㅻ갚 exe ?대쫫 遺덉씪移??섏젙 (v1.0.157)
 
 - **?먮룞 ?낅뜲?댄듃 濡ㅻ갚 ?섏젙:** 湲곗〈 ?ㅼ튂 exe ?대쫫怨???諛고룷 exe ?대쫫???щ씪?? zip ?대??먯꽌 ?ㅼ젣 exe ?뚯씪紐낆쓣 李얠븘 寃利??ъ떆?묓븯?꾨줉 ?섏젙
