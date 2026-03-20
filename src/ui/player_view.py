@@ -4710,9 +4710,9 @@ class GameModeDialog(ctk.CTkToplevel):
         def _segment_has_route_starts(_idx):
             return bool(len(all_targets[_idx]) > 8 and all_targets[_idx][8])
 
-        def _is_portal_step_forbidden(_x, _y, _goal=None):
+        def _is_portal_step_forbidden(_x, _y, _goal=None, _current=None):
             _pos = (_x, _y)
-            if _pos == current_pos:
+            if _current is not None and _pos == tuple(_current):
                 return False
             if _pos not in _portal_protected:
                 return False
@@ -4741,7 +4741,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 _nx, _ny = _cx + _sdx, _cy + _sdy
                 if _start_pos is not None and (_nx, _ny) == _start_pos:
                     continue
-                if _is_portal_step_forbidden(_nx, _ny, _goal_pos):
+                if _is_portal_step_forbidden(_nx, _ny, _goal_pos, (_cx, _cy)):
                     continue
                 if self._game_map.is_blocked(_nx, _ny) or self._game_map.is_soft_blocked(_nx, _ny):
                     continue
@@ -5000,7 +5000,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         next_pos = current_path[path_index + 1]
                         # 다음 타일이 벽/소프트블록/출발지이면 캐시 무효화 → A* 재계산
                         _is_start = (self._game_map.start_pos is not None and next_pos == self._game_map.start_pos)
-                        _is_portal_step = _is_portal_step_forbidden(next_pos[0], next_pos[1], target_pos)
+                        _is_portal_step = _is_portal_step_forbidden(next_pos[0], next_pos[1], target_pos, current_pos)
                         if use_map and (_is_start or _is_portal_step or
                                         self._game_map.is_blocked(next_pos[0], next_pos[1]) or
                                         self._game_map.is_soft_blocked(next_pos[0], next_pos[1])):
@@ -5033,7 +5033,7 @@ class GameModeDialog(ctk.CTkToplevel):
             def _build_avoid_set(_goal=None, include_dir_avoid=True):
                 _avoid = set(_dir_avoid) if include_dir_avoid else set()
                 for _ppx, _ppy in _portal_protected:
-                    if _is_portal_step_forbidden(_ppx, _ppy, _goal):
+                    if _is_portal_step_forbidden(_ppx, _ppy, _goal, current_pos):
                         _avoid.add((_ppx, _ppy))
                 if _detour_block_goal is not None and _detour_block_goal != _goal:
                     _avoid.add(_detour_block_goal)
@@ -5497,7 +5497,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 if d not in tried and not self._game_map.is_blocked(nx, ny) and not _is_dir_blocked(cx, cy, d, iteration):
                     if _start_pos is not None and (nx, ny) == _start_pos:
                         continue  # 출발지 회피
-                    if _is_portal_step_forbidden(nx, ny, target_pos):
+                    if _is_portal_step_forbidden(nx, ny, target_pos, current_pos):
                         continue  # 보호 포탈 회피
                     dist = abs(nx - tx) + abs(ny - ty)
                     candidates.append((dist, d, nx, ny))
@@ -5534,7 +5534,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     continue
                 if _start_pos is not None and (nx, ny) == _start_pos:
                     continue  # 출발지 회피
-                if _is_portal_step_forbidden(nx, ny, target_pos):
+                if _is_portal_step_forbidden(nx, ny, target_pos, current_pos):
                     continue  # 보호 포탈 회피
                 if not self._game_map.is_blocked(nx, ny) and not self._game_map.is_soft_blocked(nx, ny):
                     backtrack_candidates.append((d, (nx, ny)))
@@ -5594,7 +5594,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     nx, ny = cx + ddx, cy + ddy
                     if _start_pos is not None and (nx, ny) == _start_pos:
                         continue
-                    if _is_portal_step_forbidden(nx, ny, target_pos):
+                    if _is_portal_step_forbidden(nx, ny, target_pos, current_pos):
                         continue
                     if self._game_map.is_blocked(nx, ny) or self._game_map.is_soft_blocked(nx, ny):
                         continue
