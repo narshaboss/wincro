@@ -115,6 +115,7 @@ jobs:
           - 자동 생성된 릴리즈입니다
         files: |
           dist/작업도우미_v${{ steps.get_version.outputs.VERSION }}.zip
+        overwrite_files: true
         draft: false
         prerelease: false
       env:
