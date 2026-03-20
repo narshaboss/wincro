@@ -173,6 +173,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
     def __init__(self, parent, plan: AutomationPlan):
         super().__init__(parent)
 
+        self._player_view = parent
         self._plan = plan
         self._thumbnail_refs = []
         self._modified = False
@@ -192,6 +193,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 부분 실행 상태
         self._is_running = False
         self._running_executor = None
+        self._running_rule_id = None
 
         self.title(f"계획 수정 - {plan.name}")
         self.geometry("950x700")
@@ -207,6 +209,108 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         self._setup_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _notify_player_partial_run_started(self, mode: str = "부분실행") -> None:
+        player_view = getattr(self, "_player_view", None)
+        if player_view is None:
+            return
+        try:
+            player_view._begin_external_execution(self, mode)
+        except Exception:
+            pass
+
+    def _notify_player_partial_run_stopped(self) -> None:
+        player_view = getattr(self, "_player_view", None)
+        if player_view is None:
+            return
+        try:
+            player_view._end_external_execution(self)
+        except Exception:
+            pass
+
+    def _mark_manual_stop_context(self, source_reason, source_detail):
+        """부분실행 수동 중지 사유를 메인 PlayerView 중단 추적에 위임."""
+        player_view = getattr(self, "_player_view", None)
+        if player_view is None:
+            return
+        try:
+            player_view._mark_manual_stop_context(source_reason, source_detail)
+        except Exception:
+            pass
+
+    def _set_partial_run_button_state(self, rule_id: Optional[str], running: bool) -> None:
+        """부분실행 버튼 상태를 실행 중/대기 상태로 토글."""
+        if not getattr(self, "_rule_widgets", None):
+            return
+
+        if not running:
+            if rule_id:
+                rule_ids = [rule_id]
+            else:
+                rule_ids = list(self._rule_widgets.keys())
+        else:
+            rule_ids = [rule_id] if rule_id else []
+
+        for current_rule_id in rule_ids:
+            if not current_rule_id or current_rule_id not in self._rule_widgets:
+                continue
+            run_btn = self._rule_widgets[current_rule_id].get("run_btn")
+            if run_btn is None:
+                continue
+            try:
+                if running and current_rule_id == rule_id:
+                    run_btn.configure(
+                        text="▶",
+                        width=30,
+                        fg_color=COLORS["error"],
+                        hover_color="#c0392b",
+                        border_width=1,
+                        border_color="#ffb4b4",
+                    )
+                else:
+                    run_btn.configure(
+                        text="▶",
+                        width=30,
+                        fg_color=COLORS["accent_orange"],
+                        hover_color="#d97706",
+                        border_width=0,
+                        border_color=COLORS["accent_orange"],
+                    )
+            except Exception:
+                pass
+
+    def _start_partial_run_visual(self, rule_id: Optional[str]) -> None:
+        """부분실행 시작 시 현재 버튼 상태를 재생중으로 표시."""
+        self._running_rule_id = rule_id
+        self._set_partial_run_button_state(None, False)
+        self._set_partial_run_button_state(rule_id, True)
+
+    def _stop_partial_run_visual(self) -> None:
+        """부분실행 종료 시 버튼 상태를 기본값으로 복원."""
+        self._set_partial_run_button_state(None, False)
+        self._running_rule_id = None
+
+    def _ensure_arduino_ready_for_playback(self, context_label: str) -> bool:
+        """부분실행/특화모드 실행 전 Arduino 연결 보장."""
+        player_view = getattr(self, "_player_view", None)
+        if player_view is not None and hasattr(player_view, "_ensure_arduino_ready_for_playback"):
+            return bool(player_view._ensure_arduino_ready_for_playback(context_label))
+
+        from tkinter import messagebox
+        from ..utils.input_controller import ensure_arduino_ready
+
+        ok, detail = ensure_arduino_ready(force_connect=True)
+        if ok:
+            logger.info(f"[아두이노가드] {context_label} 가능: {detail}")
+            return True
+
+        logger.warning(f"[아두이노가드] {context_label} 차단: {detail}")
+        message = f"아두이노가 연결되지 않아 {context_label}을 시작할 수 없습니다.\n\n사유: {detail}"
+        try:
+            messagebox.showerror("아두이노 연결 필요", message, parent=self)
+        except TypeError:
+            messagebox.showerror("아두이노 연결 필요", message)
+        return False
 
     def _init_collapsed_items(self):
         """자식이 있는 규칙을 접힌 상태로 초기화"""
@@ -837,7 +941,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         ).pack(side="right", padx=(4, 0))
 
         # 테스트 실행 버튼
-        ctk.CTkButton(
+        run_btn = ctk.CTkButton(
             btn_frame,
             text="▶",
             font=ctk.CTkFont(size=14),
@@ -848,7 +952,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             height=26,
             corner_radius=4,
             command=lambda r=rule: self._test_run_rule(r),
-        ).pack(side="right", padx=(4, 0))
+        )
+        run_btn.pack(side="right", padx=(4, 0))
 
         # 게임모드 수정 버튼
         if rule.action_type == "game_mode":
@@ -932,6 +1037,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         ).pack(side="right", padx=(4, 0))
 
         # 버튼 참조 저장 (개별 업데이트용)
+        self._rule_widgets[rule.rule_id]["run_btn"] = run_btn
         self._rule_widgets[rule.rule_id]["repeat_btn"] = repeat_btn
         self._rule_widgets[rule.rule_id]["delay_btn"] = delay_btn
 
@@ -1639,6 +1745,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 _gm._stop_event.set()
             except Exception:
                 pass
+            self._is_running = False
+            self.title(f"계획 수정 - {self._plan.name}")
+            self.configure(fg_color=COLORS["bg_dark"])
+            self._stop_partial_run_visual()
+            self._notify_player_partial_run_stopped()
             # 곧 _check_gm_done에서 destroy + _on_game_mode_complete 호출됨
             return
 
@@ -1654,6 +1765,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
         self.configure(fg_color=COLORS["bg_dark"])
+        self._stop_partial_run_visual()
+        self._notify_player_partial_run_stopped()
 
     def _run_game_mode(self, config_rule_id=None):
         """특화모드 실행 — 숨긴 GameModeDialog로 _run_coordinate_loop 사용"""
@@ -1669,6 +1782,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 실행 중 상태 표시 (PlanDetailDialog에서 관리)
         self._is_running = True
+        self._start_partial_run_visual(config_rule_id)
+        self._notify_player_partial_run_started("부분실행")
         self.title("▶ 특화모드 실행 중... (ESC로 중지)")
         self.configure(fg_color="#1a3a1a")
         self.update_idletasks()
@@ -1724,6 +1839,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
         self.configure(fg_color=COLORS["bg_dark"])
+        self._stop_partial_run_visual()
+        self._notify_player_partial_run_stopped()
         self.update()
         from tkinter import messagebox
         if success:
@@ -1738,6 +1855,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._is_running = False
             self.title(f"계획 수정 - {self._plan.name}")
             self.configure(fg_color=COLORS["bg_dark"])
+            self._stop_partial_run_visual()
+            self._notify_player_partial_run_stopped()
             return
 
         # 첫 번째 game_mode 규칙 위치 찾기
@@ -1865,6 +1984,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._stop_execution()
             return
 
+        if not self._ensure_arduino_ready_for_playback("부분실행"):
+            logger.warning(f"[부분실행] Arduino 준비 실패로 실행 차단: rule_id={rule.rule_id}")
+            return
+
         # 모든 규칙을 평탄화 (자식 포함)
         def flatten_rules(rules):
             result = []
@@ -1973,6 +2096,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if _has_game_mode:
             logger.info(f"[부분실행] game_mode 포함 → _run_remaining_rules 경유 (GameModeDialog 사용)")
             self._is_running = True
+            self._start_partial_run_visual(rule.rule_id)
+            self._notify_player_partial_run_started("부분실행")
             self.title("▶ 실행 중... (아무 ▶ 버튼 클릭시 중지)")
             self.configure(fg_color="#1a3a1a")
             try:
@@ -2004,6 +2129,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 실행 중 상태 표시
         self._is_running = True
+        self._start_partial_run_visual(rule.rule_id)
+        self._notify_player_partial_run_started("부분실행")
         self.title("▶ 실행 중... (아무 ▶ 버튼 클릭시 중지)")
         self.configure(fg_color="#1a3a1a")  # 녹색 배경으로 변경
 
@@ -2068,6 +2195,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._running_executor = None
         self.title(f"계획 수정 - {self._plan.name}")
         self.configure(fg_color=COLORS["bg_dark"])
+        self._stop_partial_run_visual()
+        self._notify_player_partial_run_stopped()
 
     def _toggle_skip_mode(self, rule: AutomationRule):
         """스킵 모드 토글 - 이미지 못찾으면 wait_after 후 다음 액션으로"""
@@ -4578,6 +4707,49 @@ class GameModeDialog(ctk.CTkToplevel):
                 return False
             return not (_res.found and _res.directions)
 
+        def _segment_has_route_starts(_idx):
+            return bool(len(all_targets[_idx]) > 8 and all_targets[_idx][8])
+
+        def _pick_local_avoid_dir(_cx, _cy, _goal_pos, _blocked_dir):
+            if _goal_pos is None:
+                return None
+            _gx, _gy = int(_goal_pos[0]), int(_goal_pos[1])
+            if _blocked_dir in ("left", "right"):
+                _side_dirs = ("up", "down")
+                _axis_score = lambda _nx, _ny: abs(_ny - _gy)
+            else:
+                _side_dirs = ("left", "right")
+                _axis_score = lambda _nx, _ny: abs(_nx - _gx)
+            _start_pos = self._game_map.start_pos
+            _recent_set = set(recent_positions[-8:])
+            _base_dist = abs(_cx - _gx) + abs(_cy - _gy)
+            _best = None
+            for _cand_dir in _side_dirs:
+                if _is_dir_blocked(_cx, _cy, _cand_dir, iteration):
+                    continue
+                _sdx, _sdy = DIRECTIONS_4.get(_cand_dir, (0, 0))
+                _nx, _ny = _cx + _sdx, _cy + _sdy
+                if _start_pos is not None and (_nx, _ny) == _start_pos:
+                    continue
+                if _is_portal_step_forbidden(_nx, _ny, _goal_pos):
+                    continue
+                if self._game_map.is_blocked(_nx, _ny) or self._game_map.is_soft_blocked(_nx, _ny):
+                    continue
+                if not self._game_map.is_passable(_nx, _ny):
+                    continue
+                _dist = abs(_nx - _gx) + abs(_ny - _gy)
+                if _dist > _base_dist + 2:
+                    continue
+                _score = (
+                    _axis_score(_nx, _ny),
+                    _dist,
+                    1 if (_nx, _ny) in _recent_set else 0,
+                    1 if _cand_dir == {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir) else 0,
+                )
+                if _best is None or _score < _best[0]:
+                    _best = (_score, _cand_dir)
+            return _best[1] if _best is not None else None
+
         def press_key(direction):
             """방향키 누르기"""
             if self._stop_event.is_set():
@@ -5205,11 +5377,26 @@ class GameModeDialog(ctk.CTkToplevel):
             if _blocked_primary_dir and not _frontier_probe_phase:
                 _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
                 if _route_only_mode:
+                    _local_avoid_mode = not _segment_has_route_starts(target_idx)
                     if _blocked_edge_fail <= 1:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                 self._append_log(f"🧭 경로재시도: ({x},{y}) {d2}"))
                         return _blocked_primary_dir
+                    if _local_avoid_mode:
+                        _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                        if _local_dir:
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
+                                    self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
+                            return _local_dir
+                        tried = explored_from.get(current_pos, set())
+                        tried.add(_blocked_primary_dir)
+                        explored_from[current_pos] = tried
+                        if _ui_update_ok and iteration % 10 == 0:
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                                self._append_log(f"🧭 국소회피 실패: ({x},{y}) {d2} 유지금지"))
+                        return None
                     _bdx, _bdy = DIRECTIONS_4.get(_blocked_primary_dir, (0, 0))
                     _blocked_next = (cx + _bdx, cy + _bdy)
                     _alt_avoid = set(_dir_avoid)
@@ -17754,6 +17941,8 @@ class PlayerView(BaseView):
         self._playback_gm_after_id = None
         self._playback_remaining_rules = []
         self._playback_active_plan: Optional[AutomationPlan] = None
+        self._external_execution_owner = None
+        self._external_execution_mode = None
 
         self._selected_sequence: Optional[Sequence] = None
         self._selected_plan: Optional[AutomationPlan] = None
@@ -17793,6 +17982,26 @@ class PlayerView(BaseView):
 
         dispatcher.post(_schedule_on_main)
         return None
+
+    def _begin_external_execution(self, owner, mode: str = "부분실행") -> None:
+        """PlanDetailDialog 같은 외부 실행원을 메인 재생 UI에 연결."""
+        self._external_execution_owner = owner
+        self._external_execution_mode = mode
+        self._update_ui_state(True)
+        self._status_label.configure(text=f"▶ {mode} 실행 중...")
+        self._status_indicator.configure(text_color=COLORS["accent"])
+
+    def _end_external_execution(self, owner) -> None:
+        """외부 실행 종료 시 메인 재생 UI 상태를 복원."""
+        if getattr(self, "_external_execution_owner", None) is not owner:
+            return
+        self._external_execution_owner = None
+        self._external_execution_mode = None
+        self._update_ui_state(False)
+        self._status_label.configure(text="⏹ 중지됨")
+        self._status_indicator.configure(text_color=COLORS["text_secondary"])
+        self._current_action_label.configure(text="-")
+        self._progress_bar.set(0)
 
     def _player_ui_post(self, callback) -> None:
         try:
@@ -19185,6 +19394,16 @@ class PlayerView(BaseView):
     def _on_stop(self) -> None:
         """실행 중지 (비차단 — stop() 호출 후 즉시 UI 갱신)"""
         logger.info("[버튼] 중지 버튼 클릭됨")
+
+        external_owner = getattr(self, "_external_execution_owner", None)
+        if external_owner is not None:
+            logger.info("[중지] 외부 부분실행 중지 요청")
+            try:
+                external_owner._stop_execution()
+            except Exception as e:
+                logger.error(f"[중지] 외부 부분실행 중지 오류: {e}")
+            self._end_external_execution(external_owner)
+            return
 
         _gm = getattr(self, "_playback_gm_dialog", None)
         if _gm is not None:

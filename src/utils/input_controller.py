@@ -20,14 +20,14 @@ _arduino_hid = None
 _arduino_load_failed = False
 _strict_move_warned = False
 _input_controller: Optional['InputController'] = None
-_MOVE_VERIFY_TOLERANCE = 2
-_MOVE_MAX_CORRECTIONS = 24
-_MOVE_STEP_LIMIT = 18
-_MOVE_MIN_STEP_LIMIT = 4
-_MOVE_MIN_HUMAN_DURATION = 0.08
-_MOVE_MAX_HUMAN_DURATION = 0.28
-_MOVE_MIN_STEP_DELAY = 0.006
-_MOVE_MAX_STEP_DELAY = 0.03
+_MOVE_VERIFY_TOLERANCE = 3
+_MOVE_MAX_CORRECTIONS = 80
+_MOVE_STEP_LIMIT = 64
+_MOVE_MIN_STEP_LIMIT = 6
+_MOVE_MIN_HUMAN_DURATION = 0.10
+_MOVE_MAX_HUMAN_DURATION = 0.45
+_MOVE_MIN_STEP_DELAY = 0.004
+_MOVE_MAX_STEP_DELAY = 0.02
 
 
 def _get_arduino():
@@ -166,7 +166,7 @@ class InputController:
 
         distance = math.hypot(target_x - current[0], target_y - current[1])
         effective_duration = self._compute_human_move_duration(distance, duration)
-        step_budget = max(4, min(_MOVE_MAX_CORRECTIONS, int(distance / 7) + 1))
+        step_budget = max(8, min(_MOVE_MAX_CORRECTIONS, int(distance / 5) + 1))
         step_delay = max(_MOVE_MIN_STEP_DELAY, min(_MOVE_MAX_STEP_DELAY, effective_duration / max(1, step_budget)))
 
         for attempt in range(_MOVE_MAX_CORRECTIONS):
@@ -179,7 +179,15 @@ class InputController:
 
             progress = min(1.0, attempt / max(1, step_budget - 1))
             ease = 1.0 - abs(2.0 * progress - 1.0)
-            max_step = int(round(_MOVE_MIN_STEP_LIMIT + (_MOVE_STEP_LIMIT - _MOVE_MIN_STEP_LIMIT) * ease))
+            remaining = max(abs(dx), abs(dy))
+            dynamic_cap = int(round(min(
+                _MOVE_STEP_LIMIT,
+                max(
+                    _MOVE_MIN_STEP_LIMIT,
+                    remaining * (0.42 if remaining > 120 else 0.32),
+                ),
+            )))
+            max_step = int(round(_MOVE_MIN_STEP_LIMIT + (dynamic_cap - _MOVE_MIN_STEP_LIMIT) * max(0.35, ease)))
             max_step = max(_MOVE_MIN_STEP_LIMIT, min(_MOVE_STEP_LIMIT, max_step))
 
             step_x = max(-max_step, min(max_step, dx))
@@ -192,8 +200,8 @@ class InputController:
             if not self._arduino_move_relative(step_x, step_y):
                 return False
 
-            # 시작/끝은 조금 더 여유 있게, 중간은 상대적으로 빠르게 움직인다.
-            edge_weight = 0.65 - (0.35 * ease)
+            # 시작/끝은 조금 더 천천히, 중간은 더 시원하게 이동한다.
+            edge_weight = 1.05 - (0.45 * ease)
             time.sleep(max(_MOVE_MIN_STEP_DELAY, min(_MOVE_MAX_STEP_DELAY, step_delay * edge_weight)))
 
             current = self._get_cursor_pos()

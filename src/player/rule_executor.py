@@ -73,6 +73,18 @@ from ..analyzer.enhanced_matcher import get_enhanced_matcher
 
 logger = get_logger(__name__)
 
+_MULTISCALE_FACTORS = (1.0, 1.1, 0.9, 1.25, 0.8, 1.4, 0.7, 1.5)
+
+
+def _resize_template_gray(template_gray: np.ndarray, scale: float):
+    if abs(scale - 1.0) < 1e-6:
+        return template_gray
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(template_gray, None, fx=scale, fy=scale, interpolation=interp)
+    if resized is None or resized.size == 0:
+        return None
+    return resized
+
 # ANSI 색상 코드 상수 (성능 최적화)
 _CYAN = "\033[96m"
 _GREEN = "\033[92m"
@@ -1705,16 +1717,33 @@ class RuleExecutor:
             if tw > sw or th > sh:
                 return None
 
-            result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
-            time.sleep(0)  # GIL 해제
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            best_match = None
+            best_scale = 1.0
+            for scale in _MULTISCALE_FACTORS:
+                scaled_tmpl = _resize_template_gray(tmpl_gray, scale)
+                if scaled_tmpl is None:
+                    continue
+                sth, stw = scaled_tmpl.shape[:2]
+                if stw > sw or sth > sh or stw < 4 or sth < 4:
+                    continue
+                result = cv2.matchTemplate(screen_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
+                time.sleep(0)  # GIL 해제
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                if best_match is None or max_val > best_match[2]:
+                    best_match = (max_loc, stw, sth, float(max_val))
+                    best_scale = scale
+                if max_val >= confidence:
+                    logger.debug(
+                        f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f}, scale={scale:.2f} - {Path(image_path).name}"
+                    )
+                    final_x = max_loc[0] + stw // 2 + region_offset_x
+                    final_y = max_loc[1] + sth // 2 + region_offset_y
+                    return (final_x, final_y, float(max_val))
 
-            logger.debug(f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f} - {Path(image_path).name}")
-
-            if max_val >= confidence:
-                final_x = max_loc[0] + tw // 2 + region_offset_x
-                final_y = max_loc[1] + th // 2 + region_offset_y
-                return (final_x, final_y, max_val)
+            if best_match is not None:
+                logger.debug(
+                    f"[이미지 검색] CCOEFF: conf={best_match[2]:.2f}, 설정={confidence:.2f}, best_scale={best_scale:.2f} - {Path(image_path).name}"
+                )
 
             return None
 
@@ -1810,20 +1839,41 @@ class RuleExecutor:
                         logger.warning(f"[트리거] 템플릿({w}x{h})이 화면({scr_w}x{scr_h})보다 큼 - 스킵")
                         return None
 
-                    try:
-                        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-                    except cv2.error as e:
-                        logger.error(f"[트리거] 매칭 오류: {e}")
-                        return None
-                    time.sleep(0)  # GIL 해제
+                    best_match = None
+                    best_scale = 1.0
+                    best_w = w
+                    best_h = h
+                    for scale in _MULTISCALE_FACTORS:
+                        scaled_tmpl = _resize_template_gray(template_gray, scale)
+                        if scaled_tmpl is None:
+                            continue
+                        sth, stw = scaled_tmpl.shape[:2]
+                        if stw > scr_w or sth > scr_h or stw < 4 or sth < 4:
+                            continue
+                        try:
+                            result = cv2.matchTemplate(screenshot_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
+                        except cv2.error as e:
+                            logger.error(f"[트리거] 매칭 오류: {e}")
+                            return None
+                        time.sleep(0)  # GIL 해제
+                        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                        if best_match is None or max_val > best_match[0]:
+                            best_match = (float(max_val), max_loc)
+                            best_scale = scale
+                            best_w = stw
+                            best_h = sth
+                        if max_val >= confidence:
+                            best_match = (float(max_val), max_loc)
+                            best_scale = scale
+                            best_w = stw
+                            best_h = sth
+                            break
 
-                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
-
-                    if max_val >= confidence:
-                        center_x = max_loc[0] + w // 2
-                        center_y = max_loc[1] + h // 2
+                    if best_match and best_match[0] >= confidence:
+                        center_x = best_match[1][0] + best_w // 2
+                        center_y = best_match[1][1] + best_h // 2
                         logger.info(f"{_GREEN}✓ 트리거 발견! ({elapsed:.1f}초 대기){_RESET}")
-                        logger.debug(f"[트리거] 위치=({center_x}, {center_y}), 점수={max_val:.2f}")
+                        logger.debug(f"[트리거] 위치=({center_x}, {center_y}), 점수={best_match[0]:.2f}, scale={best_scale:.2f}")
                         return (center_x, center_y)
                 finally:
                     # 메모리 해제 (저사양 PC 지원)
@@ -1975,34 +2025,62 @@ class RuleExecutor:
                 logger.warning(f"템플릿({w}x{h})이 검색 영역({scr_w}x{scr_h})보다 큼 - 스킵")
                 return []
 
-            # 템플릿 매칭
-            try:
-                result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-            except cv2.error as e:
-                logger.error(f"템플릿 매칭 오류: {e}")
-                return []
-            time.sleep(0)  # GIL 해제
+            # 템플릿 매칭 (1배율 우선, 실패 시 멀티스케일 fallback)
+            locations = []
+            best_result = None
+            best_tmpl_w = w
+            best_tmpl_h = h
+            best_scale = 1.0
+            for scale in _MULTISCALE_FACTORS:
+                scaled_tmpl = _resize_template_gray(template_gray, scale)
+                if scaled_tmpl is None:
+                    continue
+                sth, stw = scaled_tmpl.shape[:2]
+                if stw > scr_w or sth > scr_h or stw < 4 or sth < 4:
+                    continue
+                try:
+                    result = cv2.matchTemplate(screenshot_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
+                except cv2.error as e:
+                    logger.error(f"템플릿 매칭 오류: {e}")
+                    return []
+                time.sleep(0)  # GIL 해제
 
-            # 중지 체크
-            if self._stop_event.is_set():
+                if self._stop_event.is_set():
+                    return []
+
+                _, max_val, _, _ = cv2.minMaxLoc(result)
+                if best_result is None or max_val > best_result[0]:
+                    best_result = (float(max_val), result)
+                    best_tmpl_w = stw
+                    best_tmpl_h = sth
+                    best_scale = scale
+                if max_val >= confidence:
+                    best_result = (float(max_val), result)
+                    best_tmpl_w = stw
+                    best_tmpl_h = sth
+                    best_scale = scale
+                    break
+
+            if best_result is None:
                 return []
 
-            # 최고 매칭 점수 확인
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            result = best_result[1]
+            logger.debug(
+                f"[이미지 검색/all] conf={best_result[0]:.2f}, 설정={confidence:.2f}, scale={best_scale:.2f} - {Path(image_path).name}"
+            )
 
             # 임계값 이상인 모든 위치 찾기
-            locations = []
             loc = np.where(result >= confidence)
 
             for pt in zip(*loc[::-1]):
-                found_x = pt[0] + w // 2 + roi_offset_x
-                found_y = pt[1] + h // 2 + roi_offset_y
+                found_x = pt[0] + best_tmpl_w // 2 + roi_offset_x
+                found_y = pt[1] + best_tmpl_h // 2 + roi_offset_y
                 score = result[pt[1], pt[0]]
 
                 # 중복 제거 (가까운 위치는 하나로)
                 is_duplicate = False
                 for existing in locations:
-                    if abs(existing[0] - found_x) < w // 2 and abs(existing[1] - found_y) < h // 2:
+                    if abs(existing[0] - found_x) < best_tmpl_w // 2 and abs(existing[1] - found_y) < best_tmpl_h // 2:
                         is_duplicate = True
                         break
 
