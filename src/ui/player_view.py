@@ -5377,7 +5377,14 @@ class GameModeDialog(ctk.CTkToplevel):
             if _blocked_primary_dir and not _frontier_probe_phase:
                 _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
                 if _route_only_mode:
-                    _local_avoid_mode = not _segment_has_route_starts(target_idx)
+                    _short_route_local_avoid = (
+                        _manhattan <= 6 or
+                        (bool(current_path) and len(current_path) <= 6)
+                    )
+                    _local_avoid_mode = (
+                        (not _segment_has_route_starts(target_idx)) or
+                        _short_route_local_avoid
+                    )
                     if _blocked_edge_fail <= 1:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
@@ -5387,15 +5394,15 @@ class GameModeDialog(ctk.CTkToplevel):
                         _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
                         if _local_dir:
                             if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
-                                    self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir, sr=_short_route_local_avoid:
+                                    self._append_log(f"🧭 {'근접국소회피' if sr else '국소회피'}: ({x},{y}) {d2}→{a2}"))
                             return _local_dir
                         tried = explored_from.get(current_pos, set())
                         tried.add(_blocked_primary_dir)
                         explored_from[current_pos] = tried
                         if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 국소회피 실패: ({x},{y}) {d2} 유지금지"))
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, sr=_short_route_local_avoid:
+                                self._append_log(f"🧭 {'근접국소회피' if sr else '국소회피'} 실패: ({x},{y}) {d2} 유지금지"))
                         return None
                     _bdx, _bdy = DIRECTIONS_4.get(_blocked_primary_dir, (0, 0))
                     _blocked_next = (cx + _bdx, cy + _bdy)
