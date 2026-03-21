@@ -4815,8 +4815,6 @@ class GameModeDialog(ctk.CTkToplevel):
             return _best[1] if _best is not None else None
 
         def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):
-            if not _route_only_mode:
-                return False
             if not _segment_has_route_starts(target_idx):
                 return False
             _edge_fail = edge_fail_counts.get(_dir_key(_cx, _cy, _dir), 0)
