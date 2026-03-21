@@ -4320,6 +4320,7 @@ class GameModeDialog(ctk.CTkToplevel):
         _boss_patrol_route = []        # 순찰 목표까지의 캐시된 경로
         _boss_patrol_route_goal = None # 순찰 캐시 경로의 목표 좌표
         _boss_patrol_route_index = {}  # 순찰 캐시 경로 역매핑
+        _boss_patrol_recent_samples = []  # [((x,y), (tx,ty)), ...] 순찰 왕복 진단용
         _boss_transition_cooldown_until = 0.0  # 보스 처치/키입력 직후 재순찰 차단
         _step_watchdog_kind = None
         _step_watchdog_dir = None
@@ -4483,6 +4484,41 @@ class GameModeDialog(ctk.CTkToplevel):
             for i, pos in enumerate(_boss_patrol_route):
                 if pos not in _boss_patrol_route_index:
                     _boss_patrol_route_index[pos] = i
+
+        def _clear_boss_patrol_recent_samples():
+            nonlocal _boss_patrol_recent_samples
+            _boss_patrol_recent_samples = []
+
+        def _record_boss_patrol_sample(_pos, _goal):
+            nonlocal _boss_patrol_recent_samples
+            if _pos is None or _goal is None:
+                return
+            _sample_pos = (int(_pos[0]), int(_pos[1]))
+            _sample_goal = (int(_goal[0]), int(_goal[1]))
+            if _boss_patrol_recent_samples:
+                _last_goal = _boss_patrol_recent_samples[-1][1]
+                if abs(_last_goal[0] - _sample_goal[0]) + abs(_last_goal[1] - _sample_goal[1]) > 3:
+                    _boss_patrol_recent_samples = []
+            _boss_patrol_recent_samples.append((_sample_pos, _sample_goal))
+            if len(_boss_patrol_recent_samples) > 8:
+                _boss_patrol_recent_samples.pop(0)
+
+        def _detect_boss_patrol_flap():
+            if len(_boss_patrol_recent_samples) < 4:
+                return None
+            (_p1, _g1), (_p2, _g2), (_p3, _g3), (_p4, _g4) = _boss_patrol_recent_samples[-4:]
+            if not (_p1 == _p3 and _p2 == _p4 and _p1 != _p2):
+                return None
+            _goal_ref = _g4
+            for _gx, _gy in (_g1, _g2, _g3, _g4):
+                if abs(_gx - _goal_ref[0]) + abs(_gy - _goal_ref[1]) > 2:
+                    return None
+            _osc_dir = _direction_between(_p4, _p3)
+            if _osc_dir is None:
+                return None
+            if _p3 == _goal_ref:
+                return None
+            return _osc_dir, _p3, _goal_ref
 
         def _boss_transition_locked():
             return time.time() < _boss_transition_cooldown_until
@@ -4778,6 +4814,18 @@ class GameModeDialog(ctk.CTkToplevel):
                     _best = (_score, _cand_dir)
             return _best[1] if _best is not None else None
 
+        def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):
+            if not _route_only_mode:
+                return False
+            if not _segment_has_route_starts(target_idx):
+                return False
+            _edge_fail = edge_fail_counts.get(_dir_key(_cx, _cy, _dir), 0)
+            if _edge_fail < 2:
+                return False
+            _dx, _dy = DIRECTIONS_4.get(_dir, (0, 0))
+            _blocked_next = (_cx + _dx, _cy + _dy)
+            return _is_route_chokepoint((_cx, _cy), _goal_pos, _blocked_next, allow_unknown=True)
+
         def press_key(direction):
             """방향키 누르기"""
             if self._stop_event.is_set():
@@ -5060,16 +5108,10 @@ class GameModeDialog(ctk.CTkToplevel):
             def _should_preserve_route_dir_avoid():
                 if not _route_only_mode:
                     return False
-                if not _segment_has_route_starts(target_idx):
-                    return False
                 for _cand_dir, (_cand_dx, _cand_dy) in DIRECTIONS_4.items():
                     if not _is_dir_blocked(cx, cy, _cand_dir, iteration):
                         continue
-                    _cand_fail = edge_fail_counts.get(_dir_key(cx, cy, _cand_dir), 0)
-                    if _cand_fail < 2:
-                        continue
-                    _cand_next = (cx + _cand_dx, cy + _cand_dy)
-                    if _is_route_chokepoint(current_pos, target_pos, _cand_next, allow_unknown=True):
+                    if _is_route_only_failed_chokepoint(cx, cy, _cand_dir, target_pos):
                         return True
                 return False
 
@@ -5409,23 +5451,40 @@ class GameModeDialog(ctk.CTkToplevel):
 
             # 경유지 이동 단계(비-프런티어): 경로 첫 방향이 차단되면
             # 해당 방향을 현재 타일에서 시도 후보에서 제외하고 대체 경로를 우선 시도
-            if _blocked_primary_dir and not _frontier_probe_phase:
-                _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
-                if _route_only_mode:
-                    _segment_has_starts = _segment_has_route_starts(target_idx)
-                    _local_avoid_mode = not _segment_has_starts
-                    if _blocked_edge_fail <= 1:
-                        if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 경로재시도: ({x},{y}) {d2}"))
-                        return _blocked_primary_dir
-                    if _local_avoid_mode:
-                        _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
-                        if _local_dir:
+                if _blocked_primary_dir and not _frontier_probe_phase:
+                    _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
+                    if _route_only_mode:
+                        _segment_has_starts = _segment_has_route_starts(target_idx)
+                        _local_avoid_mode = not _segment_has_starts
+                        _route_failed_chokepoint = _is_route_only_failed_chokepoint(
+                            cx, cy, _blocked_primary_dir, target_pos
+                        )
+                        if _blocked_edge_fail <= 1:
                             if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
-                                    self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
-                            return _local_dir
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                                    self._append_log(f"🧭 경로재시도: ({x},{y}) {d2}"))
+                            return _blocked_primary_dir
+                        if _route_failed_chokepoint:
+                            _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                            if _local_dir:
+                                if _ui_update_ok and iteration % 10 == 0:
+                                    self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
+                                        self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
+                                return _local_dir
+                            tried = explored_from.get(current_pos, set())
+                            tried.add(_blocked_primary_dir)
+                            explored_from[current_pos] = tried
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                                    self._append_log(f"🧭 유일통로 재시도 중단: ({x},{y}) {d2}"))
+                            return None
+                        if _local_avoid_mode:
+                            _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                            if _local_dir:
+                                if _ui_update_ok and iteration % 10 == 0:
+                                    self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
+                                        self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
+                                return _local_dir
                         tried = explored_from.get(current_pos, set())
                         tried.add(_blocked_primary_dir)
                         explored_from[current_pos] = tried
@@ -9031,6 +9090,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             _boss_chase_miss = 0
                             patrol_skip_count = 0
                             _clear_boss_patrol_route_cache()
+                            _clear_boss_patrol_recent_samples()
                             prev_x, prev_y = current_x, current_y
                             self._stop_event.wait(0.05)
                             continue
@@ -9100,6 +9160,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             elif tile_dist <= 1 and pixel_dist <= 16:
                                                 _boss_chase_miss = 0
                                                 _boss_chasing = False
+                                                _clear_boss_patrol_recent_samples()
                                                 boss_mode = "approaching"
                                                 boss_appr_miss = 0
                                                 stuck_count = 0
@@ -9138,6 +9199,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 # ── 보스 추적: 추정 위치로 직행 (X/Y 둘 다 반영) ──
                                                 _boss_chase_miss = 0
                                                 _boss_chasing = True
+                                                _clear_boss_patrol_recent_samples()
                                                 stuck_count = 0
                                                 total_stuck_count = 0
                                                 last_dir = None
@@ -9321,6 +9383,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 boss_mode = "exploring"
                                 boss_patrol = None
                                 _clear_boss_patrol_route_cache()
+                                _clear_boss_patrol_recent_samples()
                                 _boss_chasing = False
                                 _boss_chase_miss = 0
                                 stuck_count = 0
@@ -9344,6 +9407,18 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._stop_event.wait(0.05)
                                 continue
                             _move_target = (_move_target_raw[0], _move_target_raw[1])
+                            _record_boss_patrol_sample(current_pos_tuple, _move_target)
+                            _patrol_flap = _detect_boss_patrol_flap()
+                            if _patrol_flap is not None:
+                                _osc_dir, _osc_to, _osc_goal = _patrol_flap
+                                _register_dir_block(current_x, current_y, _osc_dir, iteration, ttl=12)
+                                _clear_boss_patrol_route_cache()
+                                if _ui_update_ok and iteration % 5 == 0:
+                                    self._schedule_boss_ui_log(
+                                        f"🔁 순찰왕복 차단: ({current_x},{current_y}) {_osc_dir}→({_osc_to[0]},{_osc_to[1]}) target=({_osc_goal[0]},{_osc_goal[1]})",
+                                        dedupe_key="boss-patrol-flap",
+                                        dedupe_window=0.35,
+                                    )
 
                         # A* 경로 계산
                         # 순찰 모드는 일반 이동과 달리 별도 pathfinder를 써서,
