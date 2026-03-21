@@ -2020,7 +2020,7 @@ self._mini_total_repeat = 1
 
 ---
 
-### 2026-03-20: Map blocked-format recovery and map-anomaly tracing (v1.0.170)
+### 2026-03-20: Map blocked-format recovery and map-anomaly tracing (v1.0.171)
 - Restored `src/ui/player_view.py` back to the `v1.0.165` algorithm baseline and kept only dedicated mapping-anomaly logging on top of it.
 - `src/player/game_map.py`
   - Added compatibility decoding for legacy `blocked` entries stored as dicts such as `{"value": [x, y], "Count": n}`.
@@ -2036,6 +2036,6 @@ self._mini_total_repeat = 1
   - Full map audit passed: `MAP_LOAD_TOTAL=535`, `MAP_LOAD_FAILED=0`, `MAP_LOAD_TILES_LE1=0`.
   - `pytest -q` passed: `77 passed` (existing warnings only).
 - `config.py`
-  - `APP_VERSION` `1.0.169` -> `1.0.170`
+  - `APP_VERSION` `1.0.169` -> `1.0.171`
 
 ---

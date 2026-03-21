@@ -18,6 +18,7 @@ from PIL import Image, ImageTk
 
 from ..utils.logger import get_logger
 from ..utils.config import DATA_DIR
+from ..utils.json_utils import load_json_file
 from ..utils.window_position import setup_window_position
 
 PLANS_DIR = DATA_DIR / "plans"
@@ -2045,8 +2046,7 @@ class AnalyzerView(BaseView):
                     if plan_id in prev_mtime and prev_mtime[plan_id] == mtime:
                         self._plan_modified_cache[plan_id] = prev_cache.get(plan_id, False)
                     else:
-                        with open(plan_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                        data = load_json_file(plan_file)
                         self._plan_modified_cache[plan_id] = data.get("modified", False)
                 except Exception:
                     pass
@@ -2062,8 +2062,7 @@ class AnalyzerView(BaseView):
             if PLANS_DIR.exists():
                 for plan_file in PLANS_DIR.glob("*.json"):
                     try:
-                        with open(plan_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                        data = load_json_file(plan_file)
                         if not isinstance(data, dict):
                             continue
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
@@ -2285,8 +2284,7 @@ class AnalyzerView(BaseView):
         if PLANS_DIR.exists():
             for plan_file in PLANS_DIR.glob("*.json"):
                 try:
-                    with open(plan_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
+                    data = load_json_file(plan_file)
                     # 필수 필드 존재 여부 확인
                     if not isinstance(data, dict):
                         logger.warning(f"잘못된 계획 형식: {plan_file}")
@@ -2639,8 +2637,7 @@ class AnalyzerView(BaseView):
             return
 
         try:
-            with open(plan_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file(plan_file)
             templates_dir = DATA_DIR / "templates"
             plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
 
@@ -2730,8 +2727,7 @@ class AnalyzerView(BaseView):
                     plan_file = PLANS_DIR / f"{recording.automation_plan_id}.json"
                     if plan_file.exists():
                         try:
-                            with open(plan_file, "r", encoding="utf-8") as f:
-                                plan_data = json.load(f)
+                            plan_data = load_json_file(plan_file)
                             if plan_data.get("modified", False):
                                 self._progress_label.configure(
                                     text="⚠️ 수정된 녹화는 재분석할 수 없습니다",
@@ -2932,8 +2928,7 @@ class AnalyzerView(BaseView):
             if PLANS_DIR.exists():
                 for plan_file in PLANS_DIR.glob("*.json"):
                     try:
-                        with open(plan_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                        data = load_json_file(plan_file)
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
                         collect_images_from_rules(plan.initial_rules)
                         collect_images_from_rules(plan.monitoring_rules)

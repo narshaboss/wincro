@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, config_manager
+from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.app_identity import (
     PRIMARY_APP_NAME,
     clear_random_app_name,
@@ -758,9 +759,8 @@ class SettingsView(BaseView):
         # 플랜 파일에서 반복횟수 읽기
         repeat_count = 1
         try:
-            with open(plan_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                repeat_count = data.get("total_repeat_count", 1) or 1
+            data = load_json_file(plan_path)
+            repeat_count = data.get("total_repeat_count", 1) or 1
         except Exception:
             pass
 
@@ -860,11 +860,9 @@ class SettingsView(BaseView):
         plan_path = self._seq_plan_paths[idx]
         try:
             if Path(plan_path).exists():
-                with open(plan_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = load_json_file(plan_path)
                 data["total_repeat_count"] = new_count
-                with open(plan_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                dump_json_file(plan_path, data, ensure_ascii=False, indent=2)
                 logger.info(f"플랜 반복횟수 저장: {Path(plan_path).stem} → {new_count}회")
         except Exception as e:
             logger.error(f"플랜 반복횟수 저장 실패: {e}")
@@ -889,12 +887,11 @@ class SettingsView(BaseView):
         if plans_dir.exists():
             for plan_file in plans_dir.glob("*.json"):
                 try:
-                    with open(plan_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        plans.append({
-                            "name": data.get("name", plan_file.stem),
-                            "path": str(plan_file)
-                        })
+                    data = load_json_file(plan_file)
+                    plans.append({
+                        "name": data.get("name", plan_file.stem),
+                        "path": str(plan_file)
+                    })
                 except Exception:
                     pass
         return plans
@@ -2154,9 +2151,8 @@ del "%~f0"
             repeat = 1
             try:
                 if Path(seq_path).exists():
-                    with open(seq_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        repeat = data.get("total_repeat_count", 1) or 1
+                    data = load_json_file(seq_path)
+                    repeat = data.get("total_repeat_count", 1) or 1
             except Exception:
                 pass
             self._seq_plan_repeats.append(repeat)

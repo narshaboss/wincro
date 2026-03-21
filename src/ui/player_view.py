@@ -15,6 +15,7 @@ import time
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
+from ..utils.json_utils import load_json_file
 from ..utils.input_controller import get_input_controller
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
@@ -3699,6 +3700,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 if hasattr(self, '_mapping_test_btn'):
                     self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
                 self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
+                try:
+                    self._append_log("⚠️ 실행 강제리셋: dead_thread_forced_reset")
+                    self._append_log("🧭 중단사유: dead_thread_forced_reset")
+                except Exception:
+                    pass
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
                 return
@@ -3721,6 +3727,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
                 self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
                 self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
+                try:
+                    self._append_log("⚠️ 실행 강제리셋: dead_thread_forced_reset")
+                    self._append_log("🧭 중단사유: dead_thread_forced_reset")
+                except Exception:
+                    pass
                 self._single_waypoint_mode = False
                 self._is_mapping_test = False
                 return
@@ -3738,6 +3749,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _rt = getattr(self, '_run_thread', None)
             if _rt is not None and not _rt.is_alive():
                 # 스레드 죽음 → 정리 후 새 테스트
+                self._mark_stop_reason("dead_thread_forced_reset", f"_run_single_mapping_test idx={idx} noticed dead run thread", overwrite=True)
                 self._is_running = False
                 self._stop_event.set()
                 if getattr(self, '_is_mapping_test', False) and prev_idx >= 0:
@@ -3745,6 +3757,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._run_btn.configure(text="▶ 전체 테스트", fg_color="#a3be8c")
                 if hasattr(self, '_mapping_test_btn'):
                     self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
+                try:
+                    self._append_log("⚠️ 실행 강제리셋: dead_thread_forced_reset")
+                    self._append_log("🧭 중단사유: dead_thread_forced_reset")
+                except Exception:
+                    pass
             elif getattr(self, '_is_mapping_test', False) and prev_idx == idx:
                 # 같은 카드 클릭 → 토글 (중지만)
                 self._mark_manual_stop_context("manual_mapping_card_stop", f"_run_single_mapping_test same idx={idx}")
@@ -3953,16 +3970,17 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 템플릿 매처 확인
         matcher = get_digit_matcher()
+        _escape_hotkey_id = None
         if not matcher.has_all_templates():
             missing = matcher.get_missing_digits()
             self.after(0, lambda: self._append_log(f"⚠️ 템플릿 미완성: {missing}"))
             self._request_stop_execution("templates_incomplete", f"missing={missing}")
             return
 
-            _escape_hotkey_id = keyboard.add_hotkey(
-                'escape',
-                lambda: self._mark_manual_stop_context("escape_hotkey", "keyboard ESC hotkey") or self._stop_event.set()
-            )
+        _escape_hotkey_id = keyboard.add_hotkey(
+            'escape',
+            lambda: self._mark_manual_stop_context("escape_hotkey", "keyboard ESC hotkey") or self._stop_event.set()
+        )
         self._key_press_count = 0
 
         # 설정값
@@ -5039,6 +5057,22 @@ class GameModeDialog(ctk.CTkToplevel):
                     _avoid.add(_detour_block_goal)
                 return _avoid if _avoid else None
 
+            def _should_preserve_route_dir_avoid():
+                if not _route_only_mode:
+                    return False
+                if not _segment_has_route_starts(target_idx):
+                    return False
+                for _cand_dir, (_cand_dx, _cand_dy) in DIRECTIONS_4.items():
+                    if not _is_dir_blocked(cx, cy, _cand_dir, iteration):
+                        continue
+                    _cand_fail = edge_fail_counts.get(_dir_key(cx, cy, _cand_dir), 0)
+                    if _cand_fail < 2:
+                        continue
+                    _cand_next = (cx + _cand_dx, cy + _cand_dy)
+                    if _is_route_chokepoint(current_pos, target_pos, _cand_next, allow_unknown=True):
+                        return True
+                return False
+
             # ── 전체테스트/부분실행 맵기반 직행 모드 ─────────────────────
             # 맵핑테스트의 "최단경로"는 안정적인데, 일반 테스트는 기존 1~2차 일반 경로 파이프를
             # 타면서 방향없음/재계산/soft 우회가 섞여 좌우/상하 흔들림이 커졌다.
@@ -5082,8 +5116,9 @@ class GameModeDialog(ctk.CTkToplevel):
                 _route_result = _run_route_only_path(_route_avoid)
                 if self._stop_event.is_set():
                     return None
+                _allow_route_dir_relax = not _should_preserve_route_dir_avoid()
                 if (not (_route_result.found and _route_result.directions) and
-                    _route_avoid and _dir_avoid):
+                    _route_avoid and _dir_avoid and _allow_route_dir_relax):
                     _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                     _relaxed_result = _run_route_only_path(_relaxed_avoid)
                     if self._stop_event.is_set():
@@ -5112,7 +5147,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         if self._stop_event.is_set():
                             return None
                         if (not (_route_result.found and _route_result.directions) and
-                            _route_avoid and _dir_avoid):
+                            _route_avoid and _dir_avoid and _allow_route_dir_relax):
                             _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                             _relaxed_result = _run_route_only_path(_relaxed_avoid)
                             if self._stop_event.is_set():
@@ -5152,7 +5187,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             if self._stop_event.is_set():
                                 return None
                             if (not (_route_result.found and _route_result.directions) and
-                                _route_avoid and _dir_avoid):
+                                _route_avoid and _dir_avoid and _allow_route_dir_relax):
                                 _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                                 _relaxed_result = _run_route_only_path(_relaxed_avoid)
                                 if self._stop_event.is_set():
@@ -5377,14 +5412,8 @@ class GameModeDialog(ctk.CTkToplevel):
             if _blocked_primary_dir and not _frontier_probe_phase:
                 _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
                 if _route_only_mode:
-                    _short_route_local_avoid = (
-                        _manhattan <= 6 or
-                        (bool(current_path) and len(current_path) <= 6)
-                    )
-                    _local_avoid_mode = (
-                        (not _segment_has_route_starts(target_idx)) or
-                        _short_route_local_avoid
-                    )
+                    _segment_has_starts = _segment_has_route_starts(target_idx)
+                    _local_avoid_mode = not _segment_has_starts
                     if _blocked_edge_fail <= 1:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
@@ -5394,15 +5423,15 @@ class GameModeDialog(ctk.CTkToplevel):
                         _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
                         if _local_dir:
                             if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir, sr=_short_route_local_avoid:
-                                    self._append_log(f"🧭 {'근접국소회피' if sr else '국소회피'}: ({x},{y}) {d2}→{a2}"))
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
+                                    self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
                             return _local_dir
                         tried = explored_from.get(current_pos, set())
                         tried.add(_blocked_primary_dir)
                         explored_from[current_pos] = tried
                         if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, sr=_short_route_local_avoid:
-                                self._append_log(f"🧭 {'근접국소회피' if sr else '국소회피'} 실패: ({x},{y}) {d2} 유지금지"))
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                                self._append_log(f"🧭 국소회피 실패: ({x},{y}) {d2} 유지금지"))
                         return None
                     _bdx, _bdy = DIRECTIONS_4.get(_blocked_primary_dir, (0, 0))
                     _blocked_next = (cx + _bdx, cy + _bdy)
@@ -5433,6 +5462,20 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_alt_dir:
                                 self._append_log(f"🧭 경로우회: ({x},{y}) {d2}→{a2}"))
                             return _alt_dir
+                    _route_chokepoint = _is_route_chokepoint(current_pos, target_pos, _blocked_next, allow_unknown=True)
+                    _preserve_failed_edge = (
+                        _segment_has_starts and
+                        _blocked_edge_fail >= 2 and
+                        _route_chokepoint
+                    )
+                    if _preserve_failed_edge:
+                        tried = explored_from.get(current_pos, set())
+                        tried.add(_blocked_primary_dir)
+                        explored_from[current_pos] = tried
+                        if _ui_update_ok and iteration % 10 == 0:
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                                self._append_log(f"🧭 유일통로 재시도 중단: ({x},{y}) {d2}"))
+                        return None
                     # 대체 경로가 전혀 없거나, relaxed 경로의 첫 칸이 아직 방향차단만 걸린 상태라면
                     # 하드블록이 아닌 한 몇 번은 그대로 밀어본다. 그렇지 않으면 특화/부분실행/
                     # 일반테스트가 모두 같은 자리에서 방향없음으로 굳을 수 있다.
@@ -5458,7 +5501,6 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                     self._append_log(f"🧭 좁은목 재시도: ({x},{y}) {d2}"))
                         return _blocked_primary_dir
-                    _route_chokepoint = _is_route_chokepoint(current_pos, target_pos, _blocked_next, allow_unknown=True)
                     if _route_chokepoint and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + 2:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
@@ -5993,6 +6035,10 @@ class GameModeDialog(ctk.CTkToplevel):
                     _guard_best_distance = None
                 _ui_update_ok = (iteration % 10 == 0)  # UI 업데이트는 10회당 1번 (Tkinter 큐 폭주 방지)
                 _t_iter_start = time.time()
+                # 보스/순찰 보조값은 일부 분기에서만 채워지므로 반복 시작마다 안전한 기본값으로 초기화한다.
+                _t_boss_ms = 0
+                _move_target = None
+                _move_target_raw = None
 
                 # 중지 확인 (좌표 읽기 전 즉시 체크)
                 if self._stop_event.is_set():
@@ -7948,6 +7994,13 @@ class GameModeDialog(ctk.CTkToplevel):
                             _frontier_from_raw = False  # raw 복구 여부 초기값
                             _frontier_from_global = False  # 전역 프런티어 복구 여부
                             _prev_explore_target = explore_target
+
+                            def _frontier_unknown_dirs(_fx, _fy):
+                                _dirs = []
+                                for _fd, (_fdx, _fdy) in DIRECTIONS_4.items():
+                                    if not self._game_map.is_known(_fx + _fdx, _fy + _fdy):
+                                        _dirs.append(_fd)
+                                return _dirs
                             # 기존 목표 유효성 검증
                             if explore_target is not None:
                                 et = explore_target
@@ -7956,9 +8009,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 still_ok = not self._game_map.is_blocked(et[0], et[1])
                                 _et_unknown_dirs = []
                                 if still_ok:
-                                    for _et_d, (_et_dx, _et_dy) in DIRECTIONS_4.items():
-                                        if not self._game_map.is_known(et[0] + _et_dx, et[1] + _et_dy):
-                                            _et_unknown_dirs.append(_et_d)
+                                    _et_unknown_dirs = _frontier_unknown_dirs(et[0], et[1])
                                     still_ok = bool(_et_unknown_dirs)
                                 if still_ok and et == (current_x, current_y):
                                     _explored_here = explored_from.get((current_x, current_y), set())
@@ -8028,6 +8079,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 시도 카운트는 "새 목표로 바뀐 경우"에만 초기화 (기존 목표는 누적 유지)
                             if explore_target is not None and explore_target != _prev_explore_target:
                                 explore_target_tries = 0
+                            _et_unknown_dirs = []
+                            if explore_target is not None:
+                                _et_unknown_dirs = _frontier_unknown_dirs(explore_target[0], explore_target[1])
                             if explore_target:
                                 _same_ft = (_last_frontier_log_target == explore_target)
                                 if (not _same_ft) or ((iteration - _last_frontier_log_iter) >= 20):
@@ -9846,6 +9900,39 @@ class GameModeDialog(ctk.CTkToplevel):
 
                 if direction is None:
                     none_dir_streak += 1
+                    if _is_mapping_test and (not _mt_has_starts) and _local_explore_phase:
+                        _unknown_dirs = []
+                        for _md, (_mdx, _mdy) in DIRECTIONS_4.items():
+                            if not self._game_map.is_known(current_x + _mdx, current_y + _mdy):
+                                _unknown_dirs.append(_md)
+                        if none_dir_streak in (1, 3) or none_dir_streak % 10 == 0:
+                            _map_name = os.path.basename(self._get_segment_map_name(target_idx))
+                            _diag = (
+                                f"seg={target_idx} pos=({current_x},{current_y}) "
+                                f"target=({target_x},{target_y}) et={explore_target} "
+                                f"center={_local_explore_center} r={_local_explore_radius} "
+                                f"unknown={_unknown_dirs} pass={len(self._game_map.passable)} "
+                                f"block={len(self._game_map.blocked)} map={_map_name}"
+                            )
+                            logger.info(f"[맵핑이상] local-no-direction {_diag}")
+                            if _ui_update_ok:
+                                self.after(
+                                    0,
+                                    lambda d=_diag, s=none_dir_streak:
+                                        self._append_log(f"⚠️ 맵핑이상: 방향없음 반복({s}) {d}")
+                                )
+                        if none_dir_streak >= 3:
+                            self._mark_stop_reason(
+                                "mapping_local_no_direction",
+                                (
+                                    f"seg={target_idx} pos=({current_x},{current_y}) "
+                                    f"target=({target_x},{target_y}) et={explore_target} "
+                                    f"center={_local_explore_center} r={_local_explore_radius} "
+                                    f"unknown={_unknown_dirs} pass={len(self._game_map.passable)} "
+                                    f"block={len(self._game_map.blocked)}"
+                                ),
+                                overwrite=False,
+                            )
                     if none_dir_streak >= 3 and use_map and (mapping_on or _stable_shortest_route_mode_active()):
                         _cleared = 0
                         for _d in DIRECTIONS_4.keys():
@@ -10002,7 +10089,8 @@ class GameModeDialog(ctk.CTkToplevel):
             # keyboard.remove_hotkey를 별도 스레드에서 실행 (join 없이 — 블로킹 방지)
             def _remove_hotkey():
                 try:
-                    keyboard.remove_hotkey(_escape_hotkey_id)
+                    if _escape_hotkey_id is not None:
+                        keyboard.remove_hotkey(_escape_hotkey_id)
                 except Exception:
                     pass
             threading.Thread(target=_remove_hotkey, daemon=True).start()
@@ -18132,8 +18220,7 @@ class PlayerView(BaseView):
             if PLANS_DIR.exists():
                 for plan_file in PLANS_DIR.glob("*.json"):
                     try:
-                        with open(plan_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                        data = load_json_file(plan_file)
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
                         if plan.user_verified:
                             plans.append(plan)
@@ -19173,8 +19260,7 @@ class PlayerView(BaseView):
             file_size = plan_file.stat().st_size
             if file_size > 5_000_000:  # 5MB 이상이면 비동기 로드 권장
                 logger.warning(f"플랜 파일이 크므로 비동기 로드 권장: {file_size/1024:.0f}KB")
-            with open(plan_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_json_file(plan_file)
             templates_dir = DATA_DIR / "templates"
             plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
             logger.info(f"계획 재로드 완료: {plan.name}")
@@ -19635,7 +19721,3 @@ class PlayerView(BaseView):
                 dispatcher.close()
             except Exception:
                 pass
-
-
-
-

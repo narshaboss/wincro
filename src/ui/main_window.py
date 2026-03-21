@@ -23,6 +23,7 @@ from pynput import keyboard
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
 from ..utils.app_identity import get_effective_app_name
+from ..utils.json_utils import load_json_file
 from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
@@ -570,13 +571,12 @@ class MainWindow(ctk.CTk):
                     templates_dir = DATA_DIR / "templates"
                     for plan_file in PLANS_DIR.glob("*.json"):
                         try:
-                            with open(plan_file, "r", encoding="utf-8") as f:
-                                data = json.load(f)
-                                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                                # 원래 파일 경로 저장 (나중에 저장할 때 사용)
-                                plan._source_file = str(plan_file)
-                                plans.append(plan)
-                                logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
+                            data = load_json_file(plan_file)
+                            plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                            # 원래 파일 경로 저장 (나중에 저장할 때 사용)
+                            plan._source_file = str(plan_file)
+                            plans.append(plan)
+                            logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
                         except Exception as e:
                             logger.error(f"플랜 로드 실패: {plan_file} - {e}")
                 logger.info(f"[미니플레이어] 총 {len(plans)}개 플랜 로드됨")
@@ -820,12 +820,11 @@ class MainWindow(ctk.CTk):
             templates_dir = DATA_DIR / "templates"
             for plan_file in PLANS_DIR.glob("*.json"):
                 try:
-                    with open(plan_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                        # 원래 파일 경로 저장
-                        plan._source_file = str(plan_file)
-                        plans.append(plan)
+                    data = load_json_file(plan_file)
+                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                    # 원래 파일 경로 저장
+                    plan._source_file = str(plan_file)
+                    plans.append(plan)
                 except Exception as e:
                     logger.error(f"[미니플레이어] 플랜 새로고침 실패: {plan_file} - {e}")
         self._mini_plans = plans
@@ -1013,10 +1012,9 @@ class MainWindow(ctk.CTk):
             return
 
         try:
-            with open(plan_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                templates_dir = DATA_DIR / "templates"
-                loaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+            data = load_json_file(plan_file)
+            templates_dir = DATA_DIR / "templates"
+            loaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
             logger.info(f"[플레이모드 테스트] 플랜 로드: {plan_name}")
         except Exception as e:
             logger.error(f"플랜 로드 실패: {e}")
@@ -1228,12 +1226,11 @@ class MainWindow(ctk.CTk):
                 selected_plan = None
                 if plan_file.exists():
                     try:
-                        with open(plan_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            templates_dir = DATA_DIR / "templates"
-                            selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                            # 원래 파일 경로 유지
-                            selected_plan._source_file = str(plan_file)
+                        data = load_json_file(plan_file)
+                        templates_dir = DATA_DIR / "templates"
+                        selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                        # 원래 파일 경로 유지
+                        selected_plan._source_file = str(plan_file)
                         for idx, rule in enumerate(selected_plan.initial_rules):
                             rule_conf = getattr(rule, 'confidence', 0)
                             logger.info(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
@@ -1311,10 +1308,9 @@ class MainWindow(ctk.CTk):
                     self._sequence_mode = False
                     return
 
-                with open(plan_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    templates_dir = DATA_DIR / "templates"
-                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                data = load_json_file(plan_file)
+                templates_dir = DATA_DIR / "templates"
+                plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
 
                 # 설정의 반복횟수 우선, 없으면(0) 플랜 파일 값 사용
                 saved_repeat = self._sequence_repeats[index] if index < len(self._sequence_repeats) else 0
@@ -1738,10 +1734,9 @@ class MainWindow(ctk.CTk):
                 try:
                     import json
                     plan_path = self._sequence_plans[self._sequence_index]
-                    with open(plan_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        templates_dir = DATA_DIR / 'templates'
-                        plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                    data = load_json_file(plan_path)
+                    templates_dir = DATA_DIR / 'templates'
+                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
                     try:
                         self.after(0, lambda p=plan: self._mini_execute_plan(p))
                     except (tk.TclError, RuntimeError):

@@ -1061,7 +1061,7 @@ wincro/
 - `config.py`
   - `APP_VERSION` `1.0.168` -> `1.0.169`
 
-### 2026-03-20: Map blocked-format recovery and map-anomaly tracing (v1.0.170)
+### 2026-03-20: Map blocked-format recovery and map-anomaly tracing (v1.0.171)
 - Restored `src/ui/player_view.py` to the `v1.0.165` algorithm baseline and did not keep the later boss/explore flap experiments.
 - Root cause of the `tiles=1` / map-collapse symptom:
   - many map JSON files stored `blocked` as dict payloads like `{"value": [x, y], "Count": n}` instead of plain `[x, y]` coordinate arrays.
@@ -1075,4 +1075,4 @@ wincro/
   - Full map audit passed with `535` map files loading successfully and no `tiles <= 1` results.
   - `pytest -q` passed with `77 passed` and only pre-existing warnings.
 - `config.py`
-  - `APP_VERSION` `1.0.169` -> `1.0.170`
+  - `APP_VERSION` `1.0.169` -> `1.0.171`
