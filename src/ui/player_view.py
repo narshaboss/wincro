@@ -4341,6 +4341,7 @@ class GameModeDialog(ctk.CTkToplevel):
         _boss_patrol_route_index = {}  # 순찰 캐시 경로 역매핑
         _boss_patrol_recent_samples = []  # [((x,y), (tx,ty)), ...] 순찰 왕복 진단용
         _boss_transition_cooldown_until = 0.0  # 보스 처치/키입력 직후 재순찰 차단
+        _boss_zero_coord_ocr_count = 0    # sentinel 보스굴에서 (0,0) OCR 반복 횟수
         _step_watchdog_kind = None
         _step_watchdog_dir = None
         _step_watchdog_from = None
@@ -6160,6 +6161,46 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 좌표를 정수로 확실하게 변환
                 current_x = int(current_x)
                 current_y = int(current_y)
+                _ocr_zero_coord = (current_x == 0 and current_y == 0)
+
+                # OCR 오독 가드: 목표가 0,0이 아닌데 좌표가 갑자기 (0,0)으로 튀면 무시
+                # sentinel 보스굴은 마지막 유효 좌표/시작좌표로 보정해 루프를 이어간다.
+                if _ocr_zero_coord:
+                    _sentinel_boss_zero_goal = _is_sentinel_boss_goal(target_idx, target_x, target_y)
+                    _cur_re_guard = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
+                    _zero_goal = ((target_x == 0 and target_y == 0) or any(ex == 0 and ey == 0 for ex, ey in _cur_re_guard)) and not _sentinel_boss_zero_goal
+                    if _sentinel_boss_zero_goal:
+                        _boss_zero_coord_ocr_count += 1
+                        _fallback_coord = None
+                        if prev_x is not None and prev_y is not None and (int(prev_x), int(prev_y)) != (0, 0):
+                            _fallback_coord = (int(prev_x), int(prev_y))
+                        else:
+                            _start_pos = getattr(self._game_map, 'start_pos', None)
+                            if _start_pos and tuple(map(int, _start_pos)) != (0, 0):
+                                _fallback_coord = (int(_start_pos[0]), int(_start_pos[1]))
+                        if _fallback_coord is not None:
+                            if _boss_zero_coord_ocr_count % 5 == 1 and _ui_update_ok:
+                                self.after(0, lambda fx=_fallback_coord[0], fy=_fallback_coord[1], c=_boss_zero_coord_ocr_count:
+                                    self._append_log(f"⚠️ 보스굴 좌표 0,0 보정: (0,0)→({fx},{fy}) ({c})"))
+                            current_x, current_y = _fallback_coord
+                        else:
+                            if _boss_zero_coord_ocr_count % 5 == 1 and _ui_update_ok:
+                                self.after(0, lambda c=_boss_zero_coord_ocr_count, m=max_coord_fails:
+                                    self._append_log(f"⚠️ 보스굴 좌표 0,0 오독 무시: (0,0) ({c}/{m})"))
+                            self._stop_event.wait(0.05)
+                            continue
+                    elif not _zero_goal and not all_targets[target_idx][3]:
+                        _jump0 = abs(prev_x - current_x) + abs(prev_y - current_y) if prev_x is not None else 0
+                        # 큰 점프 형태의 0,0은 사실상 오독으로 간주
+                        if _jump0 >= 6:
+                            coord_fail_count += 1
+                            if coord_fail_count % 5 == 1 and _ui_update_ok:
+                                self.after(0, lambda px=prev_x, py=prev_y, j=_jump0, c=coord_fail_count, m=max_coord_fails:
+                                    self._append_log(f"⚠️ 좌표 0,0 오독 무시: ({px},{py})→(0,0) 거리={j} ({c}/{m})"))
+                            self._stop_event.wait(0.05)
+                            continue
+                else:
+                    _boss_zero_coord_ocr_count = 0
 
                 _guard_target_total_iterations += 1
                 _sentinel_boss_goal = _is_sentinel_boss_goal(target_idx, target_x, target_y)
@@ -6200,30 +6241,6 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):
                     self._stop_event.wait(0.05)
                     continue
-
-                # OCR 오독 가드: 목표가 0,0이 아닌데 좌표가 갑자기 (0,0)으로 튀면 무시
-                # (구간 전환/포탈 직후 일시 오독으로 도착/전환 판정이 깨지는 현상 방지)
-                if current_x == 0 and current_y == 0:
-                    _sentinel_boss_zero_goal = _is_sentinel_boss_goal(target_idx, target_x, target_y)
-                    _cur_re_guard = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
-                    _zero_goal = ((target_x == 0 and target_y == 0) or any(ex == 0 and ey == 0 for ex, ey in _cur_re_guard)) and not _sentinel_boss_zero_goal
-                    if _sentinel_boss_zero_goal:
-                        coord_fail_count += 1
-                        if coord_fail_count % 5 == 1 and _ui_update_ok:
-                            self.after(0, lambda c=coord_fail_count, m=max_coord_fails:
-                                self._append_log(f"⚠️ 보스굴 좌표 0,0 오독 무시: (0,0) ({c}/{m})"))
-                        self._stop_event.wait(0.05)
-                        continue
-                    if not _zero_goal and not all_targets[target_idx][3]:
-                        _jump0 = abs(prev_x - current_x) + abs(prev_y - current_y) if prev_x is not None else 0
-                        # 큰 점프 형태의 0,0은 사실상 오독으로 간주
-                        if _jump0 >= 6:
-                            coord_fail_count += 1
-                            if coord_fail_count % 5 == 1 and _ui_update_ok:
-                                self.after(0, lambda px=prev_x, py=prev_y, j=_jump0, c=coord_fail_count, m=max_coord_fails:
-                                    self._append_log(f"⚠️ 좌표 0,0 오독 무시: ({px},{py})→(0,0) 거리={j} ({c}/{m})"))
-                            self._stop_event.wait(0.05)
-                            continue
 
                 # 좌표 범위 검증 (OCR 오독 필터링)
                 # 1) 절대 범위: 500 초과 무시
