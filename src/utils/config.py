@@ -1,4 +1,4 @@
-"""
+﻿"""
 Application configuration management.
 
 This module keeps local JSON configuration in a single place and exposes
@@ -29,7 +29,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.173"
+APP_VERSION = "1.0.174"
 
 
 @dataclass
