@@ -7438,6 +7438,33 @@ class GameModeDialog(ctk.CTkToplevel):
                                 _edge_key = _dir_key(prev_x, prev_y, last_dir)
                                 _edge_fail = edge_fail_counts.get(_edge_key, 0)
                                 _known_passable = self._game_map.is_passable(wall_x, wall_y)
+                                _patrol_adjacent_goal_fail = (
+                                    _patrolling_route_phase and
+                                    boss_patrol is not None and
+                                    _patrol_goal_origin is not None and
+                                    _edge_fail >= 2 and
+                                    (wall_x, wall_y) == _patrol_goal_origin and
+                                    (abs(prev_x - _patrol_goal_origin[0]) + abs(prev_y - _patrol_goal_origin[1])) <= 1
+                                )
+                                if _patrol_adjacent_goal_fail:
+                                    boss_patrol.skip_current_target()
+                                    patrol_skip_count += 1
+                                    _clear_boss_patrol_route_cache()
+                                    _clear_temporary_goal_detour(_patrol_goal_origin)
+                                    edge_fail_counts.pop(_edge_key, None)
+                                    current_path = []
+                                    path_index = 0
+                                    path_pos_index = {}
+                                    pathfinder.invalidate_path()
+                                    last_dir = None
+                                    stuck_count = 0
+                                    total_stuck_count = 0
+                                    prev_x, prev_y = current_x, current_y
+                                    if _ui_update_ok:
+                                        self.after(0, lambda gx=_patrol_goal_origin[0], gy=_patrol_goal_origin[1]:
+                                            self._append_log(f"⚠️ 순찰 인접목표 반복실패 → 스킵 ({gx},{gy})"))
+                                    self._stop_event.wait(0.05)
+                                    continue
                                 _skip_wall_promotion = _route_chokepoint and (_stable_waypoint_phase or _patrolling_route_phase)
                                 _force_probe_wall = (
                                     _is_mapping_mode and mapping_on and (not _segment_map_locked)

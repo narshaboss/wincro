@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,3 +22,11 @@ def test_boss_patrol_records_and_blocks_abab_oscillation():
     assert "_register_dir_block(current_x, current_y, _osc_dir, iteration, ttl=12)" in text
     assert "_clear_boss_patrol_route_cache()" in text
     assert "순찰왕복 차단" in text
+
+
+def test_boss_patrol_adjacent_goal_repeated_fail_skips_target():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "_patrol_adjacent_goal_fail = (" in text
+    assert "boss_patrol.skip_current_target()" in text
+    assert "⚠️ 순찰 인접목표 반복실패 → 스킵" in text

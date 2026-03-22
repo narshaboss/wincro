@@ -29,7 +29,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.176"
+APP_VERSION = "1.0.177"
 
 
 @dataclass
@@ -303,6 +303,7 @@ def get_config_load_error() -> str:
 
 def is_startup_config_save_safe() -> bool:
     return config_manager.is_startup_save_safe()
+
 
 
 
