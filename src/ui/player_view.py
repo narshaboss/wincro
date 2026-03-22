@@ -3920,11 +3920,13 @@ class GameModeDialog(ctk.CTkToplevel):
         # 맵 데이터 저장 + 배지 갱신 (모두 백그라운드 스레드에서 수행)
         # 일반 전체 테스트에서는 맵 저장 건너뜀
         _skip_save = getattr(self, '_no_save_mode', False)
+        _save_segment_idx = mapping_seg if mapping_seg >= 0 else getattr(self, '_current_segment_idx', 0)
+        _save_map_ref = getattr(self, '_game_map', None)
         def do_save():
             try:
-                if not _skip_save and hasattr(self, '_game_map') and self._game_map.passable:
-                    self._auto_save_map()
-                    stats = self._game_map.get_statistics()
+                if not _skip_save and _save_map_ref is not None and getattr(_save_map_ref, 'passable', None):
+                    self._auto_save_map(segment_idx=_save_segment_idx, game_map_ref=_save_map_ref)
+                    stats = _save_map_ref.get_statistics()
                     try:
                         self.after(0, lambda s=stats: self._append_log(
                             f"맵 저장 완료 ({s['total_tiles']}개 타일)"))
@@ -4093,6 +4095,23 @@ class GameModeDialog(ctk.CTkToplevel):
             else:
                 tx, ty = _wpx, _wpy
             return tx, ty
+
+        def _is_sentinel_boss_goal(tidx, tx, ty):
+            """보스굴의 더미 목표(0,0) 여부.
+
+            일부 보스굴 경유지는 실제 목표 좌표 대신 (0,0)을 센티넬로 사용한다.
+            이 경우 (0,0) OCR 결과를 정상 좌표로 취급하면 경로/정체 보호가 망가진다.
+            """
+            if not (0 <= tidx < len(all_targets)):
+                return False
+            _target = all_targets[tidx]
+            if not _target[3]:
+                return False
+            if (int(tx), int(ty)) != (0, 0):
+                return False
+            _route_ends = _target[7] if len(_target) > 7 else []
+            _route_starts = _target[8] if len(_target) > 8 else []
+            return bool(_route_starts) and not bool(_route_ends)
 
         target_x, target_y = _pick_target(target_idx)
 
@@ -6143,7 +6162,17 @@ class GameModeDialog(ctk.CTkToplevel):
                 current_y = int(current_y)
 
                 _guard_target_total_iterations += 1
-                _current_target_distance = abs(current_x - target_x) + abs(current_y - target_y)
+                _sentinel_boss_goal = _is_sentinel_boss_goal(target_idx, target_x, target_y)
+                if _sentinel_boss_goal and boss_mode == "exploring":
+                    _frontier_anchor = _find_nearest_frontier_raw(current_x, current_y)
+                    if _frontier_anchor is None:
+                        _frontier_anchor = _find_global_frontier_raw(current_x, current_y)
+                    if _frontier_anchor is not None:
+                        _current_target_distance = abs(current_x - _frontier_anchor[0]) + abs(current_y - _frontier_anchor[1])
+                    else:
+                        _current_target_distance = 0
+                else:
+                    _current_target_distance = abs(current_x - target_x) + abs(current_y - target_y)
                 if _guard_best_distance is None or _current_target_distance < _guard_best_distance:
                     _guard_best_distance = _current_target_distance
                     _guard_stagnation_iterations = 0
@@ -6175,8 +6204,16 @@ class GameModeDialog(ctk.CTkToplevel):
                 # OCR 오독 가드: 목표가 0,0이 아닌데 좌표가 갑자기 (0,0)으로 튀면 무시
                 # (구간 전환/포탈 직후 일시 오독으로 도착/전환 판정이 깨지는 현상 방지)
                 if current_x == 0 and current_y == 0:
+                    _sentinel_boss_zero_goal = _is_sentinel_boss_goal(target_idx, target_x, target_y)
                     _cur_re_guard = all_targets[target_idx][7] if len(all_targets[target_idx]) > 7 else []
-                    _zero_goal = (target_x == 0 and target_y == 0) or any(ex == 0 and ey == 0 for ex, ey in _cur_re_guard)
+                    _zero_goal = ((target_x == 0 and target_y == 0) or any(ex == 0 and ey == 0 for ex, ey in _cur_re_guard)) and not _sentinel_boss_zero_goal
+                    if _sentinel_boss_zero_goal:
+                        coord_fail_count += 1
+                        if coord_fail_count % 5 == 1 and _ui_update_ok:
+                            self.after(0, lambda c=coord_fail_count, m=max_coord_fails:
+                                self._append_log(f"⚠️ 보스굴 좌표 0,0 오독 무시: (0,0) ({c}/{m})"))
+                        self._stop_event.wait(0.05)
+                        continue
                     if not _zero_goal and not all_targets[target_idx][3]:
                         _jump0 = abs(prev_x - current_x) + abs(prev_y - current_y) if prev_x is not None else 0
                         # 큰 점프 형태의 0,0은 사실상 오독으로 간주
@@ -7802,8 +7839,10 @@ class GameModeDialog(ctk.CTkToplevel):
                         # Phase 2 경로맵핑: 프런티어 대신 실제 목표로 직행
                         # 맵 데이터 있으면(passable>=50) 부분실행/전체테스트도 직행
                         _has_mapped = len(self._game_map.passable) >= 50
-                        _phase2_direct = (not _local_explore_phase and not _mapping_guard_active()
-                                           and (_is_mapping_test or _has_mapped))
+                        _phase2_direct = (not _local_explore_phase and
+                                           not _mapping_guard_active() and
+                                           (_is_mapping_test or _has_mapped) and
+                                           not _is_sentinel_boss_goal(target_idx, target_x, target_y))
                         if _phase2_direct:
                             _phase2_reprobe_requested = False
                             _phase2_reprobe_reason = ""
