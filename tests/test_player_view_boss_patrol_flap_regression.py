@@ -30,3 +30,12 @@ def test_boss_patrol_adjacent_goal_repeated_fail_skips_target():
     assert "_patrol_adjacent_goal_fail = (" in text
     assert "boss_patrol.skip_current_target()" in text
     assert "⚠️ 순찰 인접목표 반복실패 → 스킵" in text
+
+
+def test_boss_patrol_adjacent_goal_skip_happens_before_wall_threshold_gate():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    skip_idx = text.index("_patrol_adjacent_goal_fail = (")
+    wall_gate_idx = text.index("if (stuck_count >= _wall_threshold or")
+
+    assert skip_idx < wall_gate_idx
