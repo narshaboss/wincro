@@ -4389,6 +4389,8 @@ class GameModeDialog(ctk.CTkToplevel):
         explore_unreachable = set()    # 도달 불가 프런티어 좌표들
         _last_frontier_log_target = None  # 동일 프런티어 목표 로그 스팸 억제용
         _last_frontier_log_iter = -9999
+        _last_move_target = None       # 직전 반복에서 실제로 누른 이동의 목표 좌표
+        _last_move_mode = None         # 직전 반복에서 실제로 누른 이동의 보스 모드
         edge_fail_counts = {}          # {(x,y,dir): n} 비연속 엣지 실패 누적
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
@@ -7529,12 +7531,12 @@ class GameModeDialog(ctk.CTkToplevel):
                             _stable_waypoint_phase = _stable_shortest_route_mode_active()
                             _tddx, _tddy = DIRECTIONS_4.get(last_dir, (0, 0))
                             _tx, _ty = prev_x + _tddx, prev_y + _tddy
-                            _patrolling_route_phase = (boss_mode == "patrolling" and not _boss_chasing)
+                            _patrolling_route_phase = (_last_move_mode == "patrolling" and not _boss_chasing)
                             _patrol_goal_origin = None
                             if _patrolling_route_phase:
                                 try:
-                                    if _move_target is not None:
-                                        _patrol_goal_origin = (int(_move_target[0]), int(_move_target[1]))
+                                    if _last_move_target is not None:
+                                        _patrol_goal_origin = (int(_last_move_target[0]), int(_last_move_target[1]))
                                 except Exception:
                                     _patrol_goal_origin = None
                             _frontier_probe_phase_fail = _mapping_guard_active() or _local_explore_phase
@@ -9457,7 +9459,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _boss_found = True
                                         boss_approach_steps += 1
                                         _char_detected = bool(_det.get("char_found"))
-                                        if not _char_detected:
+                                        _char_anchor_valid = bool(_det.get("char_anchor_valid"))
+                                        _char_anchor_source = _det.get("char_anchor_source")
+                                        if not _char_detected and not _char_anchor_valid:
                                             if _ui_update_ok:
                                                 self._schedule_boss_ui_log(
                                                     f"👀 보스 후보 감지 (신뢰도={_res.confidence:.1%}) — 캐릭터 인식 대기",
@@ -9472,6 +9476,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                             est_dy_tiles = _det.get("dy_tiles", 0)
                                             tile_dist = _det.get("tile_dist", 0)
                                             pixel_dist = _det.get("pixel_dist", 0.0)
+                                            if (not _char_detected) and _char_anchor_valid and _ui_update_ok:
+                                                self._schedule_boss_ui_log(
+                                                    f"🧭 캐릭터 보정 사용: {_char_anchor_source} dx={dx_pixel}px dy={dy_pixel}px",
+                                                    dedupe_key="boss-char-anchor-fallback",
+                                                    dedupe_window=0.6,
+                                                )
 
                                             # 20타일 초과 → UI 요소 오탐, 무시
                                             if tile_dist > 20:
@@ -10278,6 +10288,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     _t_path_ms = int((time.time() - _t_iter_start) * 1000) - _t_ocr_ms - _t_boss_ms
                     _t_key_start = time.time()
                     _last_probe_target = _pending_probe_target
+                    _last_move_target = _move_target
+                    _last_move_mode = boss_mode
                     press_key(direction)
                     _arm_step_watchdog(f"boss-{boss_mode}", (current_x, current_y), direction, _move_target)
                     _t_key_ms = int((time.time() - _t_key_start) * 1000)
@@ -10445,6 +10457,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         self.after(0, lambda: self._key_count_label.configure(text=f"{self._key_press_count}회"))
                     self._stop_event.wait(0.2)  # 포탈 전환 안정화 대기
                 else:
+                    _last_move_target = None
+                    _last_move_mode = None
                     press_key(direction)
                 _t_key_ms = int((time.time() - _t_key_start) * 1000)
                 last_dir = direction
@@ -15863,6 +15877,10 @@ class GameModeDialog(ctk.CTkToplevel):
         color_threshold: float,
         focus_threshold: float,
         use_focus: bool = True,
+        allow_single_strong: bool = False,
+        single_strong_threshold: float = 0.95,
+        recent_hint=None,
+        recent_hint_radius: int = 28,
     ):
         """이진/일반/색포커스 매칭을 교차 검증해 안정된 결과만 채택"""
         from ..analyzer.template_matcher import MatchResult
@@ -15894,6 +15912,50 @@ class GameModeDialog(ctk.CTkToplevel):
                 best_cluster = cluster
 
         if len(best_cluster) < 2:
+            if allow_single_strong and found:
+                _recent_hint = None
+                try:
+                    if recent_hint is not None:
+                        _recent_hint = (int(recent_hint[0]), int(recent_hint[1]))
+                except Exception:
+                    _recent_hint = None
+                _near_found = []
+                if _recent_hint is not None:
+                    for _name, _res in found:
+                        _dist = abs(int(_res.center_x) - _recent_hint[0]) + abs(int(_res.center_y) - _recent_hint[1])
+                        if _dist <= max(1, int(recent_hint_radius)):
+                            _near_found.append((_name, _res, _dist))
+                _single_pick = None
+                if _near_found:
+                    _near_found.sort(key=lambda item: (float(item[1].confidence), -item[2]), reverse=True)
+                    _cand_name, _cand_res, _ = _near_found[0]
+                    _near_threshold = max(min(binary_threshold, color_threshold, focus_threshold), single_strong_threshold - 0.08)
+                    if float(_cand_res.confidence) >= float(_near_threshold):
+                        _single_pick = (_cand_name, _cand_res)
+                if _single_pick is None:
+                    _cand_name, _cand_res = max(found, key=lambda item: float(item[1].confidence))
+                    if float(_cand_res.confidence) >= float(single_strong_threshold):
+                        _single_pick = (_cand_name, _cand_res)
+                if _single_pick is not None:
+                    _pick_name, _pick_res = _single_pick
+                    _merged = MatchResult(
+                        found=True,
+                        x=int(_pick_res.x),
+                        y=int(_pick_res.y),
+                        width=int(_pick_res.width),
+                        height=int(_pick_res.height),
+                        confidence=float(_pick_res.confidence),
+                        center_x=int(_pick_res.center_x),
+                        center_y=int(_pick_res.center_y),
+                    )
+                    return {
+                        "result": _merged,
+                        "binary": binary_res,
+                        "color": color_res,
+                        "focus": focus_res,
+                        "cluster": [(_pick_name, _pick_res)],
+                        "fallback_source": _pick_name,
+                    }
             return {
                 "result": MatchResult(found=False),
                 "binary": binary_res,
@@ -15928,6 +15990,8 @@ class GameModeDialog(ctk.CTkToplevel):
         from ..analyzer.template_matcher import TemplateMatcher
 
         matcher = TemplateMatcher()
+        _last_boss_center = getattr(self, "_boss_detect_last_boss_center", None)
+        _last_char_center = getattr(self, "_boss_detect_last_char_center", None)
         boss_info = self._detect_template_consensus(
             screen, boss_img_path,
             matcher=matcher,
@@ -15935,6 +15999,10 @@ class GameModeDialog(ctk.CTkToplevel):
             color_threshold=0.64,
             focus_threshold=0.45,
             use_focus=True,
+            allow_single_strong=True,
+            single_strong_threshold=0.93,
+            recent_hint=_last_boss_center,
+            recent_hint_radius=72,
         )
         char_info = None
         if char_img_path:
@@ -15945,12 +16013,23 @@ class GameModeDialog(ctk.CTkToplevel):
                 color_threshold=0.60,
                 focus_threshold=0.42,
                 use_focus=True,
+                allow_single_strong=True,
+                single_strong_threshold=0.94,
+                recent_hint=_last_char_center,
+                recent_hint_radius=44,
             )
 
         boss_result = boss_info["result"]
         char_result = char_info["result"] if char_info else None
         char_found = bool(char_result and char_result.found)
         boss_found = bool(boss_result and boss_result.found)
+        char_anchor_source = None
+        char_anchor_center = None
+
+        if boss_found:
+            self._boss_detect_last_boss_center = (int(boss_result.center_x), int(boss_result.center_y))
+        if char_found:
+            self._boss_detect_last_char_center = (int(char_result.center_x), int(char_result.center_y))
 
         data = {
             "boss_found": boss_found,
@@ -15959,6 +16038,8 @@ class GameModeDialog(ctk.CTkToplevel):
             "char_result": char_result,
             "boss_info": boss_info,
             "char_info": char_info,
+            "char_anchor_source": None,
+            "char_anchor_valid": False,
             "dx_px": None,
             "dy_px": None,
             "dx_tiles": None,
@@ -15966,12 +16047,29 @@ class GameModeDialog(ctk.CTkToplevel):
             "tile_dist": None,
             "pixel_dist": None,
         }
-        if boss_found and char_found:
-            dx_px = int(boss_result.center_x - char_result.center_x)
-            dy_px = int(boss_result.center_y - char_result.center_y)
+        if boss_found:
+            if char_found:
+                char_anchor_source = "template"
+                char_anchor_center = (int(char_result.center_x), int(char_result.center_y))
+            elif _last_char_center is not None:
+                try:
+                    char_anchor_center = (int(_last_char_center[0]), int(_last_char_center[1]))
+                    char_anchor_source = "recent_char"
+                except Exception:
+                    char_anchor_center = None
+            if char_anchor_center is None:
+                _sh, _sw = screen.shape[:2]
+                char_anchor_center = (int(_sw // 2), int(_sh // 2))
+                char_anchor_source = "screen_center"
+
+        if boss_found and char_anchor_center is not None:
+            dx_px = int(boss_result.center_x - char_anchor_center[0])
+            dy_px = int(boss_result.center_y - char_anchor_center[1])
             dx_tiles = int(round(dx_px / 44))
             dy_tiles = int(round(dy_px / 44))
             data.update({
+                "char_anchor_source": char_anchor_source,
+                "char_anchor_valid": True,
                 "dx_px": dx_px,
                 "dy_px": dy_px,
                 "dx_tiles": dx_tiles,

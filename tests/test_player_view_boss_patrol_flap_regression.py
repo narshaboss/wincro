@@ -39,3 +39,15 @@ def test_boss_patrol_adjacent_goal_skip_happens_before_wall_threshold_gate():
     wall_gate_idx = text.index("if (stuck_count >= _wall_threshold or")
 
     assert skip_idx < wall_gate_idx
+
+
+def test_boss_patrol_adjacent_goal_fail_uses_last_issued_move_target():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "_last_move_target = None" in text
+    assert "_last_move_mode = None" in text
+    assert '_patrolling_route_phase = (_last_move_mode == "patrolling" and not _boss_chasing)' in text
+    assert "if _last_move_target is not None:" in text
+    assert "_patrol_goal_origin = (int(_last_move_target[0]), int(_last_move_target[1]))" in text
+    assert "_last_move_target = _move_target" in text
+    assert "_last_move_mode = boss_mode" in text
