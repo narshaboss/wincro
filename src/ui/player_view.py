@@ -11507,13 +11507,29 @@ class GameModeDialog(ctk.CTkToplevel):
             return False
 
         placeholder_origin = (phx, phy)
+        if passable_snap:
+            xs = [pos[0] for pos in passable_snap]
+            ys = [pos[1] for pos in passable_snap]
+            min_known_x = min(xs)
+            max_known_x = max(xs)
+            min_known_y = min(ys)
+            max_known_y = max(ys)
+        else:
+            min_known_x = max_known_x = phx
+            min_known_y = max_known_y = phy
         for (x, y) in passable_snap:
             for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
                 neighbor = (x + dx, y + dy)
                 if neighbor in passable_snap or neighbor in blocked_snap or neighbor in soft_blocked_snap:
                     continue
                 if (x, y) == placeholder_origin:
-                    continue
+                    if (
+                        neighbor[0] < min_known_x
+                        or neighbor[0] > max_known_x
+                        or neighbor[1] < min_known_y
+                        or neighbor[1] > max_known_y
+                    ):
+                        continue
                 return False
         return True
 

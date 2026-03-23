@@ -80,6 +80,33 @@ def test_placeholder_segment_still_requires_non_placeholder_unknowns():
     assert view._is_segment_map_complete(gm, 0) is False
 
 
+def test_placeholder_segment_keeps_interior_unknown_from_origin_incomplete():
+    waypoints = [
+        (1, 1, "boss-cave", {
+            "arrival_keys": [{"key": "enter"}],
+            "route_ends": [],
+            "target_image": "boss.png",
+        })
+    ]
+    view = _make_view_with_waypoints(waypoints)
+    gm = GameMap()
+    gm.passable = {
+        (0, 1), (1, 1), (2, 1),
+        (0, 2), (1, 2), (2, 2),
+    }
+    gm.blocked = {
+        (-1, 1), (3, 1),
+        (-1, 2), (3, 2),
+        (0, 3), (1, 3), (2, 3),
+        (0, 0), (2, 0),
+    }
+    gm.soft_blocked = {}
+
+    # Placeholder origin (1,1) still has an interior unknown at (1,0),
+    # so completion must stay False.
+    assert view._is_segment_map_complete(gm, 0) is False
+
+
 def test_no_start_segment_uses_transient_local_map_path():
     waypoints = [
         (31, 30, "group-root", {
