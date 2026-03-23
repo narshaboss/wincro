@@ -1,24 +1,15 @@
-﻿# WinCro ?먮룞 鍮뚮뱶 諛?由대━利?
-# ?쒓렇 ?몄떆?섎㈃ ?먮룞?쇰줈 exe 鍮뚮뱶 ??Release ?앹꽦
-#
-# ?ъ슜踰?
-#   git tag v1.0.1
-#   git push origin v1.0.1
-#
-# ?먮뒗 ?섎룞?쇰줈 Actions ??뿉???ㅽ뻾 媛??
-
 name: Build and Release
 
 on:
   push:
     tags:
-      - 'v*'  # v濡??쒖옉?섎뒗 ?쒓렇 (v1.0.0, v1.2.3 ??
-  workflow_dispatch:  # ?섎룞 ?ㅽ뻾 媛??
+      - "v*"
+  workflow_dispatch:
     inputs:
       version:
-        description: '踰꾩쟾 (?? 1.0.1)'
+        description: "Version number without the v prefix"
         required: true
-        default: '1.0.0'
+        default: "1.0.0"
 
 permissions:
   contents: write
@@ -28,103 +19,115 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
 
-    - name: Get version from tag
-      id: get_version
-      shell: bash
-      run: |
-        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          # ?쒓렇?먯꽌 v ?쒓굅
-          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-        fi
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          fi
 
-    - name: Update version in code
-      shell: python
-      run: |
-        import re
-        version = "${{ steps.get_version.outputs.VERSION }}"
+      - name: Update version files
+        shell: python
+        run: |
+          import json
+          import re
+          from pathlib import Path
 
-        # config.py??APP_VERSION ?낅뜲?댄듃
-        config_path = "src/utils/config.py"
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+          version = "${{ steps.meta.outputs.version }}"
 
-        content = re.sub(
-            r'APP_VERSION = "[^"]*"',
-            f'APP_VERSION = "{version}"',
-            content
-        )
+          config_path = Path("src/utils/config.py")
+          config_text = config_path.read_text(encoding="utf-8")
+          config_text = re.sub(r'APP_VERSION = "[^"]*"', f'APP_VERSION = "{version}"', config_text)
+          config_path.write_text(config_text, encoding="utf-8")
 
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+          init_path = Path("src/__init__.py")
+          init_text = init_path.read_text(encoding="utf-8")
+          init_text = re.sub(r'__version__ = "[^"]*"', f'__version__ = "{version}"', init_text)
+          init_path.write_text(init_text, encoding="utf-8")
 
-        print(f"Updated APP_VERSION to {version}")
+          cache_path = Path("data/update_cache.json")
+          if cache_path.exists():
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            data["current_version"] = version
+            result = data.get("result") or {}
+            if isinstance(result, dict):
+              result["version"] = version
+              data["result"] = result
+            cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    - name: Build with PyInstaller (spec file)
-      run: |
-        pyinstaller WinCro.spec --clean --noconfirm
-      shell: pwsh
+      - name: Build application
+        shell: pwsh
+        run: |
+          pyinstaller WinCro.spec --clean --noconfirm
 
-    - name: Add legacy executable alias
-      run: |
-        Copy-Item "dist\?묒뾽?꾩슦誘??묒뾽?꾩슦誘?exe" "dist\?묒뾽?꾩슦誘?dwm.exe" -Force
-      shell: pwsh
+      - name: Package release zip
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $appDir = Get-ChildItem dist -Directory | Select-Object -First 1
+          if (-not $appDir) {
+            throw "No application directory found under dist"
+          }
 
-    - name: Create ZIP package
-      run: |
-        cd dist
-        7z a -tzip "?묒뾽?꾩슦誘?v${{ steps.get_version.outputs.VERSION }}.zip" ?묒뾽?꾩슦誘?*
-      shell: pwsh
+          $mainExe = Get-ChildItem $appDir.FullName -Filter *.exe | Where-Object { $_.Name -ne "dwm.exe" } | Select-Object -First 1
+          if (-not $mainExe) {
+            throw "No main executable found in $($appDir.FullName)"
+          }
 
-    - name: Create or Update Release
-      shell: pwsh
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        $version = "${{ steps.get_version.outputs.VERSION }}"
-        $tag = "v$version"
-        $zipPath = "dist/?묒뾽?꾩슦誘?v$version.zip"
-        $notesPath = "$env:RUNNER_TEMP/release_notes.txt"
+          Copy-Item $mainExe.FullName (Join-Path $appDir.FullName "dwm.exe") -Force
 
-        @"
-        ## ?묒뾽?꾩슦誘?v$version
+          $zipPath = Join-Path $env:RUNNER_TEMP "_v$version.zip"
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
 
-        ### ?ㅼ슫濡쒕뱶
-        - **?묒뾽?꾩슦誘?v$version.zip** - ?꾩껜 ?⑦궎吏
+          Compress-Archive -Path (Join-Path $appDir.FullName "*") -DestinationPath $zipPath -CompressionLevel Optimal
 
-        ### ?ㅼ튂 諛⑸쾿
-        1. zip ?뚯씪 ?ㅼ슫濡쒕뱶
-        2. ?먰븯???대뜑???뺤텞 ?댁젣
-        3. ?묒뾽?꾩슦誘?exe ?ㅽ뻾!
+          "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-        ### ?낅뜲?댄듃 諛⑸쾿
-        - ?꾨줈洹몃옩 ???ㅼ젙 > ?낅뜲?댄듃 ?ㅼ젙?먯꽌 "踰꾩쟾 ?뺤씤" ??"?낅뜲?댄듃 ?ㅼ슫濡쒕뱶"
+      - name: Create or update release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $tag = "v$version"
+          $zipPath = "${{ steps.package.outputs.zip_path }}"
+          $notesPath = Join-Path $env:RUNNER_TEMP "release_notes.txt"
 
-        ### 蹂寃??ы빆
-        - ?먮룞 ?앹꽦??由대━利덉엯?덈떎
-        "@ | Set-Content -Path $notesPath -Encoding UTF8
+          @"
+          작업도우미 v$version
 
-        gh release view $tag *> $null
-        if ($LASTEXITCODE -ne 0) {
-          gh release create $tag $zipPath --target $env:GITHUB_SHA --title "?묒뾽?꾩슦誘?v$version" --notes-file $notesPath
-        } else {
-          gh release edit $tag --title "?묒뾽?꾩슦誘?v$version" --notes-file $notesPath
-          gh release upload $tag $zipPath --clobber
-        }
+          Automated release package.
+          "@ | Set-Content -Path $notesPath -Encoding utf8
 
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $zipPath --target ${{ github.sha }} --title "작업도우미 v$version" --notes-file $notesPath
+          }
+          else {
+            gh release edit $tag --title "작업도우미 v$version" --notes-file $notesPath
+            gh release upload $tag $zipPath --clobber
+          }
