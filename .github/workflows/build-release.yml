@@ -134,6 +134,6 @@ jobs:
             gh release create $tag $zipPath --target ${{ github.sha }} --title $title --notes-file $notesPath
           }
           else {
-            gh release edit $tag --title $title --notes-file $notesPath
+            gh release edit $tag --target ${{ github.sha }} --title $title --notes-file $notesPath
             gh release upload $tag $zipPath --clobber
           }
