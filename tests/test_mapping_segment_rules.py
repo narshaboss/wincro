@@ -64,6 +64,20 @@ def test_placeholder_segment_keeps_negative_origin_unknown_incomplete():
     assert view._is_segment_map_complete(gm, 0) is False
 
 
+def test_zero_zero_image_segment_without_arrival_keys_is_treated_as_placeholder():
+    waypoints = [
+        (0, 0, "boss-cave", {
+            "route_starts": [{"x": 26, "y": 21}],
+            "route_ends": [],
+            "character_image": "char.png",
+            "target_image": "boss.png",
+        })
+    ]
+    view = _make_view_with_waypoints(waypoints)
+
+    assert view._should_persist_segment_end(0) is False
+
+
 def test_non_placeholder_segment_keeps_unknown_edges_incomplete():
     waypoints = [
         (5, 5, "normal-cave", {

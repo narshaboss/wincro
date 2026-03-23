@@ -11455,7 +11455,8 @@ class GameModeDialog(ctk.CTkToplevel):
         meta = self._get_segment_waypoint_meta(segment_idx)
         arrival_keys = meta.get("arrival_keys", []) or []
         route_ends = meta.get("route_ends", []) or []
-        has_boss_image = bool(meta.get("target_image"))
+        has_boss_image = bool(meta.get("target_image") or (meta.get("target_images") or []))
+        has_segment_images = has_boss_image or bool(meta.get("character_image"))
         try:
             wp_x = int(wp[0])
             wp_y = int(wp[1])
@@ -11464,7 +11465,10 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 보스 이미지 + 도착키 전용 세그먼트(예: 9굴 placeholder)는
         # 실제 도착 좌표가 아니므로 end_pos를 저장하지 않는다.
-        if arrival_keys and not route_ends and (has_boss_image or (wp_x == 0 and wp_y == 0)):
+        if not route_ends and (
+            (arrival_keys and (has_boss_image or (wp_x == 0 and wp_y == 0))) or
+            ((wp_x == 0 and wp_y == 0) and has_segment_images)
+        ):
             return False
         return True
 
