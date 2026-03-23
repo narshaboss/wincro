@@ -44,9 +44,24 @@ def test_placeholder_segment_completion_ignores_placeholder_unknown_edges():
     ]
     view = _make_view_with_waypoints(waypoints)
     gm = _build_placeholder_like_map()
+    gm.blocked.update({(-1, 0), (0, -1)})
 
-    assert gm.is_fully_explored() is False
+    assert gm.is_fully_explored() is True
     assert view._is_segment_map_complete(gm, 0) is True
+
+
+def test_placeholder_segment_keeps_negative_origin_unknown_incomplete():
+    waypoints = [
+        (0, 0, "boss-cave", {
+            "arrival_keys": [{"key": "enter"}],
+            "route_ends": [],
+            "target_image": "boss.png",
+        })
+    ]
+    view = _make_view_with_waypoints(waypoints)
+    gm = _build_placeholder_like_map()
+
+    assert view._is_segment_map_complete(gm, 0) is False
 
 
 def test_non_placeholder_segment_keeps_unknown_edges_incomplete():

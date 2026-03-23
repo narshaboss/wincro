@@ -11523,6 +11523,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 if neighbor in passable_snap or neighbor in blocked_snap or neighbor in soft_blocked_snap:
                     continue
                 if (x, y) == placeholder_origin:
+                    # 0,0 origin의 음수 방향 unknown은 실제 경계 wall 등록이 필요하다.
+                    # 이 경우를 무시하면 마지막 보스굴에서 좌상단 경계가 덜 맵핑돼도
+                    # 완료로 끝나 버린다.
+                    if neighbor[0] < 0 or neighbor[1] < 0:
+                        return False
                     if (
                         neighbor[0] < min_known_x
                         or neighbor[0] > max_known_x
@@ -12083,6 +12088,8 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _stop_mapping(self):
         """맵핑 중지 - 즉시 반환, 절대 블로킹 없음"""
+        mapping_seg = getattr(self, '_current_segment_idx', 0)
+        _save_map_ref = getattr(self, '_game_map', None)
         # 1. 플래그만 설정하고 즉시 반환
         self._stop_event.set()
         self._is_mapping = False
@@ -12095,8 +12102,12 @@ class GameModeDialog(ctk.CTkToplevel):
         # 3. 저장은 별도 스레드
         def do_save():
             try:
-                if hasattr(self, '_game_map') and self._game_map.passable:
-                    self._auto_save_map(critical=True)
+                if _save_map_ref is not None and getattr(_save_map_ref, 'passable', None):
+                    self._auto_save_map(
+                        segment_idx=mapping_seg,
+                        game_map_ref=_save_map_ref,
+                        critical=True,
+                    )
             except Exception as e:
                 logger.debug(f"무시된 예외: {e}")
             # 배지 갱신: 파일 I/O를 여기서 수행 (백그라운드), UI 업데이트만 메인스레드로
