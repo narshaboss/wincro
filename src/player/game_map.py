@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import threading
 from typing import Dict, Optional, Tuple, List, Set
 from pathlib import Path
@@ -46,6 +47,43 @@ class GameMap:
     COORD_SANITY_MIN_TILES = 20
     COORD_LOCAL_MARGIN = 80
     COORD_CLUSTER_MARGIN = 120
+    FILE_IO_RETRY_DELAY_S = 0.05
+    FILE_IO_RETRY_COUNT = 8
+    _file_io_locks_guard = threading.Lock()
+    _file_io_locks: Dict[str, threading.RLock] = {}
+
+    @classmethod
+    def _get_file_io_lock(cls, filepath: str) -> threading.RLock:
+        key = str(Path(filepath).resolve()).lower()
+        with cls._file_io_locks_guard:
+            lock = cls._file_io_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                cls._file_io_locks[key] = lock
+            return lock
+
+    @classmethod
+    def _replace_with_retry(cls, temp_path: str, filepath: str):
+        last_exc = None
+        for attempt in range(1, cls.FILE_IO_RETRY_COUNT + 1):
+            try:
+                os.replace(temp_path, filepath)
+                return
+            except PermissionError as e:
+                last_exc = e
+                if attempt >= cls.FILE_IO_RETRY_COUNT:
+                    break
+                logger.warning(
+                    "[Map] 저장 교체 재시도: %s -> %s (%d/%d, %s)",
+                    temp_path,
+                    filepath,
+                    attempt,
+                    cls.FILE_IO_RETRY_COUNT,
+                    e,
+                )
+                time.sleep(cls.FILE_IO_RETRY_DELAY_S)
+        if last_exc is not None:
+            raise last_exc
 
     @staticmethod
     def _is_valid_coord(x: int, y: int) -> bool:
@@ -620,19 +658,21 @@ class GameMap:
 
         path_obj = Path(filepath)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_path = tempfile.mkstemp(prefix=f"{path_obj.stem}_", suffix=".tmp", dir=str(path_obj.parent))
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, filepath)
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
+        file_lock = self._get_file_io_lock(filepath)
+        with file_lock:
+            fd, temp_path = tempfile.mkstemp(prefix=f"{path_obj.stem}_", suffix=".tmp", dir=str(path_obj.parent))
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                self._replace_with_retry(temp_path, filepath)
+            finally:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
 
         logger.info(
             f"[Map] ??: {filepath} (???? {len(passable_snapshot)}?, ? {len(blocked_snapshot)}?, ??? {len(soft_blocked_snapshot)}?)"
@@ -645,8 +685,10 @@ class GameMap:
             return False
 
         try:
-            with open(filepath, 'r', encoding='utf-8-sig') as f:
-                data = json.load(f)
+            file_lock = self._get_file_io_lock(filepath)
+            with file_lock:
+                with open(filepath, 'r', encoding='utf-8-sig') as f:
+                    data = json.load(f)
 
             new_name = data.get("name", "Unknown")
             raw_passable = data.get("passable", [])
@@ -719,8 +761,10 @@ class GameMap:
             return False
 
         try:
-            with open(filepath, 'r', encoding='utf-8-sig') as f:
-                data = json.load(f)
+            file_lock = self._get_file_io_lock(filepath)
+            with file_lock:
+                with open(filepath, 'r', encoding='utf-8-sig') as f:
+                    data = json.load(f)
 
             raw_passable = data.get("passable", [])
             raw_blocked = data.get("blocked", [])

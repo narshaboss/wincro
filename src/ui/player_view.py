@@ -3744,6 +3744,10 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _run_single_mapping_test(self, idx: int):
         """특정 경유지만 맵핑테스트 (해당 경유지 좌표만 맵핑 후 종료)"""
+        logger.info(
+            f"[맵핑이상] 단일테스트 클릭: idx={idx} "
+            f"is_running={self._is_running} current_segment_idx={getattr(self, '_current_segment_idx', -1)}"
+        )
         if self._is_running:
             prev_idx = getattr(self, '_single_waypoint_idx', -1)
             _rt = getattr(self, '_run_thread', None)
@@ -3858,6 +3862,11 @@ class GameModeDialog(ctk.CTkToplevel):
         if getattr(self, '_single_waypoint_mode', False):
             idx = getattr(self, '_single_waypoint_idx', 0)
             self._append_log(f"경유지 {idx+1} 테스트 시작 (ESC로 중지)")
+            logger.info(
+                f"[맵핑이상] 실행시작 단일테스트: idx={idx} "
+                f"is_mapping_test={getattr(self, '_is_mapping_test', False)} "
+                f"current_segment_idx={getattr(self, '_current_segment_idx', -1)}"
+            )
         elif getattr(self, '_is_mapping_test', False):
             self._append_log(f"전체 맵핑테스트 시작 (ESC로 중지)")
         else:
@@ -4009,7 +4018,10 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 최종 목표까지의 경유지만 포함
         all_targets = []  # [(x, y, name, is_boss, boss_img, char_img, arrival_keys, route_ends), ...]
-        start_idx = single_idx if single_mode else 0
+        # 단일 경유지 테스트라도 all_targets의 인덱스는 실제 세그먼트 인덱스와 같아야 한다.
+        # 여기서 single_idx부터 잘라버리면 target_idx가 로컬 인덱스(0)로 붕괴해서
+        # 완료/저장 판정이 0번 세그먼트 기준으로 잘못 흐를 수 있다.
+        start_idx = 0
         for i, wp in enumerate(waypoints_raw):
             if i < start_idx:
                 continue
@@ -4071,15 +4083,57 @@ class GameModeDialog(ctk.CTkToplevel):
                 target_idx = 0
                 self._current_segment_idx = 0
         else:
-            target_idx = 0
+            if single_mode and 0 <= single_idx < len(all_targets):
+                target_idx = single_idx
+            else:
+                target_idx = 0
             # 개별 경유지 테스트: 해당 경유지의 맵 로드 (순찰 좌표 등)
             # ※ _current_segment_idx를 미리 변경하면 안 됨!
             #    _switch_segment_map이 현재 인덱스(0)의 맵을 저장한 후 내부에서 변경함
             if single_mode:
-                self._switch_segment_map(single_idx)
+                logger.info(
+                    f"[맵핑이상] 단일테스트 세그전환 요청: single_idx={single_idx} "
+                    f"before_current={getattr(self, '_current_segment_idx', -1)}"
+                )
+                _switched = self._switch_segment_map(single_idx)
+                logger.info(
+                    f"[맵핑이상] 단일테스트 세그전환 결과: single_idx={single_idx} "
+                    f"switched={_switched} after_current={getattr(self, '_current_segment_idx', -1)}"
+                )
+                if (not _switched) or getattr(self, '_current_segment_idx', -1) != single_idx:
+                    _seg_msg = (
+                        f"⚠️ 단일테스트 세그전환 실패: single_idx={single_idx} "
+                        f"current_segment_idx={getattr(self, '_current_segment_idx', -1)} switched={_switched}"
+                    )
+                    logger.warning(f"[맵핑이상] {_seg_msg}")
+                    if _ui_update_ok:
+                        self.after(0, lambda m=_seg_msg: self._append_log(m))
+                    self._mark_stop_reason(
+                        "mapping_single_segment_switch_failed",
+                        f"single_idx={single_idx} current_segment_idx={getattr(self, '_current_segment_idx', -1)} switched={_switched}",
+                        overwrite=True,
+                    )
+                    self._stop_event.set()
+                    return
             else:
                 # 전체 테스트: 반드시 세그먼트 0 맵 로드 (이전 테스트 데이터 오염 방지)
                 self._switch_segment_map(0)
+
+        try:
+            _ctx_msg = (
+                f"🧭 맵핑컨텍스트: single_mode={single_mode} single_idx={single_idx} "
+                f"target_idx={target_idx} current_segment_idx={getattr(self, '_current_segment_idx', -1)} "
+                f"is_mapping={getattr(self, '_is_mapping', False)} is_mapping_test={getattr(self, '_is_mapping_test', False)}"
+            )
+            logger.info(f"[맵핑이상] {_ctx_msg}")
+            if _ui_update_ok:
+                self._schedule_ui_log(
+                    _ctx_msg,
+                    dedupe_key=f"mapping-context:{target_idx}:{getattr(self, '_current_segment_idx', -1)}",
+                    dedupe_window=1.0,
+                )
+        except Exception:
+            pass
 
         import random as _rand
 
@@ -4102,6 +4156,8 @@ class GameModeDialog(ctk.CTkToplevel):
             일부 보스굴 경유지는 실제 목표 좌표 대신 (0,0)을 센티넬로 사용한다.
             이 경우 (0,0) OCR 결과를 정상 좌표로 취급하면 경로/정체 보호가 망가진다.
             """
+            if _is_mapping_test:
+                return False
             if not (0 <= tidx < len(all_targets)):
                 return False
             _target = all_targets[tidx]
@@ -4223,6 +4279,26 @@ class GameModeDialog(ctk.CTkToplevel):
 
         def _should_mark_current_segment_target_tile(tx, ty):
             return not _segment_target_is_placeholder(tx, ty)
+
+        def _allow_placeholder_target_wall_promotion(tx, ty, edge_fail=0, from_pos=None):
+            """placeholder target은 알려진 인접 접근이 모두 반복 실패한 경우에만 벽 승격한다."""
+            if not _segment_target_is_placeholder(tx, ty):
+                return False
+            if not _is_mapping_test:
+                return False
+            try:
+                _tx, _ty = int(tx), int(ty)
+            except Exception:
+                return False
+            _adj_fail_dirs = []
+            for _nd, (_dx, _dy) in DIRECTIONS_4.items():
+                _ax, _ay = _tx - _dx, _ty - _dy
+                if not self._game_map.is_passable(_ax, _ay):
+                    continue
+                _adj_fail_dirs.append(edge_fail_counts.get(_dir_key(_ax, _ay, _nd), 0))
+            if not _adj_fail_dirs:
+                return False
+            return all(_ef >= EDGE_FAIL_MARK_THRESHOLD for _ef in _adj_fail_dirs)
 
         self._mapping_segment_completion_committed_idx = None
         _segment_completion_committed = False
@@ -5945,6 +6021,148 @@ class GameModeDialog(ctk.CTkToplevel):
                 return True, _sanitize_start_full_frontier_hint(cx, cy, _protected_hint), "incomplete-map"
             return False, None, None
 
+        def _emit_mapping_completion_diag(cx, cy, phase, pending, protected_only, frontier_hint, protected_hint, map_complete):
+            """맵핑테스트 완료 직전 핵심 상태를 특화모드 로그창에 남긴다."""
+            if not _is_mapping_test:
+                return
+            _placeholder = _current_segment_placeholder_target()
+            if _placeholder is None:
+                return
+            try:
+                with self._game_map._lock:
+                    _pass_count = len(self._game_map.passable)
+                    _block_count = len(self._game_map.blocked)
+                    _soft_count = len(self._game_map.soft_blocked)
+                _neg_left_known = self._game_map.is_known(-1, 0)
+                _neg_up_known = self._game_map.is_known(0, -1)
+                _neg_left_blocked = self._game_map.is_blocked(-1, 0)
+                _neg_up_blocked = self._game_map.is_blocked(0, -1)
+                _msg = (
+                    f"⚠️ 맵핑완료진단[{phase}] seg={target_idx} pos=({cx},{cy}) "
+                    f"placeholder={_placeholder} complete={map_complete} pending={pending} "
+                    f"protected_only={protected_only} raw={frontier_hint} protected={protected_hint} "
+                    f"known(-1,0)={_neg_left_known}/{_neg_left_blocked} "
+                    f"known(0,-1)={_neg_up_known}/{_neg_up_blocked} "
+                    f"tiles={_pass_count + _block_count + _soft_count}"
+                )
+                logger.info(f"[맵핑이상] {_msg}")
+                if _ui_update_ok:
+                    self._schedule_ui_log(
+                        _msg,
+                        dedupe_key=f"mapping-complete-diag:{target_idx}:{phase}",
+                        dedupe_window=1.0,
+                    )
+            except Exception as _diag_e:
+                logger.debug(f"[맵핑] 완료진단 로그 실패(무시): {_diag_e}")
+
+        def _guard_mapping_completion_before_commit(cx, cy, phase):
+            """맵핑테스트 완료/다음구간 전환 직전에 동일한 완료 가드를 적용한다."""
+            if _is_mapping_test and _current_segment_placeholder_target() == (0, 0):
+                _zero_corner_tile_known = self._game_map.is_known(0, 0)
+                _zero_corner_tile_blocked = self._game_map.is_blocked(0, 0)
+                _neg_left_known = self._game_map.is_known(-1, 0)
+                _neg_up_known = self._game_map.is_known(0, -1)
+                if _zero_corner_tile_known and (not _zero_corner_tile_blocked) and (not _neg_left_known or not _neg_up_known):
+                    _corner_msg = (
+                        f"⚠️ 0,0 코너경계 미확정[{phase}] "
+                        f"known(-1,0)={_neg_left_known} known(0,-1)={_neg_up_known}"
+                    )
+                    logger.info(f"[맵핑이상] {_corner_msg}")
+                    if _ui_update_ok:
+                        self._schedule_ui_log(
+                            _corner_msg,
+                            dedupe_key=f"mapping-zero-corner:{target_idx}:{phase}",
+                            dedupe_window=1.0,
+                        )
+                    _restore_start_based_full_mapping(
+                        cx,
+                        cy,
+                        reason=f"{phase}:zero-corner-boundary",
+                        frontier_hint=None,
+                    )
+                    explore_target = (0, 0)
+                    explore_target_tries = 0
+                    probe_focus_target = None
+                    probe_focus_stall = 0
+                    return True
+            if not (_is_mapping_test and _mapping_guard_active()):
+                return False
+            _block_finish, _block_frontier, _block_reason = _should_block_mapping_segment_advance(cx, cy)
+            if _block_finish:
+                _restore_start_based_full_mapping(
+                    cx,
+                    cy,
+                    reason=f"{phase}:{_block_reason}",
+                    frontier_hint=_block_frontier,
+                )
+                return True
+            _pending_dbg, _protected_only_dbg, _frontier_dbg, _protected_dbg, _map_complete_dbg = _get_start_based_full_mapping_status(cx, cy)
+            _emit_mapping_completion_diag(
+                cx,
+                cy,
+                phase,
+                _pending_dbg,
+                _protected_only_dbg,
+                _frontier_dbg,
+                _protected_dbg,
+                _map_complete_dbg,
+            )
+            return False
+
+        def _pick_zero_corner_probe_direction(cx, cy):
+            """placeholder target=(0,0) 구간에서 좌상단 경계만 별도로 확정한다."""
+            if not (_is_mapping_test and _current_segment_placeholder_target() == (0, 0)):
+                return None
+            if self._game_map.is_blocked(0, 0):
+                return None
+            if self._game_map.is_known(-1, 0) and self._game_map.is_known(0, -1):
+                return None
+            if (cx, cy) == (0, 0):
+                if not self._game_map.is_known(-1, 0):
+                    return "left"
+                if not self._game_map.is_known(0, -1):
+                    return "up"
+                return None
+            if max(abs(cx), abs(cy)) > 2:
+                return None
+            _up_fail = edge_fail_counts.get(_dir_key(0, 1, "up"), 0)
+            _left_fail = edge_fail_counts.get(_dir_key(1, 0, "left"), 0)
+            # 아래 접근이 반복 실패하면 우측 접근으로 전환한다.
+            if _up_fail >= EDGE_FAIL_MARK_THRESHOLD and _left_fail < EDGE_FAIL_MARK_THRESHOLD:
+                if (cx, cy) == (0, 1) and self._game_map.is_passable(1, 1):
+                    return "right"
+                if (cx, cy) == (1, 1) and self._game_map.is_passable(1, 0):
+                    return "up"
+                if (cx, cy) == (1, 0):
+                    return "left"
+            # 우측 접근이 반복 실패하면 아래 접근으로 전환한다.
+            if _left_fail >= EDGE_FAIL_MARK_THRESHOLD and _up_fail < EDGE_FAIL_MARK_THRESHOLD:
+                if (cx, cy) == (1, 0) and self._game_map.is_passable(1, 1):
+                    return "down"
+                if (cx, cy) == (1, 1) and self._game_map.is_passable(0, 1):
+                    return "left"
+                if (cx, cy) == (0, 1):
+                    return "up"
+            # 0,0 코너 probe는 일반 경로탐색을 쓰면 (0,1)<->(1,1) 같은 옆걸음
+            # 왕복이 생긴다. 코너 근처에서는 축 기준으로만 원점 쪽으로 수렴시킨다.
+            if cx > 0 and cy == 0:
+                return "left"
+            if cx == 0 and cy > 0:
+                return "up"
+            if cx < 0 and cy == 0:
+                return "right"
+            if cx == 0 and cy < 0:
+                return "down"
+            if cx > 0:
+                return "left"
+            if cy > 0:
+                return "up"
+            if cx < 0:
+                return "right"
+            if cy < 0:
+                return "down"
+            return None
+
         def _restore_start_based_full_mapping(cx, cy, reason="resume", frontier_hint=None):
             """출발좌표가 있는 굴에서 전체맵핑 상태가 누수되면 강제로 복귀시킨다."""
             nonlocal full_mapping_exploring, _segment_full_mapping_guard, _segment_requires_full_completion
@@ -7480,6 +7698,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                     and _edge_fail >= EDGE_FAIL_MARK_THRESHOLD
                                     and (wall_x, wall_y) not in _portal_protected
                                 ) or _force_probe_wall
+                                _allow_placeholder_wall = _allow_placeholder_target_wall_promotion(
+                                    wall_x, wall_y, edge_fail=_edge_fail, from_pos=(prev_x, prev_y)
+                                )
+                                _can_mark_wall_tile = _should_mark_current_segment_target_tile(wall_x, wall_y) or _allow_placeholder_wall
 
                                 if _skip_wall_promotion:
                                     if _ui_update_ok and iteration % 10 == 0:
@@ -7502,12 +7724,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                             self._append_log(f"🧭 방향차단: ({px},{py})→({wx},{wy}) {d2} (타일유지 x{wx}y{wy})"))
                                 elif _segment_map_locked:
                                     # 잠금맵: 맵 파일 수정 없이 메모리에만 벽 적용
-                                    if not self._game_map.is_blocked(wall_x, wall_y):
+                                    if _can_mark_wall_tile and not self._game_map.is_blocked(wall_x, wall_y):
                                         self._game_map.mark_blocked(wall_x, wall_y)
                                         _wall_marked = True
                                 elif mapping_on:
                                     # 맵 기록 모드: 벽 등록
-                                    if not self._game_map.is_blocked(wall_x, wall_y):
+                                    if _can_mark_wall_tile and not self._game_map.is_blocked(wall_x, wall_y):
                                         self._game_map.mark_blocked(wall_x, wall_y)
                                         _wall_marked = True
                                         if _ui_update_ok:
@@ -7532,7 +7754,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         ).start()
                                 else:
                                     # 부분실행/전체테스트: 메모리 벽만 적용 (디스크 저장 안 함)
-                                    if not self._game_map.is_blocked(wall_x, wall_y):
+                                    if _can_mark_wall_tile and not self._game_map.is_blocked(wall_x, wall_y):
                                         self._game_map.mark_blocked(wall_x, wall_y)
                                         _wall_marked = True
 
@@ -7880,6 +8102,15 @@ class GameModeDialog(ctk.CTkToplevel):
                             self.after(0, lambda: self._append_log(f"{'='*30}"))
 
                     if boss_mode == "exploring":
+                        _zero_corner_dir = _pick_zero_corner_probe_direction(current_x, current_y)
+                        if _zero_corner_dir is not None:
+                            direction = _zero_corner_dir
+                            explore_target = (0, 0)
+                            explore_target_tries = 0
+                            boss_no_frontier_count = 0
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda cx=current_x, cy=current_y, d2=_zero_corner_dir:
+                                    self._append_log(f"🧭 0,0 코너프로브: ({cx},{cy}) -> {d2}"))
                         # Phase 2 경로맵핑: 프런티어 대신 실제 목표로 직행
                         # 맵 데이터 있으면(passable>=50) 부분실행/전체테스트도 직행
                         _has_mapped = len(self._game_map.passable) >= 50
@@ -7887,7 +8118,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                            not _mapping_guard_active() and
                                            (_is_mapping_test or _has_mapped) and
                                            not _is_sentinel_boss_goal(target_idx, target_x, target_y))
-                        if _phase2_direct:
+                        if _zero_corner_dir is not None:
+                            pass
+                        elif _phase2_direct:
                             _phase2_reprobe_requested = False
                             _phase2_reprobe_reason = ""
                             _cur_goal_dist = abs(current_x - target_x) + abs(current_y - target_y)
@@ -8038,6 +8271,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             _probe_force_wall = (
                                                 not self._game_map.is_known(_pfx, _pfy) and
                                                 (_pfx, _pfy) not in _portal_protected and
+                                                not _segment_target_is_placeholder(_pfx, _pfy) and
                                                 (
                                                     (_probe_dir2 is not None and _probe_edge_fail2 >= EDGE_FAIL_MARK_THRESHOLD) or
                                                     (_probe_in_fail_max >= EDGE_FAIL_MARK_THRESHOLD)
@@ -8341,7 +8575,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             _mark_wall = explore_target
                                             _mark_reason = "frontier_tile"
 
-                                        if _mark_wall is not None:
+                                        if _mark_wall is not None and _should_mark_current_segment_target_tile(_mark_wall[0], _mark_wall[1]):
                                             self._game_map.mark_blocked(_mark_wall[0], _mark_wall[1])
                                             _forced_wall = True
                                             for _d, (_ddx, _ddy) in DIRECTIONS_4.items():
@@ -8610,6 +8844,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 prev_x, prev_y = current_x, current_y
                                                 self._stop_event.wait(0.05)
                                                 continue
+                                            if _guard_mapping_completion_before_commit(current_x, current_y, "before-commit"):
+                                                prev_x, prev_y = current_x, current_y
+                                                self._stop_event.wait(0.05)
+                                                continue
                                             _mt_stats = self._game_map.get_statistics()
                                             self.after(0, lambda tc=_mt_stats.get('total_tiles', 0):
                                                 self._append_log(f"✅ 전체맵핑 완료 ({tc}타일) → 경유지 이동"))
@@ -8667,6 +8905,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                                     if _ui_update_ok:
                                                         self.after(0, lambda tx=target_x, ty=target_y, bc=_best_cost:
                                                             self._append_log(f"🎯 최단 경유지: ({tx},{ty}) (거리:{bc})"))
+                                            if _guard_mapping_completion_before_commit(current_x, current_y, "boss-before-commit"):
+                                                prev_x, prev_y = current_x, current_y
+                                                self._stop_event.wait(0.05)
+                                                continue
                                             # 맵 저장
                                             if not self._stop_event.is_set():
                                                 self._auto_save_map(
@@ -8798,6 +9040,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                             boss_appr_miss = 0
                                             prev_x, prev_y = current_x, current_y
                                             time.sleep(0.05)
+                                            continue
+                                        if _guard_mapping_completion_before_commit(current_x, current_y, "boss-frontier-complete"):
+                                            prev_x, prev_y = current_x, current_y
+                                            self._stop_event.wait(0.05)
                                             continue
                                         self._ui_post(lambda: self._append_log("✅ 맵 탐색 완료 → 다음 경유지"))
                                         # 다음 경유지로 전환
@@ -10252,6 +10498,8 @@ class GameModeDialog(ctk.CTkToplevel):
             threading.Thread(target=_remove_hotkey, daemon=True).start()
 
             try:
+                if getattr(self, "_completed_normally", False):
+                    return
                 if not getattr(self, "_stop_reason", ""):
                     self._mark_stop_reason("coordinate_loop_finally_unclassified", "coordinate loop reached finally without reason", overwrite=True)
                 self.after(0, self._stop_execution)
@@ -11543,13 +11791,42 @@ class GameModeDialog(ctk.CTkToplevel):
         return True
 
     def _sanitize_segment_placeholder_target_tile(self, game_map_ref, segment_idx: int):
-        """placeholder waypoint는 실제 타일을 지우지 않는다.
+        """부분 맵핑 상태에서 placeholder target에 남은 stale blocked만 걷어낸다."""
+        if game_map_ref is None:
+            return
+        placeholder = self._get_segment_placeholder_target(segment_idx)
+        if placeholder is None:
+            return
+        try:
+            phx, phy = int(placeholder[0]), int(placeholder[1])
+        except Exception:
+            return
+        if not game_map_ref.is_blocked(phx, phy):
+            return
 
-        보스 이미지 + arrival_keys 구간은 end_pos 저장만 막아야 한다.
-        실제 맵 좌표가 (0,0) 또는 그 인근을 포함할 수 있으므로 passable/blocked를
-        제거하면 전체맵핑 frontier가 사라지고 조기 완료 판정이 난다.
-        """
-        return
+        orthogonal = ((0, -1), (0, 1), (-1, 0), (1, 0))
+        passable_neighbors = []
+        unknown_neighbors = []
+        for dx, dy in orthogonal:
+            nx, ny = phx + dx, phy + dy
+            if game_map_ref.is_passable(nx, ny):
+                passable_neighbors.append((nx, ny))
+            elif not game_map_ref.is_known(nx, ny):
+                unknown_neighbors.append((nx, ny))
+
+        # placeholder target 주위가 아직 부분맵핑 상태면, target 자체의 blocked는
+        # 실제 경계가 아니라 저장 오염일 가능성이 높다.
+        if passable_neighbors and unknown_neighbors:
+            with game_map_ref._lock:
+                game_map_ref.blocked.discard((phx, phy))
+                game_map_ref.soft_blocked.pop((phx, phy), None)
+            logger.warning(
+                "[맵] placeholder target stale blocked 정리: segment=%s target=%s passable_neighbors=%s unknown_neighbors=%s",
+                segment_idx,
+                (phx, phy),
+                passable_neighbors,
+                unknown_neighbors,
+            )
 
     def _get_segment_route_start_points(self, segment_idx: int):
         """세그먼트의 route_starts 좌표를 정규화해 반환한다."""
