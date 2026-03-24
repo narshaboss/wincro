@@ -54,3 +54,13 @@ def test_stable_waypoint_goal_detour_is_disabled_for_route_chokepoints():
     assert "if (_stable_waypoint_phase and _edge_fail >= 2 and" in text
     assert "portal_grace <= 0 and" in text
     assert "not _route_chokepoint):" in text
+
+
+def test_active_goal_detour_is_cleared_when_anchor_is_no_longer_reachable():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "_detour_probe = pathfinder.find_path(" in text
+    assert "current_pos," in text
+    assert "_active_goal_detour," in text
+    assert "_detour_probe_avoid = {target_pos}" in text
+    assert "_clear_temporary_goal_detour(target_pos)" in text

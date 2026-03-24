@@ -5064,9 +5064,29 @@ class GameModeDialog(ctk.CTkToplevel):
             _detour_block_goal = None
             _active_goal_detour = _get_active_goal_detour(target_pos, current_pos)
             if _active_goal_detour is not None:
-                _detour_block_goal = target_pos
-                target_pos = _active_goal_detour
-                tx, ty = target_pos
+                _detour_probe_avoid = {target_pos}
+                for _ppx, _ppy in _portal_protected:
+                    if _is_portal_step_forbidden(_ppx, _ppy, _active_goal_detour, current_pos):
+                        _detour_probe_avoid.add((_ppx, _ppy))
+                _detour_probe = pathfinder.find_path(
+                    current_pos,
+                    _active_goal_detour,
+                    allow_unknown=True,
+                    stop_event=self._stop_event,
+                    max_iterations=max((abs(cx - _active_goal_detour[0]) + abs(cy - _active_goal_detour[1])) * 30, 4000),
+                    unknown_cost=3,
+                    allow_soft_blocked=False,
+                    respect_blocked_edges=True,
+                    avoid_set=_detour_probe_avoid,
+                )
+                if self._stop_event.is_set():
+                    return None
+                if _detour_probe.found and _detour_probe.directions:
+                    _detour_block_goal = target_pos
+                    target_pos = _active_goal_detour
+                    tx, ty = target_pos
+                else:
+                    _clear_temporary_goal_detour(target_pos)
             _manhattan = abs(cx - tx) + abs(cy - ty)
             # 프런티어 탐색(전체맵핑/근처맵핑) 중에만 공격적 차단무시 허용
             _frontier_probe_phase = _mapping_guard_active() or _local_explore_phase
