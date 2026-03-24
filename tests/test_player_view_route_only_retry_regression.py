@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +18,39 @@ def test_route_only_relax_and_retry_are_guarded_for_failed_chokepoints():
 
     assert "def _should_preserve_route_dir_avoid():" in text
     assert "def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):" in text
-    assert "if not _route_only_mode:" not in text[text.index("def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):"):text.index("def press_key(direction):")]
+    helper_slice = text[
+        text.index("def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):"):
+        text.index("def press_key(direction):")
+    ]
+    assert "if not _route_only_mode:" not in helper_slice
     assert "_allow_route_dir_relax = not _should_preserve_route_dir_avoid()" in text
     assert "_route_avoid and _dir_avoid and _allow_route_dir_relax" in text
     assert "_route_failed_chokepoint = _is_route_only_failed_chokepoint(" in text
-    assert "유일통로 국소회피" in text
     assert "_preserve_failed_edge = (" in text
-    assert "재시도 중단" in text
+
+
+def test_route_only_local_avoid_requires_goal_rejoin_path():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "def _local_avoid_candidate_reaches_goal(_cand_pos):" in text
+    assert "avoid_set=_avoid," in text
+    assert "if not _local_avoid_candidate_reaches_goal((_nx, _ny)):" in text
+
+
+def test_route_only_failed_chokepoint_preserves_corridor_axis_when_no_side_path():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    choke_slice = text[
+        text.index("if _route_failed_chokepoint:"):
+        text.index("if _local_avoid_mode:")
+    ]
+    assert "🧭 유일통로 유지 직진" in text
+    assert "return _blocked_primary_dir" in choke_slice
+
+
+def test_stable_waypoint_goal_detour_is_disabled_for_route_chokepoints():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "if (_stable_waypoint_phase and _edge_fail >= 2 and" in text
+    assert "portal_grace <= 0 and" in text
+    assert "not _route_chokepoint):" in text

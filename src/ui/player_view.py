@@ -35,6 +35,14 @@ from .constants import (
 from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
 from .analyzer_view import ImageCropDialog
+from ..utils.waypoint_presets import (
+    list_arrival_key_presets,
+    list_image_presets,
+    remove_arrival_key_preset,
+    remove_image_preset,
+    upsert_arrival_key_preset,
+    upsert_image_preset,
+)
 import cv2
 import numpy as np
 from PIL import Image
@@ -3643,18 +3651,23 @@ class GameModeDialog(ctk.CTkToplevel):
         if auto_cd_img and Path(auto_cd_img).exists():
             self._load_thumb(auto_cd_img, self._auto_skill_cd_preview, size=50)
         else:
+            self._auto_skill_cd_preview._ctk_image = None
             self._auto_skill_cd_preview.configure(image=None, text="없음")
 
     def _load_thumb(self, path: str, label: ctk.CTkLabel, size: int = 80):
         try:
-            from PIL import Image
-            img = Image.open(path)
+            with Image.open(path) as _img:
+                img = _img.copy()
             img.thumbnail((size, size))
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
             self._thumbnail_refs.append(ctk_img)
+            label._ctk_image = ctk_img
+            label._thumb_ref = ctk_img
             label.configure(image=ctk_img, text="")
         except Exception as e:
             logger.warning(f"[특화모드] 썸네일 로드 실패: {path} - {e}")
+            label._ctk_image = None
+            label._thumb_ref = None
             label.configure(image=None, text="오류")
 
     def _select_auto_skill_cd_image(self):
@@ -3743,7 +3756,7 @@ class GameModeDialog(ctk.CTkToplevel):
             self._start_execution()
 
     def _run_single_mapping_test(self, idx: int):
-        """특정 경유지만 맵핑테스트 (해당 경유지 좌표만 맵핑 후 종료)"""
+        """특정 경유지부터 맵핑테스트 (이후 경유지를 끝까지 이어서 진행)"""
         logger.info(
             f"[맵핑이상] 단일테스트 클릭: idx={idx} "
             f"is_running={self._is_running} current_segment_idx={getattr(self, '_current_segment_idx', -1)}"
@@ -3861,7 +3874,10 @@ class GameModeDialog(ctk.CTkToplevel):
         self._append_log("="*40)
         if getattr(self, '_single_waypoint_mode', False):
             idx = getattr(self, '_single_waypoint_idx', 0)
-            self._append_log(f"경유지 {idx+1} 테스트 시작 (ESC로 중지)")
+            if getattr(self, '_is_mapping_test', False):
+                self._append_log(f"경유지 {idx+1}부터 맵핑테스트 시작 (ESC로 중지)")
+            else:
+                self._append_log(f"경유지 {idx+1} 테스트 시작 (ESC로 중지)")
             logger.info(
                 f"[맵핑이상] 실행시작 단일테스트: idx={idx} "
                 f"is_mapping_test={getattr(self, '_is_mapping_test', False)} "
@@ -4012,6 +4028,8 @@ class GameModeDialog(ctk.CTkToplevel):
         if getattr(self, '_is_mapping', False):
             mapping_seg = getattr(self, '_current_segment_idx', 0)
             final_wp_idx = max(final_wp_idx, mapping_seg)
+        elif single_mode and getattr(self, '_is_mapping_test', False):
+            final_wp_idx = len(waypoints_raw) - 1
         elif single_mode:
             # 개별 테스트 모드: 해당 경유지만
             final_wp_idx = single_idx
@@ -4886,6 +4904,24 @@ class GameModeDialog(ctk.CTkToplevel):
             _recent_set = set(recent_positions[-8:])
             _base_dist = abs(_cx - _gx) + abs(_cy - _gy)
             _best = None
+
+            def _local_avoid_candidate_reaches_goal(_cand_pos):
+                _avoid = {_cand_pos}
+                _res = pathfinder.find_path(
+                    _cand_pos,
+                    _goal_pos,
+                    allow_unknown=True,
+                    stop_event=self._stop_event,
+                    max_iterations=max((abs(int(_cand_pos[0]) - int(_goal_pos[0])) + abs(int(_cand_pos[1]) - int(_goal_pos[1]))) * 30, 4000),
+                    unknown_cost=3,
+                    allow_soft_blocked=True,
+                    respect_blocked_edges=True,
+                    avoid_set=_avoid,
+                )
+                if self._stop_event.is_set():
+                    return False
+                return bool(_res.found and _res.directions)
+
             for _cand_dir in _side_dirs:
                 if _is_dir_blocked(_cx, _cy, _cand_dir, iteration):
                     continue
@@ -4901,6 +4937,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     continue
                 _dist = abs(_nx - _gx) + abs(_ny - _gy)
                 if _dist > _base_dist + 2:
+                    continue
+                if not _local_avoid_candidate_reaches_goal((_nx, _ny)):
                     continue
                 _score = (
                     _axis_score(_nx, _ny),
@@ -5567,13 +5605,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
                                         self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
                                 return _local_dir
-                            tried = explored_from.get(current_pos, set())
-                            tried.add(_blocked_primary_dir)
-                            explored_from[current_pos] = tried
                             if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                    self._append_log(f"🧭 유일통로 재시도 중단: ({x},{y}) {d2}"))
-                            return None
+                                    self._append_log(f"🧭 유일통로 유지 직진: ({x},{y}) {d2}"))
+                            return _blocked_primary_dir
                         if _local_avoid_mode:
                             _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
                             if _local_dir:
@@ -7607,7 +7642,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 같은 타일을 계속 찍지 말고 인접 앵커로 잠깐 우회한다.
                             if (_stable_waypoint_phase and _edge_fail >= 2 and
                                 (_tx, _ty) == (int(target_x), int(target_y)) and
-                                portal_grace <= 0):
+                                portal_grace <= 0 and
+                                not _route_chokepoint):
                                 _activate_temporary_goal_detour((target_x, target_y), (prev_x, prev_y), prev_x, prev_y, allow_unknown=True)
                             elif (_patrolling_route_phase and _patrol_goal_origin is not None and
                                   _edge_fail >= 2 and (_tx, _ty) == _patrol_goal_origin and
@@ -10893,6 +10929,17 @@ class GameModeDialog(ctk.CTkToplevel):
                       fg_color="#4c566a", hover_color="#bf616a",
                       font=ctk.CTkFont(size=12),
                       command=self._clear_all_maps).pack(side="left", padx=(4, 0))
+        self._all_map_lock_btn = ctk.CTkButton(
+            wp_add_row,
+            text="전체맵 잠금",
+            width=100,
+            height=32,
+            fg_color="#3b4252",
+            hover_color="#5e81ac",
+            font=ctk.CTkFont(size=12),
+            command=self._toggle_all_map_locks,
+        )
+        self._all_map_lock_btn.pack(side="left", padx=(4, 0))
 
         # 모두 접기/펼치기 버튼
         wp_collapse_row = ctk.CTkFrame(waypoint_inner, fg_color="transparent")
@@ -11139,6 +11186,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._current_segment_idx = 0
         _seg0_name = self._get_segment_display_name(0)
         self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{_seg0_name}")
+        self._bind_game_map_segment(self._game_map, 0)
         self._map_pathfinder = SimplePathfinder(self._game_map)
         self._map_explorer = MapExplorer(self._game_map)
         self._is_mapping = False
@@ -12065,6 +12113,24 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception:
             pass
 
+    def _bind_game_map_segment(self, game_map_ref, segment_idx: int):
+        try:
+            if game_map_ref is not None:
+                setattr(game_map_ref, "_segment_idx", int(segment_idx))
+        except Exception:
+            pass
+
+    def _resolve_game_map_segment_idx(self, game_map_ref, fallback_idx: int) -> int:
+        try:
+            _bound_idx = getattr(game_map_ref, "_segment_idx", None)
+        except Exception:
+            _bound_idx = None
+        if isinstance(_bound_idx, int) and _bound_idx >= 0:
+            if _bound_idx != fallback_idx:
+                logger.info(f"[맵핑이상] 저장 세그먼트 보정: {fallback_idx}->{_bound_idx}")
+            return _bound_idx
+        return fallback_idx
+
     def _auto_save_map(self, segment_idx: int = None, game_map_ref=None, critical: bool = False) -> str:
         """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장, 롤링 백업 포함)"""
         _trace_t0 = time.time()
@@ -12072,6 +12138,7 @@ class GameModeDialog(ctk.CTkToplevel):
             segment_idx = getattr(self, '_current_segment_idx', 0)
         if game_map_ref is None:
             game_map_ref = self._game_map
+        segment_idx = self._resolve_game_map_segment_idx(game_map_ref, segment_idx)
         if getattr(self, "_segment_switch_in_progress", False) and not critical:
             logger.info("[맵핑] 전환 중 일반 맵 저장 건너뜀")
             return ""
@@ -12235,7 +12302,7 @@ class GameModeDialog(ctk.CTkToplevel):
             if (not skip_save and
                 not self._is_segment_map_locked(_current_seg_idx)):
                 try:
-                    segment_idx = _current_seg_idx
+                    segment_idx = self._resolve_game_map_segment_idx(self._game_map, _current_seg_idx)
                     map_path = self._get_segment_map_name(segment_idx)
                     from pathlib import Path
                     Path(map_path).parent.mkdir(parents=True, exist_ok=True)
@@ -12268,6 +12335,7 @@ class GameModeDialog(ctk.CTkToplevel):
             self._start_registered = False  # 새 구간에서 start_pos 재등록 필요
             new_name = self._get_segment_display_name(new_segment_idx)
             self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{new_name}")
+            self._bind_game_map_segment(self._game_map, new_segment_idx)
             self._map_pathfinder = SimplePathfinder(self._game_map)
             self._map_explorer = MapExplorer(self._game_map)
 
@@ -12350,6 +12418,7 @@ class GameModeDialog(ctk.CTkToplevel):
         seg_name = self._get_segment_display_name(segment_idx)
         try:
             fresh_map = GameMap(name=f"{self._config.name or 'autosave'}_{seg_name}")
+            self._bind_game_map_segment(fresh_map, segment_idx)
             _loaded_ok = fresh_map.load(map_path)
             if not _loaded_ok:
                 self._log_map_anomaly(
@@ -13222,12 +13291,14 @@ class GameModeDialog(ctk.CTkToplevel):
             self._wp_empty_label.pack(fill="x", pady=2)
             ctk.CTkLabel(self._wp_empty_label, text="경유지를 추가하세요. 순서대로 이동합니다.",
                          font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(pady=12)
+            self._update_all_map_lock_btn()
             return
 
         for i, wp in enumerate(waypoints):
             self._build_single_card(i, wp)
         # 저장된 그룹 상태 적용 (자식 카드 숨김)
         self._apply_grouping()
+        self._update_all_map_lock_btn()
 
     def _get_final_idx(self) -> int:
         """최종 목표 인덱스 반환"""
@@ -13456,11 +13527,21 @@ class GameModeDialog(ctk.CTkToplevel):
         if char_img_name or boss_img_name or _arr_keys:
             row5.pack(fill="x", padx=8, pady=(0, 2))
 
+        char_img_thumb = tk.Label(
+            row5,
+            text="",
+            bg=COLORS["bg_card"],
+            fg=COLORS["text_secondary"],
+            bd=0,
+            highlightthickness=0,
+        )
         char_img_status = ctk.CTkLabel(row5,
                      text=f"캐릭터: {char_img_name}" if char_img_name else "",
                      font=ctk.CTkFont(size=10), text_color="#a0c8e8",
                      cursor="hand2" if char_img_name else "")
         if char_img_name:
+            self._set_status_thumb(char_img_thumb, wp_img_cfg.get("character_image"), size=18)
+            char_img_thumb.pack(side="left", padx=(0, 3))
             char_img_status.pack(side="left", padx=(0, 2))
             char_img_status.bind("<Button-1>", lambda e, idx=i: self._edit_character_image(idx))
 
@@ -13472,11 +13553,21 @@ class GameModeDialog(ctk.CTkToplevel):
         if char_img_name:
             del_char_img_btn.pack(side="left", padx=(0, 8))
 
+        boss_img_thumb = tk.Label(
+            row5,
+            text="",
+            bg=COLORS["bg_card"],
+            fg=COLORS["text_secondary"],
+            bd=0,
+            highlightthickness=0,
+        )
         boss_img_status = ctk.CTkLabel(row5,
                      text=f"보스: {boss_img_name}" if boss_img_name else "",
                      font=ctk.CTkFont(size=10), text_color="#90e8a0",
                      cursor="hand2" if boss_img_name else "")
         if boss_img_name:
+            self._set_status_thumb(boss_img_thumb, wp_img_cfg.get("target_image"), size=18)
+            boss_img_thumb.pack(side="left", padx=(0, 3))
             boss_img_status.pack(side="left", padx=(0, 2))
             boss_img_status.bind("<Button-1>", lambda e, idx=i: self._edit_waypoint_image(idx))
 
@@ -13488,10 +13579,17 @@ class GameModeDialog(ctk.CTkToplevel):
         if boss_img_name:
             del_boss_img_btn.pack(side="left")
 
+        arr_key_status = ctk.CTkLabel(row5, text="", font=ctk.CTkFont(size=10), text_color="#e8d090")
+        del_arr_key_btn = ctk.CTkButton(row5, text="✕", width=20, height=20,
+                      font=ctk.CTkFont(size=9),
+                      fg_color="transparent", hover_color="#5a2020",
+                      text_color="#e06060", border_width=0,
+                      command=lambda idx=i: self._delete_arrival_keys(idx))
         if _arr_keys:
             _kn = ",".join(kd.get("key", "?") for kd in _arr_keys)
-            ctk.CTkLabel(row5, text=f"키: {_kn}",
-                         font=ctk.CTkFont(size=10), text_color="#e8d090").pack(side="left", padx=(8, 0))
+            arr_key_status.configure(text=f"키: {_kn}")
+            arr_key_status.pack(side="left", padx=(8, 2))
+            del_arr_key_btn.pack(side="left", padx=(0, 0))
 
         # 위젯 참조 저장 (모든 버튼 포함)
         self._wp_cards.append({
@@ -13519,12 +13617,17 @@ class GameModeDialog(ctk.CTkToplevel):
             'clear_btn': clear_btn,
             'load_map_btn': load_map_btn,
             'add_char_img_btn': add_char_img_btn,
+            'char_img_thumb': char_img_thumb,
             'char_img_status': char_img_status,
             'del_char_img_btn': del_char_img_btn,
             'add_boss_img_btn': add_boss_img_btn,
+            'boss_img_thumb': boss_img_thumb,
             'boss_img_status': boss_img_status,
             'del_boss_img_btn': del_boss_img_btn,
             'arr_key_btn': arr_key_btn,
+            'row5': row5,
+            'arr_key_status': arr_key_status,
+            'del_arr_key_btn': del_arr_key_btn,
             'add_route_start_btn': add_route_start_btn,
             'add_route_end_btn': add_route_end_btn,
             'add_route_wall_btn': add_route_wall_btn,
@@ -13701,6 +13804,33 @@ class GameModeDialog(ctk.CTkToplevel):
             if parent_idx is not None:
                 self._update_group_ui(parent_idx)
 
+    def _configure_map_lock_btn(self, btn, locked: bool):
+        if not btn:
+            return
+        btn.configure(
+            text="🔒" if locked else "🔓",
+            fg_color="#d08770" if locked else "transparent",
+            hover_color="#bf616a" if locked else "#4c566a",
+            text_color="#ffffff" if locked else COLORS["text_muted"],
+            border_color="#d08770" if locked else COLORS["border"],
+        )
+
+    def _update_all_map_lock_btn(self):
+        btn = getattr(self, '_all_map_lock_btn', None)
+        if not btn:
+            return
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not waypoints:
+            btn.configure(text="전체맵 잠금", state="disabled", fg_color="#3b4252")
+            return
+        all_locked = all(self._is_segment_map_locked(i) for i in range(len(waypoints)))
+        btn.configure(
+            text="전체맵 잠금해제" if all_locked else "전체맵 잠금",
+            state="normal",
+            fg_color="#d08770" if all_locked else "#3b4252",
+            hover_color="#bf616a" if all_locked else "#5e81ac",
+        )
+
     def _toggle_map_lock(self, idx):
         """경유지 맵 잠금 토글"""
         waypoints = getattr(self._config, 'waypoints', []) or []
@@ -13712,17 +13842,38 @@ class GameModeDialog(ctk.CTkToplevel):
         cfg['map_locked'] = locked
         cards = getattr(self, '_wp_cards', [])
         if 0 <= idx < len(cards):
-            btn = cards[idx].get('map_lock_btn')
-            if btn:
-                btn.configure(
-                    text="🔒" if locked else "🔓",
-                    fg_color="#d08770" if locked else "transparent",
-                    hover_color="#bf616a" if locked else "#4c566a",
-                    text_color="#ffffff" if locked else COLORS["text_muted"],
-                    border_color="#d08770" if locked else COLORS["border"])
+            self._configure_map_lock_btn(cards[idx].get('map_lock_btn'), locked)
+        self._update_all_map_lock_btn()
         self._save_config()
         seg_name = wp[2] if len(wp) >= 3 else f"경유지{idx+1}"
         self._append_log(f"{'🔒 맵 잠금' if locked else '🔓 맵 잠금 해제'}: {seg_name}")
+
+    def _toggle_all_map_locks(self):
+        """모든 경유지 맵 잠금 일괄 토글"""
+        if getattr(self, '_is_mapping', False) or self._is_running:
+            self._append_log("⚠️ 실행 중에는 전체 맵 잠금 변경 불가")
+            return
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not waypoints:
+            self._append_log("⚠️ 경유지가 없습니다")
+            return
+        lock_all = not all(self._is_segment_map_locked(i) for i in range(len(waypoints)))
+        cards = getattr(self, '_wp_cards', [])
+        changed = 0
+        for i, wp in enumerate(waypoints):
+            cfg = self._ensure_wp_config(wp)
+            if bool(cfg.get('map_locked', False)) == lock_all:
+                continue
+            cfg['map_locked'] = lock_all
+            if 0 <= i < len(cards):
+                self._configure_map_lock_btn(cards[i].get('map_lock_btn'), lock_all)
+            changed += 1
+        self._update_all_map_lock_btn()
+        self._save_config()
+        self._append_log(
+            f"{'🔒 전체 맵 잠금' if lock_all else '🔓 전체 맵 잠금 해제'}: "
+            f"{len(waypoints)}개 경유지"
+        )
 
     def _toggle_group(self, parent_idx):
         """부모 카드의 자식 그룹 펼치기/접기"""
@@ -13860,262 +14011,264 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[idx]['map_badge'].configure(fg_color=badge_color)
             cards[idx]['map_badge_label'].configure(text=f" {map_tag} ", text_color=badge_text_color)
 
-    def _add_boss_image(self, idx: int):
-        """경유지에 보스 이미지 추가 (파일 선택 → templates 복사 → wp[3] 저장)"""
-        from tkinter import filedialog
+    def _ensure_waypoint_image_cfg(self, idx: int):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx < 0 or idx >= len(waypoints):
+            return None, None
+        wp = waypoints[idx]
+        while len(wp) < 3:
+            wp.append(None)
+        if len(wp) < 4:
+            wp.append({})
+        elif not isinstance(wp[3], dict):
+            wp[3] = {}
+        return wp, wp[3]
+
+    def _normalize_path_text(self, path: str) -> str:
+        try:
+            return os.path.normcase(os.path.normpath(str(path or '')))
+        except Exception:
+            return str(path or '')
+
+    def _get_waypoint_image_path(self, idx: int, kind: str) -> str:
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx < 0 or idx >= len(waypoints):
+            return ''
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return ''
+        if kind == 'boss':
+            return str(wp[3].get('target_image', '') or '')
+        return str(wp[3].get('character_image', '') or '')
+
+    def _set_waypoint_image_path(self, idx: int, kind: str, image_path: str):
+        wp, img_cfg = self._ensure_waypoint_image_cfg(idx)
+        if img_cfg is None:
+            return
+        if kind == 'boss':
+            img_cfg['target_image'] = image_path
+            img_cfg.setdefault('target_images', [])
+            img_cfg.setdefault('confidence', 0.65)
+            img_cfg.setdefault('search_radius', 0)
+            img_cfg.setdefault('action_x', None)
+            img_cfg.setdefault('action_y', None)
+            img_cfg.setdefault('move_mouse_before_search', False)
+        else:
+            img_cfg['character_image'] = image_path
+        self._save_config()
+        self._update_card_image_status(idx)
+
+    def _clear_waypoint_image_path(self, idx: int, kind: str):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx < 0 or idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return
+        if kind == 'boss':
+            for key in [
+                'target_image',
+                'target_images',
+                'confidence',
+                'search_radius',
+                'action_x',
+                'action_y',
+                'move_mouse_before_search',
+            ]:
+                wp[3].pop(key, None)
+        else:
+            wp[3].pop('character_image', None)
+        if not wp[3]:
+            wp[3] = None
+            while len(wp) > 3 and wp[-1] is None:
+                wp.pop()
+        self._save_config()
+        self._update_card_image_status(idx)
+
+    def _make_unique_image_preset_name(self, kind: str, base_name: str) -> str:
+        name = str(base_name or '').strip() or ('보스' if kind == 'boss' else '캐릭터')
+        existing = {str(item.get('name', '')).strip() for item in list_image_presets(kind, existing_only=False)}
+        if name not in existing:
+            return name
+        suffix = 2
+        while f'{name} ({suffix})' in existing:
+            suffix += 1
+        return f'{name} ({suffix})'
+
+    def _copy_waypoint_image_to_templates(self, source_path: str, kind: str) -> str:
         import shutil
         import uuid
 
-        waypoints = getattr(self._config, 'waypoints', []) or []
-        if idx >= len(waypoints):
-            return
+        templates_dir = DATA_DIR / 'templates'
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        ext = Path(source_path).suffix or '.png'
+        prefix = 'wp_img' if kind == 'boss' else 'wp_char'
+        dest_path = templates_dir / f'{prefix}_{uuid.uuid4().hex[:8]}{ext}'
+        shutil.copy2(source_path, dest_path)
+        return str(dest_path)
 
-        image_path = filedialog.askopenfilename(
-            title="보스 이미지 선택",
-            filetypes=[
-                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
-                ("모든 파일", "*.*"),
-            ],
-            initialdir=str(DATA_DIR / "templates"),
-        )
-        if not image_path:
-            return
+    def _open_waypoint_image_picker(self, idx: int, kind: str):
+        from tkinter import filedialog
 
-        try:
-            templates_dir = DATA_DIR / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            new_ext = Path(image_path).suffix
-            new_filename = f"wp_img_{uuid.uuid4().hex[:8]}{new_ext}"
-            dest_path = templates_dir / new_filename
-            shutil.copy2(image_path, dest_path)
+        title = '보스 이미지' if kind == 'boss' else '캐릭터 이미지'
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(f'{title} 설정 - 경유지 {idx + 1}')
+        dlg.geometry('520x460')
+        dlg.resizable(False, True)
+        dlg.configure(fg_color=COLORS['bg_dark'])
+        dlg.transient(self)
+        dlg.after(100, lambda: dlg.grab_set())
+        dlg.update_idletasks()
+        _dx = (dlg.winfo_screenwidth() - 520) // 2
+        _dy = (dlg.winfo_screenheight() - 460) // 2
+        dlg.geometry(f'+{_dx}+{_dy}')
+        dlg.lift()
+        dlg.focus_force()
 
-            # wp[3]에 보스 이미지 설정 저장
-            wp = waypoints[idx]
-            if len(wp) < 4:
-                img_cfg = {
-                    "target_image": str(dest_path),
-                    "target_images": [],
-                    "confidence": 0.65,
-                    "search_radius": 0,
-                    "action_x": None,
-                    "action_y": None,
-                    "move_mouse_before_search": False,
-                }
-                wp.append(img_cfg)
-            elif not isinstance(wp[3], dict):
-                img_cfg = {
-                    "target_image": str(dest_path),
-                    "target_images": [],
-                    "confidence": 0.65,
-                    "search_radius": 0,
-                    "action_x": None,
-                    "action_y": None,
-                    "move_mouse_before_search": False,
-                }
-                wp[3] = img_cfg
-            else:
-                wp[3]["target_image"] = str(dest_path)
-                wp[3].setdefault("target_images", [])
-                wp[3].setdefault("confidence", 0.65)
-                wp[3].setdefault("search_radius", 0)
-                wp[3].setdefault("action_x", None)
-                wp[3].setdefault("action_y", None)
-                wp[3].setdefault("move_mouse_before_search", False)
+        selected_name = None
+        list_frame = ctk.CTkScrollableFrame(dlg, fg_color=COLORS['bg_dark'], height=360)
+        list_frame.pack(fill='both', expand=True, padx=10, pady=(10, 5))
+        row_refs = {}
 
-            self._save_config()
-            self._update_card_image_status(idx)
-            logger.info(f"[좌표모드] 경유지{idx+1} 보스 이미지 추가: {dest_path}")
+        def refresh_rows():
+            nonlocal selected_name, row_refs
+            row_refs = {}
+            for w in list_frame.winfo_children():
+                w.destroy()
 
-            # ImageCropDialog 열기 (편집 가능)
-            self._edit_waypoint_image(idx)
-        except Exception as e:
-            logger.error(f"[좌표모드] 보스 이미지 추가 실패: {e}")
+            presets = list_image_presets(kind, existing_only=False)
+            if selected_name and not any(str(item.get('name', '')).strip() == selected_name for item in presets):
+                selected_name = None
+
+            current_path = self._normalize_path_text(self._get_waypoint_image_path(idx, kind))
+
+            def refresh_selection():
+                for _name, data in row_refs.items():
+                    data['row'].configure(fg_color='#213246' if _name == selected_name else COLORS['bg_card'])
+
+            def select_item(_name):
+                nonlocal selected_name
+                selected_name = _name
+                refresh_selection()
+
+            def toggle_apply(_path: str):
+                normalized = self._normalize_path_text(_path)
+                if current_path and normalized == current_path:
+                    self._clear_waypoint_image_path(idx, kind)
+                else:
+                    self._set_waypoint_image_path(idx, kind, _path)
+                refresh_rows()
+
+            if not presets:
+                ctk.CTkLabel(
+                    list_frame,
+                    text='저장된 이미지가 없습니다. 아래에서 추가하세요.',
+                    font=ctk.CTkFont(size=11),
+                    text_color=COLORS['text_secondary'],
+                ).pack(pady=24)
+                return
+
+            for item in presets:
+                preset_name = str(item.get('name', '')).strip()
+                preset_path = str(item.get('path', '')).strip()
+                row = ctk.CTkFrame(list_frame, fg_color=COLORS['bg_card'], corner_radius=6, height=46)
+                row.pack(fill='x', padx=4, pady=3)
+                row.pack_propagate(False)
+
+                thumb = tk.Label(
+                    row,
+                    text='없음',
+                    bg=COLORS['bg_card'],
+                    fg=COLORS['text_secondary'],
+                    bd=0,
+                    highlightthickness=0,
+                )
+                thumb.pack(side='left', padx=(8, 6))
+                if preset_path and Path(preset_path).exists():
+                    self._set_status_thumb(thumb, preset_path, size=28)
+
+                name_label = ctk.CTkLabel(
+                    row,
+                    text=preset_name,
+                    font=ctk.CTkFont(size=11, weight='bold'),
+                    text_color=COLORS['text_primary'],
+                    anchor='w',
+                )
+                name_label.pack(side='left', fill='x', expand=True, padx=(0, 8))
+
+                active = bool(current_path and self._normalize_path_text(preset_path) == current_path)
+                apply_btn = ctk.CTkButton(
+                    row,
+                    text='해제' if active else '적용',
+                    width=58,
+                    height=26,
+                    font=ctk.CTkFont(size=10, weight='bold'),
+                    fg_color='#7a2a2a' if active else COLORS['accent_blue'],
+                    hover_color='#8f3434' if active else COLORS['accent_blue'],
+                    command=lambda p=preset_path: toggle_apply(p),
+                )
+                apply_btn.pack(side='right', padx=(4, 8))
+
+                row_refs[preset_name] = {'row': row, 'apply_btn': apply_btn}
+                for widget in (row, thumb, name_label):
+                    widget.bind('<Button-1>', lambda _e, n=preset_name: select_item(n))
+            refresh_selection()
+
+        def add_image():
+            nonlocal selected_name
+            image_path = filedialog.askopenfilename(
+                title=f'{title} 선택',
+                filetypes=[
+                    ('이미지 파일', '*.png *.jpg *.jpeg *.bmp *.gif'),
+                    ('모든 파일', '*.*'),
+                ],
+                initialdir=str(DATA_DIR / 'templates'),
+            )
+            if not image_path:
+                return
+            try:
+                stored_path = self._copy_waypoint_image_to_templates(image_path, kind)
+                preset_name = self._make_unique_image_preset_name(kind, Path(image_path).stem)
+                upsert_image_preset(kind, preset_name, stored_path)
+                selected_name = preset_name
+                refresh_rows()
+            except Exception as e:
+                logger.error(f'[좌표모드] {title} 등록 실패: {e}')
+
+        def delete_image():
+            nonlocal selected_name
+            if not selected_name:
+                return
+            presets = list_image_presets(kind, existing_only=False)
+            target = next((item for item in presets if str(item.get('name', '')).strip() == selected_name), None)
+            if target:
+                target_path = self._normalize_path_text(target.get('path', ''))
+                current_path = self._normalize_path_text(self._get_waypoint_image_path(idx, kind))
+                if current_path and current_path == target_path:
+                    self._clear_waypoint_image_path(idx, kind)
+                remove_image_preset(kind, selected_name)
+            selected_name = None
+            refresh_rows()
+
+        refresh_rows()
+
+        btn_row = ctk.CTkFrame(dlg, fg_color='transparent')
+        btn_row.pack(fill='x', padx=10, pady=(0, 10))
+        ctk.CTkButton(btn_row, text='이미지등록', width=90, height=30, command=add_image).pack(side='left')
+        ctk.CTkButton(btn_row, text='이미지삭제', width=90, height=30, command=delete_image).pack(side='left', padx=6)
+        ctk.CTkButton(btn_row, text='취소', width=70, height=30, fg_color=COLORS['border'], command=dlg.destroy).pack(side='right')
+
+    def _add_boss_image(self, idx: int):
+        self._open_waypoint_image_picker(idx, 'boss')
 
     def _add_character_image(self, idx: int):
-        """경유지에 캐릭터 이미지 추가 (파일 선택 → templates 복사 → wp[3]["character_image"] 저장)"""
-        from tkinter import filedialog
-        import shutil
-        import uuid
-
-        waypoints = getattr(self._config, 'waypoints', []) or []
-        if idx >= len(waypoints):
-            return
-
-        image_path = filedialog.askopenfilename(
-            title="캐릭터 이미지 선택",
-            filetypes=[
-                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
-                ("모든 파일", "*.*"),
-            ],
-            initialdir=str(DATA_DIR / "templates"),
-        )
-        if not image_path:
-            return
-
-        try:
-            templates_dir = DATA_DIR / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            new_ext = Path(image_path).suffix
-            new_filename = f"wp_char_{uuid.uuid4().hex[:8]}{new_ext}"
-            dest_path = templates_dir / new_filename
-            shutil.copy2(image_path, dest_path)
-
-            # wp[3]에 캐릭터 이미지 저장
-            wp = waypoints[idx]
-            if len(wp) < 4:
-                wp.append({"character_image": str(dest_path)})
-            elif not isinstance(wp[3], dict):
-                wp[3] = {"character_image": str(dest_path)}
-            else:
-                wp[3]["character_image"] = str(dest_path)
-
-            self._save_config()
-            self._update_card_image_status(idx)
-            logger.info(f"[좌표모드] 경유지{idx+1} 캐릭터 이미지 추가: {dest_path}")
-
-            # ImageCropDialog 열기 (편집 가능)
-            self._edit_character_image(idx)
-        except Exception as e:
-            logger.error(f"[좌표모드] 캐릭터 이미지 추가 실패: {e}")
+        self._open_waypoint_image_picker(idx, 'character')
 
     def _edit_waypoint_image(self, idx: int):
-        """경유지 이미지 편집 — ImageCropDialog 열기"""
-        waypoints = getattr(self._config, 'waypoints', []) or []
-        if idx >= len(waypoints):
-            return
-        wp = waypoints[idx]
-        if len(wp) < 4 or not isinstance(wp[3], dict):
-            return
-        img_cfg = wp[3]
-        img_path = img_cfg.get("target_image", "")
-        if not img_path or not Path(img_path).exists():
-            return
-
-        # 임시 AutomationRule 생성 (ImageCropDialog가 rule 파라미터로 사용)
-        temp_rule = AutomationRule(
-            rule_id=f"wp_{idx}",
-            action_type="click",
-            target_image=img_path,
-            target_images=list(img_cfg.get("target_images", [])),
-            confidence=img_cfg.get("confidence", 0.65),
-            search_radius=img_cfg.get("search_radius", 0),
-            action_x=img_cfg.get("action_x"),
-            action_y=img_cfg.get("action_y"),
-            move_mouse_before_search=img_cfg.get("move_mouse_before_search", False),
-        )
-
-        def on_crop(new_path):
-            img_cfg["target_image"] = new_path
-            self._sync_rule_to_wp_image(temp_rule, idx)
-            self._update_card_image_status(idx)
-
-        def on_delete():
-            if len(wp) >= 4 and isinstance(wp[3], dict):
-                for key in ["target_image", "target_images", "confidence",
-                            "search_radius", "action_x", "action_y",
-                            "move_mouse_before_search"]:
-                    wp[3].pop(key, None)
-                if not wp[3]:
-                    wp[3] = None
-                    while len(wp) > 3 and wp[-1] is None:
-                        wp.pop()
-            self._save_config()
-            self._update_card_image_status(idx)
-
-        def on_change(new_path):
-            img_cfg["target_image"] = new_path
-            temp_rule.target_image = new_path
-            self._save_config()
-            self._update_card_image_status(idx)
-
-        def on_search_radius_change():
-            self._sync_rule_to_wp_image(temp_rule, idx)
-
-        dialog = ImageCropDialog(
-            self,
-            img_path,
-            on_crop=on_crop,
-            on_delete=on_delete,
-            on_change=on_change,
-            rule=temp_rule,
-            on_search_radius_change=on_search_radius_change,
-        )
-        # 다이얼로그 닫힌 후 최종 동기화
-        dialog.wait_window()
-        self._sync_rule_to_wp_image(temp_rule, idx)
-
-    def _sync_rule_to_wp_image(self, rule, idx: int):
-        """AutomationRule 설정 → wp[3] dict로 동기화"""
-        waypoints = getattr(self._config, 'waypoints', []) or []
-        if idx >= len(waypoints):
-            return
-        wp = waypoints[idx]
-        if len(wp) < 4 or not isinstance(wp[3], dict):
-            return
-        cfg = wp[3]
-        cfg["target_image"] = rule.target_image
-        cfg["target_images"] = list(rule.target_images) if rule.target_images else []
-        cfg["confidence"] = rule.confidence
-        cfg["search_radius"] = rule.search_radius
-        cfg["action_x"] = rule.action_x
-        cfg["action_y"] = rule.action_y
-        cfg["move_mouse_before_search"] = rule.move_mouse_before_search
-        self._save_config()
+        self._open_waypoint_image_picker(idx, 'boss')
 
     def _edit_character_image(self, idx: int):
-        """캐릭터 이미지 편집 — ImageCropDialog 열기"""
-        waypoints = getattr(self._config, 'waypoints', []) or []
-        if idx >= len(waypoints):
-            return
-        wp = waypoints[idx]
-        if len(wp) < 4 or not isinstance(wp[3], dict):
-            return
-        img_cfg = wp[3]
-        img_path = img_cfg.get("character_image", "")
-        if not img_path or not Path(img_path).exists():
-            return
-
-        # 임시 AutomationRule 생성 (ImageCropDialog용)
-        temp_rule = AutomationRule(
-            rule_id=f"wp_char_{idx}",
-            action_type="click",
-            target_image=img_path,
-            confidence=0.65,
-        )
-
-        def on_crop(new_path):
-            img_cfg["character_image"] = new_path
-            self._save_config()
-            self._update_card_image_status(idx)
-
-        def on_delete():
-            img_cfg.pop("character_image", None)
-            if not img_cfg:
-                wp[3] = None
-                while len(wp) > 3 and wp[-1] is None:
-                    wp.pop()
-            self._save_config()
-            self._update_card_image_status(idx)
-
-        def on_change(new_path):
-            img_cfg["character_image"] = new_path
-            temp_rule.target_image = new_path
-            self._save_config()
-            self._update_card_image_status(idx)
-
-        dialog = ImageCropDialog(
-            self,
-            img_path,
-            on_crop=on_crop,
-            on_delete=on_delete,
-            on_change=on_change,
-            rule=temp_rule,
-        )
-        dialog.wait_window()
-        # 최종 동기화: character_image 경로 업데이트
-        if len(wp) >= 4 and isinstance(wp[3], dict):
-            wp[3]["character_image"] = temp_rule.target_image
-            self._save_config()
+        self._open_waypoint_image_picker(idx, 'character')
 
     def _delete_waypoint_image(self, idx: int):
         """경유지 보스 이미지 삭제"""
@@ -14155,8 +14308,68 @@ class GameModeDialog(ctk.CTkToplevel):
             self._update_card_image_status(idx)
             logger.info(f"[좌표모드] 경유지{idx+1} 캐릭터 이미지 삭제")
 
+    def _delete_arrival_keys(self, idx: int):
+        """경유지 도착 키 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) >= 4 and isinstance(wp[3], dict):
+            wp[3].pop("arrival_keys", None)
+            wp[3].pop("arrival_key", None)
+            if not wp[3]:
+                wp[3] = None
+                while len(wp) > 3 and wp[-1] is None:
+                    wp.pop()
+            self._save_config()
+            self._update_card_image_status(idx)
+
+    def _set_status_thumb(self, label, image_path: str, size: int = 18) -> bool:
+        try:
+            from PIL import ImageTk
+            normalized = self._normalize_path_text(image_path)
+            if not normalized or not Path(normalized).exists():
+                label.configure(image=None, text="")
+                label.image = None
+                label._ctk_image = None
+                label._thumb_ref = None
+                return False
+            img_arr = np.fromfile(normalized, np.uint8)
+            img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+            if img is None:
+                label.configure(image=None, text="")
+                label.image = None
+                label._ctk_image = None
+                label._thumb_ref = None
+                return False
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            h, w = img_rgb.shape[:2]
+            if not h or not w:
+                label.configure(image=None, text="")
+                label.image = None
+                label._ctk_image = None
+                label._thumb_ref = None
+                return False
+            scale = min(size / w, size / h)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            resized = cv2.resize(img_rgb, (new_w, new_h))
+            pil_image = Image.fromarray(resized)
+            tk_img = ImageTk.PhotoImage(pil_image)
+            label.configure(image=tk_img, text="")
+            label.image = tk_img
+            label._ctk_image = tk_img
+            label._thumb_ref = tk_img
+            return True
+        except Exception:
+            label.configure(image=None, text="")
+            label.image = None
+            label._ctk_image = None
+            label._thumb_ref = None
+            return False
+
     def _update_card_image_status(self, idx: int):
-        """카드 이미지 상태 라벨 + 삭제 버튼 갱신 (캐릭터/보스 이미지 각각)"""
+        """카드 상태 라벨 + 삭제 버튼 갱신 (캐릭터/보스/키입력)"""
         cards = getattr(self, '_wp_cards', [])
         if not (0 <= idx < len(cards)):
             return
@@ -14165,38 +14378,102 @@ class GameModeDialog(ctk.CTkToplevel):
             return
         wp = waypoints[idx]
         img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+        row5 = cards[idx].get('row5')
+        char_label = cards[idx]['char_img_status']
+        del_char_btn = cards[idx]['del_char_img_btn']
+        boss_label = cards[idx]['boss_img_status']
+        del_boss_btn = cards[idx]['del_boss_img_btn']
+        arr_key_label = cards[idx].get('arr_key_status')
+        del_arr_key_btn = cards[idx].get('del_arr_key_btn')
+
+        def _new_thumb():
+            return tk.Label(
+                row5,
+                text="",
+                width=2,
+                bg=COLORS["bg_card"],
+                fg=COLORS["text_secondary"],
+                bd=0,
+                highlightthickness=0,
+            )
+
+        for thumb_key in ('char_img_thumb', 'boss_img_thumb'):
+            old_thumb = cards[idx].get(thumb_key)
+            if old_thumb is not None:
+                try:
+                    old_thumb.destroy()
+                except Exception:
+                    pass
+        char_thumb = _new_thumb()
+        boss_thumb = _new_thumb()
+        cards[idx]['char_img_thumb'] = char_thumb
+        cards[idx]['boss_img_thumb'] = boss_thumb
 
         # 캐릭터 이미지 상태 갱신
         char_img_name = ""
+        char_img_path = ""
         if img_cfg and img_cfg.get("character_image"):
-            char_img_name = Path(img_cfg["character_image"]).stem[:10]
-        char_label = cards[idx]['char_img_status']
-        del_char_btn = cards[idx]['del_char_img_btn']
-        if char_img_name:
-            char_label.configure(text=f" {char_img_name}", cursor="hand2")
-            char_label.unbind("<Button-1>")
-            char_label.bind("<Button-1>", lambda e, i=idx: self._edit_character_image(i))
-            del_char_btn.pack(side="left", padx=(1, 0))
-        else:
-            char_label.configure(text="", cursor="")
-            char_label.unbind("<Button-1>")
-            del_char_btn.pack_forget()
+            char_img_path = img_cfg["character_image"]
+            char_img_name = Path(char_img_path).stem[:10]
 
         # 보스 이미지 상태 갱신
         boss_img_name = ""
+        boss_img_path = ""
         if img_cfg and img_cfg.get("target_image"):
-            boss_img_name = Path(img_cfg["target_image"]).stem[:10]
-        boss_label = cards[idx]['boss_img_status']
-        del_boss_btn = cards[idx]['del_boss_img_btn']
+            boss_img_path = img_cfg["target_image"]
+            boss_img_name = Path(boss_img_path).stem[:10]
+
+        # 도착 키 상태 갱신
+        arr_keys = []
+        if img_cfg:
+            arr_keys = img_cfg.get("arrival_keys", []) or []
+            if not arr_keys and img_cfg.get("arrival_key"):
+                arr_keys = [{"key": k.strip()} for k in img_cfg["arrival_key"].split(",") if k.strip()]
+
+        for widget in (char_thumb, char_label, del_char_btn, boss_thumb, boss_label, del_boss_btn, arr_key_label, del_arr_key_btn):
+            if widget is not None and widget.winfo_manager():
+                widget.pack_forget()
+
+        if char_img_name:
+            if char_thumb is not None and self._set_status_thumb(char_thumb, char_img_path, size=18):
+                char_thumb.pack(side="left", padx=(0, 3))
+            char_label.configure(text=f"캐릭터: {char_img_name}", cursor="hand2")
+            char_label.unbind("<Button-1>")
+            char_label.bind("<Button-1>", lambda e, i=idx: self._edit_character_image(i))
+            char_label.pack(side="left", padx=(0, 2))
+            del_char_btn.pack(side="left", padx=(0, 8))
+        else:
+            char_label.configure(text="", cursor="")
+            char_label.unbind("<Button-1>")
+
         if boss_img_name:
-            boss_label.configure(text=f" {boss_img_name}", cursor="hand2")
+            if boss_thumb is not None and self._set_status_thumb(boss_thumb, boss_img_path, size=18):
+                boss_thumb.pack(side="left", padx=(0, 3))
+            boss_label.configure(text=f"보스: {boss_img_name}", cursor="hand2")
             boss_label.unbind("<Button-1>")
             boss_label.bind("<Button-1>", lambda e, i=idx: self._edit_waypoint_image(i))
-            del_boss_btn.pack(side="left", padx=(1, 0))
+            boss_label.pack(side="left", padx=(0, 2))
+            del_boss_btn.pack(side="left", padx=(0, 8))
         else:
             boss_label.configure(text="", cursor="")
             boss_label.unbind("<Button-1>")
-            del_boss_btn.pack_forget()
+
+        if arr_key_label is not None and del_arr_key_btn is not None:
+            if arr_keys:
+                key_text = ",".join(kd.get("key", "?") for kd in arr_keys)
+                arr_key_label.configure(text=f"키: {key_text}")
+                arr_key_label.pack(side="left", padx=(0, 2))
+                del_arr_key_btn.pack(side="left", padx=(0, 0))
+            else:
+                arr_key_label.configure(text="")
+
+        # 상태줄 표시/숨김
+        has_any_status = bool(char_img_name or boss_img_name or arr_keys)
+        if row5 is not None:
+            if has_any_status and not row5.winfo_manager():
+                row5.pack(fill="x", padx=8, pady=(0, 2))
+            elif not has_any_status and row5.winfo_manager():
+                row5.pack_forget()
 
     def _refresh_badges_async(self):
         """배지 갱신 (파일 I/O는 현재 스레드, UI 업데이트만 메인스레드로)
@@ -14395,11 +14672,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     wp[3]['map_locked'] = False
                 cards = getattr(self, '_wp_cards', [])
                 if 0 <= i < len(cards):
-                    btn = cards[i].get('map_lock_btn')
-                    if btn:
-                        btn.configure(text="🔓", fg_color="transparent",
-                                      hover_color="#4c566a", text_color=COLORS["text_muted"],
-                                      border_color=COLORS["border"])
+                    self._configure_map_lock_btn(cards[i].get('map_lock_btn'), False)
 
             # map_file 공유 경로 해제 (원본 파일 보호)
             wp = waypoints[i]
@@ -14445,6 +14718,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         self._append_log(f"🗑️ 전체 맵 초기화 완료 ({cleared}개 경유지)", force=True)
         logger.info(f"[맵핑] 전체 맵 초기화: {cleared}개 경유지")
+        self._update_all_map_lock_btn()
 
     def _clear_map_for(self, idx: int):
         """특정 경유지 맵 초기화"""
@@ -15036,94 +15310,179 @@ class GameModeDialog(ctk.CTkToplevel):
         dlg.lift()
         dlg.focus_force()
 
-        # 로컬 복사본
         local_keys = [dict(k) for k in keys_list]
 
-        # 스크롤 영역
-        list_frame = ctk.CTkScrollableFrame(dlg, fg_color=COLORS["bg_dark"],
-                                            height=300)
+        def _key_preset_name(kd: dict) -> str:
+            base = str(kd.get("key", "")).strip().upper() or "KEY"
+            existing = [str(item.get("name", "")).strip() for item in list_arrival_key_presets()]
+            if base not in existing:
+                return base
+            idx = 2
+            while f"{base} ({idx})" in existing:
+                idx += 1
+            return f"{base} ({idx})"
+
+        def _key_signature(kd: dict) -> str:
+            return json.dumps(
+                {
+                    "key": str(kd.get("key", "")).strip().lower(),
+                    "wait_after": float(kd.get("wait_after", 0.3) or 0.3),
+                    "wait_random": bool(kd.get("wait_random", False)),
+                    "wait_random_range": float(kd.get("wait_random_range", 0.3) or 0.3),
+                    "repeat_count": int(kd.get("repeat_count", 1) or 1),
+                    "repeat_delay": float(kd.get("repeat_delay", 0.5) or 0.5),
+                    "repeat_delay_random": bool(kd.get("repeat_delay_random", False)),
+                    "repeat_delay_random_range": float(kd.get("repeat_delay_random_range", 0.3) or 0.3),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+        def _save_waypoint_keys():
+            wp_cfg["arrival_keys"] = [dict(item) for item in local_keys]
+            wp_cfg.pop("arrival_key", None)
+            self._save_config()
+            self._update_card_image_status(index)
+
+        list_frame = ctk.CTkScrollableFrame(dlg, fg_color=COLORS["bg_dark"], height=345)
         list_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        selected_preset_name = None
+        row_refs = {}
 
         def refresh_list():
+            nonlocal selected_preset_name, row_refs
+            row_refs = {}
             for w in list_frame.winfo_children():
                 w.destroy()
-            if not local_keys:
-                ctk.CTkLabel(list_frame, text="키가 없습니다. 아래에서 추가하세요.",
-                             font=ctk.CTkFont(size=11),
-                             text_color=COLORS["text_secondary"]).pack(pady=20)
+
+            presets = list_arrival_key_presets()
+            if not presets:
+                selected_preset_name = None
+                ctk.CTkLabel(
+                    list_frame,
+                    text="저장된 키가 없습니다. 아래에서 추가하세요.",
+                    font=ctk.CTkFont(size=11),
+                    text_color=COLORS["text_secondary"],
+                ).pack(pady=20)
                 return
-            for ki, kd in enumerate(local_keys):
-                row = ctk.CTkFrame(list_frame, fg_color=COLORS["bg_card"],
-                                   corner_radius=6, height=36)
+
+            if selected_preset_name and not any(str(item.get("name", "")).strip() == selected_preset_name for item in presets):
+                selected_preset_name = None
+
+            local_sigs = {_key_signature(kd) for kd in local_keys}
+
+            def refresh_row_selection():
+                for _name, data in row_refs.items():
+                    data["row"].configure(fg_color="#213246" if _name == selected_preset_name else COLORS["bg_card"])
+
+            def select_key(_name):
+                nonlocal selected_preset_name
+                selected_preset_name = _name
+                refresh_row_selection()
+
+            def toggle_preset_apply(preset_key: dict):
+                sig = _key_signature(preset_key)
+                existing_idx = next((i for i, item in enumerate(local_keys) if _key_signature(item) == sig), None)
+                if existing_idx is None:
+                    local_keys.append(dict(preset_key))
+                else:
+                    local_keys.pop(existing_idx)
+                _save_waypoint_keys()
+                refresh_list()
+
+            for item in presets:
+                if not item.get("keys"):
+                    continue
+                preset_name = str(item.get("name", "")).strip()
+                kd = dict(item["keys"][0])
+
+                row = ctk.CTkFrame(list_frame, fg_color=COLORS["bg_card"], corner_radius=6, height=36)
                 row.pack(fill="x", padx=4, pady=2)
                 row.pack_propagate(False)
-                # 키 이름
-                ctk.CTkLabel(row, text=kd.get("key", "?").upper(),
-                             font=ctk.CTkFont(size=12, weight="bold"),
-                             text_color=COLORS["accent"], width=60).pack(side="left", padx=(8, 4))
-                # 대기시간
+
+                key_label = ctk.CTkLabel(
+                    row,
+                    text=str(kd.get("key", "?")).upper(),
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    text_color=COLORS["accent"],
+                    width=72,
+                    anchor="w",
+                )
+                key_label.pack(side="left", padx=(8, 6))
+
+                active = _key_signature(kd) in local_sigs
+                apply_btn = ctk.CTkButton(
+                    row, text="적용", width=52, height=24,
+                    font=ctk.CTkFont(size=10, weight="bold"),
+                    fg_color="#5a2020" if active else COLORS["accent_blue"],
+                    hover_color="#7a2a2a" if active else COLORS["accent_blue"],
+                    command=lambda k=kd: toggle_preset_apply(k),
+                )
+                apply_btn.pack(side="right", padx=(4, 8))
+
                 _wr = kd.get("wait_random", False)
                 _wt = kd.get("wait_after", 0.3)
-                ctk.CTkButton(row, text=f"{_wt:.1f}s{'*' if _wr else ''}",
-                    width=46, height=24, font=ctk.CTkFont(size=10),
+                wait_btn = ctk.CTkButton(
+                    row, text=f"{_wt:.1f}s{'*' if _wr else ''}",
+                    width=50, height=24, font=ctk.CTkFont(size=10),
                     fg_color=COLORS["success"] if _wr else "#0d1f17",
                     hover_color="#27ae60",
                     text_color="white" if _wr else COLORS["text_secondary"],
                     corner_radius=4,
-                    command=lambda k=ki: edit_wait(k)).pack(side="left", padx=2)
-                # 반복횟수
+                    command=lambda n=preset_name, key_data=dict(kd): edit_wait(n, key_data),
+                )
+                wait_btn.pack(side="right", padx=2)
+
                 _rc = kd.get("repeat_count", 1)
-                ctk.CTkButton(row, text=f"x{_rc}",
+                repeat_btn = ctk.CTkButton(
+                    row, text=f"x{_rc}",
                     width=34, height=24, font=ctk.CTkFont(size=10),
                     fg_color=COLORS["accent_blue"] if _rc > 1 else "#0d1f17",
                     hover_color="#2563eb",
                     text_color="white" if _rc > 1 else COLORS["text_secondary"],
                     corner_radius=4,
-                    command=lambda k=ki: edit_repeat(k)).pack(side="left", padx=2)
-                # 삭제
-                ctk.CTkButton(row, text="✕", width=24, height=24,
-                    font=ctk.CTkFont(size=10),
-                    fg_color="transparent", hover_color="#5a2020",
-                    text_color="#e06060",
-                    command=lambda k=ki: del_key(k)).pack(side="right", padx=(0, 6))
-                # 순서 이동
-                if ki > 0:
-                    ctk.CTkButton(row, text="▲", width=22, height=24,
-                        font=ctk.CTkFont(size=9), fg_color="transparent",
-                        hover_color=COLORS["bg_card_hover"],
-                        text_color=COLORS["text_secondary"],
-                        command=lambda k=ki: move_key(k, -1)).pack(side="right")
-                if ki < len(local_keys) - 1:
-                    ctk.CTkButton(row, text="▼", width=22, height=24,
-                        font=ctk.CTkFont(size=9), fg_color="transparent",
-                        hover_color=COLORS["bg_card_hover"],
-                        text_color=COLORS["text_secondary"],
-                        command=lambda k=ki: move_key(k, 1)).pack(side="right")
+                    command=lambda n=preset_name, key_data=dict(kd): edit_repeat(n, key_data),
+                )
+                repeat_btn.pack(side="right", padx=2)
+
+                row_refs[preset_name] = {"row": row, "apply_btn": apply_btn}
+                for widget in (row, key_label, wait_btn, repeat_btn):
+                    widget.bind("<Button-1>", lambda _e, n=preset_name: select_key(n))
+            refresh_row_selection()
 
         def add_key():
+            nonlocal selected_preset_name
             kid = KeyInputDialog(dlg)
             captured = kid.get_key()
             if captured:
-                local_keys.append({"key": captured.lower().strip(),
-                    "wait_after": 0.3, "wait_random": False,
-                    "wait_random_range": 0.3, "repeat_count": 1,
-                    "repeat_delay": 0.5, "repeat_delay_random": False,
-                    "repeat_delay_random_range": 0.3})
+                new_key = {
+                    "key": captured.lower().strip(),
+                    "wait_after": 0.3,
+                    "wait_random": False,
+                    "wait_random_range": 0.3,
+                    "repeat_count": 1,
+                    "repeat_delay": 0.5,
+                    "repeat_delay_random": False,
+                    "repeat_delay_random_range": 0.3,
+                }
+                selected_preset_name = _key_preset_name(new_key)
+                upsert_arrival_key_preset(selected_preset_name, [new_key])
                 refresh_list()
 
-        def del_key(ki):
-            if 0 <= ki < len(local_keys):
-                local_keys.pop(ki)
+        def del_key():
+            nonlocal selected_preset_name
+            if selected_preset_name:
+                presets = list_arrival_key_presets()
+                removed_item = next((item for item in presets if str(item.get("name", "")).strip() == selected_preset_name), None)
+                if removed_item and removed_item.get("keys"):
+                    removed_sig = _key_signature(dict(removed_item["keys"][0]))
+                    local_keys[:] = [item for item in local_keys if _key_signature(item) != removed_sig]
+                    _save_waypoint_keys()
+                remove_arrival_key_preset(selected_preset_name)
+                selected_preset_name = None
                 refresh_list()
 
-        def move_key(ki, direction):
-            ni = ki + direction
-            if 0 <= ni < len(local_keys):
-                local_keys[ki], local_keys[ni] = local_keys[ni], local_keys[ki]
-                refresh_list()
-
-        def edit_wait(ki):
-            kd = local_keys[ki]
+        def edit_wait(preset_name, kd):
             wd = ctk.CTkToplevel(dlg)
             wd.title("대기시간 설정")
             wd.geometry("300x280")
@@ -15145,9 +15504,16 @@ class GameModeDialog(ctk.CTkToplevel):
 
             def sw():
                 try:
-                    kd["wait_after"] = float(we.get())
-                    kd["wait_random"] = rv.get()
-                    kd["wait_random_range"] = float(re.get())
+                    old_sig = _key_signature(kd)
+                    new_key = dict(kd)
+                    new_key["wait_after"] = float(we.get())
+                    new_key["wait_random"] = rv.get()
+                    new_key["wait_random_range"] = float(re.get())
+                    upsert_arrival_key_preset(preset_name, [new_key])
+                    for i, item in enumerate(local_keys):
+                        if _key_signature(item) == old_sig:
+                            local_keys[i] = dict(new_key)
+                    _save_waypoint_keys()
                     wd.destroy()
                     refresh_list()
                 except ValueError:
@@ -15161,8 +15527,7 @@ class GameModeDialog(ctk.CTkToplevel):
                           fg_color=COLORS["bg_card"],
                           command=wd.destroy).pack(side="left", padx=10)
 
-        def edit_repeat(ki):
-            kd = local_keys[ki]
+        def edit_repeat(preset_name, kd):
             rd = ctk.CTkToplevel(dlg)
             rd.title("반복 설정")
             rd.geometry("350x420")
@@ -15211,10 +15576,17 @@ class GameModeDialog(ctk.CTkToplevel):
                     dr = float(dre.get().strip().replace(',', '.'))
                     if c < 1 or d < 0 or dr < 0:
                         return
-                    kd["repeat_count"] = c
-                    kd["repeat_delay"] = d
-                    kd["repeat_delay_random"] = drv.get()
-                    kd["repeat_delay_random_range"] = dr
+                    old_sig = _key_signature(kd)
+                    new_key = dict(kd)
+                    new_key["repeat_count"] = c
+                    new_key["repeat_delay"] = d
+                    new_key["repeat_delay_random"] = drv.get()
+                    new_key["repeat_delay_random_range"] = dr
+                    upsert_arrival_key_preset(preset_name, [new_key])
+                    for i, item in enumerate(local_keys):
+                        if _key_signature(item) == old_sig:
+                            local_keys[i] = dict(new_key)
+                    _save_waypoint_keys()
                     rd.destroy()
                     refresh_list()
                 except ValueError:
@@ -15236,22 +15608,16 @@ class GameModeDialog(ctk.CTkToplevel):
         bot = ctk.CTkFrame(dlg, fg_color="transparent")
         bot.pack(fill="x", padx=10, pady=(5, 10))
 
-        ctk.CTkButton(bot, text="+ 키 추가", width=100, height=32,
+        ctk.CTkButton(bot, text="키추가", width=100, height=32,
                       font=ctk.CTkFont(size=12, weight="bold"),
                       fg_color="#2a2518", hover_color="#4a3828",
                       text_color="#e8d090",
                       command=add_key).pack(side="left", padx=4)
-
-        def save_all():
-            wp_cfg["arrival_keys"] = local_keys
-            wp_cfg.pop("arrival_key", None)  # 구버전 키 제거
-            self._save_config()
-            dlg.destroy()
-
-        ctk.CTkButton(bot, text="저장", width=80, height=32,
+        ctk.CTkButton(bot, text="키삭제", width=100, height=32,
                       font=ctk.CTkFont(size=12, weight="bold"),
-                      fg_color=COLORS["accent_blue"],
-                      command=save_all).pack(side="right", padx=4)
+                      fg_color="#3d1a1a", hover_color="#602020",
+                      text_color="#e8a0a0",
+                      command=del_key).pack(side="left", padx=4)
         ctk.CTkButton(bot, text="취소", width=80, height=32,
                       font=ctk.CTkFont(size=12, weight="bold"),
                       fg_color=COLORS["bg_card"],

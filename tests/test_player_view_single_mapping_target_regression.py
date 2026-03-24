@@ -8,3 +8,6 @@ def test_single_mapping_test_uses_selected_target_idx():
     assert "target_idx = single_idx" in source
     assert "start_idx = 0" in source
     assert "start_idx = single_idx if single_mode else 0" not in source
+    assert "elif single_mode and getattr(self, '_is_mapping_test', False):" in source
+    assert "final_wp_idx = len(waypoints_raw) - 1" in source
+    assert "경유지 {idx+1}부터 맵핑테스트 시작 (ESC로 중지)" in source
