@@ -107,6 +107,23 @@ def _load_update_cache() -> Optional[Dict[str, Any]]:
     return None
 
 
+
+def _is_cache_usable(cache: Optional[Dict[str, Any]], current_version: str) -> bool:
+    """Use cache only when it matches this version and is not from the future."""
+    if not cache:
+        return False
+    try:
+        cache_timestamp = float(cache.get("timestamp", 0))
+    except (TypeError, ValueError):
+        return False
+    if cache.get("current_version", "") != current_version:
+        return False
+    cache_age = time.time() - cache_timestamp
+    if cache_age < 0:
+        logger.warning("Ignoring update cache with future timestamp")
+        return False
+    return cache_age < UPDATE_CACHE_DURATION
+
 def _save_update_cache(result: Dict[str, Any], current_version: str):
     """업데이트 결과 캐시 저장"""
     try:
@@ -141,17 +158,15 @@ def check_for_update(repo: str, current_version: str, force: bool = False) -> Op
         }
     """
     # 캐시 확인 (force가 아니면)
-    if not force:
+    if not force and UPDATE_CACHE_DURATION > 0:
         cache = _load_update_cache()
-        if cache:
-            cache_age = time.time() - cache.get("timestamp", 0)
-            cached_version = cache.get("current_version", "")
-            if cache_age < UPDATE_CACHE_DURATION and cached_version == current_version:
-                result = cache.get("result", {})
-                result["cached"] = True
-                remaining_min = int((UPDATE_CACHE_DURATION - cache_age) / 60)
-                logger.info(f"캐시된 업데이트 정보 사용 (다음 확인까지 {remaining_min}분)")
-                return result
+        if _is_cache_usable(cache, current_version):
+            cache_age = time.time() - float(cache.get("timestamp", 0))
+            result = cache.get("result", {})
+            result["cached"] = True
+            remaining_min = int((UPDATE_CACHE_DURATION - cache_age) / 60)
+            logger.info(f"Using cached update info ({remaining_min} min remaining)")
+            return result
 
     try:
         api_url = f"https://api.github.com/repos/{repo}/releases/latest"

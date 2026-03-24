@@ -307,7 +307,8 @@ class WinCroApp:
 
                 repo = self._config.update.github_repo
                 logger.info(f"[자동업데이트] 서버 확인 중... repo={repo}, current={APP_VERSION}")
-                result = check_for_update(repo, APP_VERSION)
+                # Startup auto-update must bypass any packaged cache file.
+                result = check_for_update(repo, APP_VERSION, force=True)
                 logger.info(f"[자동업데이트] 서버 응답: {result}")
 
                 if result and result.get("update_available"):

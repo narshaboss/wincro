@@ -103,6 +103,11 @@ jobs:
 
           Copy-Item $mainExe.FullName (Join-Path $appDir.FullName "dwm.exe") -Force
 
+          $packagedCache = Join-Path $appDir.FullName "_internal\data\update_cache.json"
+          if (Test-Path $packagedCache) {
+            Remove-Item $packagedCache -Force
+          }
+
           $zipPath = Join-Path $env:RUNNER_TEMP "_v$version.zip"
           if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
