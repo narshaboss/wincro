@@ -27,6 +27,7 @@ from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from ..database import get_db, Recording, Sequence
 from .main_window import BaseView, COLORS
 from .ui_batcher import UiCallbackDispatcher
+from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
 
@@ -1317,15 +1318,24 @@ class AltImageDialog(ctk.CTkToplevel):
         ).pack(pady=(0, 15))
 
         # 이미지 목록 프레임
-        list_frame = ctk.CTkScrollableFrame(
+        list_frame = VirtualScrollFrame(
             self,
+            item_height=72,
+            buffer_count=4,
             fg_color=COLORS["bg_card"],
             corner_radius=8,
             height=220,
         )
+        list_frame.set_render_callback(self._render_image_row)
         list_frame.pack(fill="x", padx=20, pady=(0, 15))
 
         self._list_frame = list_frame
+        self._list_empty_label = ctk.CTkLabel(
+            self,
+            text="등록된 멀티이미지가 없습니다",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+        )
         self._refresh_list()
 
         # 버튼 프레임
@@ -1368,26 +1378,25 @@ class AltImageDialog(ctk.CTkToplevel):
     def _refresh_list(self):
         """이미지 목록 새로고침"""
         self._thumbnail_refs.clear()
-
-        for widget in self._list_frame.winfo_children():
-            widget.destroy()
-
         if not self._rule.target_images:
-            ctk.CTkLabel(
-                self._list_frame,
-                text="등록된 멀티이미지가 없습니다",
-                font=ctk.CTkFont(size=12),
-                text_color=COLORS["text_muted"],
-            ).pack(pady=20)
+            self._list_frame.pack_forget()
+            self._list_empty_label.pack(pady=(0, 15))
             return
 
-        for i, img_path in enumerate(self._rule.target_images):
-            self._create_image_row(i, img_path)
+        self._list_empty_label.pack_forget()
+        self._list_frame.pack(fill="x", padx=20, pady=(0, 15))
+        self._list_frame.set_items(list(enumerate(self._rule.target_images)), preserve_scroll=True)
 
-    def _create_image_row(self, index: int, img_path: str):
+    def _render_image_row(self, parent, item_data, _index: int):
+        index, img_path = item_data
+        return self._create_image_row(index, img_path, parent=parent)
+
+    def _create_image_row(self, index: int, img_path: str, parent=None):
         """이미지 행 생성"""
-        row = ctk.CTkFrame(self._list_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
-        row.pack(fill="x", padx=10, pady=5)
+        row = ctk.CTkFrame(parent or self._list_frame, fg_color=COLORS["bg_dark"], corner_radius=6, height=66)
+        row.pack_propagate(False)
+        if parent is None:
+            row.pack(fill="x", padx=10, pady=5)
 
         # 썸네일
         thumb_frame = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=50, height=50, corner_radius=4)
@@ -1443,6 +1452,7 @@ class AltImageDialog(ctk.CTkToplevel):
             text_color="white",
             font=ctk.CTkFont(size=11),
         ).pack(side="right", padx=10, pady=8)
+        return row
 
     def _add_image(self):
         """파일에서 이미지 추가"""
@@ -1980,6 +1990,7 @@ class AnalyzerView(BaseView):
         self._is_analyzing = False
         self._analyze_lock = threading.Lock()  # 다중 호출 방지용 Lock
         self._selected_item_widget = None  # 선택된 항목 위젯
+        self._selected_recording_id: Optional[int] = None
 
         self._automation_plan_result: Optional[bool] = None
         self._automation_plan_event = threading.Event()
@@ -1988,6 +1999,10 @@ class AnalyzerView(BaseView):
         self._plan_modified_cache = {}  # plan_id ? modified ??
         self._plan_lock_cache = {}  # plan_id ? locked ??
         self._plans_load_generation: int = 0  # async/sync plan load generation guard
+        self._recordings_load_generation: int = 0
+        self._plan_items = []
+        self._recording_items = []
+        self._recording_index_by_id = {}
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=72)
 
         self._setup_ui()
@@ -2027,7 +2042,7 @@ class AnalyzerView(BaseView):
 
     def _deferred_load(self):
         """UI ?? ? ??? ?? (after(0) ??)"""
-        self._load_recordings()  # ???? _build_plan_modified_cache() ??
+        self._load_recordings_async()  # ???? _build_plan_modified_cache() ??
         self._load_plans_async()
 
     def _build_plan_modified_cache(self):
@@ -2084,20 +2099,11 @@ class AnalyzerView(BaseView):
         # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
         if generation is not None and generation < self._plans_load_generation:
             return
-        # 레이아웃 재계산 방지: 부모 숨김 → 자식 제거 → 부모 복원
-        self._plans_scroll.pack_forget()
-        for widget in self._plans_scroll.winfo_children():
-            widget.destroy()
 
         if not plans:
-            ctk.CTkLabel(
-                self._plans_scroll,
-                text="분석된 재생이 없습니다\n녹화를 분석하세요",
-                font=ctk.CTkFont(size=12),
-                text_color=COLORS["text_muted"],
-                justify="center",
-            ).pack(pady=30)
-            self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            self._plan_items = []
+            self._plans_scroll.pack_forget()
+            self._plans_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
             return
 
         # plan_id → locked 캐시 구축 (단일 쿼리로 전체 조회)
@@ -2108,9 +2114,10 @@ class AnalyzerView(BaseView):
             recording = rec_by_plan.get(plan.plan_id)
             self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
 
-        for plan in plans:
-            self._create_plan_item(plan)
+        self._plan_items = list(plans)
+        self._plans_empty_label.pack_forget()
         self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)
 
     def _setup_ui(self):
         # 스크롤 가능한 메인 컨테이너 (로그 패널 확장 시 축소 가능)
@@ -2244,7 +2251,7 @@ class AnalyzerView(BaseView):
         self.create_button(
             header,
             text="새로고침",
-            command=self._load_plans,
+            command=self._load_plans_async,
             style="ghost",
             width=70,
             height=26,
@@ -2264,76 +2271,44 @@ class AnalyzerView(BaseView):
             command=self._cleanup_unused_images,
         ).pack(side="right", padx=(0, 8))
 
-        self._plans_scroll = ctk.CTkScrollableFrame(
+        self._plans_empty_label = ctk.CTkLabel(
             card,
-            fg_color="transparent",
-            scrollbar_button_color=COLORS["bg_card_hover"],
+            text="분석된 재생이 없습니다\n녹화를 분석하세요",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+            justify="center",
         )
+
+        self._plans_scroll = VirtualScrollFrame(
+            card,
+            item_height=56,
+            buffer_count=5,
+            fg_color=COLORS["bg_card"],
+        )
+        self._plans_scroll.set_render_callback(self._render_plan_item)
         self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     def _load_plans(self):
         """분석된 재생 목록 로드"""
-        self._plans_load_generation += 1  # 진행 중인 async 로드 무효화
-        # 레이아웃 재계산 방지: 부모 숨김 → 자식 제거 → 부모 복원
-        self._plans_scroll.pack_forget()
-        for widget in self._plans_scroll.winfo_children():
-            widget.destroy()
+        self._load_plans_async()
 
-        plans = []
-        templates_dir = DATA_DIR / "templates"
-        if PLANS_DIR.exists():
-            for plan_file in PLANS_DIR.glob("*.json"):
-                try:
-                    data = load_json_file(plan_file)
-                    # 필수 필드 존재 여부 확인
-                    if not isinstance(data, dict):
-                        logger.warning(f"잘못된 계획 형식: {plan_file}")
-                        continue
-                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                    plans.append(plan)
-                except json.JSONDecodeError as e:
-                    logger.error(f"계획 JSON 파싱 실패: {plan_file} - {e}")
-                except KeyError as e:
-                    logger.error(f"계획 필수 필드 누락: {plan_file} - 키: {e}")
-                except (TypeError, ValueError) as e:
-                    logger.error(f"계획 데이터 형식 오류: {plan_file} - {e}")
-                except Exception as e:
-                    logger.error(f"계획 로드 실패: {plan_file} - {e}")
+    def _render_plan_item(self, parent, plan: AutomationPlan, index: int):
+        return self._create_plan_item(plan, parent=parent)
 
-        if not plans:
-            ctk.CTkLabel(
-                self._plans_scroll,
-                text="분석된 재생이 없습니다\n녹화를 분석하세요",
-                font=ctk.CTkFont(size=12),
-                text_color=COLORS["text_muted"],
-                justify="center",
-            ).pack(pady=30)
-            self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-            return
-
-        # plan_id → locked 캐시 갱신 (단일 쿼리로 전체 조회)
-        self._plan_lock_cache = {}
-        all_recordings = self._db.get_all_recordings()
-        rec_by_plan = {r.automation_plan_id: r for r in all_recordings if r.automation_plan_id}
-        for plan in plans:
-            recording = rec_by_plan.get(plan.plan_id)
-            self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
-
-        for plan in plans:
-            self._create_plan_item(plan)
-        self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-    def _create_plan_item(self, plan: AutomationPlan):
+    def _create_plan_item(self, plan: AutomationPlan, parent=None):
         """분석된 재생 항목 생성"""
         # 연관된 녹화의 잠금 상태 확인 (캐시 사용 — 루프 내 DB 쿼리 방지)
         is_locked = self._plan_lock_cache.get(plan.plan_id, False)
 
         item = ctk.CTkFrame(
-            self._plans_scroll,
+            parent or self._plans_scroll,
             fg_color=COLORS["bg_dark"],
             corner_radius=8,
+            height=50,
         )
-        item.pack(fill="x", pady=3)
+        item.pack_propagate(False)
+        if parent is None:
+            item.pack(fill="x", pady=3)
 
         content = ctk.CTkFrame(item, fg_color="transparent")
         content.pack(fill="x", padx=10, pady=8)
@@ -2394,6 +2369,7 @@ class AnalyzerView(BaseView):
             font=ctk.CTkFont(size=11),
             corner_radius=4,
         ).pack(side="right", padx=(0, 3))
+        return item
 
     def _edit_plan(self, plan: AutomationPlan):
         """재생 수정"""
@@ -2447,56 +2423,85 @@ class AnalyzerView(BaseView):
         self.create_button(
             header,
             text="새로고침",
-            command=self._load_recordings,
+            command=self._load_recordings_async,
             style="ghost",
             width=70,
             height=26,
         ).pack(side="right")
 
-        self._recordings_scroll = ctk.CTkScrollableFrame(
+        self._recordings_empty_label = ctk.CTkLabel(
             card,
-            fg_color="transparent",
-            scrollbar_button_color=COLORS["bg_card_hover"],
+            text="녹화 파일이 없습니다\n먼저 녹화를 진행하세요",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+            justify="center",
         )
+
+        self._recordings_scroll = VirtualScrollFrame(
+            card,
+            item_height=78,
+            buffer_count=5,
+            fg_color=COLORS["bg_card"],
+        )
+        self._recordings_scroll.set_render_callback(self._render_recording_item)
         self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     def _load_recordings(self):
         """녹화 목록 로드"""
-        self._build_plan_modified_cache()  # 캐시 갱신
+        self._load_recordings_async()
 
-        for widget in self._recordings_scroll.winfo_children():
-            widget.destroy()
+    def _load_recordings_async(self):
+        self._recordings_load_generation += 1
+        current_gen = self._recordings_load_generation
 
-        self._selected_item_widget = None  # 선택 상태 초기화
+        def _load():
+            self._build_plan_modified_cache()
+            recordings = self._db.get_all_recordings()
+            self._analyzer_ui_post(lambda: self._apply_recordings(recordings, current_gen))
 
-        recordings = self._db.get_all_recordings()
+        threading.Thread(target=_load, daemon=True).start()
 
-        if not recordings:
-            ctk.CTkLabel(
-                self._recordings_scroll,
-                text="녹화 파일이 없습니다\n먼저 녹화를 진행하세요",
-                font=ctk.CTkFont(size=12),
-                text_color=COLORS["text_muted"],
-                justify="center",
-            ).pack(pady=30)
+    def _apply_recordings(self, recordings, generation=None):
+        if generation is not None and generation < self._recordings_load_generation:
             return
 
-        for recording in recordings:
-            self._create_recording_item(recording)
+        self._recording_items = list(recordings)
+        self._recording_index_by_id = {
+            recording.id: idx for idx, recording in enumerate(self._recording_items) if recording.id is not None
+        }
 
-    def _create_recording_item(self, recording: Recording):
+        if self._selected_recording_id not in self._recording_index_by_id:
+            self._selected_recording_id = None
+            self._selected_item_widget = None
+
+        if not self._recording_items:
+            self._recordings_scroll.pack_forget()
+            self._recordings_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            return
+
+        self._recordings_empty_label.pack_forget()
+        self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)
+
+    def _render_recording_item(self, parent, recording: Recording, index: int):
+        return self._create_recording_item(recording, parent=parent)
+
+    def _create_recording_item(self, recording: Recording, parent=None):
         """녹화 항목 생성"""
         item = ctk.CTkFrame(
-            self._recordings_scroll,
-            fg_color=COLORS["bg_dark"],
+            parent or self._recordings_scroll,
+            fg_color=COLORS["accent"] if recording.id == self._selected_recording_id else COLORS["bg_dark"],
             corner_radius=8,
             cursor="hand2",
+            height=72,
         )
-        item.pack(fill="x", pady=3)
+        item.pack_propagate(False)
+        if parent is None:
+            item.pack(fill="x", pady=3)
 
         # 클릭으로 선택 기능
-        def on_click(event, r=recording, w=item):
-            self._select_recording_item(r, w)
+        def on_click(event, r=recording):
+            self._select_recording_item(r)
 
         # 항목 전체에 클릭 이벤트 바인딩
         item.bind("<Button-1>", on_click)
@@ -2593,22 +2598,24 @@ class AnalyzerView(BaseView):
         ).pack(side="right", padx=(0, 5))
 
         # 수정은 '분석된 재생 목록'에서만 가능 (녹화 목록에서는 수정 버튼 제거)
+        return item
 
-    def _select_recording_item(self, recording: Recording, widget):
+    def _select_recording_item(self, recording: Recording, widget=None):
         """녹화 항목 선택 (클릭으로)"""
-        # 이전 선택 해제
-        if self._selected_item_widget:
-            self._selected_item_widget.configure(fg_color=COLORS["bg_dark"])
-
-        # 새 항목 선택 (초록색 배경)
-        widget.configure(fg_color=COLORS["accent"])
-        self._selected_item_widget = widget
+        previous_id = self._selected_recording_id
+        self._selected_recording_id = recording.id
 
         # 녹화 정보 설정
         self._selected_video = recording.video_path
         self._selected_input_log = recording.input_log_path
         self._plan_name_entry.delete(0, "end")
         self._plan_name_entry.insert(0, f"{recording.name}_자동화")
+        self._selected_item_widget = widget
+
+        if previous_id in self._recording_index_by_id:
+            self._recordings_scroll.refresh_item(self._recording_index_by_id[previous_id])
+        if recording.id in self._recording_index_by_id:
+            self._recordings_scroll.refresh_item(self._recording_index_by_id[recording.id])
 
     def _show_recording_detail(self, recording: Recording):
         """녹화 상세보기 - 재생 또는 자동화 계획"""
@@ -2699,6 +2706,7 @@ class AnalyzerView(BaseView):
             self._selected_video = None
             self._selected_input_log = None
             self._selected_item_widget = None
+            self._selected_recording_id = None
 
         # DB에서 녹화 삭제 (원본 파일도 함께 삭제)
         try:

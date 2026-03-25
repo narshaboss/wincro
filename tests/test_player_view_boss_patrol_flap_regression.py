@@ -24,6 +24,24 @@ def test_boss_patrol_records_and_blocks_abab_oscillation():
     assert "순찰왕복 차단" in text
 
 
+def test_boss_chase_flap_helpers_exist():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "_boss_chase_recent_samples = []" in text
+    assert "def _clear_boss_chase_recent_samples():" in text
+    assert "def _record_boss_chase_sample(_pos, _goal):" in text
+    assert "def _detect_boss_chase_flap():" in text
+
+
+def test_boss_chase_records_and_blocks_abab_oscillation():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "_record_boss_chase_sample(current_pos_tuple, _move_target)" in text
+    assert "_chase_flap = _detect_boss_chase_flap()" in text
+    assert "_register_dir_block(current_x, current_y, _osc_dir, iteration, ttl=12)" in text
+    assert "추적왕복 차단" in text
+
+
 def test_boss_patrol_adjacent_goal_repeated_fail_skips_target():
     text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
 

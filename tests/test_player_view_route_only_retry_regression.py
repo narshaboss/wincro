@@ -64,3 +64,13 @@ def test_active_goal_detour_is_cleared_when_anchor_is_no_longer_reachable():
     assert "_active_goal_detour," in text
     assert "_detour_probe_avoid = {target_pos}" in text
     assert "_clear_temporary_goal_detour(target_pos)" in text
+
+
+def test_route_only_clears_stale_blocked_edges_when_edge_relaxed_probe_succeeds():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "def _clear_runtime_blocked_edges_at(_cx, _cy):" in text
+    assert "respect_blocked_edges=False," in text
+    assert "_edge_relaxed_probe = pathfinder.find_path(" in text
+    assert "_cleared_edge_count = _clear_runtime_blocked_edges_at(cx, cy)" in text
+    assert "🧭 경로복구: (" in text

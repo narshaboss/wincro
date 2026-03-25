@@ -3452,6 +3452,7 @@ class GameModeDialog(ctk.CTkToplevel):
         """UI 구성"""
         main = ctk.CTkScrollableFrame(self, fg_color="transparent")
         main.pack(fill="both", expand=True, padx=15, pady=10)
+        self._main_scroll = main
 
         # === 좌표 기반 모드 설정 프레임 ===
         self._coord_mode_frame = ctk.CTkFrame(main, fg_color="transparent")
@@ -4436,6 +4437,7 @@ class GameModeDialog(ctk.CTkToplevel):
         _boss_patrol_route_goal = None # 순찰 캐시 경로의 목표 좌표
         _boss_patrol_route_index = {}  # 순찰 캐시 경로 역매핑
         _boss_patrol_recent_samples = []  # [((x,y), (tx,ty)), ...] 순찰 왕복 진단용
+        _boss_chase_recent_samples = []   # [((x,y), (tx,ty)), ...] 추적 왕복 진단용
         _boss_transition_cooldown_until = 0.0  # 보스 처치/키입력 직후 재순찰 차단
         _boss_zero_coord_ocr_count = 0    # sentinel 보스굴에서 (0,0) OCR 반복 횟수
         _step_watchdog_kind = None
@@ -4605,6 +4607,10 @@ class GameModeDialog(ctk.CTkToplevel):
             nonlocal _boss_patrol_recent_samples
             _boss_patrol_recent_samples = []
 
+        def _clear_boss_chase_recent_samples():
+            nonlocal _boss_chase_recent_samples
+            _boss_chase_recent_samples = []
+
         def _record_boss_patrol_sample(_pos, _goal):
             nonlocal _boss_patrol_recent_samples
             if _pos is None or _goal is None:
@@ -4623,6 +4629,37 @@ class GameModeDialog(ctk.CTkToplevel):
             if len(_boss_patrol_recent_samples) < 4:
                 return None
             (_p1, _g1), (_p2, _g2), (_p3, _g3), (_p4, _g4) = _boss_patrol_recent_samples[-4:]
+            if not (_p1 == _p3 and _p2 == _p4 and _p1 != _p2):
+                return None
+            _goal_ref = _g4
+            for _gx, _gy in (_g1, _g2, _g3, _g4):
+                if abs(_gx - _goal_ref[0]) + abs(_gy - _goal_ref[1]) > 2:
+                    return None
+            _osc_dir = _direction_between(_p4, _p3)
+            if _osc_dir is None:
+                return None
+            if _p3 == _goal_ref:
+                return None
+            return _osc_dir, _p3, _goal_ref
+
+        def _record_boss_chase_sample(_pos, _goal):
+            nonlocal _boss_chase_recent_samples
+            if _pos is None or _goal is None:
+                return
+            _sample_pos = (int(_pos[0]), int(_pos[1]))
+            _sample_goal = (int(_goal[0]), int(_goal[1]))
+            if _boss_chase_recent_samples:
+                _last_goal = _boss_chase_recent_samples[-1][1]
+                if abs(_last_goal[0] - _sample_goal[0]) + abs(_last_goal[1] - _sample_goal[1]) > 3:
+                    _boss_chase_recent_samples = []
+            _boss_chase_recent_samples.append((_sample_pos, _sample_goal))
+            if len(_boss_chase_recent_samples) > 8:
+                _boss_chase_recent_samples.pop(0)
+
+        def _detect_boss_chase_flap():
+            if len(_boss_chase_recent_samples) < 4:
+                return None
+            (_p1, _g1), (_p2, _g2), (_p3, _g3), (_p4, _g4) = _boss_chase_recent_samples[-4:]
             if not (_p1 == _p3 and _p2 == _p4 and _p1 != _p2):
                 return None
             _goal_ref = _g4
@@ -4959,6 +4996,13 @@ class GameModeDialog(ctk.CTkToplevel):
             _dx, _dy = DIRECTIONS_4.get(_dir, (0, 0))
             _blocked_next = (_cx + _dx, _cy + _dy)
             return _is_route_chokepoint((_cx, _cy), _goal_pos, _blocked_next, allow_unknown=True)
+
+        def _clear_runtime_blocked_edges_at(_cx, _cy):
+            _cleared = 0
+            for _dir in DIRECTIONS_4.keys():
+                if self._game_map.clear_blocked_edge(_cx, _cy, _dir):
+                    _cleared += 1
+            return _cleared
 
         def press_key(direction):
             """방향키 누르기"""
@@ -5325,6 +5369,39 @@ class GameModeDialog(ctk.CTkToplevel):
                         if _ui_update_ok:
                             self.after(0, lambda cx2=cx, cy2=cy:
                                 self._append_log(f"🧭 경로회피 완화: ({cx2},{cy2}) dir-avoid 해제"))
+
+                if not (_route_result.found and _route_result.directions):
+                    _edge_relaxed_probe = pathfinder.find_path(
+                        current_pos, target_pos,
+                        allow_unknown=True,
+                        stop_event=self._stop_event,
+                        max_iterations=max(_manhattan * 30, 20000),
+                        unknown_cost=3,
+                        allow_soft_blocked=True,
+                        respect_blocked_edges=False,
+                        avoid_set=_route_avoid,
+                    )
+                    if self._stop_event.is_set():
+                        return None
+                    if _edge_relaxed_probe.found and _edge_relaxed_probe.directions:
+                        _cleared_edge_count = _clear_runtime_blocked_edges_at(cx, cy)
+                        if _cleared_edge_count:
+                            pathfinder.invalidate_path()
+                            _route_result = _run_route_only_path(_route_avoid)
+                            if self._stop_event.is_set():
+                                return None
+                            if (not (_route_result.found and _route_result.directions) and
+                                _route_avoid and _dir_avoid and _allow_route_dir_relax):
+                                _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
+                                _relaxed_result = _run_route_only_path(_relaxed_avoid)
+                                if self._stop_event.is_set():
+                                    return None
+                                if _relaxed_result.found and _relaxed_result.directions:
+                                    _route_result = _relaxed_result
+                                    _route_avoid = _relaxed_avoid
+                            if _route_result.found and _route_result.directions and _ui_update_ok:
+                                self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
+                                    self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))
 
                 if _route_result.found and _route_result.directions:
                     current_path = _route_result.path
@@ -7276,6 +7353,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         boss_approach_steps = 0
                         boss_appr_miss = 0
                         _boss_chasing = False
+                        _clear_boss_chase_recent_samples()
                         _boss_chase_miss = 0
                         patrol_skip_count = 0
                         _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
@@ -7452,6 +7530,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         boss_approach_steps = 0
                         boss_appr_miss = 0
                         _boss_chasing = False
+                        _clear_boss_chase_recent_samples()
                         _boss_chase_miss = 0
                         patrol_skip_count = 0
                         _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
@@ -9038,6 +9117,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 last_dir = None
                                                 recent_positions.clear()
                                                 _boss_chasing = False
+                                                _clear_boss_chase_recent_samples()
                                                 _boss_chase_miss = 0
                                                 boss_approach_steps = 0
                                                 boss_appr_miss = 0
@@ -9093,6 +9173,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             last_dir = None
                                             recent_positions.clear()
                                             _boss_chasing = False
+                                            _clear_boss_chase_recent_samples()
                                             _boss_chase_miss = 0
                                             boss_approach_steps = 0
                                             boss_appr_miss = 0
@@ -9150,6 +9231,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         last_dir = None
                                         recent_positions.clear()
                                         _boss_chasing = False
+                                        _clear_boss_chase_recent_samples()
                                         _boss_chase_miss = 0
                                         boss_approach_steps = 0
                                         boss_appr_miss = 0
@@ -9422,6 +9504,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             boss_approach_steps = 0
                             boss_appr_miss = 0
                             _boss_chasing = False
+                            _clear_boss_chase_recent_samples()
                             _boss_chase_miss = 0
                             patrol_skip_count = 0
                             _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
@@ -9476,6 +9559,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             patrol_skip_count = 0
                             _clear_boss_patrol_route_cache()
                             _clear_boss_patrol_recent_samples()
+                            _clear_boss_chase_recent_samples()
                             prev_x, prev_y = current_x, current_y
                             self._stop_event.wait(0.05)
                             continue
@@ -9554,6 +9638,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 _boss_chase_miss = 0
                                                 _boss_chasing = False
                                                 _clear_boss_patrol_recent_samples()
+                                                _clear_boss_chase_recent_samples()
                                                 boss_mode = "approaching"
                                                 boss_appr_miss = 0
                                                 stuck_count = 0
@@ -9593,6 +9678,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 _boss_chase_miss = 0
                                                 _boss_chasing = True
                                                 _clear_boss_patrol_recent_samples()
+                                                _clear_boss_chase_recent_samples()
                                                 stuck_count = 0
                                                 total_stuck_count = 0
                                                 last_dir = None
@@ -9719,6 +9805,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             boss_approach_steps = 0
                             boss_appr_miss = 0
                             _boss_chasing = False
+                            _clear_boss_chase_recent_samples()
                             _boss_chase_miss = 0
                             patrol_skip_count = 0
                             _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
@@ -9777,6 +9864,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 boss_patrol = None
                                 _clear_boss_patrol_route_cache()
                                 _clear_boss_patrol_recent_samples()
+                                _clear_boss_chase_recent_samples()
                                 _boss_chasing = False
                                 _boss_chase_miss = 0
                                 stuck_count = 0
@@ -9819,6 +9907,21 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 막힌 간선을 재시도하지 않고 우회할 수 있다.
                         _remaining = 0
                         if _boss_chasing:
+                            _record_boss_chase_sample(current_pos_tuple, _move_target)
+                            _chase_flap = _detect_boss_chase_flap()
+                            if _chase_flap is not None:
+                                _osc_dir, _osc_to, _osc_goal = _chase_flap
+                                _register_dir_block(current_x, current_y, _osc_dir, iteration, ttl=12)
+                                current_path = []
+                                path_index = 0
+                                path_pos_index = {}
+                                pathfinder.invalidate_path()
+                                if _ui_update_ok and iteration % 5 == 0:
+                                    self._schedule_boss_ui_log(
+                                        f"🔁 추적왕복 차단: ({current_x},{current_y}) {_osc_dir}→({_osc_to[0]},{_osc_to[1]}) target=({_osc_goal[0]},{_osc_goal[1]})",
+                                        dedupe_key="boss-chase-flap",
+                                        dedupe_window=0.35,
+                                    )
                             # 보스 추적도 순찰처럼 최근 실패 방향/보호 포탈을 회피해
                             # 같은 간선을 장기 재시도하는 상황을 줄인다.
                             _cleanup_blocked_dirs(iteration)
@@ -9980,6 +10083,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 if _at_target:
                                                     _boss_chase_miss = 0
                                                     _boss_chasing = False
+                                                    _clear_boss_chase_recent_samples()
                                                     boss_mode = "approaching"
                                                     boss_appr_miss = 0
                                                     stuck_count = 0
@@ -10081,6 +10185,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _boss_chase_miss += 1
                                     if _boss_chase_miss >= 15:
                                         _boss_chasing = False
+                                        _clear_boss_chase_recent_samples()
                                         _boss_chase_miss = 0
                                         _clear_boss_patrol_route_cache()
                                         _move_dist = abs(current_x - _move_target[0]) + abs(current_y - _move_target[1])
@@ -10163,6 +10268,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             boss_approach_steps = 0
                                             boss_appr_miss = 0
                                             _boss_chasing = False
+                                            _clear_boss_chase_recent_samples()
                                             _boss_chase_miss = 0
                                             patrol_skip_count = 0
                                             _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
@@ -10234,6 +10340,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                     boss_patrol = None
                                     _clear_boss_patrol_route_cache()
                                     _boss_chasing = False
+                                    _clear_boss_chase_recent_samples()
                                     _boss_chase_miss = 0
                                     last_dir = None
                                     stuck_count = 0
@@ -12725,7 +12832,8 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 카드 프레임 제거
         if 0 <= index < len(cards):
-            cards[index]['card'].destroy()
+            if cards[index] is not None:
+                cards[index]['card'].destroy()
             cards.pop(index)
 
         # 나머지 카드 번호 + command 갱신
@@ -12737,6 +12845,8 @@ class GameModeDialog(ctk.CTkToplevel):
         # 최종 인덱스 보정
         final_idx = self._get_final_idx()
         for i, c in enumerate(cards):
+            if c is None:
+                continue
             is_f = (i == final_idx)
             c['card'].configure(
                 border_width=2 if is_f else 1,
@@ -12810,7 +12920,8 @@ class GameModeDialog(ctk.CTkToplevel):
             # 복사 성공 피드백: 버튼 색상 변경
             cards = getattr(self, '_wp_cards', [])
             if 0 <= index < len(cards):
-                btn = cards[index].get('copy_btn')
+                card_data = cards[index]
+                btn = card_data.get('copy_btn') if card_data else None
                 if btn:
                     btn.configure(text="복사됨!", fg_color="#a3be8c", text_color="#1a1a1a")
                     self.after(1500, lambda b=btn: b.configure(
@@ -12952,21 +13063,21 @@ class GameModeDialog(ctk.CTkToplevel):
     def _rename_waypoint(self, index: int):
         """경유지 이름 변경 (인라인 입력)"""
         waypoints = getattr(self._config, 'waypoints', []) or []
-        cards = getattr(self, '_wp_cards', [])
-        if not (0 <= index < len(waypoints)) or not (0 <= index < len(cards)):
+        card_data = self._get_card_data(index)
+        if not (0 <= index < len(waypoints)) or card_data is None:
             return
 
         wp = waypoints[index]
         old_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{index+1}"
-        name_label = cards[index]['name_label']
+        name_label = card_data['name_label']
 
         # 라벨을 엔트리로 교체
-        entry = ctk.CTkEntry(cards[index]['row1'], width=120, height=24,
+        entry = ctk.CTkEntry(card_data['row1'], width=120, height=24,
                              font=ctk.CTkFont(size=13, weight="bold"))
         entry.insert(0, old_name)
         entry.select_range(0, "end")
         name_label.pack_forget()
-        entry.pack(side="left", padx=(4, 0), after=cards[index]['num_label'])
+        entry.pack(side="left", padx=(4, 0), after=card_data['num_label'])
         entry.focus_set()
 
         def _confirm(event=None):
@@ -12999,12 +13110,12 @@ class GameModeDialog(ctk.CTkToplevel):
             # UI 복원
             entry.destroy()
             name_label.configure(text=new_name)
-            name_label.pack(side="left", padx=(4, 0), after=cards[index]['num_label'])
+            name_label.pack(side="left", padx=(4, 0), after=card_data['num_label'])
             logger.info(f"[좌표모드] 이름 변경: {old_name} → {new_name}")
 
         def _cancel(event=None):
             entry.destroy()
-            name_label.pack(side="left", padx=(4, 0), after=cards[index]['num_label'])
+            name_label.pack(side="left", padx=(4, 0), after=card_data['num_label'])
 
         entry.bind("<Return>", _confirm)
         entry.bind("<Escape>", _cancel)
@@ -13043,9 +13154,11 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # pack 순서 재정렬
         for c in cards:
-            c['card'].pack_forget()
+            if c is not None:
+                c['card'].pack_forget()
         for c in cards:
-            c['card'].pack(fill="x", pady=(0, 3))
+            if c is not None:
+                c['card'].pack(fill="x", pady=(0, 3))
 
         # 번호 + command 갱신
         start = min(index, new_idx)
@@ -13055,6 +13168,8 @@ class GameModeDialog(ctk.CTkToplevel):
         # 최종 인덱스 표시 갱신
         final_idx = self._get_final_idx()
         for i, c in enumerate(cards):
+            if c is None:
+                continue
             is_f = (i == final_idx)
             c['card'].configure(
                 border_width=2 if is_f else 1,
@@ -13073,7 +13188,8 @@ class GameModeDialog(ctk.CTkToplevel):
         self._config.waypoints = []
         cards = getattr(self, '_wp_cards', [])
         for c in cards:
-            c['card'].destroy()
+            if c is not None:
+                c['card'].destroy()
         self._wp_cards = []
 
         self._wp_empty_label = ctk.CTkFrame(self._waypoint_list_frame, fg_color=COLORS["bg_card_hover"], corner_radius=8)
@@ -13299,6 +13415,139 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception:
             return -1
 
+    def _ensure_waypoint_card_slots(self, count: int):
+        cards = getattr(self, '_wp_cards', None)
+        if cards is None:
+            cards = []
+            self._wp_cards = cards
+        if len(cards) < count:
+            cards.extend([None] * (count - len(cards)))
+        return cards
+
+    def _get_card_data(self, idx: int):
+        cards = getattr(self, '_wp_cards', []) or []
+        if 0 <= idx < len(cards):
+            return cards[idx]
+        return None
+
+    def _has_group_parent(self, idx: int) -> bool:
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not (0 <= idx < len(waypoints)):
+            return False
+        wp = waypoints[idx]
+        cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
+        return bool(cfg and cfg.get('group_parent'))
+
+    def _start_waypoint_badge_refresh(self):
+        if getattr(self, "_wp_badge_refresh_running", False):
+            self._wp_badge_refresh_pending = True
+            return
+        self._wp_badge_refresh_running = True
+        try:
+            threading.Thread(target=self._refresh_badges_async, daemon=True).start()
+        except Exception:
+            self._wp_badge_refresh_running = False
+
+    def _ensure_card_built(self, idx: int):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not (0 <= idx < len(waypoints)):
+            return None
+        cards = self._ensure_waypoint_card_slots(len(waypoints))
+        card_data = cards[idx]
+        if card_data is not None:
+            return card_data
+        return self._build_single_card(idx, waypoints[idx], pack_card=False)
+
+    def _card_row5_has_content(self, card_data) -> bool:
+        row5 = card_data.get('row5')
+        if row5 is None:
+            return False
+        try:
+            if any(child.winfo_manager() for child in row5.winfo_children()):
+                return True
+        except Exception:
+            pass
+        for key in ('char_img_status', 'boss_img_status', 'arr_key_status'):
+            widget = card_data.get(key)
+            try:
+                if widget is not None and str(widget.cget('text')).strip():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _reflow_waypoint_card_sections(self, idx: int):
+        card_data = self._get_card_data(idx)
+        if card_data is None:
+            return
+        row1 = card_data.get('row1')
+        route_frame = card_data.get('route_frame')
+        row3 = card_data.get('row3')
+        row4 = card_data.get('row4')
+        row5 = card_data.get('row5')
+        sections = [row1, route_frame, row3, row4, row5]
+        for section in sections:
+            if section is None:
+                continue
+            try:
+                if section.winfo_manager():
+                    section.pack_forget()
+            except Exception:
+                continue
+
+        if row1 is not None:
+            row1.pack(fill="x", padx=8, pady=(6, 0))
+
+        grouped_child = self._has_group_parent(idx)
+        if grouped_child:
+            if row3 is not None:
+                row3.pack(fill="x", padx=8, pady=(0, 2))
+            if row4 is not None:
+                row4.pack(fill="x", padx=8, pady=(0, 1))
+            if row5 is not None and self._card_row5_has_content(card_data):
+                row5.pack(fill="x", padx=8, pady=(0, 2))
+            if route_frame is not None:
+                route_frame.pack(fill="x", padx=8, pady=(2, 2))
+        else:
+            if route_frame is not None:
+                route_frame.pack(fill="x", padx=8, pady=(2, 2))
+            if row3 is not None:
+                row3.pack(fill="x", padx=8, pady=(0, 2))
+            if row4 is not None:
+                row4.pack(fill="x", padx=8, pady=(0, 1))
+            if row5 is not None and self._card_row5_has_content(card_data):
+                row5.pack(fill="x", padx=8, pady=(0, 2))
+
+    def _get_top_level_waypoint_indices(self):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        return [i for i in range(len(waypoints)) if not self._has_group_parent(i)]
+
+    def _schedule_waypoint_parent_build(self):
+        build_generation = getattr(self, "_wp_build_generation", 0) + 1
+        self._wp_build_generation = build_generation
+        self._wp_parent_build_queue = self._get_top_level_waypoint_indices()
+        self._consume_waypoint_parent_build(build_generation, 0)
+
+    def _consume_waypoint_parent_build(self, generation: int, start_idx: int):
+        if generation != getattr(self, "_wp_build_generation", 0):
+            return
+
+        queue = getattr(self, "_wp_parent_build_queue", []) or []
+        if start_idx >= len(queue):
+            self._apply_grouping()
+            self._update_all_map_lock_btn()
+            self._start_waypoint_badge_refresh()
+            return
+
+        batch_size = 4
+        end_idx = min(start_idx + batch_size, len(queue))
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        for idx in queue[start_idx:end_idx]:
+            if 0 <= idx < len(waypoints):
+                self._build_single_card(idx, waypoints[idx])
+
+        self.after_idle(lambda g=generation, s=end_idx: self._consume_waypoint_parent_build(g, s))
+
     def _refresh_waypoint_list(self):
         """경유지 리스트 초기 빌드 (최초 1회만 호출)"""
         for widget in self._waypoint_list_frame.winfo_children():
@@ -13314,11 +13563,9 @@ class GameModeDialog(ctk.CTkToplevel):
             self._update_all_map_lock_btn()
             return
 
-        for i, wp in enumerate(waypoints):
-            self._build_single_card(i, wp)
-        # 저장된 그룹 상태 적용 (자식 카드 숨김)
-        self._apply_grouping()
+        self._wp_cards = [None] * len(waypoints)
         self._update_all_map_lock_btn()
+        self._schedule_waypoint_parent_build()
 
     def _get_final_idx(self) -> int:
         """최종 목표 인덱스 반환"""
@@ -13328,23 +13575,22 @@ class GameModeDialog(ctk.CTkToplevel):
             final_idx = len(waypoints) - 1
         return final_idx
 
-    def _build_single_card(self, i: int, wp):
+    def _build_single_card(self, i: int, wp, pack_card: bool = True):
         """경유지 카드 1개 빌드, 위젯 참조를 self._wp_cards에 저장"""
         wp_name = wp[2] if len(wp) >= 3 and wp[2] else f"경유지{i+1}"
         wp_x = wp[0] if len(wp) >= 1 else 0
         wp_y = wp[1] if len(wp) >= 2 else 0
         _wp_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
-        tiles = self._get_segment_map_tiles(i)
-        has_map = tiles >= 0
-        map_tag = f"{tiles}칸" if has_map else "미탐색"
-        badge_color = COLORS["accent"] if has_map else COLORS["bg_card"]
-        badge_text_color = "#ffffff" if has_map else COLORS["text_muted"]
+        map_tag = "확인중"
+        badge_color = COLORS["bg_card"]
+        badge_text_color = COLORS["text_muted"]
         has_coord = not (wp_x == 0 and wp_y == 0)
 
         card = ctk.CTkFrame(self._waypoint_list_frame,
                             fg_color=COLORS["bg_card_hover"], corner_radius=8,
                             border_width=1, border_color=COLORS["border"])
-        card.pack(fill="x", pady=(0, 3))
+        if pack_card:
+            card.pack(fill="x", pady=(0, 3))
 
         # 1행
         row1 = ctk.CTkFrame(card, fg_color="transparent")
@@ -13612,7 +13858,7 @@ class GameModeDialog(ctk.CTkToplevel):
             del_arr_key_btn.pack(side="left", padx=(0, 0))
 
         # 위젯 참조 저장 (모든 버튼 포함)
-        self._wp_cards.append({
+        card_data = {
             'card': card,
             'row1': row1,
             'num_label': num_label,
@@ -13626,6 +13872,8 @@ class GameModeDialog(ctk.CTkToplevel):
             'ungroup_btn': ungroup_btn,
             'group_expanded': False,
             'route_frame': route_frame,
+            'row3': row3,
+            'row4': row4,
             'single_mapping_btn': single_mapping_btn,
             'del_btn': del_btn,
             'move_up_btn': move_up_btn,
@@ -13651,7 +13899,11 @@ class GameModeDialog(ctk.CTkToplevel):
             'add_route_start_btn': add_route_start_btn,
             'add_route_end_btn': add_route_end_btn,
             'add_route_wall_btn': add_route_wall_btn,
-        })
+        }
+        cards = self._ensure_waypoint_card_slots(max(len(getattr(self._config, 'waypoints', []) or []), i + 1))
+        cards[i] = card_data
+        self._reflow_waypoint_card_sections(i)
+        return card_data
 
     # ── 드래그&드롭 그룹핑 ──
 
@@ -13676,19 +13928,19 @@ class GameModeDialog(ctk.CTkToplevel):
             self._drag_active = True
             # 드래그 중인 카드 시각적 표시
             cards = getattr(self, '_wp_cards', [])
-            if 0 <= self._drag_idx < len(cards):
+            if 0 <= self._drag_idx < len(cards) and cards[self._drag_idx] is not None:
                 cards[self._drag_idx]['card'].configure(border_color="#88ccff", border_width=2)
 
         # 이전 하이라이트 해제
         cards = getattr(self, '_wp_cards', [])
-        if self._drag_target_idx is not None and 0 <= self._drag_target_idx < len(cards):
+        if self._drag_target_idx is not None and 0 <= self._drag_target_idx < len(cards) and cards[self._drag_target_idx] is not None:
             _prev = cards[self._drag_target_idx]
             _prev['card'].configure(border_color=COLORS["border"], border_width=1)
             self._drag_target_idx = None
 
         # 마우스 아래 카드 찾기
         target = self._find_card_at_pos(event.x_root, event.y_root)
-        if target is not None and target != self._drag_idx and 0 <= target < len(cards):
+        if target is not None and target != self._drag_idx and 0 <= target < len(cards) and cards[target] is not None:
             self._drag_target_idx = target
             cards[target]['card'].configure(border_color="#ebcb8b", border_width=2)
 
@@ -13699,13 +13951,13 @@ class GameModeDialog(ctk.CTkToplevel):
         was_active = getattr(self, '_drag_active', False)
 
         # 시각적 표시 복원
-        if drag_idx is not None and 0 <= drag_idx < len(cards):
+        if drag_idx is not None and 0 <= drag_idx < len(cards) and cards[drag_idx] is not None:
             final_idx = self._get_final_idx()
             is_f = (drag_idx == final_idx)
             cards[drag_idx]['card'].configure(
                 border_color=COLORS["accent_orange"] if is_f else COLORS["border"],
                 border_width=2 if is_f else 1)
-        if self._drag_target_idx is not None and 0 <= self._drag_target_idx < len(cards):
+        if self._drag_target_idx is not None and 0 <= self._drag_target_idx < len(cards) and cards[self._drag_target_idx] is not None:
             t_final = (self._drag_target_idx == self._get_final_idx())
             cards[self._drag_target_idx]['card'].configure(
                 border_color=COLORS["accent_orange"] if t_final else COLORS["border"],
@@ -13724,6 +13976,8 @@ class GameModeDialog(ctk.CTkToplevel):
         """마우스 위치에 있는 카드 인덱스 반환 (보이는 카드만)"""
         cards = getattr(self, '_wp_cards', [])
         for i, cd in enumerate(cards):
+            if cd is None:
+                continue
             card = cd['card']
             try:
                 if not card.winfo_ismapped():
@@ -13790,7 +14044,7 @@ class GameModeDialog(ctk.CTkToplevel):
         old_parent_name = child_wp[3].get('group_parent')
         child_wp[3]['group_parent'] = parent_name
         # child 카드 숨김
-        if 0 <= child_idx < len(cards):
+        if 0 <= child_idx < len(cards) and cards[child_idx] is not None:
             cards[child_idx]['card'].pack_forget()
         # 부모 그룹 버튼/배지 갱신
         self._update_group_ui(parent_idx)
@@ -13814,9 +14068,11 @@ class GameModeDialog(ctk.CTkToplevel):
         # 전체 카드를 올바른 순서로 재정렬 (pack 순서 보장)
         if 0 <= child_idx < len(cards):
             for j in range(len(cards)):
-                cards[j]['card'].pack_forget()
+                if cards[j] is not None:
+                    cards[j]['card'].pack_forget()
             for j in range(len(cards)):
-                cards[j]['card'].pack(fill="x", pady=(0, 3))
+                if cards[j] is not None:
+                    cards[j]['card'].pack(fill="x", pady=(0, 3))
             self._apply_grouping()
         # 이전 부모 갱신
         if parent_name:
@@ -13861,7 +14117,7 @@ class GameModeDialog(ctk.CTkToplevel):
         locked = not cfg.get('map_locked', False)
         cfg['map_locked'] = locked
         cards = getattr(self, '_wp_cards', [])
-        if 0 <= idx < len(cards):
+        if 0 <= idx < len(cards) and cards[idx] is not None:
             self._configure_map_lock_btn(cards[idx].get('map_lock_btn'), locked)
         self._update_all_map_lock_btn()
         self._save_config()
@@ -13885,7 +14141,7 @@ class GameModeDialog(ctk.CTkToplevel):
             if bool(cfg.get('map_locked', False)) == lock_all:
                 continue
             cfg['map_locked'] = lock_all
-            if 0 <= i < len(cards):
+            if 0 <= i < len(cards) and cards[i] is not None:
                 self._configure_map_lock_btn(cards[i].get('map_lock_btn'), lock_all)
             changed += 1
         self._update_all_map_lock_btn()
@@ -13900,32 +14156,99 @@ class GameModeDialog(ctk.CTkToplevel):
         cards = getattr(self, '_wp_cards', [])
         if not (0 <= parent_idx < len(cards)):
             return
+        card_data = cards[parent_idx]
+        if card_data is None:
+            return
         children = self._get_children(parent_idx)
         if not children:
             return
         n = len(children)
-        card_data = cards[parent_idx]
         if card_data.get('group_expanded', False):
             # 접기
             for ci in children:
-                if 0 <= ci < len(cards):
+                if 0 <= ci < len(cards) and cards[ci] is not None:
                     cards[ci]['card'].pack_forget()
+                    self._reflow_waypoint_card_sections(ci)
             card_data['group_btn'].configure(text=f"▶ 펼치기 ({n})")
             card_data['group_expanded'] = False
         else:
-            # 펼치기: 부모 바로 뒤에 인덱스 순으로 pack
-            after_w = card_data['card']
-            for ci in children:
-                if 0 <= ci < len(cards):
-                    cards[ci]['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=after_w)
-                    after_w = cards[ci]['card']
             card_data['group_btn'].configure(text=f"▼ 접기 ({n})")
             card_data['group_expanded'] = True
+            self._expand_group_children_chunk(parent_idx, list(children), 0, card_data['card'], False)
+
+    def _scroll_widget_into_main_view(self, widget, padding: int = 20):
+        if widget is None:
+            return
+        main_scroll = getattr(self, '_main_scroll', None)
+        canvas = getattr(main_scroll, '_parent_canvas', None) if main_scroll is not None else None
+        if canvas is None:
+            return
+        try:
+            if not widget.winfo_exists():
+                return
+            self.update_idletasks()
+            canvas.update_idletasks()
+            current_top = float(canvas.canvasy(0))
+            view_height = max(1, int(canvas.winfo_height()))
+            widget_top = current_top + (widget.winfo_rooty() - canvas.winfo_rooty())
+            widget_bottom = widget_top + int(widget.winfo_height())
+            target_top = None
+            if widget_top < current_top + padding:
+                target_top = max(0.0, widget_top - padding)
+            elif widget_bottom > current_top + view_height - padding:
+                target_top = max(0.0, widget_bottom - view_height + padding)
+            if target_top is None:
+                return
+            bbox = canvas.bbox('all')
+            if not bbox:
+                return
+            total_height = max(1, int(bbox[3] - bbox[1]))
+            canvas.yview_moveto(max(0.0, min(target_top / total_height, 1.0)))
+        except Exception:
+            return
+
+    def _expand_group_children_chunk(self, parent_idx: int, children: list, start_idx: int, after_widget, built_any: bool):
+        cards = getattr(self, '_wp_cards', [])
+        if not (0 <= parent_idx < len(cards)):
+            return
+        card_data = cards[parent_idx]
+        if card_data is None or not card_data.get('group_expanded', False):
+            return
+
+        batch_size = 4
+        end_idx = min(start_idx + batch_size, len(children))
+        last_widget = after_widget
+        for ci in children[start_idx:end_idx]:
+            was_missing = self._get_card_data(ci) is None
+            child_card = self._ensure_card_built(ci)
+            if child_card is None:
+                continue
+            if was_missing:
+                built_any = True
+            self._reflow_waypoint_card_sections(ci)
+            child_card['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=last_widget)
+            last_widget = child_card['card']
+
+        if end_idx >= len(children):
+            if built_any:
+                self._start_waypoint_badge_refresh()
+            if children:
+                first_child = self._get_card_data(children[0])
+                if first_child is not None:
+                    self.after_idle(lambda w=first_child['card']: self._scroll_widget_into_main_view(w))
+            return
+
+        self.after_idle(
+            lambda p=parent_idx, c=children, s=end_idx, w=last_widget, b=built_any:
+                self._expand_group_children_chunk(p, c, s, w, b)
+        )
 
     def _update_group_ui(self, parent_idx):
         """부모 카드의 그룹 버튼/배지 갱신"""
         cards = getattr(self, '_wp_cards', [])
         if not (0 <= parent_idx < len(cards)):
+            return
+        if cards[parent_idx] is None:
             return
         children = self._get_children(parent_idx)
         cd = cards[parent_idx]
@@ -13961,26 +14284,36 @@ class GameModeDialog(ctk.CTkToplevel):
         cards = getattr(self, '_wp_cards', [])
         # 모든 카드의 해체 버튼 초기화
         for j in range(len(cards)):
-            cards[j]['ungroup_btn'].pack_forget()
+            if cards[j] is not None:
+                cards[j]['ungroup_btn'].pack_forget()
         # 자식 카드 숨기기 + 해체 버튼 준비
         for i, wp in enumerate(waypoints):
             cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
             if cfg and cfg.get('group_parent'):
-                if 0 <= i < len(cards):
+                if 0 <= i < len(cards) and cards[i] is not None:
                     cards[i]['card'].pack_forget()
+                    self._reflow_waypoint_card_sections(i)
                     if not cards[i]['ungroup_btn'].winfo_ismapped():
                         cards[i]['ungroup_btn'].pack(side="left", padx=(6, 0))
         # 부모 카드에 그룹 버튼 표시 + 펼쳐진 그룹은 자식 다시 pack
+        built_any = False
         for i in range(len(waypoints)):
             children = self._get_children(i)
             if children:
                 self._update_group_ui(i)
-                if 0 <= i < len(cards) and cards[i].get('group_expanded', False):
+                if 0 <= i < len(cards) and cards[i] is not None and cards[i].get('group_expanded', False):
                     after_w = cards[i]['card']
                     for ci in children:
-                        if 0 <= ci < len(cards):
-                            cards[ci]['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=after_w)
-                            after_w = cards[ci]['card']
+                        was_missing = self._get_card_data(ci) is None
+                        child_card = self._ensure_card_built(ci)
+                        if child_card is not None:
+                            if was_missing:
+                                built_any = True
+                            self._reflow_waypoint_card_sections(ci)
+                            child_card['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=after_w)
+                            after_w = child_card['card']
+        if built_any:
+            self._start_waypoint_badge_refresh()
 
     def _toggle_all_cards(self):
         """모든 그룹 펼치기/접기"""
@@ -13989,47 +14322,71 @@ class GameModeDialog(ctk.CTkToplevel):
         if not cards:
             return
         if self._wp_all_collapsed:
-            # 모두 펼치기: 모든 자식 카드 표시
-            for i in range(len(waypoints)):
-                children = self._get_children(i)
-                if children and 0 <= i < len(cards):
-                    after_w = cards[i]['card']
-                    for ci in children:
-                        if 0 <= ci < len(cards):
-                            cards[ci]['card'].pack(fill="x", pady=(0, 3), padx=(16, 0),
-                                                   after=after_w)
-                            after_w = cards[ci]['card']
-                    cards[i]['group_btn'].configure(text="▼")
-                    cards[i]['group_expanded'] = True
             self._wp_all_collapsed = False
             self._wp_collapse_all_btn.configure(text="모두 접기")
+            parents = [i for i in range(len(waypoints)) if self._get_children(i)]
+            self._expand_all_groups_chunk(parents, 0, False)
         else:
             # 모두 접기: 모든 자식 카드 숨김
             for i, wp in enumerate(waypoints):
                 cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
                 if cfg and cfg.get('group_parent'):
-                    if 0 <= i < len(cards):
+                    if 0 <= i < len(cards) and cards[i] is not None:
                         cards[i]['card'].pack_forget()
             for i in range(len(cards)):
+                if cards[i] is None:
+                    continue
                 cards[i]['group_expanded'] = False
                 if cards[i]['group_btn'].winfo_ismapped():
                     cards[i]['group_btn'].configure(text="▶")
             self._wp_all_collapsed = True
             self._wp_collapse_all_btn.configure(text="모두 펼치기")
 
+    def _expand_all_groups_chunk(self, parents: list, start_idx: int, built_any: bool):
+        cards = getattr(self, '_wp_cards', [])
+        batch_size = 2
+        end_idx = min(start_idx + batch_size, len(parents))
+        for parent_idx in parents[start_idx:end_idx]:
+            if not (0 <= parent_idx < len(cards)) or cards[parent_idx] is None:
+                continue
+            children = self._get_children(parent_idx)
+            if not children:
+                continue
+            after_w = cards[parent_idx]['card']
+            for ci in children:
+                was_missing = self._get_card_data(ci) is None
+                child_card = self._ensure_card_built(ci)
+                if child_card is None:
+                    continue
+                if was_missing:
+                    built_any = True
+                self._reflow_waypoint_card_sections(ci)
+                child_card['card'].pack(fill="x", pady=(0, 3), padx=(16, 0), after=after_w)
+                after_w = child_card['card']
+            cards[parent_idx]['group_btn'].configure(text=f"▼ 접기 ({len(children)})")
+            cards[parent_idx]['group_expanded'] = True
+
+        if end_idx >= len(parents):
+            if built_any:
+                self._start_waypoint_badge_refresh()
+            return
+
+        self.after_idle(lambda p=parents, s=end_idx, b=built_any: self._expand_all_groups_chunk(p, s, b))
+
     # ── 개별 위젯 업데이트 (새로고침 없음) ──
 
     def _update_card_map_badge(self, idx: int):
         """맵 배지만 업데이트 (1개 카드)"""
-        cards = getattr(self, '_wp_cards', [])
-        if 0 <= idx < len(cards):
-            tiles = self._get_segment_map_tiles(idx)
-            has_map = tiles >= 0
-            map_tag = f"{tiles}칸" if has_map else "미탐색"
-            badge_color = COLORS["accent"] if has_map else COLORS["bg_card"]
-            badge_text_color = "#ffffff" if has_map else COLORS["text_muted"]
-            cards[idx]['map_badge'].configure(fg_color=badge_color)
-            cards[idx]['map_badge_label'].configure(text=f" {map_tag} ", text_color=badge_text_color)
+        card_data = self._get_card_data(idx)
+        if card_data is None:
+            return
+        tiles = self._get_segment_map_tiles(idx)
+        has_map = tiles >= 0
+        map_tag = f"{tiles}칸" if has_map else "미탐색"
+        badge_color = COLORS["accent"] if has_map else COLORS["bg_card"]
+        badge_text_color = "#ffffff" if has_map else COLORS["text_muted"]
+        card_data['map_badge'].configure(fg_color=badge_color)
+        card_data['map_badge_label'].configure(text=f" {map_tag} ", text_color=badge_text_color)
 
     def _ensure_waypoint_image_cfg(self, idx: int):
         waypoints = getattr(self._config, 'waypoints', []) or []
@@ -14390,21 +14747,21 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _update_card_image_status(self, idx: int):
         """카드 상태 라벨 + 삭제 버튼 갱신 (캐릭터/보스/키입력)"""
-        cards = getattr(self, '_wp_cards', [])
-        if not (0 <= idx < len(cards)):
+        card_data = self._get_card_data(idx)
+        if card_data is None:
             return
         waypoints = getattr(self._config, 'waypoints', []) or []
         if idx >= len(waypoints):
             return
         wp = waypoints[idx]
         img_cfg = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else None
-        row5 = cards[idx].get('row5')
-        char_label = cards[idx]['char_img_status']
-        del_char_btn = cards[idx]['del_char_img_btn']
-        boss_label = cards[idx]['boss_img_status']
-        del_boss_btn = cards[idx]['del_boss_img_btn']
-        arr_key_label = cards[idx].get('arr_key_status')
-        del_arr_key_btn = cards[idx].get('del_arr_key_btn')
+        row5 = card_data.get('row5')
+        char_label = card_data['char_img_status']
+        del_char_btn = card_data['del_char_img_btn']
+        boss_label = card_data['boss_img_status']
+        del_boss_btn = card_data['del_boss_img_btn']
+        arr_key_label = card_data.get('arr_key_status')
+        del_arr_key_btn = card_data.get('del_arr_key_btn')
 
         def _new_thumb():
             return tk.Label(
@@ -14418,7 +14775,7 @@ class GameModeDialog(ctk.CTkToplevel):
             )
 
         for thumb_key in ('char_img_thumb', 'boss_img_thumb'):
-            old_thumb = cards[idx].get(thumb_key)
+            old_thumb = card_data.get(thumb_key)
             if old_thumb is not None:
                 try:
                     old_thumb.destroy()
@@ -14426,8 +14783,8 @@ class GameModeDialog(ctk.CTkToplevel):
                     pass
         char_thumb = _new_thumb()
         boss_thumb = _new_thumb()
-        cards[idx]['char_img_thumb'] = char_thumb
-        cards[idx]['boss_img_thumb'] = boss_thumb
+        card_data['char_img_thumb'] = char_thumb
+        card_data['boss_img_thumb'] = boss_thumb
 
         # 캐릭터 이미지 상태 갱신
         char_img_name = ""
@@ -14494,6 +14851,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 row5.pack(fill="x", padx=8, pady=(0, 2))
             elif not has_any_status and row5.winfo_manager():
                 row5.pack_forget()
+        self._reflow_waypoint_card_sections(idx)
 
     def _refresh_badges_async(self):
         """배지 갱신 (파일 I/O는 현재 스레드, UI 업데이트만 메인스레드로)
@@ -14502,7 +14860,9 @@ class GameModeDialog(ctk.CTkToplevel):
             cards = getattr(self, '_wp_cards', [])
             # 파일 I/O를 백그라운드에서 수행 → 결과만 수집
             badge_data = []
-            for i in range(len(cards)):
+            for i, card_data in enumerate(cards):
+                if card_data is None:
+                    continue
                 tiles = self._get_segment_map_tiles(i)
                 has_map = tiles >= 0
                 map_tag = f"{tiles}칸" if has_map else "미탐색"
@@ -14513,7 +14873,7 @@ class GameModeDialog(ctk.CTkToplevel):
             def _apply_badges(data=badge_data):
                 try:
                     for idx, tag, bg, fg in data:
-                        if idx < len(cards):
+                        if idx < len(cards) and cards[idx] is not None:
                             cards[idx]['map_badge'].configure(fg_color=bg)
                             cards[idx]['map_badge_label'].configure(text=f" {tag} ", text_color=fg)
                 except Exception:
@@ -14524,25 +14884,33 @@ class GameModeDialog(ctk.CTkToplevel):
                 pass
         except Exception:
             pass
+        finally:
+            self._wp_badge_refresh_running = False
+            if getattr(self, "_wp_badge_refresh_pending", False):
+                self._wp_badge_refresh_pending = False
+                self._start_waypoint_badge_refresh()
 
     def _update_card_mapping_btn(self, idx: int, is_mapping: bool, mapping_type: str = "path"):
         """맵핑 버튼 상태만 업데이트 (1개 카드)"""
-        cards = getattr(self, '_wp_cards', [])
-        if 0 <= idx < len(cards):
-            btn = cards[idx]['single_mapping_btn']
-            if is_mapping:
-                btn.configure(text="⏹ 중지",
-                    fg_color=COLORS["accent_red"], hover_color="#d63a31",
-                    text_color="#ffffff", border_width=0)
-            else:
-                btn.configure(text="맵핑테스트", state="normal",
-                    fg_color="#1a3526", hover_color=COLORS["accent"],
-                    text_color="#4ae168", border_width=1, border_color="#2d5a3d")
+        card_data = self._get_card_data(idx)
+        if card_data is None:
+            return
+        btn = card_data['single_mapping_btn']
+        if is_mapping:
+            btn.configure(text="⏹ 중지",
+                fg_color=COLORS["accent_red"], hover_color="#d63a31",
+                text_color="#ffffff", border_width=0)
+        else:
+            btn.configure(text="맵핑테스트", state="normal",
+                fg_color="#1a3526", hover_color=COLORS["accent"],
+                text_color="#4ae168", border_width=1, border_color="#2d5a3d")
 
     def _reindex_cards(self, from_idx: int = 0):
         """카드 번호 + 모든 버튼 command 갱신 (구조 변경 후)"""
         cards = getattr(self, '_wp_cards', [])
         for i in range(from_idx, len(cards)):
+            if cards[i] is None:
+                continue
             cards[i]['num_label'].configure(text=f"{i+1}.")
             cards[i]['del_btn'].configure(command=lambda idx=i: self._remove_waypoint(idx))
             cards[i]['move_up_btn'].configure(command=lambda idx=i: self._move_waypoint(idx, -1))
@@ -14691,7 +15059,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
                     wp[3]['map_locked'] = False
                 cards = getattr(self, '_wp_cards', [])
-                if 0 <= i < len(cards):
+                if 0 <= i < len(cards) and cards[i] is not None:
                     self._configure_map_lock_btn(cards[i].get('map_lock_btn'), False)
 
             # map_file 공유 경로 해제 (원본 파일 보호)
@@ -14761,7 +15129,7 @@ class GameModeDialog(ctk.CTkToplevel):
             if idx < len(waypoints) and len(waypoints[idx]) >= 4 and isinstance(waypoints[idx][3], dict):
                 waypoints[idx][3]['map_locked'] = False
             cards = getattr(self, '_wp_cards', [])
-            if 0 <= idx < len(cards):
+            if 0 <= idx < len(cards) and cards[idx] is not None:
                 btn = cards[idx].get('map_lock_btn')
                 if btn:
                     btn.configure(text="🔓", fg_color="transparent",
@@ -15209,10 +15577,10 @@ class GameModeDialog(ctk.CTkToplevel):
     def _rebuild_card(self, wp_idx):
         """특정 경유지 카드의 경로 섹션만 재빌드"""
         waypoints = getattr(self._config, 'waypoints', []) or []
-        cards = getattr(self, '_wp_cards', [])
-        if not (0 <= wp_idx < len(waypoints)) or not (0 <= wp_idx < len(cards)):
+        card_data = self._get_card_data(wp_idx)
+        if not (0 <= wp_idx < len(waypoints)) or card_data is None:
             return
-        route_frame = cards[wp_idx].get('route_frame')
+        route_frame = card_data.get('route_frame')
         if route_frame is None:
             return
         # 기존 경로 행 전부 삭제

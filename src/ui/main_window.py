@@ -475,6 +475,7 @@ class MainWindow(ctk.CTk):
         self._view_titles: Dict[str, str] = {}
         self._pending_view_id: Optional[str] = None
         self._view_switch_token = 0
+        self._dirty_views = set()
 
         # 전역 F8 캡쳐 기능
         self._keyboard_listener: Optional[keyboard.Listener] = None
@@ -2172,6 +2173,9 @@ class MainWindow(ctk.CTk):
             return
         self._current_view = view_id
         self._pending_view_id = None
+        if view_id in self._dirty_views:
+            self._dirty_views.discard(view_id)
+            self.after_idle(lambda target=view_id: self._refresh_view_if_needed(target))
 
     def register_view(self, view_id: str, view: ctk.CTkFrame):
         """뷰 등록 (즉시 생성된 뷰)"""
@@ -2225,12 +2229,22 @@ class MainWindow(ctk.CTk):
 
     def refresh_all_views(self):
         """모든 뷰 새로고침"""
-        for view in self._views.values():
-            if hasattr(view, 'refresh'):
-                try:
-                    view.refresh()
-                except Exception as e:
-                    logger.debug(f"뷰 새로고침 실패: {e}")
+        for view_id in list(self._views.keys()):
+            if view_id == self._current_view:
+                self._refresh_view_if_needed(view_id)
+            else:
+                self._dirty_views.add(view_id)
+
+    def _refresh_view_if_needed(self, view_id: Optional[str]):
+        if not view_id:
+            return
+        view = self._views.get(view_id)
+        if view is None or not hasattr(view, "refresh"):
+            return
+        try:
+            view.refresh()
+        except Exception as e:
+            logger.debug(f"뷰 새로고침 실패 ({view_id}): {e}")
 
     def set_tab(self, tab_name: str):
         """탭 전환 (하위 호환성)"""

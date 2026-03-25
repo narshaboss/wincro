@@ -18,6 +18,8 @@ from ..i18n import RECORDER, BUTTONS
 from ..recorder import RecordingSession, get_screen_recorder
 from ..database import Recording, get_db
 from .main_window import BaseView, COLORS
+from .ui_batcher import UiCallbackDispatcher
+from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
 
@@ -45,9 +47,22 @@ class RecorderView(BaseView):
         self._async_done = None
         self._async_error = None
         self._async_result_name = None
+        self._recordings_load_generation = 0
+        self._recording_items = []
+        self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=48)
 
         self._setup_ui()
         self._setup_hotkeys()
+
+    def _recorder_ui_post(self, callback):
+        try:
+            dispatcher = getattr(self, "_ui_dispatcher", None)
+            if dispatcher is not None:
+                dispatcher.post(callback)
+                return
+            self.after(0, callback)
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _setup_ui(self):
         # 스크롤 가능한 메인 컨테이너 (로그 패널 확장 시 축소 가능)
@@ -284,67 +299,87 @@ class RecorderView(BaseView):
         ).pack(side="left")
 
     def _setup_recordings_card(self, parent):
-        """녹화 목록 카드"""
-        card = self.create_card(parent, title="저장된 녹화")
+        """?? ?? ??"""
+        card = self.create_card(parent, title="??? ??")
         card.pack(fill="both", expand=True)
 
-        # 헤더 (새로고침 버튼)
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.pack(fill="x", padx=15, pady=(10, 5))
 
         self.create_button(
             header,
             text="새로고침",
-            command=self._refresh_recordings_list,
+            command=self._refresh_recordings_list_async,
             style="ghost",
             width=80,
             height=28,
         ).pack(side="right")
 
-        # 목록
-        self._recordings_scroll = ctk.CTkScrollableFrame(
+        self._recordings_empty_label = ctk.CTkLabel(
             card,
-            fg_color="transparent",
-            scrollbar_button_color=COLORS["bg_card_hover"],
+            text="저장된 녹화가 없습니다\n녹화를 시작해보세요",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+            justify="center",
         )
+
+        self._recordings_scroll = VirtualScrollFrame(
+            card,
+            item_height=72,
+            buffer_count=5,
+            fg_color=COLORS["bg_card"],
+        )
+        self._recordings_scroll.set_render_callback(self._render_recording_item)
         self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        self.after(0, self._refresh_recordings_list)  # UI 렌더 후 로드
+        self.after(0, self._refresh_recordings_list_async)
 
     def _refresh_recordings_list(self):
-        """녹화 목록 새로고침"""
-        for widget in self._recordings_scroll.winfo_children():
-            widget.destroy()
+        """?? ?? ????"""
+        self._refresh_recordings_list_async()
 
-        recordings = self._db.get_all_recordings()
+    def _refresh_recordings_list_async(self):
+        self._recordings_load_generation += 1
+        current_gen = self._recordings_load_generation
 
-        if not recordings:
-            empty_label = ctk.CTkLabel(
-                self._recordings_scroll,
-                text="저장된 녹화가 없습니다\n녹화를 시작해보세요",
-                font=ctk.CTkFont(size=12),
-                text_color=COLORS["text_muted"],
-                justify="center",
-            )
-            empty_label.pack(pady=30)
+        def _load():
+            recordings = self._db.get_all_recordings()
+            self._recorder_ui_post(lambda: self._apply_recordings_list(recordings, current_gen))
+
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _apply_recordings_list(self, recordings, generation=None):
+        if generation is not None and generation < self._recordings_load_generation:
             return
 
-        for recording in recordings:
-            self._create_recording_item(recording)
+        self._recording_items = list(recordings)
+        if not self._recording_items:
+            self._recordings_scroll.pack_forget()
+            self._recordings_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            return
 
-    def _create_recording_item(self, recording: Recording):
-        """녹화 항목 생성"""
+        self._recordings_empty_label.pack_forget()
+        self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)
+
+    def _render_recording_item(self, parent, recording: Recording, index: int):
+        return self._create_recording_item(recording, parent=parent)
+
+    def _create_recording_item(self, recording: Recording, parent=None):
+        """?? ?? ??"""
         item = ctk.CTkFrame(
-            self._recordings_scroll,
+            parent or self._recordings_scroll,
             fg_color=COLORS["bg_dark"],
             corner_radius=8,
+            height=66,
         )
-        item.pack(fill="x", pady=3)
+        item.pack_propagate(False)
+        if parent is None:
+            item.pack(fill="x", pady=3)
 
         content = ctk.CTkFrame(item, fg_color="transparent")
         content.pack(fill="x", padx=12, pady=10)
 
-        # 정보
         info = ctk.CTkFrame(content, fg_color="transparent")
         info.pack(side="left", fill="x", expand=True)
 
@@ -357,7 +392,6 @@ class RecorderView(BaseView):
         ).pack(fill="x")
 
         date_str = recording.created_at.strftime("%Y-%m-%d %H:%M") if recording.created_at else ""
-
         ctk.CTkLabel(
             info,
             text=date_str,
@@ -366,7 +400,6 @@ class RecorderView(BaseView):
             anchor="w",
         ).pack(fill="x")
 
-        # 삭제 버튼
         self.create_button(
             content,
             text="삭제",
@@ -375,6 +408,8 @@ class RecorderView(BaseView):
             width=50,
             height=28,
         ).pack(side="right")
+
+        return item
 
     def _delete_recording(self, recording: Recording):
         """녹화 삭제"""
@@ -1042,7 +1077,11 @@ class RecorderView(BaseView):
         self._refresh_recordings_list()
 
     def cleanup(self):
-        """리소스 정리"""
+        """cleanup"""
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.close()
+
         # 녹화 상태 업데이트 콜백 취소
         if self._status_update_id is not None:
             try:
