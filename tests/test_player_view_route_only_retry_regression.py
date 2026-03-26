@@ -70,7 +70,9 @@ def test_route_only_clears_stale_blocked_edges_when_edge_relaxed_probe_succeeds(
     text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
 
     assert "def _clear_runtime_blocked_edges_at(_cx, _cy):" in text
+    assert "def _clear_runtime_blocked_edges_for_path(_path, _directions):" in text
     assert "respect_blocked_edges=False," in text
     assert "_edge_relaxed_probe = pathfinder.find_path(" in text
-    assert "_cleared_edge_count = _clear_runtime_blocked_edges_at(cx, cy)" in text
+    assert "_cleared_edge_count = _clear_runtime_blocked_edges_for_path(" in text
+    assert "_edge_relaxed_probe.path, _edge_relaxed_probe.directions" in text
     assert "🧭 경로복구: (" in text

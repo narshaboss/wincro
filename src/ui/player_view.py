@@ -5004,6 +5004,18 @@ class GameModeDialog(ctk.CTkToplevel):
                     _cleared += 1
             return _cleared
 
+        def _clear_runtime_blocked_edges_for_path(_path, _directions):
+            _cleared = 0
+            if not _path or not _directions:
+                return 0
+            for _idx, _dir in enumerate(_directions):
+                if _idx >= len(_path):
+                    break
+                _px, _py = _path[_idx]
+                if self._game_map.clear_blocked_edge(_px, _py, _dir):
+                    _cleared += 1
+            return _cleared
+
         def press_key(direction):
             """방향키 누르기"""
             if self._stop_event.is_set():
@@ -5384,7 +5396,9 @@ class GameModeDialog(ctk.CTkToplevel):
                     if self._stop_event.is_set():
                         return None
                     if _edge_relaxed_probe.found and _edge_relaxed_probe.directions:
-                        _cleared_edge_count = _clear_runtime_blocked_edges_at(cx, cy)
+                        _cleared_edge_count = _clear_runtime_blocked_edges_for_path(
+                            _edge_relaxed_probe.path, _edge_relaxed_probe.directions
+                        )
                         if _cleared_edge_count:
                             pathfinder.invalidate_path()
                             _route_result = _run_route_only_path(_route_avoid)

@@ -29,7 +29,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.189"
+APP_VERSION = "1.0.190"
 
 
 @dataclass
