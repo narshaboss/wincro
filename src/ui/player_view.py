@@ -5251,6 +5251,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 """
                 if not _is_dir_blocked(cx, cy, _d, iteration):
                     return True
+                if _route_only_mode and _route_relaxed_dir_override == _d:
+                    return True
                 if (not _is_mapping_mode) or _manhattan <= 2:
                     return False
                 _ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)
@@ -5305,6 +5307,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
             _skip_to_explore = False  # 최단경로 모드 A* 실패 시 True → 1차~2차 건너뜀
             _dir_avoid = set()  # 현재 위치에서 방향차단된 인접 타일 (A* avoid용)
+            _route_relaxed_dir_override = None
 
             def _build_avoid_set(_goal=None, include_dir_avoid=True):
                 _avoid = set(_dir_avoid) if include_dir_avoid else set()
@@ -5378,6 +5381,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _relaxed_result.found and _relaxed_result.directions:
                         _route_result = _relaxed_result
                         _route_avoid = _relaxed_avoid
+                        _route_relaxed_dir_override = _relaxed_result.directions[0]
                         if _ui_update_ok:
                             self.after(0, lambda cx2=cx, cy2=cy:
                                 self._append_log(f"🧭 경로회피 완화: ({cx2},{cy2}) dir-avoid 해제"))
@@ -5413,6 +5417,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if _relaxed_result.found and _relaxed_result.directions:
                                     _route_result = _relaxed_result
                                     _route_avoid = _relaxed_avoid
+                                    _route_relaxed_dir_override = _relaxed_result.directions[0]
                             if _route_result.found and _route_result.directions and _ui_update_ok:
                                 self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
                                     self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))

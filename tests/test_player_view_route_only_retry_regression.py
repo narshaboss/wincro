@@ -76,3 +76,11 @@ def test_route_only_clears_stale_blocked_edges_when_edge_relaxed_probe_succeeds(
     assert "_cleared_edge_count = _clear_runtime_blocked_edges_for_path(" in text
     assert "_edge_relaxed_probe.path, _edge_relaxed_probe.directions" in text
     assert "🧭 경로복구: (" in text
+
+
+def test_route_only_relaxed_path_can_use_its_first_blocked_direction():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "_route_relaxed_dir_override = None" in text
+    assert "if _route_only_mode and _route_relaxed_dir_override == _d:" in text
+    assert "_route_relaxed_dir_override = _relaxed_result.directions[0]" in text
