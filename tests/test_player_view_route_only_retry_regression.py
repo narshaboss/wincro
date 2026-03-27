@@ -84,6 +84,7 @@ def test_route_only_relaxed_path_can_use_its_first_blocked_direction():
     assert "_route_relaxed_dir_override = None" in text
     assert "if _route_only_mode and _route_relaxed_dir_override == _d:" in text
     assert "_route_relaxed_dir_override = _relaxed_result.directions[0]" in text
+    assert text.index("_route_relaxed_dir_override = None") < text.index("def _can_take_path_dir(_d):")
 
 
 def test_route_only_can_force_runtime_reload_when_locked_no_start_segment_current_pos_is_unknown():

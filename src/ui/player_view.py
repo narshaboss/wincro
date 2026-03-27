@@ -5149,6 +5149,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _route_only_mode = _stable_shortest_route_mode_active()
             _strict_route_mode = ((_is_mapping_test and not _frontier_probe_phase) or _route_only_mode)
             _blocked_primary_dir = None  # 경유지 이동 단계에서 경로차단 시 fallback 난수탐색 방지
+            _route_relaxed_dir_override = None
             # 디버그: 상태 출력 (iteration 50의 배수)
             _fpd_debug_this_call = (iteration % 50 == 0)
             _cleanup_blocked_dirs(iteration)
@@ -5307,7 +5308,6 @@ class GameModeDialog(ctk.CTkToplevel):
 
             _skip_to_explore = False  # 최단경로 모드 A* 실패 시 True → 1차~2차 건너뜀
             _dir_avoid = set()  # 현재 위치에서 방향차단된 인접 타일 (A* avoid용)
-            _route_relaxed_dir_override = None
 
             def _build_avoid_set(_goal=None, include_dir_avoid=True):
                 _avoid = set(_dir_avoid) if include_dir_avoid else set()

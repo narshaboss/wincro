@@ -1,1 +1,10 @@
-{"timestamp": 1774593390.0, "current_version": "1.0.192", "result": {"update_available": false, "version": "1.0.192", "release_data": null, "cached": false}}
+﻿{
+    "timestamp":  1774593390.0,
+    "current_version":  "1.0.193",
+    "result":  {
+                   "update_available":  false,
+                   "version":  "1.0.193",
+                   "release_data":  null,
+                   "cached":  false
+               }
+}
