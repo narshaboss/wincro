@@ -5465,7 +5465,15 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 잠금맵 런타임 재로드는 "정적 맵 연결이 실제로 끊긴 경우"에만 수행한다.
                         # 동적 장애물/임시 회피 때문에 현재 칸에서만 실패하는 상황까지 매번 재로드하면
                         # 굴 전환 후 첫 병목에서 reload 루프가 생기고 프로그램이 멎은 것처럼 보일 수 있다.
-                        _needs_runtime_reload = not self._segment_has_reachable_target_from_start(self._game_map, target_idx)
+                        _current_pos_unknown = self._should_force_runtime_reload_for_unknown_route_position(
+                            self._game_map,
+                            target_idx,
+                            current_pos,
+                        )
+                        _needs_runtime_reload = (
+                            _current_pos_unknown or
+                            (not self._segment_has_reachable_target_from_start(self._game_map, target_idx))
+                        )
                         _reload_allowed = (
                             self._runtime_reload_segment_idx != target_idx and
                             time.time() >= getattr(self, "_runtime_reload_cooldown_until", 0.0)
@@ -12086,6 +12094,23 @@ class GameModeDialog(ctk.CTkToplevel):
         game_map_ref.start_pos = None
         game_map_ref.mark_passable(preferred_start[0], preferred_start[1])
         game_map_ref.start_pos = preferred_start
+
+    def _should_force_runtime_reload_for_unknown_route_position(self, game_map_ref, segment_idx: int, current_pos) -> bool:
+        """route_starts 없는 잠금맵에서 현재 좌표가 맵 밖이면 런타임 재로드를 강제한다."""
+        if game_map_ref is None or current_pos is None:
+            return False
+        if self._get_segment_route_start_points(segment_idx):
+            return False
+        if not self._is_segment_map_locked(segment_idx):
+            return False
+        try:
+            cx, cy = int(current_pos[0]), int(current_pos[1])
+        except Exception:
+            return False
+        try:
+            return not game_map_ref.is_known(cx, cy)
+        except Exception:
+            return False
 
     def _get_segment_target_points(self, segment_idx: int):
         """세그먼트의 실제 경로 목표 좌표 후보를 정규화해 반환한다."""

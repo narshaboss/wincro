@@ -84,3 +84,15 @@ def test_route_only_relaxed_path_can_use_its_first_blocked_direction():
     assert "_route_relaxed_dir_override = None" in text
     assert "if _route_only_mode and _route_relaxed_dir_override == _d:" in text
     assert "_route_relaxed_dir_override = _relaxed_result.directions[0]" in text
+
+
+def test_route_only_can_force_runtime_reload_when_locked_no_start_segment_current_pos_is_unknown():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "def _should_force_runtime_reload_for_unknown_route_position(self, game_map_ref, segment_idx: int, current_pos) -> bool:" in text
+    assert "if self._get_segment_route_start_points(segment_idx):" in text
+    assert "if not self._is_segment_map_locked(segment_idx):" in text
+    assert "return not game_map_ref.is_known(cx, cy)" in text
+    assert "_current_pos_unknown = self._should_force_runtime_reload_for_unknown_route_position(" in text
+    assert "_needs_runtime_reload = (" in text
+    assert "_current_pos_unknown or" in text
