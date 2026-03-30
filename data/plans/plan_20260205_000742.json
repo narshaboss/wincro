@@ -1039,6 +1039,16 @@
                 "repeat_delay_random_range": 0.3
               },
               {
+                "key": "2",
+                "wait_after": 1.0,
+                "wait_random": true,
+                "wait_random_range": 0.3,
+                "repeat_count": 1,
+                "repeat_delay": 0.5,
+                "repeat_delay_random": false,
+                "repeat_delay_random_range": 0.3
+              },
+              {
                 "key": "enter",
                 "wait_after": 1.2,
                 "wait_random": true,

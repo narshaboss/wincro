@@ -11808,8 +11808,101 @@ class GameModeDialog(ctk.CTkToplevel):
             kept.append(last_point)
         return kept
 
+    def _is_nine_cave_boss_segment(self, segment_idx: int) -> bool:
+        seg_name = self._get_segment_display_name(segment_idx)
+        return bool(
+            self._is_boss_image_segment(segment_idx)
+            and isinstance(seg_name, str)
+            and seg_name.endswith("9굴")
+        )
+
+    def _load_nine_cave_patrol_template(self):
+        cache = getattr(self, "_nine_cave_patrol_template_cache", None)
+        if cache is not None:
+            return cache
+
+        template_path = None
+        for cand in sorted((DATA_DIR / "maps").glob("65546d26_09_*boss_map.json")):
+            template_path = cand
+            break
+        if template_path is None:
+            self._nine_cave_patrol_template_cache = None
+            return None
+
+        try:
+            template_data = json.loads(template_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            self._nine_cave_patrol_template_cache = None
+            return None
+
+        template_points = [tuple(map(int, p)) for p in (template_data.get("patrol_points") or []) if len(p) >= 2]
+        template_passable = [tuple(map(int, p)) for p in (template_data.get("passable") or []) if len(p) >= 2]
+        if len(template_points) < 2 or not template_passable:
+            self._nine_cave_patrol_template_cache = None
+            return None
+
+        xs = [p[0] for p in template_passable]
+        ys = [p[1] for p in template_passable]
+        template_bounds = {
+            "min_x": min(xs),
+            "max_x": max(xs),
+            "min_y": min(ys),
+            "max_y": max(ys),
+        }
+        self._nine_cave_patrol_template_cache = (template_points, template_bounds)
+        return self._nine_cave_patrol_template_cache
+
+    def _project_nine_cave_patrol_points(self, game_map_ref):
+        template = self._load_nine_cave_patrol_template()
+        if not template:
+            return []
+
+        template_points, template_bounds = template
+        passable = {tuple(p) for p in game_map_ref.get_passable_snapshot()}
+        if len(passable) < 12:
+            return []
+
+        bounds = game_map_ref.get_bounds()
+        min_x = int(bounds.get("min_x", 0))
+        max_x = int(bounds.get("max_x", 0))
+        min_y = int(bounds.get("min_y", 0))
+        max_y = int(bounds.get("max_y", 0))
+        base_w = max(1, int(template_bounds["max_x"]) - int(template_bounds["min_x"]))
+        base_h = max(1, int(template_bounds["max_y"]) - int(template_bounds["min_y"]))
+        target_w = max(1, max_x - min_x)
+        target_h = max(1, max_y - min_y)
+
+        projected = []
+        recent = set()
+        for bx, by in template_points:
+            rx = (int(bx) - int(template_bounds["min_x"])) / base_w
+            ry = (int(by) - int(template_bounds["min_y"])) / base_h
+            tx = int(round(min_x + rx * target_w))
+            ty = int(round(min_y + ry * target_h))
+            best = None
+            for px, py in passable:
+                score = (
+                    abs(px - tx) + abs(py - ty),
+                    1 if (px, py) in recent else 0,
+                    abs(px - tx),
+                    abs(py - ty),
+                )
+                if best is None or score < best[0]:
+                    best = (score, (px, py))
+            if best is not None:
+                projected.append(best[1])
+                recent.add(best[1])
+
+        projected = self._dedupe_ai_patrol_points_keep_last(projected)
+        return self._limit_ai_patrol_points(projected, max_points=len(template_points))
+
     def _build_ai_patrol_points(self, game_map_ref, segment_idx: int):
         """보스맵 지형을 따라 골고루 순찰하는 경로 생성"""
+        if self._is_nine_cave_boss_segment(segment_idx):
+            template_points = self._project_nine_cave_patrol_points(game_map_ref)
+            if len(template_points) >= 2:
+                return template_points
+
         passable = set(game_map_ref.get_passable_snapshot())
         if len(passable) < 12:
             return []
