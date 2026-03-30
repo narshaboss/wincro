@@ -5799,6 +5799,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                     self._append_log(f"🧭 유일통로 첫칸 유지: ({x},{y}) {d2}"))
                             return _blocked_primary_dir
+                        _route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                        if _route_local_dir:
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_route_local_dir:
+                                    self._append_log(f"🧭 경로막힘 국소회피: ({x},{y}) {d2}→{a2}"))
+                            return _route_local_dir
                         if _local_avoid_mode:
                             _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
                             if _local_dir:

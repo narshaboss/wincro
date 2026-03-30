@@ -65,6 +65,17 @@ def test_route_only_failed_chokepoint_preserves_corridor_axis_when_no_side_path(
     assert "return _blocked_primary_dir" in choke_slice
 
 
+def test_route_only_can_use_local_avoid_even_when_segment_has_starts():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    route_slice = text[
+        text.index("if _route_only_mode:"):
+        text.index("elif _strict_route_mode:")
+    ]
+    assert "_route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)" in route_slice
+    assert "🧭 경로막힘 국소회피" in text
+
+
 def test_stable_waypoint_goal_detour_is_disabled_for_route_chokepoints():
     text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
 
