@@ -25,9 +25,11 @@ def test_route_only_relax_and_retry_are_guarded_for_failed_chokepoints():
     ]
     assert "if not _route_only_mode:" not in helper_slice
     assert "_allow_route_dir_relax = not _should_preserve_route_dir_avoid()" in text
-    assert "_route_avoid and _dir_avoid and _allow_route_dir_relax" in text
+    assert "_route_avoid and _dir_avoid" in text
     assert "_route_failed_chokepoint = _is_route_only_failed_chokepoint(" in text
     assert "_preserve_failed_edge = (" in text
+    assert "_route_chokepoint_override = _is_route_only_failed_chokepoint(" in text
+    assert "if _allow_route_dir_relax or _route_chokepoint_override:" in text
 
 
 def test_route_only_dir_avoid_uses_only_hard_fail_edges():
@@ -58,7 +60,8 @@ def test_route_only_failed_chokepoint_preserves_corridor_axis_when_no_side_path(
         text.index("if _route_failed_chokepoint:"):
         text.index("if _local_avoid_mode:")
     ]
-    assert "🧭 유일통로 유지 직진" in text
+    assert "_route_relaxed_dir_override = _blocked_primary_dir" in choke_slice
+    assert "🧭 유일통로 첫칸 유지" in text
     assert "return _blocked_primary_dir" in choke_slice
 
 
@@ -97,7 +100,7 @@ def test_route_only_relaxed_path_can_use_its_first_blocked_direction():
 
     assert "_route_relaxed_dir_override = None" in text
     assert "if _route_only_mode and _route_relaxed_dir_override == _d:" in text
-    assert "_route_relaxed_dir_override = _relaxed_result.directions[0]" in text
+    assert "_route_relaxed_dir_override = _relaxed_first_dir" in text
     assert text.index("_route_relaxed_dir_override = None") < text.index("def _can_take_path_dir(_d):")
 
 

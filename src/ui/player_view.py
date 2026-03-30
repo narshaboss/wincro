@@ -5414,18 +5414,27 @@ class GameModeDialog(ctk.CTkToplevel):
                     return None
                 _allow_route_dir_relax = not _should_preserve_route_dir_avoid()
                 if (not (_route_result.found and _route_result.directions) and
-                    _route_avoid and _dir_avoid and _allow_route_dir_relax):
+                    _route_avoid and _dir_avoid):
                     _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                     _relaxed_result = _run_route_only_path(_relaxed_avoid)
                     if self._stop_event.is_set():
                         return None
                     if _relaxed_result.found and _relaxed_result.directions:
-                        _route_result = _relaxed_result
-                        _route_avoid = _relaxed_avoid
-                        _route_relaxed_dir_override = _relaxed_result.directions[0]
-                        if _ui_update_ok:
-                            self.after(0, lambda cx2=cx, cy2=cy:
-                                self._append_log(f"🧭 경로회피 완화: ({cx2},{cy2}) dir-avoid 해제"))
+                        _relaxed_first_dir = _relaxed_result.directions[0]
+                        _route_chokepoint_override = _is_route_only_failed_chokepoint(
+                            cx, cy, _relaxed_first_dir, target_pos
+                        )
+                        if _allow_route_dir_relax or _route_chokepoint_override:
+                            _route_result = _relaxed_result
+                            _route_avoid = _relaxed_avoid
+                            _route_relaxed_dir_override = _relaxed_first_dir
+                            if _ui_update_ok:
+                                if _route_chokepoint_override:
+                                    self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir:
+                                        self._append_log(f"🧭 유일통로 첫칸 유지: ({cx2},{cy2}) {d2}"))
+                                else:
+                                    self.after(0, lambda cx2=cx, cy2=cy:
+                                        self._append_log(f"🧭 경로회피 완화: ({cx2},{cy2}) dir-avoid 해제"))
 
                 if not (_route_result.found and _route_result.directions):
                     _edge_relaxed_probe = pathfinder.find_path(
@@ -5450,15 +5459,20 @@ class GameModeDialog(ctk.CTkToplevel):
                             if self._stop_event.is_set():
                                 return None
                             if (not (_route_result.found and _route_result.directions) and
-                                _route_avoid and _dir_avoid and _allow_route_dir_relax):
+                                _route_avoid and _dir_avoid):
                                 _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                                 _relaxed_result = _run_route_only_path(_relaxed_avoid)
                                 if self._stop_event.is_set():
                                     return None
                                 if _relaxed_result.found and _relaxed_result.directions:
-                                    _route_result = _relaxed_result
-                                    _route_avoid = _relaxed_avoid
-                                    _route_relaxed_dir_override = _relaxed_result.directions[0]
+                                    _relaxed_first_dir = _relaxed_result.directions[0]
+                                    _route_chokepoint_override = _is_route_only_failed_chokepoint(
+                                        cx, cy, _relaxed_first_dir, target_pos
+                                    )
+                                    if _allow_route_dir_relax or _route_chokepoint_override:
+                                        _route_result = _relaxed_result
+                                        _route_avoid = _relaxed_avoid
+                                        _route_relaxed_dir_override = _relaxed_first_dir
                             if _route_result.found and _route_result.directions and _ui_update_ok:
                                 self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
                                     self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))
@@ -5480,14 +5494,19 @@ class GameModeDialog(ctk.CTkToplevel):
                         if self._stop_event.is_set():
                             return None
                         if (not (_route_result.found and _route_result.directions) and
-                            _route_avoid and _dir_avoid and _allow_route_dir_relax):
+                            _route_avoid and _dir_avoid):
                             _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                             _relaxed_result = _run_route_only_path(_relaxed_avoid)
                             if self._stop_event.is_set():
                                 return None
                             if _relaxed_result.found and _relaxed_result.directions:
-                                _route_result = _relaxed_result
-                                _route_avoid = _relaxed_avoid
+                                _relaxed_first_dir = _relaxed_result.directions[0]
+                                _route_chokepoint_override = _is_route_only_failed_chokepoint(
+                                    cx, cy, _relaxed_first_dir, target_pos
+                                )
+                                if _allow_route_dir_relax or _route_chokepoint_override:
+                                    _route_result = _relaxed_result
+                                    _route_avoid = _relaxed_avoid
                         if _route_result.found and _route_result.directions:
                             current_path = _route_result.path
                             path_index = 0
@@ -5528,14 +5547,19 @@ class GameModeDialog(ctk.CTkToplevel):
                             if self._stop_event.is_set():
                                 return None
                             if (not (_route_result.found and _route_result.directions) and
-                                _route_avoid and _dir_avoid and _allow_route_dir_relax):
+                                _route_avoid and _dir_avoid):
                                 _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
                                 _relaxed_result = _run_route_only_path(_relaxed_avoid)
                                 if self._stop_event.is_set():
                                     return None
                                 if _relaxed_result.found and _relaxed_result.directions:
-                                    _route_result = _relaxed_result
-                                    _route_avoid = _relaxed_avoid
+                                    _relaxed_first_dir = _relaxed_result.directions[0]
+                                    _route_chokepoint_override = _is_route_only_failed_chokepoint(
+                                        cx, cy, _relaxed_first_dir, target_pos
+                                    )
+                                    if _allow_route_dir_relax or _route_chokepoint_override:
+                                        _route_result = _relaxed_result
+                                        _route_avoid = _relaxed_avoid
                             if _route_result.found and _route_result.directions:
                                 current_path = _route_result.path
                                 path_index = 0
@@ -5770,9 +5794,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
                                         self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
                                 return _local_dir
+                            _route_relaxed_dir_override = _blocked_primary_dir
                             if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                    self._append_log(f"🧭 유일통로 유지 직진: ({x},{y}) {d2}"))
+                                    self._append_log(f"🧭 유일통로 첫칸 유지: ({x},{y}) {d2}"))
                             return _blocked_primary_dir
                         if _local_avoid_mode:
                             _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
