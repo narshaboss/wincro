@@ -80,6 +80,7 @@ class Action:
     repeat_delay_random_range: float = 0.3  # 반복 대기시간 ±범위 (초)
     # 스킵 모드
     skip_on_not_found: bool = False  # 이미지 못찾으면 wait_after 후 다음 액션으로 스킵
+    enabled: bool = True  # False면 실행에서 제외
     # 계층 구조 (부모-자식)
     parent_id: Optional[str] = None  # 부모 액션 ID
     children: List["Action"] = field(default_factory=list)  # 자식 액션들
@@ -113,7 +114,7 @@ class Action:
             'description', 'wait_for_image', 'wait_for_image_timeout',
             'wait_for_image_disappear', 'repeat_count', 'repeat_delay',
             'repeat_delay_random', 'repeat_delay_random_range', 'skip_on_not_found',
-            'parent_id', 'action_id'
+            'enabled', 'parent_id', 'action_id'
         }
         # 유효한 필드만 필터링 (새 버전에서 추가된 필드가 없어도 됨)
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
@@ -181,6 +182,16 @@ class Sequence:
     def action_count(self) -> int:
         """액션 수"""
         return len(self.actions)
+
+    @property
+    def enabled_actions(self) -> List[Action]:
+        """실행 대상 액션"""
+        return [action for action in self.actions if getattr(action, "enabled", True)]
+
+    @property
+    def enabled_action_count(self) -> int:
+        """실행 대상 액션 수"""
+        return len(self.enabled_actions)
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환 (DB 저장용)"""

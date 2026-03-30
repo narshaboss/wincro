@@ -1753,10 +1753,38 @@ class MainWindow(ctk.CTk):
         else:
             plan = self._mini_active_plan
             if plan is not None:
-                try:
-                    self.after(0, lambda p=plan: self._mini_execute_plan(p))
-                except (tk.TclError, RuntimeError):
-                    pass
+                def reload_and_execute_current():
+                    try:
+                        reloaded_plan = self._mini_reload_plan_for_repeat(plan)
+                        try:
+                            self.after(0, lambda p=reloaded_plan: self._mini_execute_plan(p))
+                        except (tk.TclError, RuntimeError):
+                            pass
+                    except Exception as e:
+                        logger.error(f"[mini-player] repeat reload error: {e}")
+                        try:
+                            self.after(0, lambda: self._mini_on_complete(False, str(e)))
+                        except (tk.TclError, RuntimeError):
+                            pass
+
+                threading.Thread(target=reload_and_execute_current, daemon=True).start()
+
+    def _mini_reload_plan_for_repeat(self, plan):
+        """Reload the active plan from disk before the next repeat when possible."""
+        plan_path = getattr(plan, "_source_file", None)
+        if not plan_path:
+            return plan
+
+        plan_file = Path(plan_path)
+        if not plan_file.exists():
+            return plan
+
+        data = load_json_file(plan_file)
+        templates_dir = DATA_DIR / "templates"
+        reloaded_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+        reloaded_plan._source_file = str(plan_file)
+        reloaded_plan.total_repeat_count = getattr(plan, "total_repeat_count", 1) or 1
+        return reloaded_plan
 
     def _mini_on_complete(self, success, message):
         """Mini player completion callback."""

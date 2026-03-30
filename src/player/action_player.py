@@ -293,6 +293,10 @@ class ActionPlayer:
         self._rule_executor: Optional[RuleExecutor] = None
         self._current_automation_plan: Optional[AutomationPlan] = None
 
+    def _get_enabled_actions(self, sequence: Sequence) -> List[Action]:
+        """실행 대상 액션만 반환"""
+        return [action for action in sequence.actions if getattr(action, "enabled", True)]
+
     @property
     def state(self) -> PlayerState:
         """현재 상태"""
@@ -346,12 +350,17 @@ class ActionPlayer:
             logger.warning("시퀀스에 액션이 없습니다")
             return False
 
+        enabled_actions = self._get_enabled_actions(sequence)
+        if not enabled_actions:
+            logger.warning("활성화된 액션이 없습니다")
+            return False
+
         self._current_sequence = sequence
         self._state = PlayerState.RUNNING
 
         # 진행 상태 초기화
         self._progress = PlaybackProgress(
-            total_steps=len(sequence.actions) * (repeat_count if repeat_count > 0 else 1),
+            total_steps=len(enabled_actions) * (repeat_count if repeat_count > 0 else 1),
             state=PlayerState.RUNNING,
         )
 
@@ -361,7 +370,7 @@ class ActionPlayer:
             sequence_name=sequence.name,
             started_at=datetime.now(),
             status=ExecutionStatus.RUNNING.value,
-            total_steps=len(sequence.actions),
+            total_steps=len(enabled_actions),
         )
         log_id = self._db.create_execution_log(self._execution_log)
         self._execution_log.id = log_id
@@ -448,6 +457,8 @@ class ActionPlayer:
         iteration = 0
         total_completed = 0
         total_failed = 0
+        enabled_actions = self._get_enabled_actions(sequence)
+        enabled_action_count = len(enabled_actions)
 
         try:
             while True:
@@ -458,7 +469,7 @@ class ActionPlayer:
                 iteration += 1
                 self._execution_logger.info(f"=== 반복 {iteration} 시작 ===")
 
-                for i, action in enumerate(sequence.actions):
+                for i, action in enumerate(enabled_actions):
                     # 상태 확인
                     if self._state == PlayerState.STOPPED:
                         self._finalize_execution(False, "중지됨")
@@ -475,11 +486,11 @@ class ActionPlayer:
                             return
 
                     # 진행 상태 업데이트
-                    step_number = (iteration - 1) * len(sequence.actions) + i + 1
+                    step_number = (iteration - 1) * enabled_action_count + i + 1
                     self._progress.current_step = step_number
                     self._progress.current_action = action
                     self._progress.elapsed_time = time.time() - start_time
-                    self._update_progress(f"액션 {i + 1}/{len(sequence.actions)} 실행 중")
+                    self._update_progress(f"액션 {i + 1}/{enabled_action_count} 실행 중")
 
                     if self._on_action_start:
                         try:

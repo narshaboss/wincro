@@ -17,6 +17,7 @@ def test_route_only_relax_and_retry_are_guarded_for_failed_chokepoints():
     text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
 
     assert "def _should_preserve_route_dir_avoid():" in text
+    assert "def _should_use_route_dir_avoid(_d):" in text
     assert "def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):" in text
     helper_slice = text[
         text.index("def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):"):
@@ -27,6 +28,19 @@ def test_route_only_relax_and_retry_are_guarded_for_failed_chokepoints():
     assert "_route_avoid and _dir_avoid and _allow_route_dir_relax" in text
     assert "_route_failed_chokepoint = _is_route_only_failed_chokepoint(" in text
     assert "_preserve_failed_edge = (" in text
+
+
+def test_route_only_dir_avoid_uses_only_hard_fail_edges():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    assert "def _should_use_route_dir_avoid(_d):" in text
+    helper_slice = text[
+        text.index("def _should_use_route_dir_avoid(_d):"):
+        text.index("# ── 전체테스트/부분실행 맵기반 직행 모드")
+    ]
+    assert "_ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)" in helper_slice
+    assert "return _ef >= EDGE_FAIL_MARK_THRESHOLD" in helper_slice
+    assert "if _should_use_route_dir_avoid(_da_d):" in text
 
 
 def test_route_only_local_avoid_requires_goal_rejoin_path():

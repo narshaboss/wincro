@@ -1,0 +1,61 @@
+{
+  "arrival_key_presets": [
+    {
+      "name": "6",
+      "keys": [
+        {
+          "key": "6",
+          "wait_after": 1.0,
+          "wait_random": true,
+          "wait_random_range": 0.3,
+          "repeat_count": 1,
+          "repeat_delay": 1.0,
+          "repeat_delay_random": true,
+          "repeat_delay_random_range": 0.3
+        }
+      ]
+    },
+    {
+      "name": "2",
+      "keys": [
+        {
+          "key": "2",
+          "wait_after": 1.0,
+          "wait_random": true,
+          "wait_random_range": 0.3,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3
+        }
+      ]
+    },
+    {
+      "name": "ENTER",
+      "keys": [
+        {
+          "key": "enter",
+          "wait_after": 1.0,
+          "wait_random": true,
+          "wait_random_range": 0.3,
+          "repeat_count": 1,
+          "repeat_delay": 0.5,
+          "repeat_delay_random": false,
+          "repeat_delay_random_range": 0.3
+        }
+      ]
+    }
+  ],
+  "boss_image_presets": [
+    {
+      "name": "wp_img_0ad2e066",
+      "path": "C:\\Projects\\wincro\\data\\templates\\wp_img_fc6c3934.png"
+    }
+  ],
+  "character_image_presets": [
+    {
+      "name": "wp_char_64b6dd3e",
+      "path": "C:\\Projects\\wincro\\data\\templates\\wp_char_b902b9e2.png"
+    }
+  ]
+}

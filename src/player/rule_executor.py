@@ -553,7 +553,7 @@ class RuleExecutor:
         self._is_moving_mouse = False
 
         # 진행 상태 초기화
-        all_rules_count = len(plan.initial_rules) + len(plan.monitoring_rules)
+        all_rules_count = len(self._flatten_rules(plan.initial_rules)) + len(self._flatten_rules(plan.monitoring_rules))
         self._progress = ExecutionProgress(
             state=ExecutionState.RUNNING_INITIAL,
             initial_total=all_rules_count,
@@ -709,6 +709,8 @@ class RuleExecutor:
         """계층 구조를 평탄화하여 모든 규칙 반환 (자식 포함)"""
         result = []
         for rule in rules:
+            if not getattr(rule, "enabled", True):
+                continue
             result.append(rule)
             if rule.children:
                 result.extend(self._flatten_rules(rule.children))
@@ -717,11 +719,15 @@ class RuleExecutor:
     def _flatten_rules_with_step(self, rules: List[AutomationRule], parent_step: str = "") -> List[Tuple[AutomationRule, str]]:
         """계층 구조를 평탄화하면서 단계 번호 추적 (예: "1", "1-1", "1-2")"""
         result = []
+        visible_index = 0
         for i, rule in enumerate(rules):
+            if not getattr(rule, "enabled", True):
+                continue
+            visible_index += 1
             if parent_step:
-                step = f"{parent_step}-{i + 1}"
+                step = f"{parent_step}-{visible_index}"
             else:
-                step = str(i + 1)
+                step = str(visible_index)
             result.append((rule, step))
             if rule.children:
                 result.extend(self._flatten_rules_with_step(rule.children, step))

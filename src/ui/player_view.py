@@ -176,6 +176,11 @@ def _convert_action_to_monitor_dict(action):
     return monitor_action
 
 
+def _rule_is_enabled(rule: AutomationRule) -> bool:
+    """룰 활성 상태."""
+    return bool(getattr(rule, "enabled", True))
+
+
 class PlanDetailDialog(ctk.CTkToplevel):
     """자동화 계획 상세보기/수정 다이얼로그"""
 
@@ -681,6 +686,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         index = index_str  # 계층적 번호 (예: "3", "3-1", "3-2-1")
         has_children = len(rule.children) > 0
         is_collapsed = rule.rule_id in self._collapsed_items
+        is_enabled = _rule_is_enabled(rule)
 
         # 깊이에 따른 들여쓰기
         indent = depth * 30
@@ -692,7 +698,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 선택 상태에 따른 배경색
         is_selected = self._selected_rule is not None and self._selected_rule.rule_id == rule.rule_id
-        bg_color = "#2e7d32" if is_selected else COLORS["bg_dark"]  # 선택 시 초록색
+        bg_color = "#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"])
 
         item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
         item.pack(fill="x", pady=4, padx=(10 + indent, 10))
@@ -732,6 +738,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 popup.add_cascade(label="클릭 유형", menu=click_menu)
             popup.add_separator()
             popup.add_command(label="복사", command=lambda: self._copy_rule(r))
+            popup.add_command(
+                label="비활성화" if _rule_is_enabled(r) else "활성화",
+                command=lambda: self._toggle_rule_enabled(r),
+            )
             # 붙여넣기 (클립보드에 내용이 있을 때만 활성화)
             if get_action_clipboard() is not None:
                 # 모니터링 액션으로 붙이기 서브메뉴 (하위로 붙여넣기 위에 배치)
@@ -778,11 +788,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 액션 색상 (숫자 배지용)
         action_colors = ACTION_COLORS
         color = action_colors.get(rule.action_type, COLORS["text_muted"])
+        badge_color = color if is_enabled else COLORS["bg_card_hover"]
+        type_color = color if is_enabled else COLORS["text_muted"]
+        primary_text_color = COLORS["text_primary"] if is_enabled else COLORS["text_muted"]
+        secondary_text_color = COLORS["text_secondary"] if is_enabled else COLORS["text_muted"]
 
         # 숫자 배지 (맨 앞에 위치)
         num_lbl = ctk.CTkLabel(
             content, text=f"{index}", font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=color, text_color="white", corner_radius=4, width=26, height=22,
+            fg_color=badge_color, text_color="white", corner_radius=4, width=26, height=22,
         )
         num_lbl.pack(side="left", padx=(0, 8))
         bind_drag(num_lbl)
@@ -827,7 +841,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         type_lbl = ctk.CTkLabel(
             row1, text=action_names.get(rule.action_type, rule.action_type or "동작"),
-            font=ctk.CTkFont(size=13, weight="bold"), text_color=color,
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=type_color,
         )
         type_lbl.pack(side="left")
         bind_drag(type_lbl)
@@ -836,10 +850,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if rule.description:
             name_lbl = ctk.CTkLabel(
                 row1, text=f" - {rule.description}",
-                font=ctk.CTkFont(size=12), text_color=COLORS["text_primary"],
+                font=ctk.CTkFont(size=12), text_color=primary_text_color,
             )
             name_lbl.pack(side="left")
             bind_drag(name_lbl)
+
+        if not is_enabled:
+            disabled_lbl = ctk.CTkLabel(
+                row1, text="  [비활성]",
+                font=ctk.CTkFont(size=11, weight="bold"), text_color=COLORS["text_muted"],
+            )
+            disabled_lbl.pack(side="left")
+            bind_drag(disabled_lbl)
 
         # 자식 수 표시
         if has_children:
@@ -863,7 +885,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
             monitoring_lbl = ctk.CTkLabel(
                 row1, text=monitoring_text,
-                font=ctk.CTkFont(size=11, weight="bold"), text_color="#2ecc71",
+                font=ctk.CTkFont(size=11, weight="bold"), text_color="#2ecc71" if is_enabled else COLORS["text_muted"],
             )
             monitoring_lbl.pack(side="left")
             bind_drag(monitoring_lbl)
@@ -889,7 +911,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if details:
             detail_lbl = ctk.CTkLabel(
                 row2, text=" | ".join(details),
-                font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"],
+                font=ctk.CTkFont(size=11), text_color=secondary_text_color,
             )
             detail_lbl.pack(side="left")
             bind_drag(detail_lbl)
@@ -954,13 +976,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
             btn_frame,
             text="▶",
             font=ctk.CTkFont(size=14),
-            fg_color=COLORS["accent_orange"],
-            hover_color="#d97706",
-            text_color="white",
+            fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
+            hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+            text_color="white" if is_enabled else COLORS["text_muted"],
             width=30,
             height=26,
             corner_radius=4,
             command=lambda r=rule: self._test_run_rule(r),
+            state="normal" if is_enabled else "disabled",
         )
         run_btn.pack(side="right", padx=(4, 0))
 
@@ -1871,7 +1894,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 첫 번째 game_mode 규칙 위치 찾기
         first_gm_idx = None
         for i, r in enumerate(rules_to_run):
-            if r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id):
+            if _rule_is_enabled(r) and r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id):
                 first_gm_idx = i
                 break
 
@@ -2099,7 +2122,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # → 있으면 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends/보스 지원)
         # → RuleExecutor.execute_game_mode_coordinate는 간소화 버전이라 route_ends 미지원 → 조기 도착 판정 버그
         _has_game_mode = any(
-            r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id)
+            _rule_is_enabled(r) and r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id)
             for r in rules_to_run
         )
         if _has_game_mode:
@@ -2206,6 +2229,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self.configure(fg_color=COLORS["bg_dark"])
         self._stop_partial_run_visual()
         self._notify_player_partial_run_stopped()
+
+    def _toggle_rule_enabled(self, rule: AutomationRule):
+        """룰 활성/비활성 토글."""
+        rule.enabled = not _rule_is_enabled(rule)
+        self._mark_modified()
+        self._save_plan()
+        self._refresh_action_list()
+        logger.info(
+            "룰 %s: %s",
+            "활성화" if rule.enabled else "비활성화",
+            rule.description or rule.action_type,
+        )
 
     def _toggle_skip_mode(self, rule: AutomationRule):
         """스킵 모드 토글 - 이미지 못찾으면 wait_after 후 다음 액션으로"""
@@ -5328,6 +5363,12 @@ class GameModeDialog(ctk.CTkToplevel):
                         return True
                 return False
 
+            def _should_use_route_dir_avoid(_d):
+                if not _is_dir_blocked(cx, cy, _d, iteration):
+                    return False
+                _ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)
+                return _ef >= EDGE_FAIL_MARK_THRESHOLD
+
             # ── 전체테스트/부분실행 맵기반 직행 모드 ─────────────────────
             # 맵핑테스트의 "최단경로"는 안정적인데, 일반 테스트는 기존 1~2차 일반 경로 파이프를
             # 타면서 방향없음/재계산/soft 우회가 섞여 좌우/상하 흔들림이 커졌다.
@@ -5336,7 +5377,7 @@ class GameModeDialog(ctk.CTkToplevel):
             if _route_only_mode:
                 _skip_to_explore = True
                 for _da_d, (_da_dx, _da_dy) in DIRECTIONS_4.items():
-                    if _is_dir_blocked(cx, cy, _da_d, iteration):
+                    if _should_use_route_dir_avoid(_da_d):
                         _dir_avoid.add((cx + _da_dx, cy + _da_dy))
                 _route_avoid = _build_avoid_set(target_pos)
 
@@ -13768,6 +13809,13 @@ class GameModeDialog(ctk.CTkToplevel):
                       command=lambda idx=i: self._show_map_for(idx))
         show_btn.pack(side="left", padx=_btn_pad)
 
+        sim_btn = ctk.CTkButton(row3, text="시뮬레이션", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
+                      fg_color="#2b1f3d", hover_color="#4a2f6a",
+                      text_color="#d9b8ff", border_width=1, border_color="#4a2f6a",
+                      command=lambda idx=i: self._run_waypoint_simulation(idx))
+        sim_btn.pack(side="left", padx=_btn_pad)
+
         clear_btn = None  # 초기화 버튼 제거됨
 
         add_route_start_btn = ctk.CTkButton(row3, text="+출발", width=48, height=_btn_h,
@@ -13926,6 +13974,7 @@ class GameModeDialog(ctk.CTkToplevel):
             'paste_btn': paste_btn,
             'test_btn': None,
             'show_btn': show_btn,
+            'sim_btn': sim_btn,
             'clear_btn': clear_btn,
             'load_map_btn': load_map_btn,
             'add_char_img_btn': add_char_img_btn,
@@ -14962,6 +15011,7 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[i]['copy_btn'].configure(command=lambda idx=i: self._copy_waypoint(idx))
             cards[i]['single_mapping_btn'].configure(command=lambda idx=i: self._run_single_mapping_test(idx))
             cards[i]['show_btn'].configure(command=lambda idx=i: self._show_map_for(idx))
+            cards[i]['sim_btn'].configure(command=lambda idx=i: self._run_waypoint_simulation(idx))
             cards[i]['load_map_btn'].configure(command=lambda idx=i: self._load_map_for(idx))
             cards[i]['add_char_img_btn'].configure(command=lambda idx=i: self._add_character_image(idx))
             cards[i]['del_char_img_btn'].configure(command=lambda idx=i: self._delete_character_image(idx))
@@ -15051,6 +15101,126 @@ class GameModeDialog(ctk.CTkToplevel):
             self._append_log(f"❌ 맵 보기 오류: {e}")
             import traceback
             logger.error(f"[맵핑] 맵 보기 오류: {traceback.format_exc()}")
+
+    def _run_waypoint_simulation(self, idx: int):
+        """특정 경유지 시뮬레이션 실행"""
+        import os
+        from tkinter import messagebox
+
+        try:
+            waypoints = getattr(self._config, "waypoints", []) or []
+            if idx < 0 or idx >= len(waypoints):
+                return
+
+            seg_name = self._get_segment_display_name(idx)
+            self._append_log(f"🎬 '{seg_name}' 시뮬레이션 요청")
+
+            from ..player.game_map import GameMap
+            from ..player.waypoint_simulation import (
+                SimulationBatchTarget,
+                WaypointSimulationWindow,
+                build_waypoint_harness_config,
+                build_waypoint_simulation,
+                get_waypoint_simulation_preset_names,
+            )
+
+            def _load_sim_map(sim_idx: int):
+                seg_label = self._get_segment_display_name(sim_idx)
+                if (
+                    sim_idx == getattr(self, "_current_segment_idx", -1)
+                    and not (
+                        self._uses_transient_local_map(sim_idx)
+                        and not getattr(self, "_is_mapping", False)
+                        and not self._is_running
+                    )
+                ):
+                    loaded_map = self._game_map
+                else:
+                    map_path = self._get_segment_map_name(sim_idx)
+                    loaded_map = GameMap(name=seg_label)
+                    if os.path.exists(map_path):
+                        loaded_map.load(map_path)
+                self._sanitize_segment_end_pos(loaded_map, sim_idx)
+                return seg_label, loaded_map
+
+            seg_name, sim_map = _load_sim_map(idx)
+            if not sim_map.passable and not sim_map.blocked and not sim_map.soft_blocked:
+                messagebox.showinfo(
+                    "시뮬레이션 불가",
+                    f"'{seg_name}' 맵 데이터가 없습니다.\n\n"
+                    "맵핑을 먼저 실행하거나, 맵을 불러온 뒤 다시 시도하세요.",
+                )
+                return
+
+            def _build_scenario_for(sim_idx: int, *, preset_name: str, seed_override: int | None = None, profile_override=None):
+                local_seg_name, local_map = _load_sim_map(sim_idx)
+                if not local_map.passable and not local_map.blocked and not local_map.soft_blocked:
+                    return None
+                seed_value = seed_override if seed_override is not None else (sim_idx + 1)
+                harness_config = profile_override or build_waypoint_harness_config(
+                    local_map,
+                    waypoints[sim_idx],
+                    preset_name=preset_name,
+                    rng_seed=seed_value,
+                )
+                return build_waypoint_simulation(
+                    local_map,
+                    waypoints[sim_idx],
+                    segment_name=local_seg_name,
+                    rng_seed=seed_value,
+                    harness_config=harness_config,
+                )
+
+            def _build_scenario(*, preset_name: str, seed_override: int | None = None, profile_override=None):
+                return _build_scenario_for(
+                    idx,
+                    preset_name=preset_name,
+                    seed_override=seed_override,
+                    profile_override=profile_override,
+                )
+
+            def _build_batch_targets():
+                targets = []
+                for sim_idx in range(len(waypoints)):
+                    local_seg_name, local_map = _load_sim_map(sim_idx)
+                    if not local_map.passable and not local_map.blocked and not local_map.soft_blocked:
+                        continue
+                    local_wp = waypoints[sim_idx]
+                    is_boss_room = (
+                        isinstance(local_wp, (list, tuple))
+                        and len(local_wp) >= 2
+                        and int(local_wp[0]) == 0
+                        and int(local_wp[1]) == 0
+                    )
+                    targets.append(
+                        SimulationBatchTarget(
+                            segment_name=local_seg_name,
+                            is_boss_room=is_boss_room,
+                            scenario_factory=(
+                                lambda *, preset_name, seed_override=None, profile_override=None, _sim_idx=sim_idx: _build_scenario_for(
+                                    _sim_idx,
+                                    preset_name=preset_name,
+                                    seed_override=seed_override,
+                                    profile_override=profile_override,
+                                )
+                            ),
+                        )
+                    )
+                return targets
+
+            scenario = _build_scenario(preset_name="정상")
+            preset_names = get_waypoint_simulation_preset_names(scenario.is_boss_room)
+            WaypointSimulationWindow(
+                self,
+                scenario,
+                scenario_factory=_build_scenario,
+                preset_names=preset_names,
+                batch_targets_factory=_build_batch_targets,
+            )
+        except Exception as e:
+            self._append_log(f"❌ 시뮬레이션 오류: {e}")
+            import traceback
+            logger.error(f"[시뮬레이션] 실행 오류: {traceback.format_exc()}")
 
     def _restore_map_for(self, idx: int):
         """특정 경유지 맵 되돌리기"""
@@ -17854,7 +18024,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 선택 상태에 따른 배경색
         is_selected = self._selected_action is not None and self._selected_action.action_id == action.action_id
-        bg_color = "#2e7d32" if is_selected else COLORS["bg_dark"]  # 선택 시 초록색
+        is_enabled = getattr(action, "enabled", True)
+        bg_color = "#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"])
 
         item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
         item.pack(fill="x", pady=4, padx=(10 + indent, 10))
@@ -17893,6 +18064,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 )
                 popup.add_cascade(label="클릭 유형", menu=click_menu)
             popup.add_separator()
+            popup.add_command(
+                label="비활성화" if getattr(a, "enabled", True) else "활성화",
+                command=lambda: self._toggle_action_enabled(a),
+            )
             popup.add_command(label="복사", command=lambda: self._copy_action(a))
             # 붙여넣기 (클립보드에 내용이 있을 때만 활성화)
             if get_action_clipboard() is not None:
@@ -17940,11 +18115,15 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         # 액션 색상 (숫자 배지용)
         action_colors = ACTION_COLORS
         color = action_colors.get(action.action_type, COLORS["text_muted"])
+        badge_color = color if is_enabled else COLORS["bg_card_hover"]
+        type_color = color if is_enabled else COLORS["text_muted"]
+        primary_text_color = COLORS["text_primary"] if is_enabled else COLORS["text_muted"]
+        secondary_text_color = COLORS["text_secondary"] if is_enabled else COLORS["text_muted"]
 
         # 숫자 배지 (맨 앞에 위치)
         num_lbl = ctk.CTkLabel(
             content, text=f"{index}", font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=color, text_color="white", corner_radius=4, width=26, height=22,
+            fg_color=badge_color, text_color="white", corner_radius=4, width=26, height=22,
         )
         num_lbl.pack(side="left", padx=(0, 8))
         bind_drag(num_lbl)
@@ -17987,9 +18166,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             lbl.pack(side="left", padx=(0, 4))
             bind_drag(lbl)
 
+        type_text = action_names.get(action.action_type, action.action_type or "동작")
+        if not is_enabled:
+            type_text = f"[비활성] {type_text}"
         type_lbl = ctk.CTkLabel(
-            row1, text=action_names.get(action.action_type, action.action_type or "동작"),
-            font=ctk.CTkFont(size=13, weight="bold"), text_color=color,
+            row1, text=type_text,
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=type_color,
         )
         type_lbl.pack(side="left")
         bind_drag(type_lbl)
@@ -17998,7 +18180,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if action.description:
             name_lbl = ctk.CTkLabel(
                 row1, text=f" - {action.description}",
-                font=ctk.CTkFont(size=12), text_color=COLORS["text_primary"],
+                font=ctk.CTkFont(size=12), text_color=primary_text_color,
             )
             name_lbl.pack(side="left")
             bind_drag(name_lbl)
@@ -18007,7 +18189,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if has_children:
             child_lbl = ctk.CTkLabel(
                 row1, text=f"  ({len(action.children)}개 하위)",
-                font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+                font=ctk.CTkFont(size=11), text_color=secondary_text_color,
             )
             child_lbl.pack(side="left")
             bind_drag(child_lbl)
@@ -18033,7 +18215,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if details:
             detail_lbl = ctk.CTkLabel(
                 row2, text="  |  ".join(details),
-                font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"],
+                font=ctk.CTkFont(size=11), text_color=secondary_text_color,
             )
             detail_lbl.pack(side="left")
             bind_drag(detail_lbl)
@@ -18689,6 +18871,17 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             self._modified = True
             self._refresh_action_list()
             logger.info(f"액션 종속 해제: {action.action_id}")
+
+    def _toggle_action_enabled(self, action: Action):
+        """액션 활성 상태 토글"""
+        action.enabled = not getattr(action, "enabled", True)
+        self._modified = True
+        self._refresh_action_list()
+        logger.info(
+            "액션 %s: %s",
+            "활성화" if action.enabled else "비활성화",
+            action.action_id,
+        )
 
     def _copy_action(self, action: Action):
         """액션 복사 (하위 액션 포함)"""
@@ -20578,9 +20771,9 @@ class PlayerView(BaseView):
 
         def _has_game_mode_rule(rules):
             for rule in rules or []:
-                if rule.action_type == "game_mode" and plan_to_execute.game_modes.get(rule.rule_id):
+                if _rule_is_enabled(rule) and rule.action_type == "game_mode" and plan_to_execute.game_modes.get(rule.rule_id):
                     return True
-                if rule.children and _has_game_mode_rule(rule.children):
+                if _rule_is_enabled(rule) and rule.children and _has_game_mode_rule(rule.children):
                     return True
             return False
 
@@ -20654,7 +20847,7 @@ class PlayerView(BaseView):
 
         first_gm_idx = None
         for i, rule in enumerate(rules_to_run):
-            if rule.action_type == "game_mode" and active_plan.game_modes.get(rule.rule_id):
+            if _rule_is_enabled(rule) and rule.action_type == "game_mode" and active_plan.game_modes.get(rule.rule_id):
                 first_gm_idx = i
                 break
 
