@@ -13,6 +13,7 @@ PRESET_FILE = DATA_DIR / "waypoint_presets.json"
 ARRIVAL_KEY_PRESETS = "arrival_key_presets"
 BOSS_IMAGE_PRESETS = "boss_image_presets"
 CHARACTER_IMAGE_PRESETS = "character_image_presets"
+ITEM_IMAGE_PRESETS = "item_image_presets"
 
 
 def _default_presets() -> dict[str, list[dict[str, Any]]]:
@@ -20,6 +21,7 @@ def _default_presets() -> dict[str, list[dict[str, Any]]]:
         ARRIVAL_KEY_PRESETS: [],
         BOSS_IMAGE_PRESETS: [],
         CHARACTER_IMAGE_PRESETS: [],
+        ITEM_IMAGE_PRESETS: [],
     }
 
 
@@ -65,6 +67,7 @@ def load_waypoint_presets() -> dict[str, list[dict[str, Any]]]:
     data[ARRIVAL_KEY_PRESETS] = _sanitize_named_items(raw.get(ARRIVAL_KEY_PRESETS), require_keys=True)
     data[BOSS_IMAGE_PRESETS] = _sanitize_named_items(raw.get(BOSS_IMAGE_PRESETS), require_path=True)
     data[CHARACTER_IMAGE_PRESETS] = _sanitize_named_items(raw.get(CHARACTER_IMAGE_PRESETS), require_path=True)
+    data[ITEM_IMAGE_PRESETS] = _sanitize_named_items(raw.get(ITEM_IMAGE_PRESETS), require_path=True)
     return data
 
 
@@ -73,9 +76,20 @@ def save_waypoint_presets(data: dict[str, list[dict[str, Any]]]) -> None:
         ARRIVAL_KEY_PRESETS: _sanitize_named_items(data.get(ARRIVAL_KEY_PRESETS), require_keys=True),
         BOSS_IMAGE_PRESETS: _sanitize_named_items(data.get(BOSS_IMAGE_PRESETS), require_path=True),
         CHARACTER_IMAGE_PRESETS: _sanitize_named_items(data.get(CHARACTER_IMAGE_PRESETS), require_path=True),
+        ITEM_IMAGE_PRESETS: _sanitize_named_items(data.get(ITEM_IMAGE_PRESETS), require_path=True),
     }
     PRESET_FILE.parent.mkdir(parents=True, exist_ok=True)
     dump_json_file(PRESET_FILE, payload, ensure_ascii=False, indent=2)
+
+
+def _image_preset_key(kind: str) -> str:
+    if kind == "boss":
+        return BOSS_IMAGE_PRESETS
+    if kind == "character":
+        return CHARACTER_IMAGE_PRESETS
+    if kind == "item":
+        return ITEM_IMAGE_PRESETS
+    raise ValueError(f"unknown image preset kind: {kind}")
 
 
 def list_arrival_key_presets() -> list[dict[str, Any]]:
@@ -83,7 +97,7 @@ def list_arrival_key_presets() -> list[dict[str, Any]]:
 
 
 def list_image_presets(kind: str, *, existing_only: bool = True) -> list[dict[str, Any]]:
-    key = BOSS_IMAGE_PRESETS if kind == "boss" else CHARACTER_IMAGE_PRESETS
+    key = _image_preset_key(kind)
     items = deepcopy(load_waypoint_presets()[key])
     if not existing_only:
         return items
@@ -127,7 +141,7 @@ def upsert_image_preset(kind: str, name: str, path: str) -> None:
         raise ValueError("preset name is required")
     if not preset_path:
         raise ValueError("image path is required")
-    key = BOSS_IMAGE_PRESETS if kind == "boss" else CHARACTER_IMAGE_PRESETS
+    key = _image_preset_key(kind)
     data = load_waypoint_presets()
     items = [item for item in data[key] if item.get("name") != preset_name]
     items.insert(0, {"name": preset_name, "path": preset_path})
@@ -139,7 +153,7 @@ def remove_image_preset(kind: str, name: str) -> None:
     preset_name = str(name).strip()
     if not preset_name:
         raise ValueError("preset name is required")
-    key = BOSS_IMAGE_PRESETS if kind == "boss" else CHARACTER_IMAGE_PRESETS
+    key = _image_preset_key(kind)
     data = load_waypoint_presets()
     data[key] = [item for item in data[key] if item.get("name") != preset_name]
     save_waypoint_presets(data)

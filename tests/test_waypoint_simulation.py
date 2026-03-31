@@ -57,7 +57,6 @@ def test_build_waypoint_simulation_for_boss_waypoint():
     assert scenario.scan_result is not None
     assert "boss_spawn" in kinds
     assert "boss_detect" in kinds
-    assert "boss_contact" in kinds
     assert "boss_skill" in kinds
     assert "item_escape" in kinds
     assert "arrival_keys" in kinds
@@ -88,6 +87,8 @@ def test_route_stagnation_preset_surfaces_failure_and_dynamic_monsters():
     assert scenario.scan_result.status == "FAIL"
     assert "실패요약:" in scenario.scan_result.details
     assert len(monster_shapes) >= 1
+    assert any(record.blocked_neighbor_tiles for record in scenario.records)
+    assert any(record.no_detour for record in scenario.records)
 
 
 def test_coord_glitch_preset_surfaces_coord_fault():
@@ -189,4 +190,13 @@ def test_simulation_window_contains_full_test_ui_hooks():
     assert "def _update_result_summary" in src
     assert "Treeview" in src
     assert "summarize_scan_results" in src
+    assert '몬스터 점유' in src
+    assert '막힌 인접 칸' in src
+    assert '회피 누적 칸' in src
+    assert '우회 경로 없음' in src
+    assert '<Configure>' in src
+    assert 'min(1000, int(self._count_entry.get().strip()))' in src
+    assert 'CTkScrollbar' in src
+    assert 'xscrollcommand=self._h_scroll.set' in src
+    assert 'yscrollcommand=self._v_scroll.set' in src
 

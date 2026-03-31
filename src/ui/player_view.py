@@ -3314,6 +3314,16 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_stop_event = threading.Event()
         self._bosstest_thread = None
         self._bosstest_current_key = None
+        self._itemtest_running = False
+        self._itemtest_stop_event = threading.Event()
+        self._itemtest_thread = None
+        self._itemtest_item_image_path = None
+        self._loot_detect_last_item_center = None
+        self._boss_item_detect_center = None
+        self._boss_item_detect_hits = 0
+        self._boss_item_seen_recent = False
+        self._boss_item_seen_at = 0.0
+        self._boss_item_passive_last_log_at = 0.0
         self._wp_cards = []
         self._auto_run = auto_run
         self._wp_empty_label = None
@@ -3325,6 +3335,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._recent_runtime_issue_detail = ""
         self._recent_runtime_issue_at = 0.0
         self._recent_runtime_issue_hits = 0
+        self._synthetic_escape_guard_until = 0.0
         self._ui_call_queue = deque()
         self._ui_call_queue_lock = threading.Lock()
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
@@ -3466,6 +3477,29 @@ class GameModeDialog(ctk.CTkToplevel):
             )
             return
         self._mark_stop_reason(source_reason, source_detail, overwrite=True)
+
+    def _suppress_escape_hotkey_for(self, duration_s: float = 0.45) -> None:
+        try:
+            _until = time.time() + max(0.05, float(duration_s or 0.0))
+            self._synthetic_escape_guard_until = max(
+                float(getattr(self, "_synthetic_escape_guard_until", 0.0) or 0.0),
+                _until,
+            )
+        except Exception:
+            pass
+
+    def _is_escape_hotkey_suppressed(self) -> bool:
+        try:
+            return time.time() < float(getattr(self, "_synthetic_escape_guard_until", 0.0) or 0.0)
+        except Exception:
+            return False
+
+    def _handle_escape_hotkey(self) -> None:
+        if self._is_escape_hotkey_suppressed():
+            logger.info("[특화모드] ESC hotkey ignored during synthetic esc input")
+            return
+        self._mark_manual_stop_context("escape_hotkey", "keyboard ESC hotkey")
+        self._stop_event.set()
 
     def _request_stop_execution(self, reason, detail="", ui_log=None, overwrite=False):
         """중단 사유를 남기고 안전하게 stop_execution을 예약한다."""
@@ -3840,17 +3874,31 @@ class GameModeDialog(ctk.CTkToplevel):
     def _run_single_waypoint(self, idx: int):
         """특정 경유지만 테스트 실행"""
         if self._is_running:
+            prev_idx = getattr(self, '_single_waypoint_idx', -1)
             # 스레드 죽었는데 _is_running True면 강제 리셋
             _rt = getattr(self, '_run_thread', None)
             if _rt is not None and not _rt.is_alive():
                 self._is_running = False
                 self._stop_event.set()
-            else:
-                self._mark_manual_stop_context("manual_waypoint_switch", f"_run_single_waypoint idx={idx}")
+                if prev_idx >= 0 and not getattr(self, '_is_mapping_test', False):
+                    self._update_card_single_play_btn(prev_idx, False)
+            elif getattr(self, '_single_waypoint_mode', False) and not getattr(self, '_is_mapping_test', False) and prev_idx == idx:
+                self._mark_manual_stop_context("manual_single_waypoint_stop", f"_run_single_waypoint same idx={idx}")
                 self._stop_execution()
+                return
+            else:
+                self._mark_manual_stop_context("manual_waypoint_switch", f"_run_single_waypoint switch prev_idx={prev_idx} next_idx={idx}")
+                self._stop_execution()
+                self._single_waypoint_mode = True
+                self._single_waypoint_idx = idx
+                self._is_mapping_test = False
+                self._update_card_single_play_btn(idx, True)
+                self.after(500, self._start_execution)
                 return
         self._single_waypoint_mode = True
         self._single_waypoint_idx = idx
+        self._is_mapping_test = False
+        self._update_card_single_play_btn(idx, True)
         # 이전 스레드 finally 정리 대기 후 시작
         self.after(300, self._start_execution)
 
@@ -3970,6 +4018,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 맵핑테스트 버튼 복원
                 if getattr(self, '_is_mapping_test', False) and single_idx >= 0:
                     self._update_card_mapping_btn(single_idx, False)
+                elif single_idx >= 0:
+                    self._update_card_single_play_btn(single_idx, False)
                 self._single_waypoint_mode = False
             self._is_mapping_test = False
         except Exception:
@@ -4042,7 +4092,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         _escape_hotkey_id = keyboard.add_hotkey(
             'escape',
-            lambda: self._mark_manual_stop_context("escape_hotkey", "keyboard ESC hotkey") or self._stop_event.set()
+            self._handle_escape_hotkey
         )
         self._key_press_count = 0
 
@@ -4067,7 +4117,8 @@ class GameModeDialog(ctk.CTkToplevel):
         elif single_mode and getattr(self, '_is_mapping_test', False):
             final_wp_idx = len(waypoints_raw) - 1
         elif single_mode:
-            # 개별 테스트 모드: 해당 경유지만
+            # 개별 일반테스트: 선택한 경유지부터 즉시 시작하고
+            # 해당 경유지 완료 시 종료한다.
             final_wp_idx = single_idx
 
         # 최종 목표까지의 경유지만 포함
@@ -4121,7 +4172,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 비활성 도착좌표 → 벽 등록 (맵 오염 방지)
                 route_walls.extend(_disabled_ends)
                 map_locked = bool(wp[3].get('map_locked')) if len(wp) >= 4 and isinstance(wp[3], dict) else False
-                all_targets.append((int(wp[0]), int(wp[1]), wp_name, is_boss, boss_img_path, char_img_path, arrival_keys, route_ends, route_starts, map_locked, route_walls))
+                ignore_jump_wait = bool(wp[3].get('ignore_jump_wait')) if len(wp) >= 4 and isinstance(wp[3], dict) else False
+                all_targets.append((int(wp[0]), int(wp[1]), wp_name, is_boss, boss_img_path, char_img_path, arrival_keys, route_ends, route_starts, map_locked, route_walls, ignore_jump_wait))
 
         if not all_targets:
             self.after(0, lambda: self._append_log("⚠️ 경유지가 없습니다. 경유지를 추가하세요."))
@@ -4137,40 +4189,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 target_idx = 0
                 self._current_segment_idx = 0
         else:
-            if single_mode and 0 <= single_idx < len(all_targets):
+            if single_mode:
                 target_idx = single_idx
+                self._switch_segment_map(single_idx)
             else:
                 target_idx = 0
-            # 개별 경유지 테스트: 해당 경유지의 맵 로드 (순찰 좌표 등)
-            # ※ _current_segment_idx를 미리 변경하면 안 됨!
-            #    _switch_segment_map이 현재 인덱스(0)의 맵을 저장한 후 내부에서 변경함
-            if single_mode:
-                logger.info(
-                    f"[맵핑이상] 단일테스트 세그전환 요청: single_idx={single_idx} "
-                    f"before_current={getattr(self, '_current_segment_idx', -1)}"
-                )
-                _switched = self._switch_segment_map(single_idx)
-                logger.info(
-                    f"[맵핑이상] 단일테스트 세그전환 결과: single_idx={single_idx} "
-                    f"switched={_switched} after_current={getattr(self, '_current_segment_idx', -1)}"
-                )
-                if (not _switched) or getattr(self, '_current_segment_idx', -1) != single_idx:
-                    _seg_msg = (
-                        f"⚠️ 단일테스트 세그전환 실패: single_idx={single_idx} "
-                        f"current_segment_idx={getattr(self, '_current_segment_idx', -1)} switched={_switched}"
-                    )
-                    logger.warning(f"[맵핑이상] {_seg_msg}")
-                    if _ui_update_ok:
-                        self.after(0, lambda m=_seg_msg: self._append_log(m))
-                    self._mark_stop_reason(
-                        "mapping_single_segment_switch_failed",
-                        f"single_idx={single_idx} current_segment_idx={getattr(self, '_current_segment_idx', -1)} switched={_switched}",
-                        overwrite=True,
-                    )
-                    self._stop_event.set()
-                    return
-            else:
-                # 전체 테스트: 반드시 세그먼트 0 맵 로드 (이전 테스트 데이터 오염 방지)
                 self._switch_segment_map(0)
 
         try:
@@ -4446,6 +4469,7 @@ class GameModeDialog(ctk.CTkToplevel):
         _last_move_target = None       # 직전 반복에서 실제로 누른 이동의 목표 좌표
         _last_move_mode = None         # 직전 반복에서 실제로 누른 이동의 보스 모드
         edge_fail_counts = {}          # {(x,y,dir): n} 비연속 엣지 실패 누적
+        AVOID_EDGE_FAIL_THRESHOLD = 2  # 회피/임시차단/임시벽 승격 최소 실패 횟수
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
         _portal_protected = set()      # 포탈 좌표 (절대 unblock 금지)
@@ -4463,6 +4487,7 @@ class GameModeDialog(ctk.CTkToplevel):
         boss_approach_target = None    # (미사용, 호환성)
         boss_approach_retries = 0      # (미사용, 호환성)
         boss_approach_cooldown = 0     # (미사용, 호환성)
+        _boss_item_force_loot = False  # 아이템 확정 감지 시 즉시 루팅/전환
         _boss_chasing = False          # 보스 추적 중 (반복 간 유지)
         _chase_tx = 0                  # 추적 목표 X
         _chase_ty = 0                  # 추적 목표 Y
@@ -4615,6 +4640,9 @@ class GameModeDialog(ctk.CTkToplevel):
             _name = ""
             if 0 <= _seg_idx < len(all_targets):
                 _name = str(all_targets[_seg_idx][2] or "")
+            _ignore_jump_wait = all_targets[_seg_idx][11] if 0 <= _seg_idx < len(all_targets) and len(all_targets[_seg_idx]) > 11 else False
+            if bool(_ignore_jump_wait):
+                return False
             _arr_keys = all_targets[_seg_idx][6] if 0 <= _seg_idx < len(all_targets) and len(all_targets[_seg_idx]) > 6 else []
             _route_ends = all_targets[_seg_idx][7] if 0 <= _seg_idx < len(all_targets) and len(all_targets[_seg_idx]) > 7 else []
             if bool(_arr_keys) and bool(_route_ends) and "탈출" in _name:
@@ -4714,6 +4742,8 @@ class GameModeDialog(ctk.CTkToplevel):
         def _arm_boss_transition_cooldown(seconds=2.0):
             nonlocal _boss_transition_cooldown_until
             _boss_transition_cooldown_until = time.time() + max(0.5, float(seconds))
+
+        self._reset_boss_item_passive_state()
 
         def _arm_segment_transition_state(wait_for_boss_teleport: bool, anchor_x: int = None, anchor_y: int = None):
             nonlocal portal_grace, prev_x, prev_y
@@ -5782,7 +5812,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         _route_failed_chokepoint = _is_route_only_failed_chokepoint(
                             cx, cy, _blocked_primary_dir, target_pos
                         )
-                        if _blocked_edge_fail <= 1:
+                        if _blocked_edge_fail < AVOID_EDGE_FAIL_THRESHOLD:
                             if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                     self._append_log(f"🧭 경로재시도: ({x},{y}) {d2}"))
@@ -5851,7 +5881,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     _route_chokepoint = _is_route_chokepoint(current_pos, target_pos, _blocked_next, allow_unknown=True)
                     _preserve_failed_edge = (
                         _segment_has_starts and
-                        _blocked_edge_fail >= 2 and
+                        _blocked_edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
                         _route_chokepoint
                     )
                     if _preserve_failed_edge:
@@ -5870,7 +5900,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         not self._game_map.is_blocked(_blocked_next[0], _blocked_next[1]) and
                         _blocked_next not in _portal_protected
                     )
-                    if _next_is_retryable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + 2:
+                    if _next_is_retryable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                 self._append_log(f"🧭 경로직진 재시도: ({x},{y}) {d2}"))
@@ -5882,12 +5912,12 @@ class GameModeDialog(ctk.CTkToplevel):
                         self._game_map.is_passable(_blocked_next[0], _blocked_next[1]) and
                         not self._game_map.is_blocked(_blocked_next[0], _blocked_next[1])
                     )
-                    if _next_is_map_passable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + 2:
+                    if _next_is_map_passable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
                         if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                     self._append_log(f"🧭 좁은목 재시도: ({x},{y}) {d2}"))
                         return _blocked_primary_dir
-                    if _route_chokepoint and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + 2:
+                    if _route_chokepoint and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                 self._append_log(f"🧭 유일통로 재시도: ({x},{y}) {d2}"))
@@ -5898,7 +5928,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     return None
                 elif _strict_route_mode:
                     # 경유지 이동 단계: 1회 실패는 일시 흔들림일 수 있어 같은 방향 1회 재시도
-                    if _blocked_edge_fail <= 1:
+                    if _blocked_edge_fail < AVOID_EDGE_FAIL_THRESHOLD:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
                                 self._append_log(f"🧭 경유지 경로재시도: ({x},{y}) {d2}"))
@@ -6561,6 +6591,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     _guard_stagnation_iterations = 0
                     _guard_target_total_iterations = 0
                     _guard_best_distance = None
+                    self._reset_boss_item_passive_state()
                 _ui_update_ok = (iteration % 10 == 0)  # UI 업데이트는 10회당 1번 (Tkinter 큐 폭주 방지)
                 _t_iter_start = time.time()
                 # 보스/순찰 보조값은 일부 분기에서만 채워지므로 반복 시작마다 안전한 기본값으로 초기화한다.
@@ -7754,7 +7785,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             _edge_key = _dir_key(prev_x, prev_y, last_dir)
                             _edge_fail = min(EDGE_FAIL_MAX, edge_fail_counts.get(_edge_key, 0) + 1)
                             edge_fail_counts[_edge_key] = _edge_fail
-                            if _ui_update_ok and _edge_fail >= 2 and explore_target is not None:
+                            if _ui_update_ok and _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and explore_target is not None:
                                 _fdx, _fdy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 _fx, _fy = prev_x + _fdx, prev_y + _fdy
                                 if explore_target == (_fx, _fy):
@@ -7784,7 +7815,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 _patrolling_route_phase and
                                 boss_patrol is not None and
                                 _patrol_goal_origin is not None and
-                                _edge_fail >= 2 and
+                                _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
                                 (_tx, _ty) == _patrol_goal_origin and
                                 (abs(prev_x - _patrol_goal_origin[0]) + abs(prev_y - _patrol_goal_origin[1])) <= 1
                             )
@@ -7809,7 +7840,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 continue
                             _route_chokepoint = False
                             if ((_stable_waypoint_phase or _patrolling_route_phase) and
-                                _edge_fail >= 2 and
+                                _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
                                 portal_grace <= 0 and
                                 not self._game_map.is_blocked(_tx, _ty)):
                                 _goal_for_chokepoint = (int(target_x), int(target_y))
@@ -7830,7 +7861,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 바로 soft_blocked로 올리지 않고, 같은 간선이 2회 이상 막힐 때만
                             # 타일 단위 임시회피로 승격한다.
                             if ((_stable_waypoint_phase or _patrolling_route_phase) and
-                                _edge_fail >= 2 and
+                                _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
                                 self._game_map.is_passable(_tx, _ty) and
                                 not _route_chokepoint and
                                 (_tx, _ty) not in _portal_protected and
@@ -7838,17 +7869,17 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self._game_map.mark_soft_blocked(_tx, _ty, allow_promote=True)
                             # 목표 타일 자체가 몬스터/변수 장애물로 일시 점유되면
                             # 같은 타일을 계속 찍지 말고 인접 앵커로 잠깐 우회한다.
-                            if (_stable_waypoint_phase and _edge_fail >= 2 and
+                            if (_stable_waypoint_phase and _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
                                 (_tx, _ty) == (int(target_x), int(target_y)) and
                                 portal_grace <= 0 and
                                 not _route_chokepoint):
                                 _activate_temporary_goal_detour((target_x, target_y), (prev_x, prev_y), prev_x, prev_y, allow_unknown=True)
                             elif (_patrolling_route_phase and _patrol_goal_origin is not None and
-                                  _edge_fail >= 2 and (_tx, _ty) == _patrol_goal_origin and
+                                  _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and (_tx, _ty) == _patrol_goal_origin and
                                   portal_grace <= 0):
                                 _activate_temporary_goal_detour(_patrol_goal_origin, (prev_x, prev_y), prev_x, prev_y, allow_unknown=False)
                             # 경유지 이동 단계는 1회 실패에서 바로 방향차단하지 않음 (과민 멈칫 방지)
-                            if ((not (_waypoint_phase or _stable_waypoint_phase)) or _edge_fail >= 2) and not (_verification_edge and _edge_fail < EDGE_FAIL_MARK_THRESHOLD):
+                            if ((not (_waypoint_phase or _stable_waypoint_phase)) or _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD) and not (_verification_edge and _edge_fail < EDGE_FAIL_MARK_THRESHOLD):
                                 _ttl = 4 if stuck_count <= 1 else min(DIR_BLOCK_TTL_MAX, DIR_BLOCK_TTL_MIN + stuck_count * 6)
                                 if _waypoint_phase or _stable_waypoint_phase:
                                     # 근거리 병목은 길게 차단, 원거리는 과도 차단 방지
@@ -7862,7 +7893,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda px=prev_x, py=prev_y, wx=_tx, wy=_ty, ef=_edge_fail:
                                     self._append_log(f"🧪 벽검증 유지: ({px},{py})→({wx},{wy}) {ef}/3"))
                             # 맵핑 모드: 같은 엣지 2회 이상 실패하면 프런티어 판정에서 제외되도록 방향 시도 기록
-                            if _is_mapping_mode and _edge_fail >= 2:
+                            if _is_mapping_mode and _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD:
                                 # 경유지 이동 단계에서는 이동가능 타일 실패도 재시도 제한을 걸어 루프를 줄인다.
                                 # (완전탐색 단계에서만 이동가능 타일 실패 보류)
                                 if ((not self._game_map.is_passable(_tx, _ty)) or (not _frontier_probe_phase_fail)) and not (_verification_edge and _edge_fail < EDGE_FAIL_MARK_THRESHOLD):
@@ -7870,10 +7901,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                     tried = explored_from.get(fail_pos, set())
                                     tried.add(last_dir)
                                     explored_from[fail_pos] = tried
-                                elif _ui_update_ok and _edge_fail == 2:
+                                elif _ui_update_ok and _edge_fail == AVOID_EDGE_FAIL_THRESHOLD:
                                     self.after(0, lambda px=prev_x, py=prev_y, wx=_tx, wy=_ty:
                                         self._append_log(f"🧪 이동타일 실패 보류: ({px},{py})→({wx},{wy})"))
-                            if _ui_update_ok and stuck_count >= 2:
+                            if _ui_update_ok and stuck_count >= AVOID_EDGE_FAIL_THRESHOLD:
                                 self.after(0, lambda px=prev_x, py=prev_y, d2=last_dir:
                                     self._append_log(f"🧭 방향차단 유지: ({px},{py}) {d2} (타일회피 생략)"))
                             # 실패 직후 경로 캐시를 비워 즉시 재경로 계산
@@ -8282,6 +8313,37 @@ class GameModeDialog(ctk.CTkToplevel):
                     if mapping_on and use_map and not self._game_map.is_passable(current_x, current_y) \
                             and not self._game_map.is_blocked(current_x, current_y):
                         self._game_map.mark_passable(current_x, current_y)
+
+                    _boss_item_img_path = self._get_waypoint_image_path(target_idx, "item")
+                    if (
+                        _boss_item_img_path
+                        and not self._stop_event.is_set()
+                        and not _boss_transition_locked()
+                        and iteration % 4 == 0
+                    ):
+                        try:
+                            _item_ss = getattr(matcher, "_last_screenshot", None)
+                            if _item_ss is not None:
+                                _item_screen = np.array(_item_ss)
+                                _item_screen = cv2.cvtColor(_item_screen, cv2.COLOR_RGB2BGR)
+                                self._passive_detect_boss_dungeon_item(
+                                    _item_screen,
+                                    _boss_item_img_path,
+                                    boss_mode=boss_mode,
+                                )
+                                if boss_mode == "approaching" and self._has_recent_boss_item_hint(max_age_s=2.0):
+                                    if not _boss_item_force_loot:
+                                        _boss_item_force_loot = True
+                                        try:
+                                            self._schedule_boss_ui_log(
+                                                f"🎁 아이템 감지 → 즉시 루팅 전환 ({current_x},{current_y})",
+                                                dedupe_key="boss-item-force-loot",
+                                                dedupe_window=0.8,
+                                            )
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
 
                     # 맵 이미 탐색 완료 → 즉시 순찰/완료 (테스트 모드에서 재탐색 방지)
                     if boss_mode == "exploring" and boss_patrol is None and len(self._game_map.passable) >= 50:
@@ -9397,10 +9459,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                 except Exception as _e:
                                     logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
 
-                        # 보스 이미지 재확인 (2회당 1번 — 홀수 반복은 스킵)
+                        # 보스 이미지 재확인: 접근 상태에서는 매 tick 갱신해 끊김을 줄인다.
                         _appr_boss_visible = False
                         _appr_detection_attempted = False
-                        if iteration % 2 == 0 and not self._stop_event.is_set():
+                        if not self._stop_event.is_set():
                             _appr_detection_attempted = True
                             try:
                                 import numpy as _np3
@@ -9447,15 +9509,13 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 )
                                         elif _char_det3 and (_td3 > 1 or _pix3 > 16):
                                             # 보스가 다시 멀어짐 → 다시 추적 (X/Y 둘 다 반영)
-                                            _chase_tx = current_x + _det3.get("dx_tiles", 0)
-                                            _chase_ty = current_y + _det3.get("dy_tiles", 0)
-                                            # start_pos 밟지 않도록 확인
-                                            _td3_sp = self._game_map.start_pos
-                                            if _td3_sp is not None and (_chase_tx, _chase_ty) == _td3_sp:
-                                                _td3_dx_sign = 1 if _det3.get("dx_tiles", 0) >= 0 else -1
-                                                _td3_dy_sign = 1 if _det3.get("dy_tiles", 0) >= 0 else -1
-                                                _chase_tx += _td3_dx_sign
-                                                _chase_ty += _td3_dy_sign
+                                            _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
+                                                current_x,
+                                                current_y,
+                                                _det3.get("dx_tiles", 0),
+                                                _det3.get("dy_tiles", 0),
+                                                _td3,
+                                            )
                                             _boss_chasing = True
                                             _boss_chase_miss = 0
                                             boss_approach_steps = 0
@@ -9509,6 +9569,10 @@ class GameModeDialog(ctk.CTkToplevel):
                             if _ui_update_ok:
                                 self._schedule_boss_status("보스스킬", f"({current_x},{current_y})", "", "전투중", "⚔️")
                         else:
+                            if _boss_item_force_loot:
+                                _appr_boss_visible = False
+                                _appr_detection_attempted = False
+                                boss_appr_miss = 10
                             if _appr_detection_attempted:
                                 boss_appr_miss += 1
                             if boss_appr_miss < 10:
@@ -9522,22 +9586,27 @@ class GameModeDialog(ctk.CTkToplevel):
                             # 10회 연속 미감지 → 보스 처치 판정
                             _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                             self._schedule_boss_ui_log(
-                                f"✅ 보스 처치! ({current_x},{current_y}) → 다음 경유지 (키{len(_arr_keys)}개)",
+                                (
+                                    f"✅ 아이템 감지! ({current_x},{current_y}) → 즉시 루팅/다음 경유지 (키{len(_arr_keys)}개)"
+                                    if _boss_item_force_loot else
+                                    f"✅ 보스 처치! ({current_x},{current_y}) → 다음 경유지 (키{len(_arr_keys)}개)"
+                                ),
                                 dedupe_key="boss-kill-complete",
                                 dedupe_window=1.0,
                             )
-                            logger.info(f"[좌표모드] 보스 처치 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
-                            # 보스 사망 애니메이션 대기
-                            self._stop_event.wait(2.0)
-                            # 도착 키 입력
-                            if _arr_keys and not self._stop_event.is_set():
-                                self._exec_arrival_keys(_arr_keys)
-                                _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                                self._schedule_boss_ui_log(
-                                    f"🔑 도착 키 입력: {_kn}",
-                                    dedupe_key="boss-arrival-keys",
-                                    dedupe_window=1.0,
-                                )
+                            logger.info(
+                                f"[좌표모드] {'아이템 감지 즉시 루팅' if _boss_item_force_loot else '보스 처치'} → "
+                                f"도착키 {len(_arr_keys)}개: {_arr_keys}"
+                            )
+                            # 보스 사망 애니메이션 대기 / 즉시 루팅 분기는 짧게만 안정화
+                            self._stop_event.wait(0.35 if _boss_item_force_loot else 2.0)
+                            self._run_boss_item_and_arrival_flow(
+                                target_idx,
+                                all_targets,
+                                (current_x, current_y),
+                                self._stop_event,
+                            )
+                            _boss_item_force_loot = False
                             _arm_boss_transition_cooldown(2.0)
                             _clear_boss_patrol_route_cache()
                             _prev_idx = target_idx
@@ -9590,6 +9659,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             unknown_path_fails = 0
                             last_dir = None
                             recent_positions.clear()
+                            _boss_item_force_loot = False
                             boss_mode = "exploring"
                             boss_patrol = None
                             explore_target = None
@@ -9663,9 +9733,14 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._stop_event.wait(0.05)
                             continue
 
-                        # ── 보스 이미지 검색 (5회마다) ──
+                        # ── 보스 이미지 검색 ──
                         _boss_found = False
-                        _check_boss_image = (iteration % 5 == 0)
+                        _boss_detect_interval = self._get_boss_detect_interval(
+                            boss_mode=boss_mode,
+                            boss_chasing=_boss_chasing,
+                            recent_steps=boss_approach_steps,
+                        )
+                        _check_boss_image = (iteration % _boss_detect_interval == 0)
                         _t_boss_start = time.time()
                         if _check_boss_image:
                             boss_img_path = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
@@ -9783,24 +9858,13 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 last_dir = None
                                                 _clear_boss_patrol_route_cache()
                                                 prev_x, prev_y = current_x, current_y
-                                                _chase_tx = current_x + est_dx_tiles
-                                                _chase_ty = current_y + est_dy_tiles
-                                                # 통과 가능 타일 찾기 (start_pos 제외)
-                                                _chase_sp = self._game_map.start_pos
-                                                _chase_is_sp = (_chase_sp is not None and (_chase_tx, _chase_ty) == _chase_sp)
-                                                if not self._game_map.is_passable(_chase_tx, _chase_ty) or _chase_is_sp:
-                                                    _found_chase = False
-                                                    for _r in range(1, 6):
-                                                        for _ddx, _ddy in [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
-                                                            _cx = _chase_tx + _ddx * _r
-                                                            _cy = _chase_ty + _ddy * _r
-                                                            if (self._game_map.is_passable(_cx, _cy)
-                                                                    and (_chase_sp is None or (_cx, _cy) != _chase_sp)):
-                                                                _chase_tx, _chase_ty = _cx, _cy
-                                                                _found_chase = True
-                                                                break
-                                                        if _found_chase:
-                                                            break
+                                                _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
+                                                    current_x,
+                                                    current_y,
+                                                    est_dx_tiles,
+                                                    est_dy_tiles,
+                                                    tile_dist,
+                                                )
                                                 if _ui_update_ok:
                                                     self._schedule_boss_ui_log(
                                                         f"🎯 보스 추적! dx={dx_pixel}px dy={dy_pixel}px ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={tile_dist}타일 ({boss_approach_steps}회)",
@@ -9826,18 +9890,15 @@ class GameModeDialog(ctk.CTkToplevel):
                                 dedupe_key="boss-patrol-complete",
                                 dedupe_window=1.0,
                             )
-                            # 이동 애니메이션 대기 후 도착 키 입력
-                            _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
-                            if _arr_keys and not self._stop_event.is_set():
-                                self._stop_event.wait(2.0)
-                                if not self._stop_event.is_set():
-                                    self._exec_arrival_keys(_arr_keys)
-                                    _kn = ",".join(kd.get("key","") for kd in _arr_keys)
-                                    self._schedule_boss_ui_log(
-                                        f"🔑 도착 키 입력: {_kn}",
-                                        dedupe_key="boss-arrival-keys",
-                                        dedupe_window=1.0,
-                                    )
+                            self._stop_event.wait(2.0)
+                            if not self._stop_event.is_set():
+                                self._run_boss_item_and_arrival_flow(
+                                    target_idx,
+                                    all_targets,
+                                    (current_x, current_y),
+                                    self._stop_event,
+                                    allow_item_loot=False,
+                                )
                             _arm_boss_transition_cooldown(2.0)
                             _clear_boss_patrol_route_cache()
                             _prev_idx2 = target_idx
@@ -10263,14 +10324,13 @@ class GameModeDialog(ctk.CTkToplevel):
                                                                 dedupe_window=0.6,
                                                             )
                                             else:
-                                                _chase_tx = current_x  # X offset 무시 (UI NAME 고정)
-                                                _chase_ty = current_y + _edy2
-                                                # start_pos 밟지 않도록 확인
-                                                _rchk_sp = self._game_map.start_pos
-                                                if _rchk_sp is not None and (_chase_tx, _chase_ty) == _rchk_sp:
-                                                    # start_pos면 Y방향으로 1타일 더 이동
-                                                    _rchk_dy_sign = 1 if _edy2 >= 0 else -1
-                                                    _chase_ty += _rchk_dy_sign
+                                                _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
+                                                    current_x,
+                                                    current_y,
+                                                    0,
+                                                    _edy2,
+                                                    _td2,
+                                                )
                                                 _boss_chase_miss = 0
                                                 if _ui_update_ok:
                                                     self._schedule_boss_ui_log(
@@ -10297,13 +10357,13 @@ class GameModeDialog(ctk.CTkToplevel):
                                             )
                                             logger.info(f"[좌표모드] 보스 추적 종료 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
                                             self._stop_event.wait(2.0)
-                                            if _arr_keys and not self._stop_event.is_set():
-                                                self._exec_arrival_keys(_arr_keys)
-                                                _kn = ",".join(kd.get("key", "") for kd in _arr_keys)
-                                                self._schedule_boss_ui_log(
-                                                    f"🔑 도착 키 입력: {_kn}",
-                                                    dedupe_key="boss-arrival-keys",
-                                                    dedupe_window=1.0,
+                                            if not self._stop_event.is_set():
+                                                self._run_boss_item_and_arrival_flow(
+                                                    target_idx,
+                                                    all_targets,
+                                                    (current_x, current_y),
+                                                    self._stop_event,
+                                                    allow_item_loot=False,
                                                 )
                                             _arm_boss_transition_cooldown(2.0)
                                             _prev_idx = target_idx
@@ -11092,6 +11152,8 @@ class GameModeDialog(ctk.CTkToplevel):
             single_idx = getattr(self, '_single_waypoint_idx', -1)
             if getattr(self, '_is_mapping_test', False) and single_idx >= 0:
                 self._update_card_mapping_btn(single_idx, False)
+            elif single_idx >= 0:
+                self._update_card_single_play_btn(single_idx, False)
             self._single_waypoint_mode = False
         self._is_mapping_test = False
         # 도착 시 맵 데이터 저장 (일반 테스트에서는 건너뜀)
@@ -11343,6 +11405,20 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_char_preview = ctk.CTkLabel(bosstest_char_row, text="없음", width=48, height=28)
         self._bosstest_char_preview.pack(side="left", padx=(8, 0))
 
+        itemtest_item_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
+        itemtest_item_row.pack(fill="x", pady=(6, 0))
+        self._itemtest_item_label = ctk.CTkLabel(
+            itemtest_item_row, text="아이템 이미지: 없음",
+            font=ctk.CTkFont(size=11), width=260, anchor="w")
+        self._itemtest_item_label.pack(side="left")
+        ctk.CTkButton(
+            itemtest_item_row, text="아이템 이미지", width=86, height=28,
+            font=ctk.CTkFont(size=11), fg_color="#6a4a9a", hover_color="#7b5cad",
+            command=self._itemtest_select
+        ).pack(side="left", padx=(5, 0))
+        self._itemtest_item_preview = ctk.CTkLabel(itemtest_item_row, text="없음", width=48, height=28)
+        self._itemtest_item_preview.pack(side="left", padx=(8, 0))
+
         bosstest_result_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
         bosstest_result_row.pack(fill="x", pady=(8, 0))
         self._bosstest_button = ctk.CTkButton(
@@ -11356,6 +11432,20 @@ class GameModeDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"],
             anchor="w", justify="left", wraplength=820)
         self._bosstest_result_label.pack(side="left", fill="x", expand=True, padx=(10, 0))
+
+        itemtest_result_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
+        itemtest_result_row.pack(fill="x", pady=(6, 0))
+        self._itemtest_button = ctk.CTkButton(
+            itemtest_result_row, text="아이템테스트", width=100, height=28,
+            font=ctk.CTkFont(size=11), fg_color="#7a5ac0", hover_color="#8c6dd2",
+            command=self._itemtest_run
+        )
+        self._itemtest_button.pack(side="left")
+        self._itemtest_result_label = ctk.CTkLabel(
+            itemtest_result_row, text="결과: -",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"],
+            anchor="w", justify="left", wraplength=820)
+        self._itemtest_result_label.pack(side="left", fill="x", expand=True, padx=(10, 0))
 
         self._bosstest_boss_image_path = None
         self._bosstest_char_image_path = None
@@ -13842,6 +13932,39 @@ class GameModeDialog(ctk.CTkToplevel):
                       command=lambda idx=i: self._toggle_map_lock(idx))
         map_lock_btn.pack(side="left", padx=(4, 0))
 
+        # 점프 무시 토글 버튼
+        _ignore_jump_wait = bool(_wp_cfg.get('ignore_jump_wait')) if _wp_cfg else False
+        jump_ignore_btn = ctk.CTkButton(
+            row1,
+            text="점프무시 ON" if _ignore_jump_wait else "점프무시 OFF",
+            width=92,
+            height=24,
+            font=ctk.CTkFont(size=11),
+            fg_color="#bf616a" if _ignore_jump_wait else "transparent",
+            hover_color="#cf717f" if _ignore_jump_wait else "#4c566a",
+            text_color="#ffffff" if _ignore_jump_wait else COLORS["text_muted"],
+            border_width=1,
+            border_color="#bf616a" if _ignore_jump_wait else COLORS["border"],
+            command=lambda idx=i: self._toggle_jump_ignore(idx),
+        )
+        jump_ignore_btn.pack(side="left", padx=(4, 0))
+
+        single_play_btn = ctk.CTkButton(
+            row1,
+            text="▶ 일반테스트",
+            width=98,
+            height=28,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#243447",
+            hover_color="#35506b",
+            text_color="#d8ecff",
+            border_width=1,
+            border_color="#4f7aa3",
+            corner_radius=7,
+            command=lambda idx=i: self._run_single_waypoint(idx),
+        )
+        single_play_btn.pack(side="left", padx=(6, 0))
+
         # 그룹 펼치기/접기 버튼 (자식 있을 때만 표시) — 테스트 버튼 옆
         group_btn = ctk.CTkButton(row1, text="▶ 펼치기", width=80, height=24,
                       font=ctk.CTkFont(size=11, weight="bold"),
@@ -13986,6 +14109,13 @@ class GameModeDialog(ctk.CTkToplevel):
                       command=lambda idx=i: self._add_boss_image(idx))
         add_boss_img_btn.pack(side="left", padx=_btn_pad)
 
+        add_item_img_btn = ctk.CTkButton(row4, text="아이템", width=_btn_w, height=_btn_h,
+                      font=_btn_font,
+                      fg_color="#2c1f35", hover_color="#47305a",
+                      text_color="#d0b0f0", border_width=1, border_color="#47305a",
+                      command=lambda idx=i: self._add_item_image(idx))
+        add_item_img_btn.pack(side="left", padx=_btn_pad)
+
         _arr_keys = _wp_cfg.get("arrival_keys", []) if _wp_cfg else []
         if not _arr_keys and _wp_cfg and _wp_cfg.get("arrival_key"):
             _arr_keys = [{"key": k.strip()} for k in _wp_cfg["arrival_key"].split(",") if k.strip()]
@@ -14004,6 +14134,9 @@ class GameModeDialog(ctk.CTkToplevel):
         boss_img_name = ""
         if wp_img_cfg and wp_img_cfg.get("target_image"):
             boss_img_name = Path(wp_img_cfg["target_image"]).stem[:10]
+        item_img_name = ""
+        if wp_img_cfg and wp_img_cfg.get("item_image"):
+            item_img_name = Path(wp_img_cfg["item_image"]).stem[:10]
 
         row5 = ctk.CTkFrame(card, fg_color="transparent")
         if char_img_name or boss_img_name or _arr_keys:
@@ -14061,6 +14194,32 @@ class GameModeDialog(ctk.CTkToplevel):
         if boss_img_name:
             del_boss_img_btn.pack(side="left")
 
+        item_img_thumb = tk.Label(
+            row5,
+            text="",
+            bg=COLORS["bg_card"],
+            fg=COLORS["text_secondary"],
+            bd=0,
+            highlightthickness=0,
+        )
+        item_img_status = ctk.CTkLabel(row5,
+                     text=f"아이템: {item_img_name}" if item_img_name else "",
+                     font=ctk.CTkFont(size=10), text_color="#d0b0f0",
+                     cursor="hand2" if item_img_name else "")
+        if item_img_name:
+            self._set_status_thumb(item_img_thumb, wp_img_cfg.get("item_image"), size=18)
+            item_img_thumb.pack(side="left", padx=(0, 3))
+            item_img_status.pack(side="left", padx=(0, 2))
+            item_img_status.bind("<Button-1>", lambda e, idx=i: self._edit_item_image(idx))
+
+        del_item_img_btn = ctk.CTkButton(row5, text="✕", width=20, height=20,
+                      font=ctk.CTkFont(size=9),
+                      fg_color="transparent", hover_color="#5a2020",
+                      text_color="#e06060", border_width=0,
+                      command=lambda idx=i: self._delete_item_image(idx))
+        if item_img_name:
+            del_item_img_btn.pack(side="left", padx=(0, 8))
+
         arr_key_status = ctk.CTkLabel(row5, text="", font=ctk.CTkFont(size=10), text_color="#e8d090")
         del_arr_key_btn = ctk.CTkButton(row5, text="✕", width=20, height=20,
                       font=ctk.CTkFont(size=9),
@@ -14082,6 +14241,8 @@ class GameModeDialog(ctk.CTkToplevel):
             'map_badge': map_badge,
             'map_badge_label': map_badge_label,
             'map_lock_btn': map_lock_btn,
+            'jump_ignore_btn': jump_ignore_btn,
+            'single_play_btn': single_play_btn,
             'drag_handle': drag_handle,
             'group_btn': group_btn,
             'child_count_label': child_count_label,
@@ -14109,6 +14270,10 @@ class GameModeDialog(ctk.CTkToplevel):
             'boss_img_thumb': boss_img_thumb,
             'boss_img_status': boss_img_status,
             'del_boss_img_btn': del_boss_img_btn,
+            'add_item_img_btn': add_item_img_btn,
+            'item_img_thumb': item_img_thumb,
+            'item_img_status': item_img_status,
+            'del_item_img_btn': del_item_img_btn,
             'arr_key_btn': arr_key_btn,
             'row5': row5,
             'arr_key_status': arr_key_status,
@@ -14308,6 +14473,17 @@ class GameModeDialog(ctk.CTkToplevel):
             border_color="#d08770" if locked else COLORS["border"],
         )
 
+    def _configure_jump_ignore_btn(self, btn, enabled: bool):
+        if not btn:
+            return
+        btn.configure(
+            text="점프무시 ON" if enabled else "점프무시 OFF",
+            fg_color="#bf616a" if enabled else "transparent",
+            hover_color="#cf717f" if enabled else "#4c566a",
+            text_color="#ffffff" if enabled else COLORS["text_muted"],
+            border_color="#bf616a" if enabled else COLORS["border"],
+        )
+
     def _update_all_map_lock_btn(self):
         btn = getattr(self, '_all_map_lock_btn', None)
         if not btn:
@@ -14340,6 +14516,22 @@ class GameModeDialog(ctk.CTkToplevel):
         self._save_config()
         seg_name = wp[2] if len(wp) >= 3 else f"경유지{idx+1}"
         self._append_log(f"{'🔒 맵 잠금' if locked else '🔓 맵 잠금 해제'}: {seg_name}")
+
+    def _toggle_jump_ignore(self, idx):
+        """경유지 점프 전환 확인 무시 토글"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if not (0 <= idx < len(waypoints)):
+            return
+        wp = waypoints[idx]
+        cfg = self._ensure_wp_config(wp)
+        enabled = not cfg.get('ignore_jump_wait', False)
+        cfg['ignore_jump_wait'] = enabled
+        cards = getattr(self, '_wp_cards', [])
+        if 0 <= idx < len(cards) and cards[idx] is not None:
+            self._configure_jump_ignore_btn(cards[idx].get('jump_ignore_btn'), enabled)
+        self._save_config()
+        seg_name = wp[2] if len(wp) >= 3 else f"경유지{idx+1}"
+        self._append_log(f"{'⏭️ 점프 무시 ON' if enabled else '↩ 점프 무시 OFF'}: {seg_name}")
 
     def _toggle_all_map_locks(self):
         """모든 경유지 맵 잠금 일괄 토글"""
@@ -14633,6 +14825,8 @@ class GameModeDialog(ctk.CTkToplevel):
             return ''
         if kind == 'boss':
             return str(wp[3].get('target_image', '') or '')
+        if kind == 'item':
+            return str(wp[3].get('item_image', '') or '')
         return str(wp[3].get('character_image', '') or '')
 
     def _set_waypoint_image_path(self, idx: int, kind: str, image_path: str):
@@ -14647,6 +14841,8 @@ class GameModeDialog(ctk.CTkToplevel):
             img_cfg.setdefault('action_x', None)
             img_cfg.setdefault('action_y', None)
             img_cfg.setdefault('move_mouse_before_search', False)
+        elif kind == 'item':
+            img_cfg['item_image'] = image_path
         else:
             img_cfg['character_image'] = image_path
         self._save_config()
@@ -14670,6 +14866,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 'move_mouse_before_search',
             ]:
                 wp[3].pop(key, None)
+        elif kind == 'item':
+            wp[3].pop('item_image', None)
         else:
             wp[3].pop('character_image', None)
         if not wp[3]:
@@ -14680,7 +14878,8 @@ class GameModeDialog(ctk.CTkToplevel):
         self._update_card_image_status(idx)
 
     def _make_unique_image_preset_name(self, kind: str, base_name: str) -> str:
-        name = str(base_name or '').strip() or ('보스' if kind == 'boss' else '캐릭터')
+        _fallback_name = {'boss': '보스', 'character': '캐릭터', 'item': '아이템'}.get(kind, '이미지')
+        name = str(base_name or '').strip() or _fallback_name
         existing = {str(item.get('name', '')).strip() for item in list_image_presets(kind, existing_only=False)}
         if name not in existing:
             return name
@@ -14696,17 +14895,24 @@ class GameModeDialog(ctk.CTkToplevel):
         templates_dir = DATA_DIR / 'templates'
         templates_dir.mkdir(parents=True, exist_ok=True)
         ext = Path(source_path).suffix or '.png'
-        prefix = 'wp_img' if kind == 'boss' else 'wp_char'
+        prefix = {'boss': 'wp_img', 'character': 'wp_char', 'item': 'wp_item'}.get(kind, 'wp_img')
         dest_path = templates_dir / f'{prefix}_{uuid.uuid4().hex[:8]}{ext}'
         shutil.copy2(source_path, dest_path)
         return str(dest_path)
 
-    def _open_waypoint_image_picker(self, idx: int, kind: str):
+    def _open_image_preset_picker(
+        self,
+        *,
+        kind: str,
+        dialog_title: str,
+        current_path_getter,
+        apply_path_callback,
+        clear_path_callback,
+    ):
         from tkinter import filedialog
 
-        title = '보스 이미지' if kind == 'boss' else '캐릭터 이미지'
         dlg = ctk.CTkToplevel(self)
-        dlg.title(f'{title} 설정 - 경유지 {idx + 1}')
+        dlg.title(dialog_title)
         dlg.geometry('520x460')
         dlg.resizable(False, True)
         dlg.configure(fg_color=COLORS['bg_dark'])
@@ -14734,7 +14940,7 @@ class GameModeDialog(ctk.CTkToplevel):
             if selected_name and not any(str(item.get('name', '')).strip() == selected_name for item in presets):
                 selected_name = None
 
-            current_path = self._normalize_path_text(self._get_waypoint_image_path(idx, kind))
+            current_path = self._normalize_path_text(current_path_getter())
 
             def refresh_selection():
                 for _name, data in row_refs.items():
@@ -14748,9 +14954,9 @@ class GameModeDialog(ctk.CTkToplevel):
             def toggle_apply(_path: str):
                 normalized = self._normalize_path_text(_path)
                 if current_path and normalized == current_path:
-                    self._clear_waypoint_image_path(idx, kind)
+                    clear_path_callback()
                 else:
-                    self._set_waypoint_image_path(idx, kind, _path)
+                    apply_path_callback(_path)
                 refresh_rows()
 
             if not presets:
@@ -14827,7 +15033,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 selected_name = preset_name
                 refresh_rows()
             except Exception as e:
-                logger.error(f'[좌표모드] {title} 등록 실패: {e}')
+                logger.error(f'[좌표모드] {dialog_title} 등록 실패: {e}')
 
         def delete_image():
             nonlocal selected_name
@@ -14837,9 +15043,9 @@ class GameModeDialog(ctk.CTkToplevel):
             target = next((item for item in presets if str(item.get('name', '')).strip() == selected_name), None)
             if target:
                 target_path = self._normalize_path_text(target.get('path', ''))
-                current_path = self._normalize_path_text(self._get_waypoint_image_path(idx, kind))
+                current_path = self._normalize_path_text(current_path_getter())
                 if current_path and current_path == target_path:
-                    self._clear_waypoint_image_path(idx, kind)
+                    clear_path_callback()
                 remove_image_preset(kind, selected_name)
             selected_name = None
             refresh_rows()
@@ -14852,17 +15058,33 @@ class GameModeDialog(ctk.CTkToplevel):
         ctk.CTkButton(btn_row, text='이미지삭제', width=90, height=30, command=delete_image).pack(side='left', padx=6)
         ctk.CTkButton(btn_row, text='취소', width=70, height=30, fg_color=COLORS['border'], command=dlg.destroy).pack(side='right')
 
+    def _open_waypoint_image_picker(self, idx: int, kind: str):
+        title = {'boss': '보스 이미지', 'character': '캐릭터 이미지', 'item': '아이템 이미지'}.get(kind, '이미지')
+        self._open_image_preset_picker(
+            kind=kind,
+            dialog_title=f'{title} 설정 - 경유지 {idx + 1}',
+            current_path_getter=lambda idx=idx, kind=kind: self._get_waypoint_image_path(idx, kind),
+            apply_path_callback=lambda path, idx=idx, kind=kind: self._set_waypoint_image_path(idx, kind, path),
+            clear_path_callback=lambda idx=idx, kind=kind: self._clear_waypoint_image_path(idx, kind),
+        )
+
     def _add_boss_image(self, idx: int):
         self._open_waypoint_image_picker(idx, 'boss')
 
     def _add_character_image(self, idx: int):
         self._open_waypoint_image_picker(idx, 'character')
 
+    def _add_item_image(self, idx: int):
+        self._open_waypoint_image_picker(idx, 'item')
+
     def _edit_waypoint_image(self, idx: int):
         self._open_waypoint_image_picker(idx, 'boss')
 
     def _edit_character_image(self, idx: int):
         self._open_waypoint_image_picker(idx, 'character')
+
+    def _edit_item_image(self, idx: int):
+        self._open_waypoint_image_picker(idx, 'item')
 
     def _delete_waypoint_image(self, idx: int):
         """경유지 보스 이미지 삭제"""
@@ -14901,6 +15123,22 @@ class GameModeDialog(ctk.CTkToplevel):
             self._save_config()
             self._update_card_image_status(idx)
             logger.info(f"[좌표모드] 경유지{idx+1} 캐릭터 이미지 삭제")
+
+    def _delete_item_image(self, idx: int):
+        """경유지 아이템 이미지 삭제"""
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) >= 4 and isinstance(wp[3], dict):
+            wp[3].pop("item_image", None)
+            if not wp[3]:
+                wp[3] = None
+                while len(wp) > 3 and wp[-1] is None:
+                    wp.pop()
+            self._save_config()
+            self._update_card_image_status(idx)
+            logger.info(f"[좌표모드] 경유지{idx+1} 아이템 이미지 삭제")
 
     def _delete_arrival_keys(self, idx: int):
         """경유지 도착 키 삭제"""
@@ -14963,7 +15201,7 @@ class GameModeDialog(ctk.CTkToplevel):
             return False
 
     def _update_card_image_status(self, idx: int):
-        """카드 상태 라벨 + 삭제 버튼 갱신 (캐릭터/보스/키입력)"""
+        """카드 상태 라벨 + 삭제 버튼 갱신 (캐릭터/보스/아이템/키입력)"""
         card_data = self._get_card_data(idx)
         if card_data is None:
             return
@@ -14977,6 +15215,8 @@ class GameModeDialog(ctk.CTkToplevel):
         del_char_btn = card_data['del_char_img_btn']
         boss_label = card_data['boss_img_status']
         del_boss_btn = card_data['del_boss_img_btn']
+        item_label = card_data.get('item_img_status')
+        del_item_btn = card_data.get('del_item_img_btn')
         arr_key_label = card_data.get('arr_key_status')
         del_arr_key_btn = card_data.get('del_arr_key_btn')
 
@@ -14991,7 +15231,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 highlightthickness=0,
             )
 
-        for thumb_key in ('char_img_thumb', 'boss_img_thumb'):
+        for thumb_key in ('char_img_thumb', 'boss_img_thumb', 'item_img_thumb'):
             old_thumb = card_data.get(thumb_key)
             if old_thumb is not None:
                 try:
@@ -15000,8 +15240,10 @@ class GameModeDialog(ctk.CTkToplevel):
                     pass
         char_thumb = _new_thumb()
         boss_thumb = _new_thumb()
+        item_thumb = _new_thumb()
         card_data['char_img_thumb'] = char_thumb
         card_data['boss_img_thumb'] = boss_thumb
+        card_data['item_img_thumb'] = item_thumb
 
         # 캐릭터 이미지 상태 갱신
         char_img_name = ""
@@ -15017,6 +15259,12 @@ class GameModeDialog(ctk.CTkToplevel):
             boss_img_path = img_cfg["target_image"]
             boss_img_name = Path(boss_img_path).stem[:10]
 
+        item_img_name = ""
+        item_img_path = ""
+        if img_cfg and img_cfg.get("item_image"):
+            item_img_path = img_cfg["item_image"]
+            item_img_name = Path(item_img_path).stem[:10]
+
         # 도착 키 상태 갱신
         arr_keys = []
         if img_cfg:
@@ -15024,7 +15272,19 @@ class GameModeDialog(ctk.CTkToplevel):
             if not arr_keys and img_cfg.get("arrival_key"):
                 arr_keys = [{"key": k.strip()} for k in img_cfg["arrival_key"].split(",") if k.strip()]
 
-        for widget in (char_thumb, char_label, del_char_btn, boss_thumb, boss_label, del_boss_btn, arr_key_label, del_arr_key_btn):
+        for widget in (
+            char_thumb,
+            char_label,
+            del_char_btn,
+            boss_thumb,
+            boss_label,
+            del_boss_btn,
+            item_thumb,
+            item_label,
+            del_item_btn,
+            arr_key_label,
+            del_arr_key_btn,
+        ):
             if widget is not None and widget.winfo_manager():
                 widget.pack_forget()
 
@@ -15052,6 +15312,19 @@ class GameModeDialog(ctk.CTkToplevel):
             boss_label.configure(text="", cursor="")
             boss_label.unbind("<Button-1>")
 
+        if item_label is not None and del_item_btn is not None:
+            if item_img_name:
+                if item_thumb is not None and self._set_status_thumb(item_thumb, item_img_path, size=18):
+                    item_thumb.pack(side="left", padx=(0, 3))
+                item_label.configure(text=f"아이템: {item_img_name}", cursor="hand2")
+                item_label.unbind("<Button-1>")
+                item_label.bind("<Button-1>", lambda e, i=idx: self._edit_item_image(i))
+                item_label.pack(side="left", padx=(0, 2))
+                del_item_btn.pack(side="left", padx=(0, 8))
+            else:
+                item_label.configure(text="", cursor="")
+                item_label.unbind("<Button-1>")
+
         if arr_key_label is not None and del_arr_key_btn is not None:
             if arr_keys:
                 key_text = ",".join(kd.get("key", "?") for kd in arr_keys)
@@ -15062,7 +15335,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 arr_key_label.configure(text="")
 
         # 상태줄 표시/숨김
-        has_any_status = bool(char_img_name or boss_img_name or arr_keys)
+        has_any_status = bool(char_img_name or boss_img_name or item_img_name or arr_keys)
         if row5 is not None:
             if has_any_status and not row5.winfo_manager():
                 row5.pack(fill="x", padx=8, pady=(0, 2))
@@ -15122,6 +15395,33 @@ class GameModeDialog(ctk.CTkToplevel):
                 fg_color="#1a3526", hover_color=COLORS["accent"],
                 text_color="#4ae168", border_width=1, border_color="#2d5a3d")
 
+    def _update_card_single_play_btn(self, idx: int, running: bool):
+        """단일 일반 테스트 버튼 상태만 업데이트 (1개 카드)"""
+        card_data = self._get_card_data(idx)
+        if card_data is None:
+            return
+        btn = card_data.get('single_play_btn')
+        if not btn:
+            return
+        if running:
+            btn.configure(
+                text="■ 중지",
+                fg_color="#bf616a",
+                hover_color="#cf717f",
+                text_color="#ffffff",
+                border_width=0,
+            )
+        else:
+            btn.configure(
+                text="▶ 일반테스트",
+                state="normal",
+                fg_color="#243447",
+                hover_color="#35506b",
+                text_color="#d8ecff",
+                border_width=1,
+                border_color="#4f7aa3",
+            )
+
     def _reindex_cards(self, from_idx: int = 0):
         """카드 번호 + 모든 버튼 command 갱신 (구조 변경 후)"""
         cards = getattr(self, '_wp_cards', [])
@@ -15136,11 +15436,14 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[i]['single_mapping_btn'].configure(command=lambda idx=i: self._run_single_mapping_test(idx))
             cards[i]['show_btn'].configure(command=lambda idx=i: self._show_map_for(idx))
             cards[i]['sim_btn'].configure(command=lambda idx=i: self._run_waypoint_simulation(idx))
+            cards[i]['single_play_btn'].configure(command=lambda idx=i: self._run_single_waypoint(idx))
             cards[i]['load_map_btn'].configure(command=lambda idx=i: self._load_map_for(idx))
             cards[i]['add_char_img_btn'].configure(command=lambda idx=i: self._add_character_image(idx))
             cards[i]['del_char_img_btn'].configure(command=lambda idx=i: self._delete_character_image(idx))
             cards[i]['add_boss_img_btn'].configure(command=lambda idx=i: self._add_boss_image(idx))
             cards[i]['del_boss_img_btn'].configure(command=lambda idx=i: self._delete_waypoint_image(idx))
+            cards[i]['add_item_img_btn'].configure(command=lambda idx=i: self._add_item_image(idx))
+            cards[i]['del_item_img_btn'].configure(command=lambda idx=i: self._delete_item_image(idx))
             cards[i]['group_btn'].configure(command=lambda idx=i: self._toggle_group(idx))
             cards[i]['ungroup_btn'].configure(command=lambda idx=i: self._ungroup_card(idx))
             # test_btn 제거됨 — 맵핑테스트만 사용
@@ -15149,6 +15452,7 @@ class GameModeDialog(ctk.CTkToplevel):
             cards[i]['add_route_end_btn'].configure(command=lambda idx=i: self._add_route_end(idx))
             cards[i]['add_route_wall_btn'].configure(command=lambda idx=i: self._add_route_wall(idx))
             cards[i]['map_lock_btn'].configure(command=lambda idx=i: self._toggle_map_lock(idx))
+            cards[i]['jump_ignore_btn'].configure(command=lambda idx=i: self._toggle_jump_ignore(idx))
             # 이름 클릭 바인딩 갱신
             cards[i]['name_label'].bind("<Button-1>", lambda e, idx=i: self._rename_waypoint(idx))
             # 드래그 핸들 바인딩 갱신
@@ -16852,6 +17156,7 @@ class GameModeDialog(ctk.CTkToplevel):
         for _path, _label in [
             (getattr(self, '_bosstest_boss_image_path', None), self._bosstest_boss_preview),
             (getattr(self, '_bosstest_char_image_path', None), self._bosstest_char_preview),
+            (getattr(self, '_itemtest_item_image_path', None), self._itemtest_item_preview),
         ]:
             if _path and Path(_path).exists():
                 self._load_thumb(_path, _label, size=42)
@@ -17171,26 +17476,647 @@ class GameModeDialog(ctk.CTkToplevel):
             })
         return data
 
+    @staticmethod
+    def _get_boss_detect_interval(*, boss_mode: str, boss_chasing: bool, recent_steps: int) -> int:
+        """보스 추적/근접 중에는 재감지 간격을 낮춰 끊김을 줄인다."""
+        if boss_mode == "approaching" or boss_chasing:
+            return 1
+        if int(recent_steps or 0) > 0:
+            return 2
+        return 5
+
+    @staticmethod
+    def _clip_boss_chase_delta(delta_tiles, step_limit: int) -> int:
+        try:
+            _delta = int(delta_tiles or 0)
+        except Exception:
+            return 0
+        if _delta == 0:
+            return 0
+        _sign = 1 if _delta > 0 else -1
+        return _sign * min(abs(_delta), max(1, int(step_limit or 1)))
+
+    def _build_incremental_boss_chase_target(self, current_x: int, current_y: int, dx_tiles, dy_tiles, tile_dist) -> tuple[int, int]:
+        """보스 추적 목표를 짧은 스텝으로 잘라 연속 추적으로 보정한다."""
+        try:
+            _dx = int(dx_tiles or 0)
+            _dy = int(dy_tiles or 0)
+        except Exception:
+            return current_x, current_y
+
+        _step_limit = 1 if int(tile_dist or 0) <= 2 else 2
+        _step_dx = self._clip_boss_chase_delta(_dx, _step_limit)
+        _step_dy = self._clip_boss_chase_delta(_dy, _step_limit)
+        if _step_dx == 0 and _step_dy == 0:
+            if abs(_dx) >= abs(_dy) and _dx != 0:
+                _step_dx = 1 if _dx > 0 else -1
+            elif _dy != 0:
+                _step_dy = 1 if _dy > 0 else -1
+            else:
+                return current_x, current_y
+
+        _target_x = current_x + _step_dx
+        _target_y = current_y + _step_dy
+        _start_pos = self._game_map.start_pos
+        if (
+            self._game_map.is_passable(_target_x, _target_y)
+            and (_start_pos is None or (_target_x, _target_y) != _start_pos)
+        ):
+            return _target_x, _target_y
+
+        _prefer_offsets = [
+            (0, 0), (1, 0), (-1, 0), (0, 1), (0, -1),
+            (1, 1), (-1, 1), (1, -1), (-1, -1),
+        ]
+        for _r in range(1, 3):
+            for _off_x, _off_y in _prefer_offsets:
+                _cand_x = _target_x + (_off_x * _r)
+                _cand_y = _target_y + (_off_y * _r)
+                if (_cand_x, _cand_y) == (current_x, current_y):
+                    continue
+                if not self._game_map.is_passable(_cand_x, _cand_y):
+                    continue
+                if _start_pos is not None and (_cand_x, _cand_y) == _start_pos:
+                    continue
+                return _cand_x, _cand_y
+        return current_x, current_y
+
+    def _detect_item_template(self, screen: np.ndarray, item_img_path: str):
+        """아이템 템플릿 감지"""
+        from ..analyzer.template_matcher import TemplateMatcher
+
+        matcher = TemplateMatcher()
+        _last_item_center = getattr(self, "_loot_detect_last_item_center", None)
+        item_info = self._detect_template_consensus(
+            screen,
+            item_img_path,
+            matcher=matcher,
+            binary_threshold=0.82,
+            color_threshold=0.62,
+            focus_threshold=0.45,
+            use_focus=True,
+            allow_single_strong=True,
+            single_strong_threshold=0.91,
+            recent_hint=_last_item_center,
+            recent_hint_radius=40,
+        )
+        item_result = item_info["result"]
+        if getattr(item_result, "found", False):
+            self._loot_detect_last_item_center = (int(item_result.center_x), int(item_result.center_y))
+        return {
+            "result": item_result,
+            "info": item_info,
+        }
+
+    @staticmethod
+    def _get_loot_screen_vector(screen_shape, item_result):
+        """화면 중앙 기준 아이템 방향/거리 값을 계산한다."""
+        try:
+            _sh, _sw = int(screen_shape[0]), int(screen_shape[1])
+            _cx, _cy = int(_sw // 2), int(_sh // 2)
+            _dx_px = int(item_result.center_x - _cx)
+            _dy_px = int(item_result.center_y - _cy)
+        except Exception:
+            return {
+                "screen_dx_px": None,
+                "screen_dy_px": None,
+                "screen_dx_tiles": None,
+                "screen_dy_tiles": None,
+                "screen_tile_dist": None,
+                "screen_pixel_dist": None,
+            }
+        _dx_tiles = int(round(_dx_px / 44))
+        _dy_tiles = int(round(_dy_px / 44))
+        return {
+            "screen_dx_px": _dx_px,
+            "screen_dy_px": _dy_px,
+            "screen_dx_tiles": _dx_tiles,
+            "screen_dy_tiles": _dy_tiles,
+            "screen_tile_dist": max(abs(_dx_tiles), abs(_dy_tiles)),
+            "screen_pixel_dist": float((_dx_px ** 2 + _dy_px ** 2) ** 0.5),
+        }
+
+    @staticmethod
+    def _get_loot_required_hits(item_cluster_size: int, fallback_source) -> int:
+        _required_hits = 2
+        if int(item_cluster_size or 0) < 2:
+            _required_hits = 4 if fallback_source else 3
+        return _required_hits
+
+    @staticmethod
+    def _is_loot_candidate_plausible(*, tile_dist, pixel_dist) -> bool:
+        return True
+
+    @staticmethod
+    def _should_use_loot_z(*, tile_dist, pixel_dist) -> bool:
+        return True
+
+    @staticmethod
+    def _did_loot_vector_progress(before_vector, after_vector) -> bool:
+        if not before_vector or not after_vector:
+            return False
+        try:
+            _before = float(before_vector.get("screen_pixel_dist") or 0.0)
+            _after = float(after_vector.get("screen_pixel_dist") or 0.0)
+        except Exception:
+            return False
+        return _after <= max(0.0, _before - 18.0)
+
+    def _reset_boss_item_passive_state(self) -> None:
+        self._boss_item_detect_center = None
+        self._boss_item_detect_hits = 0
+        self._boss_item_seen_recent = False
+        self._boss_item_seen_at = 0.0
+        self._boss_item_passive_last_log_at = 0.0
+        self._loot_detect_last_item_center = None
+
+    def _has_recent_boss_item_hint(self, *, max_age_s: float = 6.0) -> bool:
+        try:
+            _seen_at = float(getattr(self, "_boss_item_seen_at", 0.0) or 0.0)
+        except Exception:
+            _seen_at = 0.0
+        if not bool(getattr(self, "_boss_item_seen_recent", False)):
+            return False
+        return (time.time() - _seen_at) <= max(0.5, float(max_age_s))
+
+    def _passive_detect_boss_dungeon_item(self, screen: np.ndarray, item_img_path: str, *, boss_mode: str = "") -> bool:
+        if screen is None or not item_img_path or not Path(item_img_path).exists():
+            return False
+        try:
+            item_detected = self._detect_item_template(screen, item_img_path)
+        except Exception:
+            return False
+
+        item_result = item_detected["result"]
+        if not getattr(item_result, "found", False):
+            self._boss_item_detect_center = None
+            self._boss_item_detect_hits = 0
+            if not self._has_recent_boss_item_hint(max_age_s=3.0):
+                self._boss_item_seen_recent = False
+            return False
+
+        item_info = item_detected.get("info") or {}
+        item_cluster = list(item_info.get("cluster") or [])
+        item_cluster_size = len(item_cluster)
+        item_fallback_source = item_info.get("fallback_source")
+        _candidate_center = (int(item_result.center_x), int(item_result.center_y))
+        _candidate_tol = max(
+            36,
+            int(getattr(item_result, "width", 0) or 0) * 2,
+            int(getattr(item_result, "height", 0) or 0) * 3,
+        )
+        _prev_center = getattr(self, "_boss_item_detect_center", None)
+        if _prev_center is None:
+            self._boss_item_detect_center = _candidate_center
+            self._boss_item_detect_hits = 1
+        else:
+            _candidate_dist = (
+                abs(int(_prev_center[0]) - _candidate_center[0]) +
+                abs(int(_prev_center[1]) - _candidate_center[1])
+            )
+            if _candidate_dist <= _candidate_tol:
+                self._boss_item_detect_center = _candidate_center
+                self._boss_item_detect_hits = int(getattr(self, "_boss_item_detect_hits", 0) or 0) + 1
+            else:
+                self._boss_item_detect_center = _candidate_center
+                self._boss_item_detect_hits = 1
+
+        _required_hits = self._get_loot_required_hits(item_cluster_size, item_fallback_source)
+        if int(getattr(self, "_boss_item_detect_hits", 0) or 0) < _required_hits:
+            return False
+
+        self._boss_item_seen_recent = True
+        self._boss_item_seen_at = time.time()
+        self._loot_detect_last_item_center = _candidate_center
+        _now = time.time()
+        if (_now - float(getattr(self, "_boss_item_passive_last_log_at", 0.0) or 0.0)) >= 1.0:
+            try:
+                self._schedule_boss_ui_log(
+                    f"👀 아이템 후보 감지 ({_candidate_center[0]},{_candidate_center[1]}) mode={boss_mode or '-'}",
+                    dedupe_key="boss-item-passive-detect",
+                    dedupe_window=0.8,
+                )
+            except Exception:
+                pass
+            self._boss_item_passive_last_log_at = _now
+        return True
+
+    def _press_escape_twice_before_arrival_keys(self, stop_event=None) -> None:
+        _stop_event = stop_event or threading.Event()
+        self._suppress_escape_hotkey_for(0.8)
+        for _ in range(2):
+            if _stop_event.is_set():
+                break
+            try:
+                self._suppress_escape_hotkey_for(0.35)
+                get_input_controller().press("esc")
+            except Exception as _e:
+                logger.error(f"[아이템] ESC 입력 실패: {_e}")
+            _stop_event.wait(0.12)
+
+    def _release_loot_targeting_mode(self, stop_event=None) -> None:
+        try:
+            self._suppress_escape_hotkey_for(0.45)
+            get_input_controller().press("esc")
+        except Exception as _e:
+            logger.error(f"[아이템] z 상태 해제 실패: {_e}")
+
+    def _run_item_loot_sequence(
+        self,
+        item_img_path: str,
+        *,
+        char_img_path: str | None = None,
+        stop_event=None,
+        log_prefix: str = "[아이템]",
+        status_callback=None,
+        initial_wait_s: float = 0.0,
+        no_item_timeout_s: float = 4.0,
+        current_pos=None,
+    ) -> bool:
+        """아이템 루팅 상태기계: 후보 확정 -> 접근 -> 루팅 -> 사라짐 검증"""
+        if not item_img_path or not Path(item_img_path).exists():
+            return False
+
+        import pyautogui
+
+        _stop_event = stop_event or threading.Event()
+        analysis_interval = max(0.12, float(getattr(self._config, "analysis_interval", 0.1) or 0.1))
+        _initial_wait = max(0.0, float(initial_wait_s or 0.0))
+        _no_item_timeout = max(1.0, float(no_item_timeout_s or 0.0))
+        _loot_z_settle_s = 0.35
+        _loot_click_settle_s = 0.15
+        no_item_deadline = time.time() + _no_item_timeout
+        disappeared_confirm_count = 3
+        seen_item = False
+        missing_after_seen = 0
+        action_cooldown_until = 0.0
+        loot_verify_until = 0.0
+        candidate_item_center = None
+        candidate_item_hits = 0
+        confirmed_item_vector = None
+        confirmed_item_center = None
+        loot_state = "acquire"
+        failed_attempts = 0
+        _max_failed_attempts = 4
+        _loot_z_mode_active = False
+        self._loot_detect_last_item_center = None
+
+        def _emit_log(message: str):
+            try:
+                self._append_log(f"{log_prefix} {message}", force=True)
+            except Exception:
+                pass
+
+        def _emit_status(message: str, color: str = COLORS["text_secondary"]):
+            if callable(status_callback):
+                try:
+                    status_callback(message, color)
+                except Exception:
+                    pass
+
+        def _cleanup_loot_targeting_state(reason: str = ""):
+            nonlocal _loot_z_mode_active
+            if not _loot_z_mode_active:
+                return
+            self._release_loot_targeting_mode(stop_event=_stop_event)
+            _loot_z_mode_active = False
+            if reason:
+                _emit_log(reason)
+
+        if _initial_wait > 0.0:
+            _emit_status("결과: 아이템 등장 안정화 대기...", COLORS["text_secondary"])
+            _emit_log(f"아이템 안정화 대기 {_initial_wait:.1f}초")
+            if _stop_event.wait(_initial_wait):
+                self._loot_detect_last_item_center = None
+                return False
+
+        try:
+            while not _stop_event.is_set():
+                _now = time.time()
+                if _now < action_cooldown_until:
+                    time.sleep(analysis_interval)
+                    continue
+
+                screenshot = pyautogui.screenshot()
+                screen = np.array(screenshot)
+                screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
+
+                item_detected = self._detect_item_template(screen, item_img_path)
+                item_result = item_detected["result"]
+                item_found = bool(getattr(item_result, "found", False))
+                item_info = item_detected.get("info") or {}
+                item_cluster = list(item_info.get("cluster") or [])
+                item_cluster_size = len(item_cluster)
+                item_fallback_source = item_info.get("fallback_source")
+                item_vector = (
+                    self._get_loot_screen_vector(screen.shape[:2], item_result)
+                    if item_found else None
+                )
+
+                if not item_found:
+                    candidate_item_center = None
+                    candidate_item_hits = 0
+                    if loot_state == "verify":
+                        missing_after_seen += 1
+                        _emit_status("결과: 아이템 사라짐 확인 중...", COLORS["text_secondary"])
+                        if missing_after_seen >= disappeared_confirm_count:
+                            _cleanup_loot_targeting_state()
+                            _emit_log("아이템 사라짐 확인 완료")
+                            _emit_status("결과: 아이템 루팅 완료", "#50c878")
+                            return True
+                        time.sleep(analysis_interval)
+                        continue
+
+                    if loot_state == "reacquire_after_z":
+                        failed_attempts += 1
+                        _cleanup_loot_targeting_state("아이템 접근 실패: z 후 재탐지 실패")
+                        if failed_attempts >= _max_failed_attempts:
+                            _emit_log("아이템 접근 불가: 재탐지 반복 실패")
+                            _emit_status("결과: 아이템 접근 불가", "#e05050")
+                            return False
+                        loot_state = "acquire"
+                        action_cooldown_until = _now + 0.35
+                        time.sleep(analysis_interval)
+                        continue
+
+                    if seen_item and loot_state != "acquire":
+                        failed_attempts += 1
+                        if failed_attempts >= _max_failed_attempts:
+                            _cleanup_loot_targeting_state()
+                            _emit_log("아이템 접근 불가: 반복 실패")
+                            _emit_status("결과: 아이템 접근 불가", "#e05050")
+                            return False
+                        loot_state = "acquire"
+                        action_cooldown_until = _now + 0.35
+                        time.sleep(analysis_interval)
+                        continue
+
+                    if time.time() >= no_item_deadline:
+                        _cleanup_loot_targeting_state()
+                        _emit_log("아이템 없음")
+                        _emit_status("결과: 아이템 없음", COLORS["text_secondary"])
+                        return False
+                    _emit_status("결과: 아이템 후보 탐색 중...", COLORS["text_secondary"])
+                    time.sleep(analysis_interval)
+                    continue
+
+                _candidate_center = (int(item_result.center_x), int(item_result.center_y))
+                _candidate_tol = max(
+                    36,
+                    int(getattr(item_result, "width", 0) or 0) * 2,
+                    int(getattr(item_result, "height", 0) or 0) * 3,
+                )
+                if candidate_item_center is None:
+                    candidate_item_center = _candidate_center
+                    candidate_item_hits = 1
+                else:
+                    _candidate_dist = (
+                        abs(int(candidate_item_center[0]) - _candidate_center[0]) +
+                        abs(int(candidate_item_center[1]) - _candidate_center[1])
+                    )
+                    if _candidate_dist <= _candidate_tol:
+                        candidate_item_center = _candidate_center
+                        candidate_item_hits += 1
+                    else:
+                        candidate_item_center = _candidate_center
+                        candidate_item_hits = 1
+
+                _required_hits = self._get_loot_required_hits(item_cluster_size, item_fallback_source)
+
+                if loot_state == "acquire":
+                    if candidate_item_hits < _required_hits:
+                        _emit_status(
+                            f"결과: 아이템 후보 확정 중... ({candidate_item_hits}/{_required_hits})",
+                            COLORS["text_secondary"],
+                        )
+                        time.sleep(analysis_interval)
+                        continue
+
+                    seen_item = True
+                    missing_after_seen = 0
+                    confirmed_item_center = _candidate_center
+                    confirmed_item_vector = item_vector
+                    if self._should_use_loot_z(
+                        tile_dist=item_vector.get("screen_tile_dist"),
+                        pixel_dist=item_vector.get("screen_pixel_dist"),
+                    ):
+                        _emit_status("결과: 아이템 접근(z) 시도...", "#5e81ac")
+                        try:
+                            _z_ok = bool(get_input_controller().press("z"))
+                        except Exception:
+                            _z_ok = False
+                        if not _z_ok:
+                            failed_attempts += 1
+                            _emit_log("아이템 접근 실패: z 입력 실패")
+                            if failed_attempts >= _max_failed_attempts:
+                                _emit_status("결과: 아이템 접근 불가", "#e05050")
+                                return False
+                            action_cooldown_until = _now + 0.45
+                            time.sleep(analysis_interval)
+                            continue
+                        _loot_z_mode_active = True
+                        loot_state = "reacquire_after_z"
+                        action_cooldown_until = _now + _loot_z_settle_s
+                        _emit_log(
+                            f"아이템 접근: z 입력 tile={item_vector.get('screen_tile_dist')} "
+                            f"px={float(item_vector.get('screen_pixel_dist') or 0.0):.1f}"
+                        )
+                        time.sleep(analysis_interval)
+                        continue
+                    loot_state = "click_loot"
+
+                if loot_state == "reacquire_after_z":
+                    seen_item = True
+                    missing_after_seen = 0
+                    if confirmed_item_vector and not self._did_loot_vector_progress(confirmed_item_vector, item_vector):
+                        _emit_log("아이템 접근: z 후 거리 변화 미미 → 클릭 시도 유지")
+                    confirmed_item_center = _candidate_center
+                    confirmed_item_vector = item_vector
+                    loot_state = "click_loot"
+
+                if loot_state == "click_loot":
+                    try:
+                        _click_x = int(item_result.center_x)
+                        _click_y = int(item_result.center_y)
+                        _dbl_ok = bool(get_input_controller().double_click(_click_x, _click_y))
+                        if _dbl_ok:
+                            _emit_log(f"아이템 루팅: 더블클릭 ({_click_x},{_click_y})")
+                        else:
+                            failed_attempts += 1
+                            _emit_log(f"아이템 루팅 실패: 더블클릭 실패 ({_click_x},{_click_y})")
+                            _cleanup_loot_targeting_state()
+                            if failed_attempts >= _max_failed_attempts:
+                                _emit_status("결과: 아이템 접근 불가", "#e05050")
+                                return False
+                            loot_state = "acquire"
+                            action_cooldown_until = _now + 0.35
+                            time.sleep(analysis_interval)
+                            continue
+
+                        time.sleep(_loot_click_settle_s)
+                        try:
+                            _loot_ok = bool(get_input_controller().press(","))
+                        except Exception:
+                            _loot_ok = False
+                        if _loot_ok:
+                            _emit_log("아이템 먹기: , 입력")
+                        else:
+                            failed_attempts += 1
+                            _emit_log("아이템 루팅 실패: , 입력 실패")
+                            _cleanup_loot_targeting_state()
+                            if failed_attempts >= _max_failed_attempts:
+                                _emit_status("결과: 아이템 접근 불가", "#e05050")
+                                return False
+                            loot_state = "acquire"
+                            action_cooldown_until = _now + 0.35
+                            time.sleep(analysis_interval)
+                            continue
+                        loot_verify_until = time.time() + 3.0
+                        missing_after_seen = 0
+                        loot_state = "verify"
+                        action_cooldown_until = _now + 0.25
+                        _emit_status("결과: 아이템 사라짐 확인 중...", COLORS["text_secondary"])
+                    except Exception as _e:
+                        failed_attempts += 1
+                        _cleanup_loot_targeting_state("아이템 루팅 실패: 상태 정리")
+                        logger.error(f"[아이템루팅] 상태기계 처리 실패: {_e}")
+                        if failed_attempts >= _max_failed_attempts:
+                            _emit_status("결과: 아이템 접근 불가", "#e05050")
+                            return False
+                        loot_state = "acquire"
+                        action_cooldown_until = _now + 0.45
+
+                elif loot_state == "verify":
+                    seen_item = True
+                    missing_after_seen = 0
+                    if _now < loot_verify_until:
+                        _emit_status("결과: 아이템 사라짐 확인 중...", COLORS["text_secondary"])
+                        time.sleep(analysis_interval)
+                        continue
+                    failed_attempts += 1
+                    _cleanup_loot_targeting_state("아이템 루팅 실패: 먹기 후 잔존")
+                    if failed_attempts >= _max_failed_attempts:
+                        _emit_log("아이템 접근 불가: 먹기 후에도 잔존")
+                        _emit_status("결과: 아이템 접근 불가", "#e05050")
+                        return False
+                    loot_state = "acquire"
+                    candidate_item_center = _candidate_center
+                    candidate_item_hits = 1
+                    action_cooldown_until = _now + 0.35
+                time.sleep(analysis_interval)
+        finally:
+            _cleanup_loot_targeting_state()
+            self._loot_detect_last_item_center = None
+        return False
+
+    def _run_boss_item_and_arrival_flow(self, target_idx: int, all_targets, current_pos, stop_event, *, allow_item_loot: bool = True) -> None:
+        """보스 후처리: 필요 시 아이템 처리 후 도착키 실행"""
+        item_img_path = self._get_waypoint_image_path(target_idx, "item")
+        found_item = False
+        _passive_item_hint = self._has_recent_boss_item_hint(max_age_s=6.0)
+        _loot_initial_wait = 0.35 if _passive_item_hint else 1.2
+        _loot_timeout = 10.0 if _passive_item_hint else 8.0
+        if allow_item_loot and item_img_path and not stop_event.is_set():
+            self._schedule_boss_ui_log(
+                "🎁 아이템 탐색 시작" + (" (상시탐지 힌트)" if _passive_item_hint else ""),
+                dedupe_key="boss-item-start",
+                dedupe_window=0.5,
+            )
+            found_item = self._run_item_loot_sequence(
+                item_img_path,
+                char_img_path=None,
+                stop_event=stop_event,
+                log_prefix="[아이템]",
+                initial_wait_s=_loot_initial_wait,
+                no_item_timeout_s=_loot_timeout,
+                current_pos=current_pos,
+            )
+            if found_item:
+                self._schedule_boss_ui_log(
+                    "🎁 아이템 루팅 완료",
+                    dedupe_key="boss-item-done",
+                    dedupe_window=0.5,
+                )
+            else:
+                self._schedule_boss_ui_log(
+                    "🎁 아이템 없음",
+                    dedupe_key="boss-item-none",
+                    dedupe_window=0.5,
+                )
+        self._reset_boss_item_passive_state()
+
+        _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
+        if _arr_keys and not stop_event.is_set():
+            if found_item:
+                self._press_escape_twice_before_arrival_keys(stop_event=stop_event)
+            self._exec_arrival_keys(_arr_keys)
+            _kn = ",".join(kd.get("key", "") for kd in _arr_keys)
+            self._schedule_boss_ui_log(
+                f"🔑 도착 키 입력: {_kn}",
+                dedupe_key="boss-arrival-keys",
+                dedupe_window=1.0,
+            )
+
     def _bosstest_select(self, kind: str):
         """보스 테스트용 이미지 선택"""
-        from tkinter import filedialog
+        def _current_path() -> str:
+            return (
+                self._bosstest_boss_image_path if kind == "boss"
+                else self._bosstest_char_image_path
+            ) or ""
 
-        path = filedialog.askopenfilename(
-            title="보스 이미지 선택" if kind == "boss" else "캐릭터 이미지 선택",
-            filetypes=[("이미지 파일", "*.png *.jpg *.jpeg *.bmp"), ("모든 파일", "*.*")],
-            initialdir=str(DATA_DIR / "templates"),
+        def _apply_path(path: str) -> None:
+            if kind == "boss":
+                self._bosstest_boss_image_path = path
+                self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(path).name}")
+            else:
+                self._bosstest_char_image_path = path
+                self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(path).name}")
+            self._update_bosstest_previews()
+            self._bosstest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+
+        def _clear_path() -> None:
+            if kind == "boss":
+                self._bosstest_boss_image_path = None
+                self._bosstest_boss_label.configure(text="보스 이미지: 없음")
+            else:
+                self._bosstest_char_image_path = None
+                self._bosstest_char_label.configure(text="캐릭터 이미지: 없음")
+            self._update_bosstest_previews()
+            self._bosstest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+
+        self._open_image_preset_picker(
+            kind=kind,
+            dialog_title="보스 이미지 선택" if kind == "boss" else "캐릭터 이미지 선택",
+            current_path_getter=_current_path,
+            apply_path_callback=_apply_path,
+            clear_path_callback=_clear_path,
         )
-        if not path:
-            return
 
-        if kind == "boss":
-            self._bosstest_boss_image_path = path
-            self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(path).name}")
-        else:
-            self._bosstest_char_image_path = path
-            self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(path).name}")
-        self._update_bosstest_previews()
-        self._bosstest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+    def _itemtest_select(self):
+        """아이템 테스트용 이미지 선택"""
+        def _current_path() -> str:
+            return self._itemtest_item_image_path or ""
+
+        def _apply_path(path: str) -> None:
+            self._itemtest_item_image_path = path
+            self._itemtest_item_label.configure(text=f"아이템 이미지: {Path(path).name}")
+            self._update_bosstest_previews()
+            self._itemtest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+
+        def _clear_path() -> None:
+            self._itemtest_item_image_path = None
+            self._itemtest_item_label.configure(text="아이템 이미지: 없음")
+            self._update_bosstest_previews()
+            self._itemtest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+
+        self._open_image_preset_picker(
+            kind="item",
+            dialog_title="아이템 이미지 선택",
+            current_path_getter=_current_path,
+            apply_path_callback=_apply_path,
+            clear_path_callback=_clear_path,
+        )
 
     def _bosstest_run(self):
         """보스 테스트 시작/중지"""
@@ -17419,6 +18345,82 @@ class GameModeDialog(ctk.CTkToplevel):
 
         self._bosstest_thread = threading.Thread(target=_run, daemon=True)
         self._bosstest_thread.start()
+
+    def _itemtest_run(self):
+        """아이템 테스트 시작/중지"""
+        if getattr(self, "_itemtest_running", False):
+            self._itemtest_stop_event.set()
+            self._itemtest_running = False
+            self._append_log("[아이템테스트] 중지 요청", force=True)
+            try:
+                self._itemtest_button.configure(text="아이템테스트", fg_color="#7a5ac0", hover_color="#8c6dd2")
+                self._itemtest_result_label.configure(text="결과: 아이템 테스트 중지", text_color=COLORS["text_secondary"])
+            except (tk.TclError, RuntimeError):
+                pass
+            return
+
+        if not self._itemtest_item_image_path:
+            self._itemtest_result_label.configure(
+                text="결과: 아이템 이미지를 먼저 선택하세요",
+                text_color="#e05050",
+            )
+            return
+
+        self._itemtest_stop_event.clear()
+        self._itemtest_running = True
+        self._append_log("[아이템테스트] 시작", force=True)
+        self._itemtest_button.configure(text="중지", fg_color="#bf616a", hover_color="#cf717f")
+        self._itemtest_result_label.configure(
+            text="결과: 2초 안에 게임 창을 활성화하세요...",
+            text_color=COLORS["text_secondary"],
+        )
+        self.update_idletasks()
+
+        def _run():
+            try:
+                time.sleep(2.0)
+                self._append_log("[아이템테스트] 게임 창 활성화 대기 2초", force=True)
+
+                def _set_status(message: str, color: str = COLORS["text_secondary"]):
+                    try:
+                        self.after(0, lambda m=message, c=color: self._itemtest_result_label.configure(text=m, text_color=c))
+                    except (tk.TclError, RuntimeError):
+                        pass
+
+                self._run_item_loot_sequence(
+                    self._itemtest_item_image_path,
+                    char_img_path=None,
+                    stop_event=self._itemtest_stop_event,
+                    log_prefix="[아이템테스트]",
+                    status_callback=_set_status,
+                    initial_wait_s=1.2,
+                    no_item_timeout_s=8.0,
+                    current_pos=None,
+                )
+            except Exception as e:
+                try:
+                    self.after(0, lambda err=str(e): self._append_log(f"[아이템테스트] 오류: {err}", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda err=str(e): self._itemtest_result_label.configure(
+                        text=f"결과: 오류 - {err}", text_color="#e05050"))
+                except (tk.TclError, RuntimeError):
+                    pass
+            finally:
+                self._itemtest_running = False
+                try:
+                    self.after(0, lambda: self._append_log("[아이템테스트] 종료", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda: self._itemtest_button.configure(
+                        text="아이템테스트", fg_color="#7a5ac0", hover_color="#8c6dd2"))
+                except (tk.TclError, RuntimeError):
+                    pass
+
+        self._itemtest_thread = threading.Thread(target=_run, daemon=True)
+        self._itemtest_thread.start()
 
     def _bosstest_release_key(self):
         """보스 테스트 중 눌린 이동키 해제"""
@@ -17749,11 +18751,15 @@ class GameModeDialog(ctk.CTkToplevel):
         # 모니터링 중지
         self._monitoring = False
         self._bosstest_stop_event.set()
+        self._itemtest_stop_event.set()
         self._bosstest_release_key()
 
         _bt = getattr(self, '_bosstest_thread', None)
         if _bt is not None and _bt.is_alive():
             _bt.join(timeout=1.0)
+        _it = getattr(self, '_itemtest_thread', None)
+        if _it is not None and _it.is_alive():
+            _it.join(timeout=1.0)
 
         _was_running = self._is_running
         if _was_running:

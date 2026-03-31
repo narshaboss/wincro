@@ -57,5 +57,11 @@
       "name": "wp_char_64b6dd3e",
       "path": "C:\\Projects\\wincro\\data\\templates\\wp_char_b902b9e2.png"
     }
+  ],
+  "item_image_presets": [
+    {
+      "name": "trigger_20260330_171917_107_crop_ac8b1b",
+      "path": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+    }
   ]
 }

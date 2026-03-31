@@ -365,7 +365,7 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
     ):
         super().__init__(master)
         self.title("특화모드 시뮬레이션")
-        self.geometry("1420x860")
+        self.geometry("1680x920")
         self.transient(master)
         self.attributes("-topmost", True)
         self.after(250, lambda: self.attributes("-topmost", False))
@@ -421,12 +421,23 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
 
         body = ctk.CTkFrame(self)
         body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(0, weight=5)
         body.grid_columnconfigure(1, weight=4)
         body.grid_rowconfigure(0, weight=1)
 
-        self._canvas = tk.Canvas(body, background="#0f172a", highlightthickness=0)
-        self._canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        canvas_wrap = ctk.CTkFrame(body, fg_color="transparent")
+        canvas_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        canvas_wrap.grid_columnconfigure(0, weight=1)
+        canvas_wrap.grid_rowconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(canvas_wrap, background="#0f172a", highlightthickness=0)
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        self._h_scroll = ctk.CTkScrollbar(canvas_wrap, orientation="horizontal", command=self._canvas.xview)
+        self._h_scroll.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self._v_scroll = ctk.CTkScrollbar(canvas_wrap, orientation="vertical", command=self._canvas.yview)
+        self._v_scroll.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self._canvas.configure(xscrollcommand=self._h_scroll.set, yscrollcommand=self._v_scroll.set)
 
         right = ctk.CTkFrame(body)
         right.grid(row=0, column=1, sticky="nsew")
@@ -470,7 +481,7 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
 
     def _read_count(self) -> int:
         try:
-            return max(1, min(200, int(self._count_entry.get().strip())))
+            return max(1, min(1000, int(self._count_entry.get().strip())))
         except Exception:
             return 50
 
@@ -523,6 +534,11 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
         canvas = self._canvas
         canvas.delete("all")
         gm = self.scenario.game_map
+        record = self._current_record()
+        monster_blocks = set(record.monster_blocks) if record is not None else set()
+        blocked_neighbor_tiles = set(record.blocked_neighbor_tiles) if record is not None else set()
+        avoid_tiles = set(record.avoid_set) if record is not None else set()
+        no_detour = bool(record.no_detour) if record is not None else False
         bounds = gm.get_bounds()
         min_x, max_x = bounds["min_x"], bounds["max_x"]
         min_y, max_y = bounds["min_y"], bounds["max_y"]
@@ -530,7 +546,18 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
         height = max(1, max_y - min_y + 1)
         cw = max(420, canvas.winfo_width() or 760)
         ch = max(320, canvas.winfo_height() or 620)
-        tile = max(10, min(28, min((cw - 20) // width, (ch - 20) // height)))
+        legend_h = 86
+        inner_w = max(80, cw - 32)
+        inner_h = max(80, ch - legend_h - 32)
+        fit_tile = max(1, min(inner_w // width, inner_h // height))
+        tile = min(24, max(10, fit_tile))
+        grid_w = width * tile
+        grid_h = height * tile
+        world_w = max(cw, grid_w + 32)
+        world_h = max(ch, grid_h + legend_h + 32)
+        offset_x = 16 if grid_w + 32 > cw else max(16, (cw - grid_w) // 2)
+        offset_y = 16 if grid_h + legend_h + 32 > ch else max(16, (inner_h - grid_h) // 2 + 8)
+        canvas.configure(scrollregion=(0, 0, world_w, world_h))
         for y in range(min_y, max_y + 1):
             for x in range(min_x, max_x + 1):
                 fill = "#111827"
@@ -544,10 +571,55 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
                     fill = "#c62828"
                 if self._player_pos == (x, y):
                     fill = "#1976d2"
-                px = 10 + (x - min_x) * tile
-                py = 10 + (y - min_y) * tile
+                px = offset_x + (x - min_x) * tile
+                py = offset_y + (y - min_y) * tile
                 canvas.create_rectangle(px, py, px + tile, py + tile, fill=fill, outline="#0b1020")
-        canvas.create_text(12, ch - 12, anchor="sw", text=f"현재: {self._player_pos} | 목표: {self._goal_pos} | 보스: {self._boss_pos}", fill="#e5e7eb", font=("Malgun Gothic", 10))
+                if (x, y) in avoid_tiles:
+                    canvas.create_rectangle(px + 1, py + 1, px + tile - 1, py + tile - 1, outline="#d946ef", width=2)
+                if (x, y) in monster_blocks:
+                    canvas.create_rectangle(px + 1, py + 1, px + tile - 1, py + tile - 1, fill="#fb923c", outline="#f97316", width=2)
+                    if tile >= 10:
+                        canvas.create_text(px + tile / 2, py + tile / 2, text="M", fill="#111827", font=("Malgun Gothic", max(6, tile // 2), "bold"))
+                if (x, y) in blocked_neighbor_tiles:
+                    canvas.create_rectangle(px + 2, py + 2, px + tile - 2, py + tile - 2, outline="#ef4444", width=2)
+                    if tile >= 10:
+                        canvas.create_line(px + 3, py + 3, px + tile - 3, py + tile - 3, fill="#ef4444", width=2)
+                        canvas.create_line(px + tile - 3, py + 3, px + 3, py + tile - 3, fill="#ef4444", width=2)
+        if no_detour:
+            player_px = offset_x + (self._player_pos[0] - min_x) * tile
+            player_py = offset_y + (self._player_pos[1] - min_y) * tile
+            canvas.create_rectangle(player_px - 2, player_py - 2, player_px + tile + 2, player_py + tile + 2, outline="#facc15", width=3)
+            canvas.create_text(
+                cw / 2,
+                max(18, offset_y - 6),
+                text="우회 경로 없음",
+                fill="#facc15",
+                font=("Malgun Gothic", 12, "bold"),
+            )
+        legend_y = world_h - 54
+        canvas.create_rectangle(12, legend_y, 28, legend_y + 16, fill="#fb923c", outline="")
+        canvas.create_text(36, legend_y + 8, anchor="w", text="몬스터 점유", fill="#e5e7eb", font=("Malgun Gothic", 10))
+        canvas.create_rectangle(130, legend_y, 146, legend_y + 16, outline="#ef4444", width=2)
+        canvas.create_text(154, legend_y + 8, anchor="w", text="막힌 인접 칸", fill="#e5e7eb", font=("Malgun Gothic", 10))
+        canvas.create_rectangle(278, legend_y, 294, legend_y + 16, outline="#d946ef", width=2)
+        canvas.create_text(302, legend_y + 8, anchor="w", text="회피 누적 칸", fill="#e5e7eb", font=("Malgun Gothic", 10))
+        canvas.create_text(
+            12,
+            world_h - 18,
+            anchor="sw",
+            text=(
+                f"현재: {self._player_pos} | 목표: {self._goal_pos} | 보스: {self._boss_pos} | "
+                f"몬스터:{len(monster_blocks)} | 막힘:{len(blocked_neighbor_tiles)} | 우회없음:{'예' if no_detour else '아니오'}"
+            ),
+            fill="#e5e7eb",
+            font=("Malgun Gothic", 10),
+        )
+
+    def _on_canvas_configure(self, _event=None):
+        try:
+            self.after_idle(self._draw_map)
+        except Exception:
+            pass
 
     def _current_record(self) -> Optional[SimulationTickRecord]:
         if not self.scenario.records:
@@ -571,7 +643,8 @@ class WaypointSimulationWindow(ctk.CTkToplevel):
                 (
                     f"tick={record.tick} state={record.state} action={record.action} reason={record.reason} "
                     f"avoid={list(record.avoid_set)} blocked={list(record.blocked_dirs)} edge_fail={list(record.edge_fail_counts)} "
-                    f"monster={list(record.monster_blocks)} fault={list(record.fault_flags)} boss_signal={record.boss_signal} stop={record.stop_reason}\n"
+                    f"monster={list(record.monster_blocks)} blocked_neighbors={list(record.blocked_neighbor_tiles)} "
+                    f"no_detour={record.no_detour} fault={list(record.fault_flags)} boss_signal={record.boss_signal} stop={record.stop_reason}\n"
                 ),
             )
         self._debug.see("end")

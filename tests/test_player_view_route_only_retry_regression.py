@@ -72,6 +72,7 @@ def test_route_only_can_use_local_avoid_even_when_segment_has_starts():
         text.index("if _route_only_mode:"):
         text.index("elif _strict_route_mode:")
     ]
+    assert "if _blocked_edge_fail < AVOID_EDGE_FAIL_THRESHOLD:" in route_slice
     assert "_route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)" in route_slice
     assert "🧭 경로막힘 국소회피" in text
 
@@ -79,7 +80,8 @@ def test_route_only_can_use_local_avoid_even_when_segment_has_starts():
 def test_stable_waypoint_goal_detour_is_disabled_for_route_chokepoints():
     text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
 
-    assert "if (_stable_waypoint_phase and _edge_fail >= 2 and" in text
+    assert "AVOID_EDGE_FAIL_THRESHOLD = 2" in text
+    assert "if (_stable_waypoint_phase and _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and" in text
     assert "portal_grace <= 0 and" in text
     assert "not _route_chokepoint):" in text
 

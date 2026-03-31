@@ -94,8 +94,10 @@ class SimulationTickRecord:
     blocked_dirs: tuple[str, ...] = ()
     edge_fail_counts: tuple[tuple[str, int], ...] = ()
     monster_blocks: tuple[Coord, ...] = ()
+    blocked_neighbor_tiles: tuple[Coord, ...] = ()
     fault_flags: tuple[str, ...] = ()
     boss_signal: str = "stable"
+    no_detour: bool = False
     stop_reason: str = ""
 
 
@@ -385,6 +387,23 @@ def _append_step(steps: list[dict[str, Any]], kind: str, position: Coord, messag
     )
 
 
+def _analyze_neighbor_constraints(
+    game_map: GameMap,
+    current: Coord,
+    monster_blocks: set[Coord],
+    avoid_edges: set[Edge],
+) -> tuple[tuple[Coord, ...], tuple[Coord, ...]]:
+    blocked_tiles: set[Coord] = set()
+    open_tiles: set[Coord] = set()
+    for nx, ny, direction in game_map.get_walkable_neighbors(current[0], current[1], allow_unknown=False, allow_soft_blocked=True):
+        nxt = (nx, ny)
+        if nxt in monster_blocks or (current[0], current[1], direction) in avoid_edges:
+            blocked_tiles.add(nxt)
+        else:
+            open_tiles.add(nxt)
+    return tuple(sorted(blocked_tiles)), tuple(sorted(open_tiles))
+
+
 def run_route_harness(
     game_map: GameMap,
     *,
@@ -421,6 +440,12 @@ def run_route_harness(
         for direction, fail_count in edge_fail_counts.items():
             if fail_count >= 2:
                 avoid_edges.add((current[0], current[1], direction))
+        blocked_neighbor_tiles, open_neighbor_tiles = _analyze_neighbor_constraints(
+            game_map,
+            current,
+            set(monster_blocks),
+            avoid_edges,
+        )
 
         if "coord_glitch" in fault_flags:
             observed = (current[0] + 100, current[1] + 100)
@@ -459,7 +484,9 @@ def run_route_harness(
                     blocked_dirs=tuple(sorted(blocked_dirs)),
                     edge_fail_counts=tuple(sorted(edge_fail_counts.items())),
                     monster_blocks=tuple(monster_blocks),
+                    blocked_neighbor_tiles=blocked_neighbor_tiles,
                     fault_flags=tuple(fault_flags),
+                    no_detour=False,
                 )
             )
             return HarnessRunResult(steps=steps, records=records, final_pos=current, completed=True)
@@ -513,7 +540,9 @@ def run_route_harness(
                 blocked_dirs=tuple(sorted(blocked_dirs)),
                 edge_fail_counts=tuple(sorted(edge_fail_counts.items())),
                 monster_blocks=tuple(monster_blocks),
+                blocked_neighbor_tiles=blocked_neighbor_tiles,
                 fault_flags=tuple(fault_flags),
+                no_detour=not path and not open_neighbor_tiles,
                 stop_reason=stop_reason,
             )
         )
@@ -593,6 +622,12 @@ def run_boss_harness(
         for direction, fail_count in edge_fail_counts.items():
             if fail_count >= 2:
                 avoid_edges.add((current[0], current[1], direction))
+        blocked_neighbor_tiles, open_neighbor_tiles = _analyze_neighbor_constraints(
+            game_map,
+            current,
+            set(monster_blocks),
+            avoid_edges,
+        )
 
         if visible:
             _append_step(
@@ -626,16 +661,18 @@ def run_boss_harness(
                         position=current,
                         state="boss_chasing",
                         action="boss_contact",
-                        reason="밀착 성공",
-                        avoid_set=tuple(sorted((x, y) for x, y, _ in avoid_edges)),
-                        blocked_dirs=tuple(sorted(blocked_dirs)),
-                        edge_fail_counts=tuple(sorted(edge_fail_counts.items())),
-                        monster_blocks=tuple(monster_blocks),
-                        fault_flags=tuple(fault_flags),
-                        boss_signal=signal,
-                    )
+                    reason="밀착 성공",
+                    avoid_set=tuple(sorted((x, y) for x, y, _ in avoid_edges)),
+                    blocked_dirs=tuple(sorted(blocked_dirs)),
+                    edge_fail_counts=tuple(sorted(edge_fail_counts.items())),
+                    monster_blocks=tuple(monster_blocks),
+                    blocked_neighbor_tiles=blocked_neighbor_tiles,
+                    fault_flags=tuple(fault_flags),
+                    boss_signal=signal,
+                    no_detour=False,
                 )
-                return HarnessRunResult(steps=steps, records=records, final_pos=current, completed=True)
+            )
+            return HarnessRunResult(steps=steps, records=records, final_pos=current, completed=True)
         else:
             stable_contact_frames = 0
 
@@ -689,8 +726,10 @@ def run_boss_harness(
                 blocked_dirs=tuple(sorted(blocked_dirs)),
                 edge_fail_counts=tuple(sorted(edge_fail_counts.items())),
                 monster_blocks=tuple(monster_blocks),
+                blocked_neighbor_tiles=blocked_neighbor_tiles,
                 fault_flags=tuple(fault_flags),
                 boss_signal=signal,
+                no_detour=not visible or not open_neighbor_tiles,
                 stop_reason=stop_reason,
             )
         )

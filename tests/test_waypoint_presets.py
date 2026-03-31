@@ -24,17 +24,22 @@ def test_arrival_key_preset_roundtrip(tmp_path, monkeypatch):
 def test_image_preset_filters_missing_files(tmp_path, monkeypatch):
     preset_file = tmp_path / "waypoint_presets.json"
     image_file = tmp_path / "boss.png"
+    item_file = tmp_path / "item.png"
     image_file.write_bytes(b"fake")
+    item_file.write_bytes(b"fake")
     monkeypatch.setattr(wp, "PRESET_FILE", preset_file)
 
     wp.upsert_image_preset("boss", "boss_a", str(image_file))
     wp.upsert_image_preset("character", "char_missing", str(tmp_path / "missing.png"))
+    wp.upsert_image_preset("item", "item_a", str(item_file))
 
     boss = wp.list_image_presets("boss")
     character = wp.list_image_presets("character")
+    item = wp.list_image_presets("item")
 
     assert boss == [{"name": "boss_a", "path": str(image_file)}]
     assert character == []
+    assert item == [{"name": "item_a", "path": str(item_file)}]
 
 
 def test_image_preset_remove_roundtrip(tmp_path, monkeypatch):
@@ -49,6 +54,20 @@ def test_image_preset_remove_roundtrip(tmp_path, monkeypatch):
     wp.remove_image_preset("boss", "boss_a")
 
     assert wp.list_image_presets("boss") == []
+
+
+def test_item_image_preset_remove_roundtrip(tmp_path, monkeypatch):
+    preset_file = tmp_path / "waypoint_presets.json"
+    image_file = tmp_path / "item.png"
+    image_file.write_bytes(b"fake")
+    monkeypatch.setattr(wp, "PRESET_FILE", preset_file)
+
+    wp.upsert_image_preset("item", "item_a", str(image_file))
+    assert wp.list_image_presets("item") == [{"name": "item_a", "path": str(image_file)}]
+
+    wp.remove_image_preset("item", "item_a")
+
+    assert wp.list_image_presets("item") == []
 
 
 def test_save_waypoint_presets_sanitizes_invalid_entries(tmp_path, monkeypatch):
@@ -70,6 +89,10 @@ def test_save_waypoint_presets_sanitizes_invalid_entries(tmp_path, monkeypatch):
                 {"name": "char", "path": "C:/y.png"},
                 {"oops": "broken"},
             ],
+            wp.ITEM_IMAGE_PRESETS: [
+                {"name": "item", "path": "C:/z.png"},
+                {"name": "item2", "path": ""},
+            ],
         }
     )
 
@@ -77,6 +100,7 @@ def test_save_waypoint_presets_sanitizes_invalid_entries(tmp_path, monkeypatch):
     assert data[wp.ARRIVAL_KEY_PRESETS] == [{"name": "ok", "keys": [{"key": "f2"}]}]
     assert data[wp.BOSS_IMAGE_PRESETS] == [{"name": "boss", "path": "C:/x.png"}]
     assert data[wp.CHARACTER_IMAGE_PRESETS] == [{"name": "char", "path": "C:/y.png"}]
+    assert data[wp.ITEM_IMAGE_PRESETS] == [{"name": "item", "path": "C:/z.png"}]
 
 
 def test_arrival_key_preset_order_is_append_based(tmp_path, monkeypatch):
@@ -116,7 +140,7 @@ def test_image_dialog_uses_saved_presets_with_row_apply_controls():
     player_view = Path(__file__).resolve().parents[1] / "src" / "ui" / "player_view.py"
     text = player_view.read_text(encoding="utf-8-sig")
     dialog_slice = text[
-        text.index("def _open_waypoint_image_picker"):
+        text.index("def _open_image_preset_picker"):
         text.index("def _delete_waypoint_image")
     ]
 
@@ -132,7 +156,24 @@ def test_image_dialog_uses_saved_presets_with_row_apply_controls():
     assert "이미지삭제" in dialog_slice
     assert "취소" in dialog_slice
     assert "저장된 이미지가 없습니다. 아래에서 추가하세요." in dialog_slice
-    assert "logger.error(f'[좌표모드] {title} 등록 실패: {e}')" in dialog_slice
+    assert "logger.error(f'[좌표모드] {dialog_title} 등록 실패: {e}')" in dialog_slice
+    assert "def _open_waypoint_image_picker" in dialog_slice
+
+
+def test_bosstest_and_itemtest_image_selection_use_saved_preset_picker():
+    player_view = Path(__file__).resolve().parents[1] / "src" / "ui" / "player_view.py"
+    text = player_view.read_text(encoding="utf-8-sig")
+    boss_item_slice = text[
+        text.index("def _bosstest_select(self, kind: str):"):
+        text.index("def _bosstest_run(self):")
+    ]
+
+    assert "self._open_image_preset_picker(" in boss_item_slice
+    assert 'dialog_title="보스 이미지 선택" if kind == "boss" else "캐릭터 이미지 선택"' in boss_item_slice
+    assert 'dialog_title="아이템 이미지 선택"' in boss_item_slice
+    assert 'self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(path).name}")' in boss_item_slice
+    assert 'self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(path).name}")' in boss_item_slice
+    assert 'self._itemtest_item_label.configure(text=f"아이템 이미지: {Path(path).name}")' in boss_item_slice
 
 
 def test_waypoint_card_status_row_includes_image_thumbnails():
@@ -169,7 +210,7 @@ def test_image_popup_rows_use_tk_labels_for_small_thumbs():
     player_view = Path(__file__).resolve().parents[1] / "src" / "ui" / "player_view.py"
     text = player_view.read_text(encoding="utf-8-sig")
     dialog_slice = text[
-        text.index("def _open_waypoint_image_picker"):
+        text.index("def _open_image_preset_picker"):
         text.index("def _delete_waypoint_image")
     ]
 
