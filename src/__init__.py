@@ -1,11 +1,9 @@
-"""
-작업도우미 패키지.
-"""
+﻿"""WinCro package."""
 
-__version__ = "1.0.198"
-__author__ = "윈크로"
-__app_name__ = "작업도우미"
-__app_name_ko__ = "작업도우미"
+__version__ = "1.0.199"
+__author__ = "WinCro"
+__app_name__ = "WinCro"
+__app_name_ko__ = "윈크로"
 
 from .app import WinCroApp, get_app, run_app
 
