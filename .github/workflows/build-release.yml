@@ -62,7 +62,7 @@ jobs:
 
           cache_path = Path("data/update_cache.json")
           if cache_path.exists():
-            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            cache_data = json.loads(cache_path.read_text(encoding="utf-8-sig"))
             cache_version = cache_data.get("current_version")
             if cache_version and cache_version != config_version:
                 raise SystemExit(
