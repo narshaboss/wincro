@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 import math
 import os
+import re
 import time
 
 from ..utils.logger import get_logger
@@ -20,6 +21,29 @@ from ..utils.input_controller import get_input_controller
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
 from ..player import get_action_player, PlayerState, PlaybackProgress
+from ..player.boss_state_machine import (
+    BossDetection,
+    BossEvidenceBuffer,
+    BossRuntimeState,
+    BossCandidateState,
+    MODE_PATROLLING,
+    MODE_CANDIDATE_HOLD,
+    MODE_CHASING,
+    MODE_APPROACHING,
+    MODE_KILL_CONFIRM_PENDING,
+    APPROACH_PIXEL_MAX,
+    APPROACH_TILE_MAX,
+    APPROACH_MISS_THRESHOLD,
+    CONTACT_PIXEL_MAX,
+    CONTACT_TILE_MAX,
+    TRUSTED_CONTACT_ANCHOR_SOURCES,
+    build_incremental_chase_target as boss_sm_build_incremental_chase_target,
+    evaluate_approach_signal as boss_sm_evaluate_approach_signal,
+    evaluate_patrol_signal as boss_sm_evaluate_patrol_signal,
+    get_detect_interval as boss_sm_get_detect_interval,
+    make_noise_signature as boss_sm_make_noise_signature,
+)
+from ..player.boss_detector import BossDetector, BossFrameEvidence
 from ..player.rule_executor import RuleExecutor
 from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
@@ -36,12 +60,21 @@ from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
 from .analyzer_view import ImageCropDialog
 from ..utils.waypoint_presets import (
+    get_image_preset,
     list_arrival_key_presets,
     list_image_presets,
     remove_arrival_key_preset,
     remove_image_preset,
+    set_image_preset_confidence,
+    set_image_preset_ocr_text,
+    set_image_preset_region,
     upsert_arrival_key_preset,
     upsert_image_preset,
+)
+from ..analyzer.text_ocr import (
+    extract_template_target_text,
+    find_target_text_match,
+    normalize_ocr_text,
 )
 import cv2
 import numpy as np
@@ -3314,6 +3347,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_stop_event = threading.Event()
         self._bosstest_thread = None
         self._bosstest_current_key = None
+        self._bosstest_preview_image = None
+        self._bosstest_last_live_payload = None
+        self._boss_ocr_text_cache = {}
         self._itemtest_running = False
         self._itemtest_stop_event = threading.Event()
         self._itemtest_thread = None
@@ -4470,6 +4506,8 @@ class GameModeDialog(ctk.CTkToplevel):
         _last_move_mode = None         # 직전 반복에서 실제로 누른 이동의 보스 모드
         edge_fail_counts = {}          # {(x,y,dir): n} 비연속 엣지 실패 누적
         AVOID_EDGE_FAIL_THRESHOLD = 2  # 회피/임시차단/임시벽 승격 최소 실패 횟수
+        BOSS_PATROL_CHOKE_SKIP_THRESHOLD = 6  # 보스 순찰 중 유일통로 반복실패 시 현재 순찰목표 스킵
+        ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD = 6  # 일반 특화모드 유일통로 첫칸 반복실패 시 재시도 중단
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
         _portal_protected = set()      # 포탈 좌표 (절대 unblock 금지)
@@ -4492,12 +4530,48 @@ class GameModeDialog(ctk.CTkToplevel):
         _chase_tx = 0                  # 추적 목표 X
         _chase_ty = 0                  # 추적 목표 Y
         _boss_chase_miss = 0           # 추적 중 보스 미감지 연속 횟수
+        _boss_contact_confirmed = False
+        _boss_skill_fired = False
+        _boss_last_contact_at = 0.0
+        _boss_last_skill_at = 0.0
         patrol_skip_count = 0          # 순찰 스킵 카운트 (로컬)
         _boss_patrol_route = []        # 순찰 목표까지의 캐시된 경로
         _boss_patrol_route_goal = None # 순찰 캐시 경로의 목표 좌표
         _boss_patrol_route_index = {}  # 순찰 캐시 경로 역매핑
         _boss_patrol_recent_samples = []  # [((x,y), (tx,ty)), ...] 순찰 왕복 진단용
         _boss_chase_recent_samples = []   # [((x,y), (tx,ty)), ...] 추적 왕복 진단용
+        _boss_noise_block_until = 0.0
+        _boss_noise_block_signature = None
+        _boss_buffer_hits = 0
+        _boss_buffer_visual_hits = 0
+        _boss_buffer_best_conf = 0.0
+        _boss_buffer_last_seen = 0.0
+        _boss_buffer_last_match_source = None
+        _boss_buffer_last_visual_source = None
+        _boss_buffer_last_tile_dist = 0
+        _boss_buffer_last_dx_tiles = 0
+        _boss_buffer_last_dy_tiles = 0
+        _boss_last_detect_dx_px = 0
+        _boss_last_detect_dy_px = 0
+        _boss_last_detect_tile_dist = 0
+        _boss_patrol_detect_runtime = {
+            "thread": None,
+            "lock": threading.Lock(),
+            "latest": None,
+            "latest_at": 0.0,
+            "last_request_at": 0.0,
+            "epoch": 0,
+            "last_consumed_seq": 0,
+            "next_seq": 0,
+            "miss_streak": 0,
+            "miss_started_at": 0.0,
+            "last_fallback_at": 0.0,
+        }
+        BOSS_PATROL_DETECT_RESULT_TTL_S = 0.8
+        BOSS_PATROL_DETECT_REQUEST_GAP_S = 0.12
+        BOSS_PATROL_FALLBACK_MISS_THRESHOLD = 4
+        BOSS_PATROL_FALLBACK_MISS_WINDOW_S = 1.2
+        BOSS_PATROL_FALLBACK_MIN_INTERVAL_S = 1.0
         _boss_transition_cooldown_until = 0.0  # 보스 처치/키입력 직후 재순찰 차단
         _boss_zero_coord_ocr_count = 0    # sentinel 보스굴에서 (0,0) OCR 반복 횟수
         _step_watchdog_kind = None
@@ -4666,6 +4740,30 @@ class GameModeDialog(ctk.CTkToplevel):
                 if pos not in _boss_patrol_route_index:
                     _boss_patrol_route_index[pos] = i
 
+        def _get_boss_patrol_route_step(_pos):
+            if not _boss_patrol_route:
+                return None, None
+            _idx = _boss_patrol_route_index.get(_pos)
+            if _idx is not None:
+                if _idx >= len(_boss_patrol_route) - 1:
+                    return None, None
+                return _boss_patrol_route[_idx + 1], max(0, len(_boss_patrol_route) - _idx - 1)
+            _best_idx = None
+            _best_dist = 99
+            for _cand_pos, _cand_idx in _boss_patrol_route_index.items():
+                _dist = abs(int(_cand_pos[0]) - int(_pos[0])) + abs(int(_cand_pos[1]) - int(_pos[1]))
+                if _dist > 2:
+                    continue
+                if _best_idx is None or _dist < _best_dist or (_dist == _best_dist and _cand_idx < _best_idx):
+                    _best_idx = _cand_idx
+                    _best_dist = _dist
+            if _best_idx is None:
+                return None, None
+            _next_idx = min(len(_boss_patrol_route) - 1, _best_idx + 1)
+            if _next_idx <= _best_idx and _best_idx >= len(_boss_patrol_route) - 1:
+                return None, None
+            return _boss_patrol_route[_next_idx], max(0, len(_boss_patrol_route) - _next_idx)
+
         def _clear_boss_patrol_recent_samples():
             nonlocal _boss_patrol_recent_samples
             _boss_patrol_recent_samples = []
@@ -4673,6 +4771,221 @@ class GameModeDialog(ctk.CTkToplevel):
         def _clear_boss_chase_recent_samples():
             nonlocal _boss_chase_recent_samples
             _boss_chase_recent_samples = []
+
+        def _get_direct_boss_follow_step(_det, _cur_x, _cur_y):
+            if not isinstance(_det, dict):
+                return None, None
+            if not bool(_det.get("boss_found")):
+                return None, None
+            if not (bool(_det.get("char_found")) or bool(_det.get("char_anchor_valid"))):
+                return None, None
+            try:
+                _td = int(_det.get("tile_dist", 0) or 0)
+                _dx_px = int(_det.get("dx_px", 0) or 0)
+                _dy_px = int(_det.get("dy_px", 0) or 0)
+            except Exception:
+                return None, None
+            if _td <= 0 or _td > 6:
+                return None, None
+
+            _direct_candidates = []
+            if abs(_dx_px) >= 8:
+                _direct_candidates.append(("right" if _dx_px > 0 else "left", abs(_dx_px)))
+            if abs(_dy_px) >= 8:
+                _direct_candidates.append(("down" if _dy_px > 0 else "up", abs(_dy_px)))
+            _direct_candidates.sort(key=lambda item: item[1], reverse=True)
+            for _move_dir, _ in _direct_candidates:
+                _dx = 1 if _move_dir == "right" else -1 if _move_dir == "left" else 0
+                _dy = 1 if _move_dir == "down" else -1 if _move_dir == "up" else 0
+                _nx, _ny = _cur_x + _dx, _cur_y + _dy
+                if self._game_map.is_passable(_nx, _ny):
+                    return _move_dir, (_nx, _ny)
+            return None, None
+
+        def _clear_boss_patrol_detect_runtime():
+            with _boss_patrol_detect_runtime["lock"]:
+                _boss_patrol_detect_runtime["latest"] = None
+                _boss_patrol_detect_runtime["latest_at"] = 0.0
+                _boss_patrol_detect_runtime["last_request_at"] = 0.0
+                _boss_patrol_detect_runtime["epoch"] = int(_boss_patrol_detect_runtime["epoch"]) + 1
+                _boss_patrol_detect_runtime["last_consumed_seq"] = 0
+                _boss_patrol_detect_runtime["next_seq"] = 0
+            _boss_patrol_detect_runtime["miss_streak"] = 0
+            _boss_patrol_detect_runtime["miss_started_at"] = 0.0
+            _boss_patrol_detect_runtime["last_fallback_at"] = 0.0
+            self._clear_boss_text_detect_history(channel="runtime")
+
+        def _record_boss_patrol_detect_miss(_now: float):
+            _boss_patrol_detect_runtime["miss_streak"] = int(_boss_patrol_detect_runtime.get("miss_streak", 0) or 0) + 1
+            if float(_boss_patrol_detect_runtime.get("miss_started_at", 0.0) or 0.0) <= 0.0:
+                _boss_patrol_detect_runtime["miss_started_at"] = float(_now)
+
+        def _clear_boss_patrol_detect_miss():
+            _boss_patrol_detect_runtime["miss_streak"] = 0
+            _boss_patrol_detect_runtime["miss_started_at"] = 0.0
+
+        def _should_boss_patrol_fullscreen_fallback(_now: float, _search_region) -> bool:
+            if not _search_region:
+                return False
+            _miss_streak = int(_boss_patrol_detect_runtime.get("miss_streak", 0) or 0)
+            _miss_started = float(_boss_patrol_detect_runtime.get("miss_started_at", 0.0) or 0.0)
+            _last_fallback = float(_boss_patrol_detect_runtime.get("last_fallback_at", 0.0) or 0.0)
+            if _miss_streak < BOSS_PATROL_FALLBACK_MISS_THRESHOLD:
+                return False
+            if _miss_started <= 0.0 or (_now - _miss_started) < BOSS_PATROL_FALLBACK_MISS_WINDOW_S:
+                return False
+            if (_now - _last_fallback) < BOSS_PATROL_FALLBACK_MIN_INTERVAL_S:
+                return False
+            return True
+
+        def _consume_boss_patrol_detect_result(_request_key):
+            _now = time.time()
+            with _boss_patrol_detect_runtime["lock"]:
+                _payload = _boss_patrol_detect_runtime.get("latest")
+                _cached_at = float(_boss_patrol_detect_runtime.get("latest_at", 0.0) or 0.0)
+                if _payload is None:
+                    return None
+                if _request_key != _payload.get("request_key"):
+                    return None
+                if (_now - _cached_at) > BOSS_PATROL_DETECT_RESULT_TTL_S:
+                    _boss_patrol_detect_runtime["latest"] = None
+                    _boss_patrol_detect_runtime["latest_at"] = 0.0
+                    return None
+                _seq = int(_payload.get("seq", 0) or 0)
+                if _seq <= int(_boss_patrol_detect_runtime.get("last_consumed_seq", 0) or 0):
+                    return None
+                _boss_patrol_detect_runtime["last_consumed_seq"] = _seq
+                return dict(_payload)
+
+        def _start_boss_patrol_async_detect(
+            boss_img_path: str,
+            char_img_path: str | None,
+            *,
+            search_region,
+            force_full_screen: bool,
+            relaxed_boss: bool,
+            relaxed_char: bool,
+            allow_screen_center_anchor: bool,
+            request_reason: str,
+        ) -> bool:
+            if self._stop_event.is_set():
+                return False
+            _thread = _boss_patrol_detect_runtime.get("thread")
+            if _thread is not None and _thread.is_alive():
+                return False
+            _now = time.time()
+            if (_now - float(_boss_patrol_detect_runtime.get("last_request_at", 0.0) or 0.0)) < BOSS_PATROL_DETECT_REQUEST_GAP_S:
+                return False
+            _boss_patrol_detect_runtime["last_request_at"] = _now
+            _request_key = (
+                str(boss_img_path or ""),
+                str(char_img_path or ""),
+                tuple(search_region) if search_region else None,
+                bool(force_full_screen),
+                bool(relaxed_boss),
+                bool(relaxed_char),
+                bool(allow_screen_center_anchor),
+            )
+            with _boss_patrol_detect_runtime["lock"]:
+                _epoch = int(_boss_patrol_detect_runtime["epoch"])
+                _next_seq = int(_boss_patrol_detect_runtime.get("next_seq", 0) or 0) + 1
+                _boss_patrol_detect_runtime["next_seq"] = _next_seq
+
+            def _run_boss_patrol_detect():
+                try:
+                    _ss = getattr(matcher, "_last_screenshot", None)
+                    if _ss is None:
+                        import pyautogui as _pag_async
+                        _ss = _pag_async.screenshot()
+                    _detect_t0 = time.time()
+                    import numpy as _np_async
+                    import cv2 as _cv2_async
+                    _screen_async = _np_async.array(_ss)
+                    _screen_async = _cv2_async.cvtColor(_screen_async, _cv2_async.COLOR_RGB2BGR)
+                    _evidence_async = self._get_boss_frame_detector().detect_frame(
+                        _screen_async,
+                        boss_img_path,
+                        char_img_path,
+                        search_region=search_region,
+                        relaxed_boss=relaxed_boss,
+                        relaxed_char=relaxed_char,
+                        full_screen_fallback=bool(force_full_screen),
+                        force_full_screen=bool(force_full_screen),
+                        allow_ocr_fallback=True,
+                        allow_screen_center_anchor=allow_screen_center_anchor,
+                    )
+                    _det_async = dict(_evidence_async.raw_det or {})
+                    _res_async = _evidence_async.raw_result
+                    _payload = {
+                        "request_key": _request_key,
+                        "reason": str(request_reason or ""),
+                        "seq": _next_seq,
+                        "evidence": _evidence_async,
+                        "det": _det_async,
+                        "res": _res_async,
+                        "char_detected": bool(_evidence_async.char_found),
+                        "char_anchor_valid": bool(_evidence_async.anchor_valid),
+                        "char_anchor_source": _evidence_async.anchor_source,
+                        "dx_pixel": int(_evidence_async.dx_px or 0),
+                        "dy_pixel": int(_evidence_async.dy_px or 0),
+                        "est_dx_tiles": int(_evidence_async.dx_tiles or 0),
+                        "est_dy_tiles": int(_evidence_async.dy_tiles or 0),
+                        "tile_dist": int(_evidence_async.tile_dist or 0),
+                        "pixel_dist": float(_evidence_async.pixel_dist or 0.0),
+                        "detect_ms": int((time.time() - _detect_t0) * 1000),
+                    }
+                    with _boss_patrol_detect_runtime["lock"]:
+                        if _epoch != int(_boss_patrol_detect_runtime["epoch"]):
+                            return
+                        _boss_patrol_detect_runtime["latest"] = _payload
+                        _boss_patrol_detect_runtime["latest_at"] = time.time()
+                except Exception as _async_e:
+                    logger.debug(f"[보스순찰] 비동기 탐지 오류: {_async_e}")
+
+            _boss_patrol_detect_runtime["thread"] = threading.Thread(
+                target=_run_boss_patrol_detect,
+                daemon=True,
+                name="boss-patrol-detect",
+            )
+            _boss_patrol_detect_runtime["thread"].start()
+            return True
+
+        def _clear_boss_detect_hints():
+            self._boss_detect_last_boss_center = None
+            self._boss_detect_last_char_center = None
+            self._boss_detect_last_boss_seen_at = 0.0
+            self._boss_detect_last_char_seen_at = 0.0
+            self._clear_boss_text_detect_history(channel="runtime")
+
+        def _make_boss_noise_signature(_dx_px, _dy_px, _tile_dist):
+            return boss_sm_make_noise_signature(_dx_px, _dy_px, _tile_dist)
+
+        def _reset_boss_far_candidate_state():
+            nonlocal _boss_buffer_hits, _boss_buffer_visual_hits
+            nonlocal _boss_buffer_best_conf, _boss_buffer_last_seen
+            nonlocal _boss_buffer_last_match_source, _boss_buffer_last_visual_source
+            nonlocal _boss_buffer_last_tile_dist, _boss_buffer_last_dx_tiles, _boss_buffer_last_dy_tiles
+            _boss_buffer_hits = 0
+            _boss_buffer_visual_hits = 0
+            _boss_buffer_best_conf = 0.0
+            _boss_buffer_last_seen = 0.0
+            _boss_buffer_last_match_source = None
+            _boss_buffer_last_visual_source = None
+            _boss_buffer_last_tile_dist = 0
+            _boss_buffer_last_dx_tiles = 0
+            _boss_buffer_last_dy_tiles = 0
+
+        def _arm_boss_noise_cooldown(_dx_px, _dy_px, _tile_dist, seconds=3.0):
+            nonlocal _boss_noise_block_until, _boss_noise_block_signature
+            _boss_noise_block_until = time.time() + max(1.0, float(seconds))
+            _boss_noise_block_signature = _make_boss_noise_signature(_dx_px, _dy_px, _tile_dist)
+            _reset_boss_far_candidate_state()
+
+        def _clear_boss_noise_cooldown():
+            nonlocal _boss_noise_block_until, _boss_noise_block_signature
+            _boss_noise_block_until = 0.0
+            _boss_noise_block_signature = None
+            _reset_boss_far_candidate_state()
 
         def _record_boss_patrol_sample(_pos, _goal):
             nonlocal _boss_patrol_recent_samples
@@ -4736,6 +5049,25 @@ class GameModeDialog(ctk.CTkToplevel):
                 return None
             return _osc_dir, _p3, _goal_ref
 
+        def _detect_boss_chase_stall():
+            if len(_boss_chase_recent_samples) < 4:
+                return None
+            _recent = _boss_chase_recent_samples[-4:]
+            _goal_ref = _recent[-1][1]
+            for _, _goal in _recent:
+                if abs(_goal[0] - _goal_ref[0]) + abs(_goal[1] - _goal_ref[1]) > 1:
+                    return None
+            _positions = [_pos for _pos, _ in _recent]
+            _unique_positions = []
+            for _pos in _positions:
+                if _pos not in _unique_positions:
+                    _unique_positions.append(_pos)
+            if len(_unique_positions) == 1:
+                _stall_pos = _unique_positions[0]
+                if abs(_stall_pos[0] - _goal_ref[0]) + abs(_stall_pos[1] - _goal_ref[1]) <= 1:
+                    return _stall_pos, _goal_ref
+            return None
+
         def _boss_transition_locked():
             return time.time() < _boss_transition_cooldown_until
 
@@ -4743,7 +5075,419 @@ class GameModeDialog(ctk.CTkToplevel):
             nonlocal _boss_transition_cooldown_until
             _boss_transition_cooldown_until = time.time() + max(0.5, float(seconds))
 
+        def _get_boss_runtime_state():
+            _mode = MODE_CHASING if _boss_chasing else str(boss_mode or "exploring")
+            if _mode == MODE_CANDIDATE_HOLD:
+                _mode = MODE_PATROLLING
+            return BossRuntimeState(
+                mode=_mode,
+                chasing=bool(_boss_chasing),
+                chase_miss=int(_boss_chase_miss or 0),
+                appr_miss=int(boss_appr_miss or 0),
+                steps=int(boss_approach_steps or 0),
+                item_force_loot=bool(_boss_item_force_loot),
+                contact_confirmed=bool(_boss_contact_confirmed),
+                skill_fired=bool(_boss_skill_fired),
+                last_contact_at=float(_boss_last_contact_at or 0.0),
+                last_skill_at=float(_boss_last_skill_at or 0.0),
+                buffer=BossEvidenceBuffer(
+                    hits=int(_boss_buffer_hits or 0),
+                    visual_hits=int(_boss_buffer_visual_hits or 0),
+                    best_conf=float(_boss_buffer_best_conf or 0.0),
+                    last_seen_at=float(_boss_buffer_last_seen or 0.0),
+                    last_match_source=_boss_buffer_last_match_source,
+                    last_visual_source=_boss_buffer_last_visual_source,
+                    last_tile_dist=int(_boss_buffer_last_tile_dist or 0),
+                    last_dx_tiles=int(_boss_buffer_last_dx_tiles or 0),
+                    last_dy_tiles=int(_boss_buffer_last_dy_tiles or 0),
+                ),
+                noise_block_signature=_boss_noise_block_signature,
+                noise_block_until=float(_boss_noise_block_until or 0.0),
+            )
+
+        def _apply_boss_runtime_state(_state: BossRuntimeState):
+            nonlocal boss_mode, _boss_chasing, _boss_chase_miss, boss_appr_miss
+            nonlocal boss_approach_steps, _boss_item_force_loot, _boss_contact_confirmed
+            nonlocal _boss_skill_fired, _boss_last_contact_at, _boss_last_skill_at
+            nonlocal _boss_buffer_hits, _boss_buffer_visual_hits
+            nonlocal _boss_buffer_best_conf, _boss_buffer_last_seen
+            nonlocal _boss_buffer_last_match_source, _boss_buffer_last_visual_source
+            nonlocal _boss_buffer_last_tile_dist, _boss_buffer_last_dx_tiles, _boss_buffer_last_dy_tiles
+            nonlocal _boss_noise_block_signature
+            nonlocal _boss_noise_block_until
+
+            _boss_chasing = bool(_state.chasing)
+            boss_mode = "patrolling" if _state.mode == MODE_CHASING else str(_state.mode or "exploring")
+            _boss_chase_miss = int(_state.chase_miss or 0)
+            boss_appr_miss = int(_state.appr_miss or 0)
+            boss_approach_steps = int(_state.steps or 0)
+            _boss_item_force_loot = bool(_state.item_force_loot)
+            _boss_contact_confirmed = bool(_state.contact_confirmed)
+            _boss_skill_fired = bool(_state.skill_fired)
+            _boss_last_contact_at = float(_state.last_contact_at or 0.0)
+            _boss_last_skill_at = float(_state.last_skill_at or 0.0)
+            _boss_buffer_hits = int(_state.buffer.hits or 0)
+            _boss_buffer_visual_hits = int(_state.buffer.visual_hits or 0)
+            _boss_buffer_best_conf = float(_state.buffer.best_conf or 0.0)
+            _boss_buffer_last_seen = float(_state.buffer.last_seen_at or 0.0)
+            _boss_buffer_last_match_source = _state.buffer.last_match_source
+            _boss_buffer_last_visual_source = _state.buffer.last_visual_source
+            _boss_buffer_last_tile_dist = int(_state.buffer.last_tile_dist or 0)
+            _boss_buffer_last_dx_tiles = int(_state.buffer.last_dx_tiles or 0)
+            _boss_buffer_last_dy_tiles = int(_state.buffer.last_dy_tiles or 0)
+            _boss_noise_block_signature = _state.noise_block_signature
+            _boss_noise_block_until = float(_state.noise_block_until or 0.0)
+            _state_mode = str(_state.mode or "exploring")
+            if _state_mode in ("exploring", MODE_PATROLLING, MODE_CHASING):
+                _clear_boss_combat_flags()
+
+        def _clear_boss_combat_flags():
+            nonlocal _boss_item_force_loot, _boss_contact_confirmed, _boss_skill_fired
+            nonlocal _boss_last_contact_at, _boss_last_skill_at
+            _boss_item_force_loot = False
+            _boss_contact_confirmed = False
+            _boss_skill_fired = False
+            _boss_last_contact_at = 0.0
+            _boss_last_skill_at = 0.0
+
+        def _reset_boss_motion_state(
+            *,
+            clear_patrol_route: bool = True,
+            clear_patrol_samples: bool = False,
+            clear_chase_samples: bool = True,
+            clear_detect_hints: bool = False,
+            clear_appr_axes: bool = True,
+        ):
+            nonlocal current_path, path_index, path_pos_index, pathfinder
+            nonlocal stuck_count, total_stuck_count, last_dir
+            current_path = []
+            path_index = 0
+            path_pos_index = {}
+            pathfinder.invalidate_path()
+            if clear_patrol_route:
+                _clear_boss_patrol_route_cache()
+            if clear_patrol_samples:
+                _clear_boss_patrol_recent_samples()
+            if clear_chase_samples:
+                _clear_boss_chase_recent_samples()
+            if clear_detect_hints:
+                _clear_boss_detect_hints()
+            if clear_appr_axes:
+                self._appr_dx3 = None
+                self._appr_dy3 = None
+            stuck_count = 0
+            total_stuck_count = 0
+            last_dir = None
+
+        def _press_boss_skill_once(_x: int, _y: int) -> bool:
+            nonlocal last_boss_skill_time, _boss_skill_fired, _boss_last_skill_at
+            if not (boss_skill_enabled and boss_skill_key):
+                return False
+            try:
+                get_input_controller().key_down(boss_skill_key)
+                try:
+                    time.sleep(0.05)
+                finally:
+                    get_input_controller().key_up(boss_skill_key)
+                self._key_press_count += 1
+                last_boss_skill_time = time.time()
+                _boss_skill_fired = True
+                _boss_last_skill_at = last_boss_skill_time
+                if _ui_update_ok:
+                    self._schedule_boss_ui_log(
+                        f"⚔️ 보스 스킬! ({_x},{_y}) 키={boss_skill_key}",
+                        dedupe_key="boss-skill-log",
+                        dedupe_window=0.5,
+                    )
+                return True
+            except Exception as _e:
+                logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
+                return False
+
+        def _enter_boss_patrolling_state(*, clear_detect_hints: bool = False, clear_patrol_samples: bool = False, arm_noise_seconds: float | None = None):
+            nonlocal boss_mode, _boss_chasing, _boss_chase_miss, boss_approach_steps, boss_appr_miss
+            boss_mode = MODE_PATROLLING
+            _boss_chasing = False
+            _boss_chase_miss = 0
+            boss_approach_steps = 0
+            boss_appr_miss = 0
+            _clear_boss_patrol_detect_runtime()
+            _clear_boss_combat_flags()
+            _reset_boss_motion_state(
+                clear_patrol_route=True,
+                clear_patrol_samples=clear_patrol_samples,
+                clear_chase_samples=True,
+                clear_detect_hints=clear_detect_hints,
+            )
+            if arm_noise_seconds is not None:
+                _arm_boss_noise_cooldown(
+                    _boss_last_detect_dx_px,
+                    _boss_last_detect_dy_px,
+                    _boss_last_detect_tile_dist,
+                    seconds=arm_noise_seconds,
+                )
+
+        def _enter_boss_exploring_state():
+            nonlocal boss_mode, boss_patrol, _boss_chasing, _boss_chase_miss
+            nonlocal boss_approach_steps, boss_appr_miss, patrol_skip_count
+            nonlocal explore_target, explore_target_tries, explore_unreachable
+            nonlocal frontier_cooldown, explored_from, edge_fail_counts
+            nonlocal unknown_path_fails, boss_no_frontier_count
+            boss_mode = "exploring"
+            boss_patrol = None
+            _boss_chasing = False
+            _boss_chase_miss = 0
+            boss_approach_steps = 0
+            boss_appr_miss = 0
+            _clear_boss_patrol_detect_runtime()
+            patrol_skip_count = 0
+            explore_target = None
+            explore_target_tries = 0
+            explore_unreachable = set()
+            frontier_cooldown.clear()
+            explored_from = {}
+            edge_fail_counts.clear()
+            unknown_path_fails = 0
+            boss_no_frontier_count = 0
+            _clear_boss_noise_cooldown()
+            _clear_boss_combat_flags()
+            _reset_boss_motion_state(
+                clear_patrol_route=True,
+                clear_patrol_samples=True,
+                clear_chase_samples=True,
+                clear_detect_hints=True,
+            )
+
+        def _enter_boss_chase_state(_x: int, _y: int, _target: tuple[int, int]):
+            nonlocal _chase_tx, _chase_ty, prev_x, prev_y
+            _reset_boss_motion_state(
+                clear_patrol_route=True,
+                clear_patrol_samples=True,
+                clear_chase_samples=True,
+                clear_detect_hints=False,
+            )
+            _clear_boss_patrol_detect_runtime()
+            _chase_tx, _chase_ty = _target
+            prev_x, prev_y = _x, _y
+
+        def _enter_boss_approaching_state(
+            _x: int,
+            _y: int,
+            *,
+            dx_tiles: int,
+            dy_tiles: int,
+            contact_confirmed: bool,
+            start_skill: bool,
+            boss_result,
+            boss_det,
+            detect_ms,
+            log_message: str,
+            debug_key: str,
+        ):
+            nonlocal boss_mode, _boss_chasing, _boss_chase_miss, boss_appr_miss
+            nonlocal _boss_contact_confirmed, _boss_last_contact_at, prev_x, prev_y
+            nonlocal _boss_skill_fired, _boss_last_skill_at
+            boss_mode = MODE_APPROACHING
+            _boss_chasing = False
+            _boss_chase_miss = 0
+            boss_appr_miss = 0
+            _clear_boss_patrol_detect_runtime()
+            _boss_contact_confirmed = bool(contact_confirmed)
+            _boss_last_contact_at = time.time() if _boss_contact_confirmed else 0.0
+            _boss_skill_fired = False
+            _boss_last_skill_at = 0.0
+            _reset_boss_motion_state(
+                clear_patrol_route=True,
+                clear_patrol_samples=True,
+                clear_chase_samples=True,
+                clear_detect_hints=False,
+                clear_appr_axes=False,
+            )
+            self._appr_dx3 = int(dx_tiles or 0)
+            self._appr_dy3 = int(dy_tiles or 0)
+            self._appr_x_step = 0
+            self._appr_x_dir = 1
+            self._appr_x_max = 2
+            if start_skill:
+                _press_boss_skill_once(_x, _y)
+            if _ui_update_ok:
+                self._schedule_boss_ui_log(
+                    log_message,
+                    dedupe_key="boss-approach-complete" if debug_key == "boss-debug-approach-enter" else "boss-chase-to-approach",
+                    dedupe_window=0.5 if debug_key == "boss-debug-approach-enter" else 0.4,
+                )
+                self._schedule_boss_ui_log(
+                    self._build_boss_debug_snapshot(
+                        boss_mode=MODE_APPROACHING,
+                        current_x=_x,
+                        current_y=_y,
+                        boss_patrol=boss_patrol,
+                        boss_chasing=False,
+                        boss_detect_attempted=True,
+                        boss_detect_interval=1,
+                        boss_detect_ms=detect_ms,
+                        boss_visible=True,
+                        boss_result=boss_result,
+                        boss_det=boss_det,
+                        move_target=(_x, _y),
+                        direction=None,
+                        remaining=0,
+                        boss_chase_miss=_boss_chase_miss,
+                        boss_appr_miss=boss_appr_miss,
+                        boss_steps=boss_approach_steps,
+                        item_hint=self._has_recent_boss_item_hint(max_age_s=2.0),
+                        force_loot=_boss_item_force_loot,
+                        candidate_active=bool(_boss_buffer_hits),
+                        ui_noise=False,
+                        contact_confirmed=_boss_contact_confirmed,
+                        skill_fired=_boss_skill_fired,
+                    ),
+                    dedupe_key=debug_key,
+                    dedupe_window=0.12,
+                )
+            prev_x, prev_y = _x, _y
+
+        def _complete_boss_segment(_current_pos, *, _allow_item_loot: bool, _completion_log: str, _dedupe_key: str):
+            nonlocal target_idx, pathfinder, target_x, target_y
+            nonlocal stuck_count, total_stuck_count, current_path, path_index, path_pos_index
+            nonlocal explored_from, unknown_path_fails, last_dir, boss_mode, boss_patrol
+            nonlocal explore_target, explore_target_tries, probe_focus_target, probe_focus_stall
+            nonlocal explore_unreachable, boss_no_frontier_count, boss_approach_steps, boss_appr_miss
+            nonlocal _boss_chasing, _boss_chase_miss, patrol_skip_count
+            nonlocal _mt_has_starts, _segment_map_locked, full_mapping_exploring
+            nonlocal _local_explore_phase, _resume_full_mapping, _segment_full_mapping_guard
+            nonlocal _segment_requires_full_completion, _is_mapping_mode
+            nonlocal _local_explore_center, _local_explore_radius
+            nonlocal _phase2_best_dist, _phase2_stall_count, _phase2_reprobe_count
+            nonlocal _phase2_reprobe_requested, _phase2_reprobe_reason
+            nonlocal is_boss_dungeon, boss_pre_teleport, mapping_on, mark_portal_entry
+            nonlocal prev_x, prev_y, last_auto_save_passable
+            nonlocal _temporary_goal_detour, _temporary_goal_detour_origin, _pending_start_pos
+
+            _cx, _cy = int(_current_pos[0]), int(_current_pos[1])
+            self._schedule_boss_ui_log(
+                _completion_log,
+                dedupe_key=_dedupe_key,
+                dedupe_window=1.0,
+            )
+            self._stop_event.wait(2.0)
+            if not self._stop_event.is_set():
+                self._run_boss_item_and_arrival_flow(
+                    target_idx,
+                    all_targets,
+                    (_cx, _cy),
+                    self._stop_event,
+                    allow_item_loot=_allow_item_loot,
+                )
+            _clear_boss_combat_flags()
+            _clear_boss_detect_hints()
+            _clear_boss_noise_cooldown()
+            _clear_boss_patrol_detect_runtime()
+            self._reset_boss_item_passive_state()
+            _arm_boss_transition_cooldown(2.0)
+            _clear_boss_patrol_route_cache()
+            _clear_boss_patrol_recent_samples()
+            _clear_boss_chase_recent_samples()
+            _prev_idx_local = target_idx
+            target_idx += 1
+            _clear_segment_completion_commit()
+            if target_idx >= len(all_targets):
+                self._boss_segment_active = False
+                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
+                self._queue_normal_completion()
+                return "completed"
+            if self._stop_event.is_set():
+                return "stopped"
+            self._stop_event.wait(0.5)
+            _prev_is_boss_local = all_targets[_prev_idx_local][3] if len(all_targets[_prev_idx_local]) > 3 else False
+            if use_map and (not _prev_is_boss_local or _is_mapping_test) and not _no_save:
+                if self._should_persist_segment_end(_prev_idx_local):
+                    self._game_map.end_pos = (_cx, _cy)
+                else:
+                    self._game_map.end_pos = None
+            self._boss_segment_active = False
+            if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss_local and not _is_mapping_test) or _no_save):
+                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
+                _arm_boss_transition_cooldown(3.0)
+                self._stop_event.wait(0.05)
+                return "switch_failed"
+            pathfinder = SimplePathfinder(self._game_map)
+            self._map_pathfinder = pathfinder
+            target_x, target_y = _pick_target(target_idx)
+            seg_name = all_targets[target_idx][2]
+            self._schedule_boss_ui_log(
+                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
+                dedupe_key="boss-next-segment",
+                dedupe_window=1.0,
+            )
+            stuck_count = 0
+            total_stuck_count = 0
+            current_path = []
+            path_index = 0
+            path_pos_index = {}
+            explored_from = {}
+            edge_fail_counts.clear()
+            blocked_dirs.clear()
+            frontier_blocked_until.clear()
+            _temporary_goal_detour = None
+            _temporary_goal_detour_origin = None
+            _pending_start_pos = None
+            last_auto_save_passable = -1
+            unknown_path_fails = 0
+            last_dir = None
+            recent_positions.clear()
+            boss_mode = "exploring"
+            boss_patrol = None
+            explore_target = None
+            explore_target_tries = 0
+            probe_focus_target = None
+            probe_focus_stall = 0
+            explore_unreachable = set()
+            _portal_protected.clear()
+            frontier_cooldown.clear()
+            boss_no_frontier_count = 0
+            boss_approach_steps = 0
+            boss_appr_miss = 0
+            _boss_chasing = False
+            _boss_chase_miss = 0
+            patrol_skip_count = 0
+            _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
+            _segment_full_mapping_guard = bool(full_mapping_exploring)
+            _segment_requires_full_completion = bool(
+                _is_mapping_test and _mt_has_starts and (not _segment_map_locked) and
+                (not _current_segment_map_complete())
+            )
+            _is_mapping_mode = _is_mapping_test or _mapping_guard_active()
+            _log_resume_full_mapping_state()
+            _local_explore_center = None
+            _local_explore_radius = _local_explore_default_radius
+            _phase2_best_dist = None
+            _phase2_stall_count = 0
+            _phase2_reprobe_count = 0
+            _phase2_reprobe_requested = False
+            _phase2_reprobe_reason = ""
+            is_boss_dungeon = all_targets[target_idx][3] or _local_explore_phase or _mapping_guard_active()
+            if is_boss_dungeon:
+                if _is_mapping_mode:
+                    boss_pre_teleport = False
+                    mapping_on = True
+                    mark_portal_entry = True
+                else:
+                    boss_pre_teleport = True
+                    mapping_on = False
+                    mark_portal_entry = False
+            else:
+                boss_pre_teleport = False
+                mapping_on = not _no_save
+                mark_portal_entry = True
+            if _segment_map_locked:
+                mapping_on = False
+            _arm_segment_transition_state(boss_pre_teleport, _cx, _cy)
+            time.sleep(0.05)
+            return "continued"
+
         self._reset_boss_item_passive_state()
+        _clear_boss_detect_hints()
 
         def _arm_segment_transition_state(wait_for_boss_teleport: bool, anchor_x: int = None, anchor_y: int = None):
             nonlocal portal_grace, prev_x, prev_y
@@ -5399,6 +6143,55 @@ class GameModeDialog(ctk.CTkToplevel):
                 _ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)
                 return _ef >= EDGE_FAIL_MARK_THRESHOLD
 
+            def _stop_route_only_chokepoint_retry(_blocked_dir):
+                nonlocal current_path, path_index, path_pos_index, _route_relaxed_dir_override
+
+                _register_dir_block(cx, cy, _blocked_dir, iteration, ttl=12)
+                explored_from.setdefault(current_pos, set()).add(_blocked_dir)
+                current_path = []
+                path_index = 0
+                path_pos_index = {}
+                pathfinder.invalidate_path()
+                _route_relaxed_dir_override = None
+                if _ui_update_ok and iteration % 10 == 0:
+                    self.after(0, lambda x=cx, y=cy, d2=_blocked_dir:
+                        self._append_log(f"⚠️ 유일통로 반복실패 → 첫칸 재시도 중단: ({x},{y}) {d2}"))
+                return None
+
+            def _apply_route_only_relaxed_result(_route_result, _route_avoid):
+                nonlocal _route_relaxed_dir_override
+
+                if (not (_route_result.found and _route_result.directions) and
+                    _route_avoid and _dir_avoid):
+                    _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
+                    _relaxed_result = _run_route_only_path(_relaxed_avoid)
+                    if self._stop_event.is_set():
+                        return _route_result, _route_avoid
+                    if _relaxed_result.found and _relaxed_result.directions:
+                        _relaxed_first_dir = _relaxed_result.directions[0]
+                        _route_chokepoint_override = _is_route_only_failed_chokepoint(
+                            cx, cy, _relaxed_first_dir, target_pos
+                        )
+                        _relaxed_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _relaxed_first_dir), 0)
+                        _stop_chokepoint_retry = (
+                            _route_chokepoint_override and
+                            _relaxed_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD
+                        )
+                        if _stop_chokepoint_retry:
+                            _stop_route_only_chokepoint_retry(_relaxed_first_dir)
+                        elif _allow_route_dir_relax or _route_chokepoint_override:
+                            _route_result = _relaxed_result
+                            _route_avoid = _relaxed_avoid
+                            _route_relaxed_dir_override = _relaxed_first_dir
+                            if _ui_update_ok:
+                                if _route_chokepoint_override:
+                                    self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir:
+                                        self._append_log(f"🧭 유일통로 첫칸 유지: ({cx2},{cy2}) {d2}"))
+                                else:
+                                    self.after(0, lambda cx2=cx, cy2=cy:
+                                        self._append_log(f"🧭 경로회피 완화: ({cx2},{cy2}) dir-avoid 해제"))
+                return _route_result, _route_avoid
+
             # ── 전체테스트/부분실행 맵기반 직행 모드 ─────────────────────
             # 맵핑테스트의 "최단경로"는 안정적인데, 일반 테스트는 기존 1~2차 일반 경로 파이프를
             # 타면서 방향없음/재계산/soft 우회가 섞여 좌우/상하 흔들림이 커졌다.
@@ -5443,28 +6236,9 @@ class GameModeDialog(ctk.CTkToplevel):
                 if self._stop_event.is_set():
                     return None
                 _allow_route_dir_relax = not _should_preserve_route_dir_avoid()
-                if (not (_route_result.found and _route_result.directions) and
-                    _route_avoid and _dir_avoid):
-                    _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
-                    _relaxed_result = _run_route_only_path(_relaxed_avoid)
-                    if self._stop_event.is_set():
-                        return None
-                    if _relaxed_result.found and _relaxed_result.directions:
-                        _relaxed_first_dir = _relaxed_result.directions[0]
-                        _route_chokepoint_override = _is_route_only_failed_chokepoint(
-                            cx, cy, _relaxed_first_dir, target_pos
-                        )
-                        if _allow_route_dir_relax or _route_chokepoint_override:
-                            _route_result = _relaxed_result
-                            _route_avoid = _relaxed_avoid
-                            _route_relaxed_dir_override = _relaxed_first_dir
-                            if _ui_update_ok:
-                                if _route_chokepoint_override:
-                                    self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir:
-                                        self._append_log(f"🧭 유일통로 첫칸 유지: ({cx2},{cy2}) {d2}"))
-                                else:
-                                    self.after(0, lambda cx2=cx, cy2=cy:
-                                        self._append_log(f"🧭 경로회피 완화: ({cx2},{cy2}) dir-avoid 해제"))
+                _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                if self._stop_event.is_set():
+                    return None
 
                 if not (_route_result.found and _route_result.directions):
                     _edge_relaxed_probe = pathfinder.find_path(
@@ -5488,21 +6262,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             _route_result = _run_route_only_path(_route_avoid)
                             if self._stop_event.is_set():
                                 return None
-                            if (not (_route_result.found and _route_result.directions) and
-                                _route_avoid and _dir_avoid):
-                                _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
-                                _relaxed_result = _run_route_only_path(_relaxed_avoid)
-                                if self._stop_event.is_set():
-                                    return None
-                                if _relaxed_result.found and _relaxed_result.directions:
-                                    _relaxed_first_dir = _relaxed_result.directions[0]
-                                    _route_chokepoint_override = _is_route_only_failed_chokepoint(
-                                        cx, cy, _relaxed_first_dir, target_pos
-                                    )
-                                    if _allow_route_dir_relax or _route_chokepoint_override:
-                                        _route_result = _relaxed_result
-                                        _route_avoid = _relaxed_avoid
-                                        _route_relaxed_dir_override = _relaxed_first_dir
+                            _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                            if self._stop_event.is_set():
+                                return None
                             if _route_result.found and _route_result.directions and _ui_update_ok:
                                 self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
                                     self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))
@@ -5523,20 +6285,9 @@ class GameModeDialog(ctk.CTkToplevel):
                         _route_result = _run_route_only_path(_route_avoid)
                         if self._stop_event.is_set():
                             return None
-                        if (not (_route_result.found and _route_result.directions) and
-                            _route_avoid and _dir_avoid):
-                            _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
-                            _relaxed_result = _run_route_only_path(_relaxed_avoid)
-                            if self._stop_event.is_set():
-                                return None
-                            if _relaxed_result.found and _relaxed_result.directions:
-                                _relaxed_first_dir = _relaxed_result.directions[0]
-                                _route_chokepoint_override = _is_route_only_failed_chokepoint(
-                                    cx, cy, _relaxed_first_dir, target_pos
-                                )
-                                if _allow_route_dir_relax or _route_chokepoint_override:
-                                    _route_result = _relaxed_result
-                                    _route_avoid = _relaxed_avoid
+                        _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                        if self._stop_event.is_set():
+                            return None
                         if _route_result.found and _route_result.directions:
                             current_path = _route_result.path
                             path_index = 0
@@ -5576,20 +6327,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             _route_result = _run_route_only_path(_route_avoid)
                             if self._stop_event.is_set():
                                 return None
-                            if (not (_route_result.found and _route_result.directions) and
-                                _route_avoid and _dir_avoid):
-                                _relaxed_avoid = _build_avoid_set(target_pos, include_dir_avoid=False)
-                                _relaxed_result = _run_route_only_path(_relaxed_avoid)
-                                if self._stop_event.is_set():
-                                    return None
-                                if _relaxed_result.found and _relaxed_result.directions:
-                                    _relaxed_first_dir = _relaxed_result.directions[0]
-                                    _route_chokepoint_override = _is_route_only_failed_chokepoint(
-                                        cx, cy, _relaxed_first_dir, target_pos
-                                    )
-                                    if _allow_route_dir_relax or _route_chokepoint_override:
-                                        _route_result = _relaxed_result
-                                        _route_avoid = _relaxed_avoid
+                            _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                            if self._stop_event.is_set():
+                                return None
                             if _route_result.found and _route_result.directions:
                                 current_path = _route_result.path
                                 path_index = 0
@@ -5824,6 +6564,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                     self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
                                         self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
                                 return _local_dir
+                            if _blocked_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD:
+                                return _stop_route_only_chokepoint_retry(_blocked_primary_dir)
                             _route_relaxed_dir_override = _blocked_primary_dir
                             if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
@@ -6848,6 +7590,17 @@ class GameModeDialog(ctk.CTkToplevel):
                     jump = abs(current_x - prev_x) + abs(current_y - prev_y)
                     _jump_confirm_hits = None
                     _jump_confirm_samples = []
+                    if _boss_transition_locked() and jump >= 10 and not boss_pre_teleport:
+                        if _ui_update_ok:
+                            self._schedule_boss_ui_log(
+                                f"⏳ 보스 전환 점프 보호: ({prev_x},{prev_y})→({current_x},{current_y}) 거리={jump}",
+                                dedupe_key="boss-transition-jump-guard",
+                                dedupe_window=0.3,
+                            )
+                        prev_x, prev_y = current_x, current_y
+                        last_dir = None
+                        self._stop_event.wait(0.05)
+                        continue
                     # (28,14)->(28,1) 같이 한 자리 누락된 OCR 점프는 포탈 판정 전에 즉시 재확인
                     _digit_drop_jump = _is_suspicious_ocr_jump(prev_x, prev_y, current_x, current_y, jump)
                     _axis_mismatch_jump = _jump_axis_mismatch(prev_x, prev_y, current_x, current_y, last_dir) and jump >= 5
@@ -7857,6 +8610,47 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if _route_chokepoint and _ui_update_ok and iteration % 10 == 0:
                                     self.after(0, lambda px=prev_x, py=prev_y, tx2=_tx, ty2=_ty:
                                         self._append_log(f"🧭 유일통로 보호: ({px},{py})→({tx2},{ty2})"))
+                            _patrol_chokepoint_repeat_fail = (
+                                _patrolling_route_phase and
+                                boss_patrol is not None and
+                                _route_chokepoint and
+                                _edge_fail >= BOSS_PATROL_CHOKE_SKIP_THRESHOLD
+                            )
+                            if _patrol_chokepoint_repeat_fail:
+                                boss_patrol.skip_current_target()
+                                patrol_skip_count += 1
+                                _clear_boss_patrol_route_cache()
+                                _clear_boss_patrol_recent_samples()
+                                if _patrol_goal_origin is not None:
+                                    _clear_temporary_goal_detour(_patrol_goal_origin)
+                                edge_fail_counts.pop(_edge_key, None)
+                                current_path = []
+                                path_index = 0
+                                path_pos_index = {}
+                                pathfinder.invalidate_path()
+                                last_dir = None
+                                stuck_count = 0
+                                total_stuck_count = 0
+                                prev_x, prev_y = current_x, current_y
+                                if _ui_update_ok:
+                                    if _patrol_goal_origin is not None:
+                                        self.after(
+                                            0,
+                                            lambda gx=_patrol_goal_origin[0], gy=_patrol_goal_origin[1], px=prev_x, py=prev_y, tx2=_tx, ty2=_ty:
+                                                self._append_log(
+                                                    f"⚠️ 유일통로 반복실패 → 순찰 타깃 스킵 ({gx},{gy}) via ({px},{py})→({tx2},{ty2})"
+                                                ),
+                                        )
+                                    else:
+                                        self.after(
+                                            0,
+                                            lambda px=prev_x, py=prev_y, tx2=_tx, ty2=_ty:
+                                                self._append_log(
+                                                    f"⚠️ 유일통로 반복실패 → 순찰 타깃 스킵 via ({px},{py})→({tx2},{ty2})"
+                                                ),
+                                        )
+                                self._stop_event.wait(0.05)
+                                continue
                             # 경유지 직행/순찰 모드에서도 첫 실패는 일시 정체일 수 있으므로
                             # 바로 soft_blocked로 올리지 않고, 같은 간선이 2회 이상 막힐 때만
                             # 타일 단위 임시회피로 승격한다.
@@ -8332,16 +9126,14 @@ class GameModeDialog(ctk.CTkToplevel):
                                     boss_mode=boss_mode,
                                 )
                                 if boss_mode == "approaching" and self._has_recent_boss_item_hint(max_age_s=2.0):
-                                    if not _boss_item_force_loot:
-                                        _boss_item_force_loot = True
-                                        try:
-                                            self._schedule_boss_ui_log(
-                                                f"🎁 아이템 감지 → 즉시 루팅 전환 ({current_x},{current_y})",
-                                                dedupe_key="boss-item-force-loot",
-                                                dedupe_window=0.8,
-                                            )
-                                        except Exception:
-                                            pass
+                                    try:
+                                        self._schedule_boss_ui_log(
+                                            f"🎁 아이템 후보 감지 ({current_x},{current_y})",
+                                            dedupe_key="boss-item-passive-hint",
+                                            dedupe_window=0.8,
+                                        )
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
 
@@ -8372,7 +9164,12 @@ class GameModeDialog(ctk.CTkToplevel):
                             boss_patrol = MapPatroller(self._game_map)
                             boss_patrol.start(current_pos_tuple)
                             _clear_boss_patrol_route_cache()
+                            _clear_boss_detect_hints()
                             boss_mode = "patrolling"
+                            _boss_contact_confirmed = False
+                            _boss_skill_fired = False
+                            _boss_last_contact_at = 0.0
+                            _boss_last_skill_at = 0.0
                             last_dir = None
                             stuck_count = 0
                             total_stuck_count = 0
@@ -9076,6 +9873,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                             boss_patrol.start(current_pos_tuple)
                                         _clear_boss_patrol_route_cache()
                                         boss_mode = "patrolling"
+                                        _boss_contact_confirmed = False
+                                        _boss_skill_fired = False
+                                        _boss_last_contact_at = 0.0
+                                        _boss_last_skill_at = 0.0
                                         last_dir = None
                                         stuck_count = 0
                                         total_stuck_count = 0
@@ -9438,581 +10239,657 @@ class GameModeDialog(ctk.CTkToplevel):
 
                     elif boss_mode == "approaching":
                         # ── 보스 근접: 스킬 사용 + 보스 이미지 추적 ──
-                        # 보스 스킬 사용 (쿨타임 체크)
-                        if boss_skill_enabled and boss_skill_key:
-                            _now = time.time()
-                            if _now - last_boss_skill_time >= boss_skill_cooldown:
-                                try:
-                                    get_input_controller().key_down(boss_skill_key)
-                                    try:
-                                        time.sleep(0.05)
-                                    finally:
-                                        get_input_controller().key_up(boss_skill_key)
-                                    self._key_press_count += 1
-                                    last_boss_skill_time = _now
-                                    if _ui_update_ok:
-                                        self._schedule_boss_ui_log(
-                                            f"⚔️ 보스 스킬! ({current_x},{current_y}) 키={boss_skill_key}",
-                                            dedupe_key="boss-skill-log",
-                                            dedupe_window=0.5,
-                                        )
-                                except Exception as _e:
-                                    logger.error(f"[좌표모드] 보스 스킬 키 입력 실패: {_e}")
-
                         # 보스 이미지 재확인: 접근 상태에서는 매 tick 갱신해 끊김을 줄인다.
                         _appr_boss_visible = False
                         _appr_detection_attempted = False
+                        _appr_det3 = None
+                        _appr_r3 = None
+                        _appr_evidence3 = None
+                        _appr_detect_ms = None
+                        _appr_ui_noise_detected = False
                         if not self._stop_event.is_set():
                             _appr_detection_attempted = True
+                            _appr_detect_t0 = time.time()
                             try:
                                 import numpy as _np3
                                 import cv2 as _cv23
                                 _boss_ip3 = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
                                 _char_ip3 = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
                                 if _boss_ip3:
+                                    _boss_region3 = self._get_waypoint_image_region(target_idx, "boss")
                                     _ss3 = getattr(matcher, '_last_screenshot', None)
                                     if _ss3 is None:
                                         import pyautogui as _pag3
                                         _ss3 = _pag3.screenshot()
                                     _scr3 = _np3.array(_ss3)
                                     _scr3 = _cv23.cvtColor(_scr3, _cv23.COLOR_RGB2BGR)
-                                    # 1차 간단 검사: match_binary 1회 (~40ms)
-                                    from ..analyzer.template_matcher import TemplateMatcher as _TM_appr
-                                    _quick_appr = _TM_appr()
-                                    _quick_appr_res = _quick_appr.match_binary(_scr3, _boss_ip3, threshold=0.84)
+                                    _appr_evidence3 = self._get_boss_frame_detector().detect_frame(
+                                        _scr3,
+                                        _boss_ip3,
+                                        _char_ip3,
+                                        search_region=_boss_region3,
+                                        full_screen_fallback=bool(_boss_region3),
+                                        force_full_screen=False,
+                                        relaxed_boss=False,
+                                        relaxed_char=False,
+                                        allow_screen_center_anchor=False,
+                                    )
                                     time.sleep(0)  # GIL 해제
-                                    if not _quick_appr_res.found:
-                                        _r3 = None
-                                        _det3 = {}
-                                    else:
-                                        _det3 = self._detect_boss_pair(_scr3, _boss_ip3, _char_ip3)
-                                        time.sleep(0)  # GIL 해제
-                                        _r3 = _det3.get("boss_result")
+                                    _det3 = dict(_appr_evidence3.raw_det or {})
+                                    _r3 = _appr_evidence3.raw_result
                                     if _r3 and _r3.found:
+                                        _appr_det3 = _det3
+                                        _appr_r3 = _r3
                                         _appr_boss_visible = True
-                                        _char_det3 = bool(_det3.get("char_found"))
-                                        _dx3 = _det3.get("dx_px", 0)
-                                        _dy3 = _det3.get("dy_px", 0)
-                                        _td3 = _det3.get("tile_dist", 0)
-                                        _pix3 = _det3.get("pixel_dist", 0.0)
+                                        _char_det3 = bool(_appr_evidence3.char_found)
+                                        _dx3 = int(_appr_evidence3.dx_px or 0)
+                                        _dy3 = int(_appr_evidence3.dy_px or 0)
+                                        _td3 = int(_appr_evidence3.tile_dist or 0)
+                                        _pix3 = float(_appr_evidence3.pixel_dist or 0.0)
                                         if _char_det3:
-                                            self._appr_dx3 = _det3.get("dx_tiles")
-                                            self._appr_dy3 = _det3.get("dy_tiles")
-                                        if _td3 > 20:
-                                            # UI 오탐 (고정 UI 이름 요소) → 보스 사라진 것으로 처리
-                                            _appr_boss_visible = False
-                                            if _ui_update_ok:
-                                                self._schedule_boss_ui_log(
-                                                    f"✅ 보스 사라짐 ({current_x},{current_y}) 거리={_td3}타일 — UI 오탐",
-                                                    dedupe_key="boss-disappear-ui-noise",
-                                                    dedupe_window=0.8,
-                                                )
-                                        elif _char_det3 and (_td3 > 1 or _pix3 > 16):
-                                            # 보스가 다시 멀어짐 → 다시 추적 (X/Y 둘 다 반영)
-                                            _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
-                                                current_x,
-                                                current_y,
-                                                _det3.get("dx_tiles", 0),
-                                                _det3.get("dy_tiles", 0),
-                                                _td3,
-                                            )
-                                            _boss_chasing = True
-                                            _boss_chase_miss = 0
-                                            boss_approach_steps = 0
-                                            boss_appr_miss = 0
-                                            stuck_count = 0
-                                            total_stuck_count = 0
-                                            last_dir = None
-                                            prev_x, prev_y = current_x, current_y
-                                            current_path = []
-                                            path_index = 0
-                                            path_pos_index = {}
-                                            pathfinder.invalidate_path()
-                                            _clear_boss_patrol_route_cache()
-                                            self._appr_dx3 = None
-                                            self._appr_dy3 = None  # approaching 상태 정리
-                                            boss_mode = "patrolling"
-                                            if _ui_update_ok:
-                                                self._schedule_boss_ui_log(
-                                                    f"🏃 보스 멀어짐 ({current_x},{current_y}) 거리={_td3}타일 → 재추적 유지",
-                                                    dedupe_key="boss-far-rechase",
-                                                    dedupe_window=0.5,
-                                                )
-                                            self._stop_event.wait(0.05)
-                                            continue
+                                            self._appr_dx3 = int(_appr_evidence3.dx_tiles or 0)
+                                            self._appr_dy3 = int(_appr_evidence3.dy_tiles or 0)
                             except Exception:
                                 pass
+                            finally:
+                                _appr_detect_ms = int((time.time() - _appr_detect_t0) * 1000)
 
-                        if _appr_boss_visible:
-                            boss_appr_miss = 0  # 감지 성공 → 미스 리셋
-                            # 보스 방향 이동: X/Y 둘 중 더 많이 어긋난 축 우선
-                            # ※ 이동 전 반드시 맵(is_passable) + start_pos 확인
-                            _appr_dx_val = getattr(self, '_appr_dx3', None)
-                            _appr_dy_val = getattr(self, '_appr_dy3', None)
+                        direction = None
+                        _move_target = None
+                        _boss_debug_move_target = None
+                        _boss_debug_direction = None
+                        _boss_debug_remaining = None
+                        _approach_detection = self._make_boss_detection_from_evidence(_appr_evidence3)
+                        _approach_decision = boss_sm_evaluate_approach_signal(
+                            _get_boss_runtime_state(),
+                            detection_attempted=_appr_detection_attempted,
+                            detection=_approach_detection,
+                            now=time.time(),
+                        )
+                        _apply_boss_runtime_state(_approach_decision.next_state)
+                        if _approach_decision.clear_detect_hints:
+                            _clear_boss_detect_hints()
+                        _appr_boss_visible = bool(_approach_decision.boss_visible)
+
+                        if _approach_decision.event == "keep_approaching":
+                            if _approach_decision.start_skill and boss_skill_enabled and boss_skill_key:
+                                _now = time.time()
+                                if _now - last_boss_skill_time >= boss_skill_cooldown:
+                                    _press_boss_skill_once(current_x, current_y)
+                            _appr_dx_val = getattr(self, "_appr_dx3", None)
+                            _appr_dy_val = getattr(self, "_appr_dy3", None)
                             _appr_start = self._game_map.start_pos
                             _appr_candidates = []
-                            if _appr_dx_val is not None and abs(_appr_dx_val) > 0:
-                                _appr_candidates.append(("right" if _appr_dx_val > 0 else "left", abs(_appr_dx_val)))
-                            if _appr_dy_val is not None and abs(_appr_dy_val) > 0:
-                                _appr_candidates.append(("down" if _appr_dy_val > 0 else "up", abs(_appr_dy_val)))
-                            _appr_candidates.sort(key=lambda item: item[1], reverse=True)
-                            for _appr_move_dir, _ in _appr_candidates:
-                                _dx_step = 1 if _appr_move_dir == "right" else -1 if _appr_move_dir == "left" else 0
-                                _dy_step = 1 if _appr_move_dir == "down" else -1 if _appr_move_dir == "up" else 0
-                                _appr_nx, _appr_ny = current_x + _dx_step, current_y + _dy_step
-                                if self._game_map.is_passable(_appr_nx, _appr_ny) and (_appr_start is None or (_appr_nx, _appr_ny) != _appr_start):
-                                    try:
-                                        self._press_boss_follow_key(_appr_move_dir, stop_event=self._stop_event)
-                                    except Exception:
-                                        pass
-                                    break
+                            _strict_contact_now = bool(
+                                _approach_detection is not None
+                                and _boss_contact_confirmed
+                                and int(_approach_detection.tile_dist or 0) <= CONTACT_TILE_MAX
+                                and float(_approach_detection.pixel_dist or 0.0) <= CONTACT_PIXEL_MAX
+                            )
+                            if not _strict_contact_now:
+                                if _appr_dx_val is not None and abs(_appr_dx_val) > 0:
+                                    _appr_candidates.append(("right" if _appr_dx_val > 0 else "left", abs(_appr_dx_val)))
+                                if _appr_dy_val is not None and abs(_appr_dy_val) > 0:
+                                    _appr_candidates.append(("down" if _appr_dy_val > 0 else "up", abs(_appr_dy_val)))
+                                _appr_candidates.sort(key=lambda item: item[1], reverse=True)
+                                for _appr_move_dir, _ in _appr_candidates:
+                                    _dx_step = 1 if _appr_move_dir == "right" else -1 if _appr_move_dir == "left" else 0
+                                    _dy_step = 1 if _appr_move_dir == "down" else -1 if _appr_move_dir == "up" else 0
+                                    _appr_nx, _appr_ny = current_x + _dx_step, current_y + _dy_step
+                                    if self._game_map.is_passable(_appr_nx, _appr_ny) and (_appr_start is None or (_appr_nx, _appr_ny) != _appr_start):
+                                        direction = _appr_move_dir
+                                        _move_target = (_appr_nx, _appr_ny)
+                                        _boss_debug_move_target = _move_target
+                                        _boss_debug_direction = direction
+                                        _boss_debug_remaining = 1
+                                        break
+                            if _ui_update_ok and (_appr_detection_attempted or iteration % 2 == 0):
+                                self._schedule_boss_ui_log(
+                                    self._build_boss_debug_snapshot(
+                                        boss_mode=boss_mode,
+                                        current_x=current_x,
+                                        current_y=current_y,
+                                        boss_patrol=boss_patrol,
+                                        boss_chasing=_boss_chasing,
+                                        boss_detect_attempted=_appr_detection_attempted,
+                                        boss_detect_interval=1,
+                                        boss_detect_ms=_appr_detect_ms,
+                                        boss_visible=_appr_boss_visible,
+                                        boss_result=_appr_r3,
+                                        boss_det=_appr_det3,
+                                        move_target=_boss_debug_move_target,
+                                        direction=_boss_debug_direction,
+                                        remaining=_boss_debug_remaining,
+                                        boss_chase_miss=_boss_chase_miss,
+                                        boss_appr_miss=boss_appr_miss,
+                                        boss_steps=boss_approach_steps,
+                                        item_hint=self._has_recent_boss_item_hint(max_age_s=2.0),
+                                        force_loot=_boss_item_force_loot,
+                                        candidate_active=bool(_boss_buffer_hits),
+                                        ui_noise=False,
+                                        contact_confirmed=_boss_contact_confirmed,
+                                        skill_fired=_boss_skill_fired,
+                                    ),
+                                    dedupe_key="boss-debug-approaching",
+                                    dedupe_window=0.12,
+                                )
                             if _ui_update_ok:
                                 self._schedule_boss_status("보스스킬", f"({current_x},{current_y})", "", "전투중", "⚔️")
-                        else:
-                            if _boss_item_force_loot:
-                                _appr_boss_visible = False
-                                _appr_detection_attempted = False
-                                boss_appr_miss = 10
-                            if _appr_detection_attempted:
-                                boss_appr_miss += 1
-                            if boss_appr_miss < 10:
-                                # 아직 미스 부족 → 계속 스킬 쓰면서 대기
+
+                        elif _approach_decision.event == "rechase":
+                            self._appr_dx3 = None
+                            self._appr_dy3 = None
+                            current_path = []
+                            path_index = 0
+                            path_pos_index = {}
+                            pathfinder.invalidate_path()
+                            _clear_boss_chase_recent_samples()
+                            _clear_boss_patrol_route_cache()
+                            stuck_count = 0
+                            total_stuck_count = 0
+                            last_dir = None
+                            if _approach_detection is not None:
+                                _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
+                                    current_x,
+                                    current_y,
+                                    _approach_detection.dx_tiles,
+                                    _approach_detection.dy_tiles,
+                                    _approach_detection.tile_dist,
+                                )
+                                if (_chase_tx, _chase_ty) == (current_x, current_y):
+                                    _boss_chasing = False
+                                    boss_mode = "patrolling"
+                                    _clear_boss_combat_flags()
+                                    _clear_boss_detect_hints()
+                                    if _ui_update_ok:
+                                        self._schedule_boss_ui_log(
+                                            f"⚠️ 보스 추적 목표 불가 ({current_x},{current_y}) dx={_approach_detection.dx_px}px dy={_approach_detection.dy_px}px 거리={_approach_detection.tile_dist}타일",
+                                            dedupe_key="boss-chase-self-target",
+                                            dedupe_window=0.6,
+                                        )
+                                    self._stop_event.wait(0.03)
+                                    continue
+                                if _ui_update_ok:
+                                    self._schedule_boss_ui_log(
+                                        f"🏃 보스 멀어짐 ({current_x},{current_y}) 거리={_approach_detection.tile_dist}타일 → 재추적 유지",
+                                        dedupe_key="boss-approach-rechase",
+                                        dedupe_window=0.5,
+                                    )
+                            prev_x, prev_y = current_x, current_y
+                            self._stop_event.wait(0.03)
+                            continue
+
+                        elif _approach_decision.event == "ui_noise_reset":
+                            _enter_boss_patrolling_state(clear_detect_hints=False, clear_patrol_samples=False, arm_noise_seconds=None)
+                            if _ui_update_ok:
+                                self._schedule_boss_ui_log(
+                                    f"🔄 UI 오탐 → 처치 취소, 순찰 복귀 ({current_x},{current_y})",
+                                    dedupe_key="boss-ui-noise-reset",
+                                    dedupe_window=0.8,
+                                )
+                                self._schedule_boss_ui_log(
+                                    self._build_boss_debug_snapshot(
+                                        boss_mode=boss_mode,
+                                        current_x=current_x,
+                                        current_y=current_y,
+                                        boss_patrol=boss_patrol,
+                                        boss_chasing=_boss_chasing,
+                                        boss_detect_attempted=_appr_detection_attempted,
+                                        boss_detect_interval=1,
+                                        boss_detect_ms=_appr_detect_ms,
+                                        boss_visible=False,
+                                        boss_result=_appr_r3,
+                                        boss_det=_appr_det3,
+                                        move_target=None,
+                                        direction=None,
+                                        remaining=None,
+                                        boss_chase_miss=_boss_chase_miss,
+                                        boss_appr_miss=boss_appr_miss,
+                                        boss_steps=boss_approach_steps,
+                                        item_hint=self._has_recent_boss_item_hint(max_age_s=2.0),
+                                        force_loot=_boss_item_force_loot,
+                                        candidate_active=bool(_boss_buffer_hits),
+                                        ui_noise=True,
+                                        contact_confirmed=_boss_contact_confirmed,
+                                        skill_fired=_boss_skill_fired,
+                                    ),
+                                    dedupe_key="boss-debug-ui-noise-reset",
+                                    dedupe_window=0.12,
+                                )
+                            self._stop_event.wait(0.03)
+                            continue
+
+                        elif _approach_decision.event == "approach_miss":
+                            _appr_dx_val = getattr(self, "_appr_dx3", None)
+                            _appr_dy_val = getattr(self, "_appr_dy3", None)
+                            _strict_contact_recent = bool(_boss_contact_confirmed and _boss_skill_fired)
+                            if not _strict_contact_recent and int(boss_appr_miss or 0) <= 2:
+                                _appr_start = self._game_map.start_pos
+                                _appr_candidates = []
+                                if _appr_dx_val is not None and abs(_appr_dx_val) > 0:
+                                    _appr_candidates.append(("right" if _appr_dx_val > 0 else "left", abs(_appr_dx_val)))
+                                if _appr_dy_val is not None and abs(_appr_dy_val) > 0:
+                                    _appr_candidates.append(("down" if _appr_dy_val > 0 else "up", abs(_appr_dy_val)))
+                                _appr_candidates.sort(key=lambda item: item[1], reverse=True)
+                                for _appr_move_dir, _ in _appr_candidates:
+                                    _dx_step = 1 if _appr_move_dir == "right" else -1 if _appr_move_dir == "left" else 0
+                                    _dy_step = 1 if _appr_move_dir == "down" else -1 if _appr_move_dir == "up" else 0
+                                    _appr_nx, _appr_ny = current_x + _dx_step, current_y + _dy_step
+                                    if self._game_map.is_passable(_appr_nx, _appr_ny) and (_appr_start is None or (_appr_nx, _appr_ny) != _appr_start):
+                                        direction = _appr_move_dir
+                                        _move_target = (_appr_nx, _appr_ny)
+                                        _boss_debug_move_target = _move_target
+                                        _boss_debug_direction = direction
+                                        _boss_debug_remaining = 1
+                                        break
+                            if _ui_update_ok and _appr_detection_attempted:
+                                self._schedule_boss_ui_log(
+                                    f"⏳ 보스 미감지 누적 ({boss_appr_miss}/{APPROACH_MISS_THRESHOLD}) contact={'Y' if _boss_contact_confirmed else 'N'} skill={'Y' if _boss_skill_fired else 'N'}",
+                                    dedupe_key="boss-approach-miss-count",
+                                    dedupe_window=0.2,
+                                )
+                            if _ui_update_ok and (_appr_detection_attempted or iteration % 2 == 0):
+                                self._schedule_boss_ui_log(
+                                    self._build_boss_debug_snapshot(
+                                        boss_mode=boss_mode,
+                                        current_x=current_x,
+                                        current_y=current_y,
+                                        boss_patrol=boss_patrol,
+                                        boss_chasing=_boss_chasing,
+                                        boss_detect_attempted=_appr_detection_attempted,
+                                        boss_detect_interval=1,
+                                        boss_detect_ms=_appr_detect_ms,
+                                        boss_visible=False,
+                                        boss_result=_appr_r3,
+                                        boss_det=_appr_det3,
+                                        move_target=None,
+                                        direction=None,
+                                        remaining=None,
+                                        boss_chase_miss=_boss_chase_miss,
+                                        boss_appr_miss=boss_appr_miss,
+                                        boss_steps=boss_approach_steps,
+                                        item_hint=self._has_recent_boss_item_hint(max_age_s=2.0),
+                                        force_loot=_boss_item_force_loot,
+                                        candidate_active=bool(_boss_buffer_hits),
+                                        ui_noise=False,
+                                        contact_confirmed=_boss_contact_confirmed,
+                                        skill_fired=_boss_skill_fired,
+                                    ),
+                                    dedupe_key="boss-debug-approach-miss",
+                                    dedupe_window=0.12,
+                                )
+                            if direction is not None and not self._stop_event.is_set():
+                                prev_x, prev_y = current_x, current_y
+                            else:
                                 prev_x, prev_y = current_x, current_y
                                 stuck_count = 0
                                 total_stuck_count = 0
                                 self._stop_event.wait(0.1)
                                 continue
+
+                        elif _approach_decision.event == "kill_hold_reset":
+                            _enter_boss_patrolling_state(clear_detect_hints=False, clear_patrol_samples=False, arm_noise_seconds=None)
+                            if _ui_update_ok:
+                                self._schedule_boss_ui_log(
+                                    f"🔄 미감지 누적이지만 근접/스킬 미확정 → 처치 보류, 순찰 복귀 ({current_x},{current_y})",
+                                    dedupe_key="boss-kill-hold-reset",
+                                    dedupe_window=0.8,
+                                )
+                                self._schedule_boss_ui_log(
+                                    self._build_boss_debug_snapshot(
+                                        boss_mode=boss_mode,
+                                        current_x=current_x,
+                                        current_y=current_y,
+                                        boss_patrol=boss_patrol,
+                                        boss_chasing=_boss_chasing,
+                                        boss_detect_attempted=_appr_detection_attempted,
+                                        boss_detect_interval=1,
+                                        boss_detect_ms=_appr_detect_ms,
+                                        boss_visible=False,
+                                        boss_result=_appr_r3,
+                                        boss_det=_appr_det3,
+                                        move_target=None,
+                                        direction=None,
+                                        remaining=None,
+                                        boss_chase_miss=_boss_chase_miss,
+                                        boss_appr_miss=boss_appr_miss,
+                                        boss_steps=boss_approach_steps,
+                                        item_hint=self._has_recent_boss_item_hint(max_age_s=2.0),
+                                        force_loot=_boss_item_force_loot,
+                                        candidate_active=bool(_boss_buffer_hits),
+                                        ui_noise=False,
+                                        contact_confirmed=_boss_contact_confirmed,
+                                        skill_fired=_boss_skill_fired,
+                                    ),
+                                    dedupe_key="boss-debug-kill-hold-reset",
+                                    dedupe_window=0.12,
+                                )
+                            self._stop_event.wait(0.03)
+                            continue
+
+                        elif _approach_decision.event == "kill_confirm_pending":
                             boss_appr_miss = 0
-                            # 10회 연속 미감지 → 보스 처치 판정
                             _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
                             self._schedule_boss_ui_log(
-                                (
-                                    f"✅ 아이템 감지! ({current_x},{current_y}) → 즉시 루팅/다음 경유지 (키{len(_arr_keys)}개)"
-                                    if _boss_item_force_loot else
-                                    f"✅ 보스 처치! ({current_x},{current_y}) → 다음 경유지 (키{len(_arr_keys)}개)"
-                                ),
+                                f"☑️ 처치 확정 조건 충족 ({current_x},{current_y}) contact={'Y' if _boss_contact_confirmed else 'N'} skill={'Y' if _boss_skill_fired else 'N'} last_contact={round(float(_boss_last_contact_at or 0.0), 2)} last_skill={round(float(_boss_last_skill_at or 0.0), 2)}",
+                                dedupe_key="boss-kill-confirm-pending",
+                                dedupe_window=0.8,
+                            )
+                            self._schedule_boss_ui_log(
+                                f"✅ 보스 처치! ({current_x},{current_y}) 미감지누적={APPROACH_MISS_THRESHOLD}/{APPROACH_MISS_THRESHOLD} → 다음 경유지 (키{len(_arr_keys)}개)",
                                 dedupe_key="boss-kill-complete",
                                 dedupe_window=1.0,
                             )
-                            logger.info(
-                                f"[좌표모드] {'아이템 감지 즉시 루팅' if _boss_item_force_loot else '보스 처치'} → "
-                                f"도착키 {len(_arr_keys)}개: {_arr_keys}"
-                            )
-                            # 보스 사망 애니메이션 대기 / 즉시 루팅 분기는 짧게만 안정화
-                            self._stop_event.wait(0.35 if _boss_item_force_loot else 2.0)
-                            self._run_boss_item_and_arrival_flow(
-                                target_idx,
-                                all_targets,
+                            logger.info(f"[좌표모드] 보스 처치 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
+                            _boss_complete_result = _complete_boss_segment(
                                 (current_x, current_y),
-                                self._stop_event,
+                                _allow_item_loot=True,
+                                _completion_log=(
+                                    f"✅ 보스 처치! ({current_x},{current_y}) "
+                                    f"미감지누적={APPROACH_MISS_THRESHOLD}/{APPROACH_MISS_THRESHOLD} → 다음 경유지 (키{len(_arr_keys)}개)"
+                                ),
+                                _dedupe_key="boss-kill-complete",
                             )
-                            _boss_item_force_loot = False
-                            _arm_boss_transition_cooldown(2.0)
-                            _clear_boss_patrol_route_cache()
-                            _prev_idx = target_idx
-                            target_idx += 1
-                            _clear_segment_completion_commit()
-                            if target_idx >= len(all_targets):
-                                self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
-                                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
-                                self._queue_normal_completion()
+                            if _boss_complete_result == "completed":
                                 return
-                            if self._stop_event.is_set():
+                            if _boss_complete_result == "stopped":
                                 break
-                            self._stop_event.wait(0.5)
-                            # 보스 경유지(0,0)에서 나갈 때는 맵 저장 안 함 (오염 방지)
-                            # 맵핑테스트에서는 항상 저장 (맵 데이터 유실 방지)
-                            _prev_is_boss = all_targets[_prev_idx][3] if len(all_targets[_prev_idx]) > 3 else False
-                            if use_map and (not _prev_is_boss or _is_mapping_test) and not _no_save:
-                                if self._should_persist_segment_end(_prev_idx):
-                                    self._game_map.end_pos = (current_x, current_y)
-                                else:
-                                    self._game_map.end_pos = None
-                            self._boss_segment_active = False
-                            if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss and not _is_mapping_test) or _no_save):
-                                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
-                                _arm_boss_transition_cooldown(3.0)
-                                self._stop_event.wait(0.05)
-                                continue
-                            pathfinder = SimplePathfinder(self._game_map)
-                            self._map_pathfinder = pathfinder
-                            target_x, target_y = _pick_target(target_idx)
-                            seg_name = all_targets[target_idx][2]
-                            self._schedule_boss_ui_log(
-                                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
-                                dedupe_key="boss-next-segment",
-                                dedupe_window=1.0,
-                            )
-                            stuck_count = 0
-                            total_stuck_count = 0
-                            current_path = []
-                            path_index = 0
-                            path_pos_index = {}
-                            explored_from = {}
-                            edge_fail_counts.clear()
-                            blocked_dirs.clear()
-                            frontier_blocked_until.clear()
-                            _temporary_goal_detour = None
-                            _temporary_goal_detour_origin = None
-                            _pending_start_pos = None
-                            last_auto_save_passable = -1
-                            unknown_path_fails = 0
-                            last_dir = None
-                            recent_positions.clear()
-                            _boss_item_force_loot = False
-                            boss_mode = "exploring"
-                            boss_patrol = None
-                            explore_target = None
-                            explore_target_tries = 0
-                            probe_focus_target = None
-                            probe_focus_stall = 0
-                            explore_unreachable = set()
-                            _portal_protected.clear()
-                            frontier_cooldown.clear()
-                            boss_no_frontier_count = 0
-                            boss_approach_steps = 0
-                            boss_appr_miss = 0
-                            _boss_chasing = False
-                            _clear_boss_chase_recent_samples()
-                            _boss_chase_miss = 0
-                            patrol_skip_count = 0
-                            _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
-                            _segment_full_mapping_guard = bool(full_mapping_exploring)
-                            _segment_requires_full_completion = bool(
-                                _is_mapping_test and _mt_has_starts and (not _segment_map_locked) and
-                                (not _current_segment_map_complete())
-                            )
-                            _is_mapping_mode = _is_mapping_test or _mapping_guard_active()
-                            _log_resume_full_mapping_state()
-                            _local_explore_center = None
-                            _local_explore_radius = _local_explore_default_radius
-                            _phase2_best_dist = None
-                            _phase2_stall_count = 0
-                            _phase2_reprobe_count = 0
-                            _phase2_reprobe_requested = False
-                            _phase2_reprobe_reason = ""
-                            # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
-                            is_boss_dungeon = all_targets[target_idx][3] or _local_explore_phase or _mapping_guard_active()
-                            if is_boss_dungeon:
-                                if _is_mapping_mode:
-                                    boss_pre_teleport = False
-                                    mapping_on = True
-                                    mark_portal_entry = True
-                                else:
-                                    boss_pre_teleport = True
-                                    mapping_on = False
-                                    mark_portal_entry = False
-                            else:
-                                boss_pre_teleport = False
-                                mapping_on = not _no_save
-                                mark_portal_entry = True
-                            if _segment_map_locked:
-                                mapping_on = False
-                            _arm_segment_transition_state(boss_pre_teleport, current_x, current_y)
-                            time.sleep(0.05)
                             continue
 
-                        prev_x, prev_y = None, None
-                        stuck_count = 0
-                        total_stuck_count = 0
-                        self._stop_event.wait(0.1)
-                        continue
-
-                    elif boss_mode == "patrolling":
-                        # ── 순찰: 등록된 순찰좌표를 순서대로 A* 이동 ──
-                        if _boss_transition_locked() and not _boss_chasing:
-                            boss_mode = "exploring"
-                            boss_patrol = None
-                            _boss_chasing = False
-                            _boss_chase_miss = 0
-                            patrol_skip_count = 0
-                            _clear_boss_patrol_route_cache()
-                            _clear_boss_patrol_recent_samples()
-                            _clear_boss_chase_recent_samples()
-                            prev_x, prev_y = current_x, current_y
-                            self._stop_event.wait(0.05)
-                            continue
-
+                    elif boss_mode in (MODE_PATROLLING, MODE_CHASING):
                         # ── 보스 이미지 검색 ──
                         _boss_found = False
+                        _boss_ui_noise_detected = False
+                        _boss_debug_det = None
+                        _boss_debug_res = None
+                        _boss_debug_move_target = None
+                        _boss_debug_direction = None
+                        _boss_debug_remaining = None
                         _boss_detect_interval = self._get_boss_detect_interval(
                             boss_mode=boss_mode,
                             boss_chasing=_boss_chasing,
                             recent_steps=boss_approach_steps,
                         )
                         _check_boss_image = (iteration % _boss_detect_interval == 0)
+                        _patrol_async_mode = boss_mode == MODE_PATROLLING and not _boss_chasing
+                        _boss_detect_attempted_now = False
                         _t_boss_start = time.time()
-                        if _check_boss_image:
+                        if _check_boss_image or _patrol_async_mode:
                             boss_img_path = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
                             char_img_path = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
                             if boss_img_path:
                                 try:
-                                    import numpy as _np
-                                    import cv2 as _cv2
-                                    from ..analyzer.template_matcher import TemplateMatcher as _TM_patrol
-                                    # 좌표 읽기 시 캡처한 스크린샷 재사용 (이중 캡처 방지)
-                                    _ss = getattr(matcher, '_last_screenshot', None)
-                                    if _ss is None:
-                                        import pyautogui as _pag
-                                        _ss = _pag.screenshot()
-                                    _screen = _np.array(_ss)
-                                    _screen = _cv2.cvtColor(_screen, _cv2.COLOR_RGB2BGR)
-                                    # 1차 간단 검사: match_binary 1회 (~40ms)
-                                    _quick_matcher = _TM_patrol()
-                                    _quick_res = _quick_matcher.match_binary(_screen, boss_img_path, threshold=0.84)
-                                    time.sleep(0)  # GIL 해제
-                                    if not _quick_res.found:
-                                        # 보스 없음 → 정밀 검사 건너뜀
-                                        _res = None
-                                    else:
-                                        # 1차 감지됨 → 정밀 검사 (교차검증)
-                                        _det = self._detect_boss_pair(_screen, boss_img_path, char_img_path)
-                                        time.sleep(0)  # GIL 해제
-                                        _res = _det.get("boss_result")
+                                    _boss_search_region = self._get_waypoint_image_region(target_idx, "boss")
+                                    _patrol_async_detect = (
+                                        boss_mode == MODE_PATROLLING
+                                        and not _boss_chasing
+                                    )
+                                    _now_detect = time.time()
+                                    _patrol_fullscreen_fallback = bool(
+                                        _patrol_async_detect and _should_boss_patrol_fullscreen_fallback(_now_detect, _boss_search_region)
+                                    )
+                                    _patrol_fullscreen_detect = bool(
+                                        _patrol_fullscreen_fallback
+                                        or (
+                                            boss_mode == MODE_PATROLLING
+                                            and not _boss_chasing
+                                            and int(boss_approach_steps or 0) <= 0
+                                            and not _boss_search_region
+                                        )
+                                    )
+                                    _detect_kwargs = {
+                                        "search_region": None if _patrol_fullscreen_detect else _boss_search_region,
+                                        "force_full_screen": bool(_patrol_fullscreen_detect),
+                                        "relaxed_boss": bool(_patrol_fullscreen_detect),
+                                        "relaxed_char": bool(_patrol_fullscreen_detect),
+                                        "allow_screen_center_anchor": bool(_patrol_fullscreen_detect),
+                                    }
+                                    _async_request_key = (
+                                        str(boss_img_path or ""),
+                                        str(char_img_path or ""),
+                                        tuple(_boss_search_region) if _boss_search_region else None,
+                                        bool(_patrol_fullscreen_detect),
+                                        bool(_patrol_fullscreen_detect),
+                                        bool(_patrol_fullscreen_detect),
+                                        bool(_patrol_fullscreen_detect),
+                                    )
+                                    _det = None
+                                    _res = None
+                                    _evidence = None
+                                    _char_detected = False
+                                    _char_anchor_valid = False
+                                    _char_anchor_source = None
+                                    dx_pixel = 0
+                                    dy_pixel = 0
+                                    est_dx_tiles = 0
+                                    est_dy_tiles = 0
+                                    tile_dist = 0
+                                    pixel_dist = 0.0
+                                    _detect_reason = None
+                                    if _patrol_async_detect and _check_boss_image:
+                                        _detect_reason = "patrol_fallback" if _patrol_fullscreen_fallback else "patrol_range"
+                                        if _start_boss_patrol_async_detect(
+                                            boss_img_path,
+                                            char_img_path,
+                                            search_region=_detect_kwargs["search_region"],
+                                            force_full_screen=bool(_patrol_fullscreen_detect),
+                                            relaxed_boss=bool(_patrol_fullscreen_detect),
+                                            relaxed_char=bool(_patrol_fullscreen_detect),
+                                            allow_screen_center_anchor=bool(_patrol_fullscreen_detect),
+                                            request_reason=_detect_reason,
+                                        ) and _patrol_fullscreen_fallback:
+                                            _boss_patrol_detect_runtime["last_fallback_at"] = _now_detect
+                                    _async_payload = _consume_boss_patrol_detect_result(_async_request_key) if _patrol_async_detect else None
+                                    if _async_payload is not None:
+                                        _boss_detect_attempted_now = True
+                                        _evidence = _async_payload.get("evidence")
+                                        _det = _async_payload.get("det")
+                                        _res = _async_payload.get("res")
+                                        _char_detected = bool(_async_payload.get("char_detected"))
+                                        _char_anchor_valid = bool(_async_payload.get("char_anchor_valid"))
+                                        _char_anchor_source = _async_payload.get("char_anchor_source")
+                                        dx_pixel = _async_payload.get("dx_pixel", 0)
+                                        dy_pixel = _async_payload.get("dy_pixel", 0)
+                                        est_dx_tiles = _async_payload.get("est_dx_tiles", 0)
+                                        est_dy_tiles = _async_payload.get("est_dy_tiles", 0)
+                                        tile_dist = _async_payload.get("tile_dist", 0)
+                                        pixel_dist = _async_payload.get("pixel_dist", 0.0)
+                                        _t_boss_start = time.time() - (int(_async_payload.get("detect_ms", 0) or 0) / 1000.0)
+                                        _detect_reason = str(_async_payload.get("reason") or "")
+                                        if _res and _res.found:
+                                            _clear_boss_patrol_detect_miss()
+                                        else:
+                                            _record_boss_patrol_detect_miss(_now_detect)
+                                    elif not _patrol_async_detect:
+                                        import numpy as _np
+                                        import cv2 as _cv2
+                                        _ss = getattr(matcher, '_last_screenshot', None)
+                                        if _ss is None:
+                                            import pyautogui as _pag
+                                            _ss = _pag.screenshot()
+                                        _screen = _np.array(_ss)
+                                        _screen = _cv2.cvtColor(_screen, _cv2.COLOR_RGB2BGR)
+                                        _boss_detect_attempted_now = True
+                                        _evidence = self._get_boss_frame_detector().detect_frame(
+                                            _screen,
+                                            boss_img_path,
+                                            char_img_path,
+                                            search_region=_boss_search_region,
+                                            full_screen_fallback=bool(_boss_search_region),
+                                            force_full_screen=False,
+                                            relaxed_boss=False,
+                                            relaxed_char=False,
+                                            allow_screen_center_anchor=False,
+                                        )
+                                        time.sleep(0)
+                                        _det = dict(_evidence.raw_det or {})
+                                        _res = _evidence.raw_result
+                                        _char_detected = bool(_evidence.char_found)
+                                        _char_anchor_valid = bool(_evidence.anchor_valid)
+                                        _char_anchor_source = _evidence.anchor_source
+                                        dx_pixel = int(_evidence.dx_px or 0)
+                                        dy_pixel = int(_evidence.dy_px or 0)
+                                        est_dx_tiles = int(_evidence.dx_tiles or 0)
+                                        est_dy_tiles = int(_evidence.dy_tiles or 0)
+                                        tile_dist = int(_evidence.tile_dist or 0)
+                                        pixel_dist = float(_evidence.pixel_dist or 0.0)
+                                        _detect_reason = str(_evidence.detect_reason or "")
+                                        if _res and _res.found:
+                                            _clear_boss_patrol_detect_miss()
+                                    _boss_debug_det = _det
+                                    _boss_debug_res = _res
+                                    if _detect_reason == "patrol_fallback" and _res and _res.found and _ui_update_ok:
+                                        self._schedule_boss_ui_log(
+                                            f"🔎 범위 미감지 누적 → 전체화면 보스 복구 탐지 성공 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px)",
+                                            dedupe_key="boss-patrol-fallback-hit",
+                                            dedupe_window=0.8,
+                                        )
                                     if _res and _res.found:
-                                        _boss_found = True
                                         boss_approach_steps += 1
-                                        _char_detected = bool(_det.get("char_found"))
-                                        _char_anchor_valid = bool(_det.get("char_anchor_valid"))
-                                        _char_anchor_source = _det.get("char_anchor_source")
-                                        if not _char_detected and not _char_anchor_valid:
+                                        _boss_last_detect_dx_px = dx_pixel
+                                        _boss_last_detect_dy_px = dy_pixel
+                                        _boss_last_detect_tile_dist = tile_dist
+                                    if (not _char_detected) and _char_anchor_valid and _ui_update_ok:
+                                        self._schedule_boss_ui_log(
+                                            f"🧭 캐릭터 보정 사용: {_char_anchor_source} dx={dx_pixel}px dy={dy_pixel}px",
+                                            dedupe_key="boss-char-anchor-fallback",
+                                            dedupe_window=0.6,
+                                        )
+                                    _boss_decision = boss_sm_evaluate_patrol_signal(
+                                        _get_boss_runtime_state(),
+                                        self._make_boss_detection_from_evidence(_evidence) or BossDetection(),
+                                        now=time.time(),
+                                        current_pos=current_pos_tuple,
+                                        chase_target_builder=lambda _cx, _cy, _dx_t, _dy_t, _td: self._build_incremental_boss_chase_target(
+                                            _cx,
+                                            _cy,
+                                            _dx_t,
+                                            _dy_t,
+                                            _td,
+                                        ),
+                                    )
+                                    _apply_boss_runtime_state(_boss_decision.next_state)
+                                    if _boss_decision.clear_detect_hints:
+                                        _clear_boss_detect_hints()
+                                    _boss_found = bool(_boss_decision.boss_visible)
+
+                                    if _boss_decision.event == "wait_char_anchor":
+                                        if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"👀 보스 후보 감지 (신뢰도={getattr(_res, 'confidence', 0.0):.1%}) — 캐릭터 인식 대기",
+                                                dedupe_key="boss-candidate-detect",
+                                                dedupe_window=0.6,
+                                            )
+                                        _boss_found = False
+                                    elif _boss_decision.event == "noise_cooldown":
+                                        if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"⚠️ 보스 감지 보류 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px) — 최근 헛추적 냉각",
+                                                dedupe_key="boss-noise-cooldown",
+                                                dedupe_window=0.8,
+                                            )
+                                        _boss_found = False
+                                    elif _boss_decision.event == "ui_noise":
+                                        if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"⚠️ 보스 감지 무시 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px) — UI 오탐 추정",
+                                                dedupe_key="boss-candidate-ignore",
+                                                dedupe_window=0.8,
+                                            )
+                                        _boss_ui_noise_detected = True
+                                        _boss_found = False
+                                    elif _boss_decision.event == "candidate_hold":
+                                        if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"👀 장거리 보스 후보 대기 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px, 신뢰도={getattr(_res, 'confidence', 0.0):.1%})",
+                                                dedupe_key="boss-far-candidate-hold",
+                                                dedupe_window=0.5,
+                                            )
+                                        _boss_found = False
+                                    elif _boss_decision.event == "candidate_reject":
+                                        if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"⚠️ 장거리 보스 후보 폐기 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px) — 수렴 없음",
+                                                dedupe_key="boss-far-candidate-reject",
+                                                dedupe_window=0.8,
+                                            )
+                                        _boss_found = False
+                                    elif _boss_decision.event == "start_approaching":
+                                        _enter_boss_approaching_state(
+                                            current_x,
+                                            current_y,
+                                            dx_tiles=est_dx_tiles,
+                                            dy_tiles=est_dy_tiles,
+                                            contact_confirmed=bool(_boss_decision.start_skill),
+                                            start_skill=bool(_boss_decision.start_skill),
+                                            boss_result=_res,
+                                            boss_det=_det,
+                                            detect_ms=_t_boss_ms,
+                                            log_message=(
+                                                f"🎯 보스 근접! ({current_x},{current_y}) dx={dx_pixel}px dy={dy_pixel}px 거리={tile_dist}타일 {boss_approach_steps}회 → 접근 완료 (신뢰도={_res.confidence:.1%})"
+                                                if _boss_decision.start_skill else
+                                                f"🎯 보스 접근! ({current_x},{current_y}) dx={dx_pixel}px dy={dy_pixel}px 거리={tile_dist}타일 {boss_approach_steps}회 → 근접 정렬 (신뢰도={_res.confidence:.1%})"
+                                            ),
+                                            debug_key="boss-debug-approach-enter",
+                                        )
+                                        time.sleep(0.05)
+                                        continue
+                                    elif _boss_decision.event == "start_chase":
+                                        _move_target = _boss_decision.chase_target
+                                        _boss_debug_move_target = _move_target
+                                        if _move_target == (current_x, current_y):
+                                            _boss_found = False
+                                            _enter_boss_patrolling_state(clear_detect_hints=False, clear_patrol_samples=False, arm_noise_seconds=None)
                                             if _ui_update_ok:
                                                 self._schedule_boss_ui_log(
-                                                    f"👀 보스 후보 감지 (신뢰도={_res.confidence:.1%}) — 캐릭터 인식 대기",
-                                                    dedupe_key="boss-candidate-detect",
+                                                    f"⚠️ 보스 추적 목표 불가 ({current_x},{current_y}) dx={dx_pixel}px dy={dy_pixel}px 거리={tile_dist}타일",
+                                                    dedupe_key="boss-chase-self-target",
                                                     dedupe_window=0.6,
                                                 )
-                                            _boss_found = False
-                                        else:
-                                            dx_pixel = _det.get("dx_px", 0)
-                                            dy_pixel = _det.get("dy_px", 0)
-                                            est_dx_tiles = _det.get("dx_tiles", 0)
-                                            est_dy_tiles = _det.get("dy_tiles", 0)
-                                            tile_dist = _det.get("tile_dist", 0)
-                                            pixel_dist = _det.get("pixel_dist", 0.0)
-                                            if (not _char_detected) and _char_anchor_valid and _ui_update_ok:
-                                                self._schedule_boss_ui_log(
-                                                    f"🧭 캐릭터 보정 사용: {_char_anchor_source} dx={dx_pixel}px dy={dy_pixel}px",
-                                                    dedupe_key="boss-char-anchor-fallback",
-                                                    dedupe_window=0.6,
-                                                )
-
-                                            # 20타일 초과 → UI 요소 오탐, 무시
-                                            if tile_dist > 20:
-                                                if _ui_update_ok:
-                                                    self._schedule_boss_ui_log(
-                                                        f"⚠️ 보스 감지 무시 (거리={tile_dist}타일, dx={dx_pixel}px, dy={dy_pixel}px) — UI 오탐 추정",
-                                                        dedupe_key="boss-candidate-ignore",
-                                                        dedupe_window=0.8,
-                                                    )
-                                                _boss_found = False  # UI 오탐 → 감지 아님 처리
-
-                                            # 충분히 근접 → approaching
-                                            elif tile_dist <= 1 and pixel_dist <= 16:
-                                                _boss_chase_miss = 0
-                                                _boss_chasing = False
-                                                _clear_boss_patrol_recent_samples()
-                                                _clear_boss_chase_recent_samples()
-                                                boss_mode = "approaching"
-                                                boss_appr_miss = 0
-                                                stuck_count = 0
-                                                total_stuck_count = 0
-                                                last_dir = None
-                                                _clear_boss_patrol_route_cache()
-                                                current_path = []
-                                                path_index = 0
-                                                path_pos_index = {}
-                                                pathfinder.invalidate_path()
-                                                self._appr_dx3 = est_dx_tiles
-                                                self._appr_dy3 = est_dy_tiles
-                                                # 즉시 보스 스킬 사용
-                                                if boss_skill_enabled and boss_skill_key:
-                                                    try:
-                                                        get_input_controller().key_down(boss_skill_key)
-                                                        try:
-                                                            time.sleep(0.05)
-                                                        finally:
-                                                            get_input_controller().key_up(boss_skill_key)
-                                                        self._key_press_count += 1
-                                                        last_boss_skill_time = time.time()
-                                                    except Exception:
-                                                        pass
-                                                if _ui_update_ok:
-                                                    self._schedule_boss_ui_log(
-                                                        f"🎯 보스 근접! ({current_x},{current_y}) dx={dx_pixel}px dy={dy_pixel}px 거리={tile_dist}타일 {boss_approach_steps}회 → 접근 완료 (신뢰도={_res.confidence:.1%})",
-                                                        dedupe_key="boss-approach-complete",
-                                                        dedupe_window=0.5,
-                                                    )
-                                                prev_x, prev_y = current_x, current_y
-                                                time.sleep(0.05)
-                                                continue
-
-                                            else:
-                                                # ── 보스 추적: 추정 위치로 직행 (X/Y 둘 다 반영) ──
-                                                _boss_chase_miss = 0
-                                                _boss_chasing = True
-                                                _clear_boss_patrol_recent_samples()
-                                                _clear_boss_chase_recent_samples()
-                                                stuck_count = 0
-                                                total_stuck_count = 0
-                                                last_dir = None
-                                                _clear_boss_patrol_route_cache()
-                                                prev_x, prev_y = current_x, current_y
-                                                _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
-                                                    current_x,
-                                                    current_y,
-                                                    est_dx_tiles,
-                                                    est_dy_tiles,
-                                                    tile_dist,
-                                                )
-                                                if _ui_update_ok:
-                                                    self._schedule_boss_ui_log(
-                                                        f"🎯 보스 추적! dx={dx_pixel}px dy={dy_pixel}px ({current_x},{current_y})→({_chase_tx},{_chase_ty}) 거리={tile_dist}타일 ({boss_approach_steps}회)",
-                                                        dedupe_key="boss-chase-detect",
-                                                        dedupe_window=0.35,
-                                                    )
-                                                _move_target = (_chase_tx, _chase_ty)
+                                            continue
+                                        _enter_boss_chase_state(current_x, current_y, _move_target)
+                                        if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"🎯 보스 추적! dx={dx_pixel}px dy={dy_pixel}px ({current_x},{current_y})→({_move_target[0]},{_move_target[1]}) 거리={tile_dist}타일 ({boss_approach_steps}회)",
+                                                dedupe_key="boss-chase-detect",
+                                                dedupe_window=0.35,
+                                            )
                                 except Exception as _e:
                                     logger.debug(f"[순찰] 보스 이미지 검색 오류: {_e}")
 
                         _t_boss_ms = int((time.time() - _t_boss_start) * 1000)
 
-                        # 보스 미감지 시 카운트 감소
+                        if _boss_ui_noise_detected and _boss_chasing:
+                            _enter_boss_patrolling_state(clear_detect_hints=True, clear_patrol_samples=False, arm_noise_seconds=3.0)
+                            if _ui_update_ok:
+                                self._schedule_boss_ui_log(
+                                    f"🔄 UI 오탐 → 추적 해제, 순찰 유지 ({current_x},{current_y})",
+                                    dedupe_key="boss-ui-noise-chase-clear",
+                                    dedupe_window=0.8,
+                                )
+
                         if not _boss_found:
                             if boss_approach_steps > 0 and iteration % 20 == 0:
                                 boss_approach_steps = max(0, boss_approach_steps - 1)
 
-                        # ── 순찰 1바퀴 완료 체크 → 다음 경유지 ──
-                        # 보스 감지를 한 반복에서만 완료 판정 (감지 안 한 반복에서 넘어가면 보스 놓침)
-                        if not _boss_chasing and boss_patrol is not None and boss_patrol.is_completed and _check_boss_image:
-                            self._schedule_boss_ui_log(
-                                f"🔄 순찰 1바퀴 완료 ({current_x},{current_y}) 보스 없음 → 다음 경유지",
-                                dedupe_key="boss-patrol-complete",
-                                dedupe_window=1.0,
-                            )
-                            self._stop_event.wait(2.0)
-                            if not self._stop_event.is_set():
-                                self._run_boss_item_and_arrival_flow(
-                                    target_idx,
-                                    all_targets,
-                                    (current_x, current_y),
-                                    self._stop_event,
-                                    allow_item_loot=False,
-                                )
-                            _arm_boss_transition_cooldown(2.0)
-                            _clear_boss_patrol_route_cache()
-                            _prev_idx2 = target_idx
-                            target_idx += 1
-                            _clear_segment_completion_commit()
-                            if target_idx >= len(all_targets):
-                                self._boss_segment_active = False  # 리셋 (auto_save 차단 해제)
-                                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
-                                self._queue_normal_completion()
-                                return
-                            if self._stop_event.is_set():
-                                break
-                            self._stop_event.wait(0.5)
-                            # 보스 경유지(0,0)에서 나갈 때는 맵 저장 안 함 (오염 방지)
-                            # 맵핑테스트에서는 항상 저장 (맵 데이터 유실 방지)
-                            _prev_is_boss2 = all_targets[_prev_idx2][3] if len(all_targets[_prev_idx2]) > 3 else False
-                            if use_map and (not _prev_is_boss2 or _is_mapping_test) and not _no_save:
-                                if self._should_persist_segment_end(_prev_idx2):
-                                    self._game_map.end_pos = (current_x, current_y)
-                                else:
-                                    self._game_map.end_pos = None
-                            self._boss_segment_active = False
-                            if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss2 and not _is_mapping_test) or _no_save):
-                                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
-                                _arm_boss_transition_cooldown(3.0)
-                                self._stop_event.wait(0.05)
-                                continue
-                            pathfinder = SimplePathfinder(self._game_map)
-                            self._map_pathfinder = pathfinder
-                            target_x, target_y = _pick_target(target_idx)
-                            seg_name = all_targets[target_idx][2]
-                            prev_seg = all_targets[target_idx - 1][2]
-                            self._schedule_boss_ui_log(
-                                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
-                                dedupe_key="boss-next-segment",
-                                dedupe_window=1.0,
-                            )
-                            stuck_count = 0
-                            total_stuck_count = 0
-                            current_path = []
-                            path_index = 0
-                            path_pos_index = {}
-                            explored_from = {}
-                            edge_fail_counts.clear()
-                            blocked_dirs.clear()
-                            frontier_blocked_until.clear()
-                            _temporary_goal_detour = None
-                            _temporary_goal_detour_origin = None
-                            _pending_start_pos = None
-                            last_auto_save_passable = -1
-                            unknown_path_fails = 0
-                            last_dir = None
-                            recent_positions.clear()
-                            boss_mode = "exploring"
-                            boss_patrol = None
-                            explore_target = None
-                            explore_target_tries = 0
-                            probe_focus_target = None
-                            probe_focus_stall = 0
-                            explore_unreachable = set()
-                            _portal_protected.clear()
-                            frontier_cooldown.clear()
-                            boss_no_frontier_count = 0
-                            boss_approach_steps = 0
-                            boss_appr_miss = 0
-                            _boss_chasing = False
-                            _clear_boss_chase_recent_samples()
-                            _boss_chase_miss = 0
-                            patrol_skip_count = 0
-                            _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
-                            _segment_full_mapping_guard = bool(full_mapping_exploring)
-                            _segment_requires_full_completion = bool(
-                                _is_mapping_test and _mt_has_starts and (not _segment_map_locked) and
-                                (not _current_segment_map_complete())
-                            )
-                            _is_mapping_mode = _is_mapping_test or _mapping_guard_active()
-                            _log_resume_full_mapping_state()
-                            _local_explore_center = None
-                            _local_explore_radius = _local_explore_default_radius
-                            _phase2_best_dist = None
-                            _phase2_stall_count = 0
-                            _phase2_reprobe_count = 0
-                            _phase2_reprobe_requested = False
-                            _phase2_reprobe_reason = ""
-                            # _local_explore_phase는 full_mapping_exploring과 독립 (근처맵핑 ≠ 전체맵핑)
-                            is_boss_dungeon = all_targets[target_idx][3] or _local_explore_phase or _mapping_guard_active()
-                            if is_boss_dungeon:
-                                if _is_mapping_mode:
-                                    boss_pre_teleport = False
-                                    mapping_on = True
-                                    mark_portal_entry = True
-                                else:
-                                    boss_pre_teleport = True
-                                    mapping_on = False
-                                    mark_portal_entry = False
-                            else:
-                                boss_pre_teleport = False
-                                mapping_on = not _no_save
-                                mark_portal_entry = True
-                            if _segment_map_locked:
-                                mapping_on = False
-                            _arm_segment_transition_state(boss_pre_teleport, current_x, current_y)
-                            time.sleep(0.05)
-                            continue
-
                         # ── 목표 결정: 보스 추적 우선, 없으면 순찰 ──
                         if _boss_chasing:
                             _move_target = (_chase_tx, _chase_ty)
+                            _boss_debug_move_target = _move_target
                         else:
                             _move_target_raw = boss_patrol.get_next_target(current_pos_tuple)
                             if _move_target_raw is None:
                                 if boss_patrol.is_completed:
-                                    prev_x, prev_y = current_x, current_y
-                                    self._stop_event.wait(0.05)
+                                    _boss_complete_result = _complete_boss_segment(
+                                        (current_x, current_y),
+                                        _allow_item_loot=False,
+                                        _completion_log=f"🔄 순찰 1바퀴 완료 ({current_x},{current_y}) 보스 없음 → 다음 경유지",
+                                        _dedupe_key="boss-patrol-complete",
+                                    )
+                                    if _boss_complete_result == "completed":
+                                        return
+                                    if _boss_complete_result == "stopped":
+                                        break
                                     continue
                                 if _ui_update_ok:
                                     self._schedule_boss_ui_log(
@@ -10020,34 +10897,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                         dedupe_key="boss-patrol-empty",
                                         dedupe_window=0.8,
                                     )
-                                boss_mode = "exploring"
-                                boss_patrol = None
-                                _clear_boss_patrol_route_cache()
-                                _clear_boss_patrol_recent_samples()
-                                _clear_boss_chase_recent_samples()
-                                _boss_chasing = False
-                                _boss_chase_miss = 0
-                                stuck_count = 0
-                                total_stuck_count = 0
-                                last_dir = None
-                                current_path = []
-                                path_index = 0
-                                path_pos_index = {}
-                                explored_from = {}
-                                edge_fail_counts.clear()
-                                unknown_path_fails = 0
-                                boss_no_frontier_count = 0
-                                frontier_cooldown.clear()
-                                explore_unreachable = set()
-                                boss_approach_steps = 0
-                                boss_appr_miss = 0
-                                patrol_skip_count = 0
-                                explore_target = None
-                                explore_target_tries = 0
+                                _enter_boss_exploring_state()
                                 prev_x, prev_y = current_x, current_y
                                 self._stop_event.wait(0.05)
                                 continue
                             _move_target = (_move_target_raw[0], _move_target_raw[1])
+                            _boss_debug_move_target = _move_target
                             _record_boss_patrol_sample(current_pos_tuple, _move_target)
                             _patrol_flap = _detect_boss_patrol_flap()
                             if _patrol_flap is not None:
@@ -10068,9 +10923,31 @@ class GameModeDialog(ctk.CTkToplevel):
                         _remaining = 0
                         if _boss_chasing:
                             _record_boss_chase_sample(current_pos_tuple, _move_target)
+                            _chase_stall = _detect_boss_chase_stall()
+                            if _chase_stall is not None and not _boss_contact_confirmed and not _boss_skill_fired:
+                                _stall_pos, _stall_goal = _chase_stall
+                                _enter_boss_patrolling_state(clear_detect_hints=True, clear_patrol_samples=False, arm_noise_seconds=3.5)
+                                if _ui_update_ok:
+                                    self._schedule_boss_ui_log(
+                                        f"🔄 장거리 추적 정체 → 순찰 복귀 ({_stall_pos[0]},{_stall_pos[1]}) target=({_stall_goal[0]},{_stall_goal[1]})",
+                                        dedupe_key="boss-chase-stall-reset",
+                                        dedupe_window=0.8,
+                                    )
+                                self._stop_event.wait(0.05)
+                                continue
                             _chase_flap = _detect_boss_chase_flap()
                             if _chase_flap is not None:
                                 _osc_dir, _osc_to, _osc_goal = _chase_flap
+                                if not _boss_contact_confirmed and not _boss_skill_fired:
+                                    _enter_boss_patrolling_state(clear_detect_hints=True, clear_patrol_samples=False, arm_noise_seconds=3.5)
+                                    if _ui_update_ok:
+                                        self._schedule_boss_ui_log(
+                                            f"🔄 추적왕복 차단 → 순찰 복귀 ({current_x},{current_y}) {_osc_dir}→({_osc_to[0]},{_osc_to[1]}) target=({_osc_goal[0]},{_osc_goal[1]})",
+                                            dedupe_key="boss-chase-flap-reset",
+                                            dedupe_window=0.8,
+                                        )
+                                    self._stop_event.wait(0.05)
+                                    continue
                                 _register_dir_block(current_x, current_y, _osc_dir, iteration, ttl=12)
                                 current_path = []
                                 path_index = 0
@@ -10092,30 +10969,40 @@ class GameModeDialog(ctk.CTkToplevel):
                             for _ppx, _ppy in _portal_protected:
                                 if (_ppx, _ppy) != current_pos_tuple and (_ppx, _ppy) != _move_target:
                                     _chase_avoid.add((_ppx, _ppy))
-                            _chase_result = pathfinder.find_path(
-                                current_pos_tuple,
-                                _move_target,
-                                allow_unknown=True,
-                                stop_event=self._stop_event,
-                                max_iterations=5000,
-                                allow_soft_blocked=False,
-                                respect_blocked_edges=True,
-                                avoid_set=(_chase_avoid if _chase_avoid else None),
-                            )
-                            if not (_chase_result.found and _chase_result.directions):
+                            _direct_chase_dir, _direct_chase_target = _get_direct_boss_follow_step(_boss_debug_det, current_x, current_y)
+                            if _direct_chase_dir is not None and _direct_chase_target is not None:
+                                direction = _direct_chase_dir
+                                _remaining = 1
+                                _boss_debug_move_target = _direct_chase_target
+                                _boss_debug_direction = direction
+                                _boss_debug_remaining = _remaining
+                            else:
                                 _chase_result = pathfinder.find_path(
                                     current_pos_tuple,
                                     _move_target,
                                     allow_unknown=True,
                                     stop_event=self._stop_event,
                                     max_iterations=5000,
-                                    allow_soft_blocked=True,
+                                    allow_soft_blocked=False,
                                     respect_blocked_edges=True,
                                     avoid_set=(_chase_avoid if _chase_avoid else None),
                                 )
-                            direction = _chase_result.directions[0] if (_chase_result.found and _chase_result.directions) else None
-                            if direction:
-                                _remaining = max(0, len(_chase_result.path) - 1)
+                                if not (_chase_result.found and _chase_result.directions):
+                                    _chase_result = pathfinder.find_path(
+                                        current_pos_tuple,
+                                        _move_target,
+                                        allow_unknown=True,
+                                        stop_event=self._stop_event,
+                                        max_iterations=5000,
+                                        allow_soft_blocked=True,
+                                        respect_blocked_edges=True,
+                                        avoid_set=(_chase_avoid if _chase_avoid else None),
+                                    )
+                                direction = _chase_result.directions[0] if (_chase_result.found and _chase_result.directions) else None
+                                if direction:
+                                    _remaining = max(0, len(_chase_result.path) - 1)
+                                    _boss_debug_direction = direction
+                                    _boss_debug_remaining = _remaining
                         else:
                             _move_path_goal = _move_target
                             _active_patrol_detour = _get_active_goal_detour(_move_target, current_pos_tuple)
@@ -10135,11 +11022,10 @@ class GameModeDialog(ctk.CTkToplevel):
                                 _patrol_avoid.add(_move_target)
                             direction = None
                             if _boss_patrol_route:
-                                _cached_idx = _boss_patrol_route_index.get(current_pos_tuple)
-                                if _cached_idx is None or _cached_idx >= len(_boss_patrol_route) - 1:
+                                _cached_next, _cached_remaining = _get_boss_patrol_route_step(current_pos_tuple)
+                                if _cached_next is None:
                                     _clear_boss_patrol_route_cache()
                                 else:
-                                    _cached_next = _boss_patrol_route[_cached_idx + 1]
                                     _cached_dir = _direction_between(current_pos_tuple, _cached_next)
                                     if (
                                         _cached_dir is None or
@@ -10149,7 +11035,9 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _clear_boss_patrol_route_cache()
                                     else:
                                         direction = _cached_dir
-                                        _remaining = max(0, len(_boss_patrol_route) - _cached_idx - 1)
+                                        _remaining = max(0, int(_cached_remaining or 0))
+                                        _boss_debug_direction = direction
+                                        _boss_debug_remaining = _remaining
                             if direction is None:
                                 _patrol_result = pathfinder.find_path(
                                     current_pos_tuple,
@@ -10178,8 +11066,57 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _boss_patrol_route_goal = _move_path_goal
                                     _rebuild_boss_patrol_route_index()
                                     _remaining = max(0, len(_patrol_result.path) - 1)
+                                    _boss_debug_direction = direction
+                                    _boss_debug_remaining = _remaining
                                 else:
                                     _clear_boss_patrol_route_cache()
+                        if not _boss_chasing and boss_patrol is not None and boss_patrol.is_completed:
+                            _boss_complete_result = _complete_boss_segment(
+                                (current_x, current_y),
+                                _allow_item_loot=False,
+                                _completion_log=f"🔄 순찰 1바퀴 완료 ({current_x},{current_y}) 보스 없음 → 다음 경유지",
+                                _dedupe_key="boss-patrol-complete",
+                            )
+                            if _boss_complete_result == "completed":
+                                return
+                            if _boss_complete_result == "stopped":
+                                break
+                            continue
+                        if _ui_update_ok and (
+                            _boss_detect_attempted_now
+                            or (_boss_chasing and iteration % 3 == 0)
+                            or iteration % 5 == 0
+                            or direction is None
+                        ):
+                            self._schedule_boss_ui_log(
+                                self._build_boss_debug_snapshot(
+                                    boss_mode=boss_mode,
+                                    current_x=current_x,
+                                    current_y=current_y,
+                                    boss_patrol=boss_patrol,
+                                    boss_chasing=_boss_chasing,
+                                    boss_detect_attempted=_boss_detect_attempted_now,
+                                    boss_detect_interval=_boss_detect_interval,
+                                    boss_detect_ms=_t_boss_ms,
+                                    boss_visible=_boss_found,
+                                    boss_result=_boss_debug_res,
+                                    boss_det=_boss_debug_det,
+                                    move_target=_boss_debug_move_target,
+                                    direction=_boss_debug_direction,
+                                    remaining=_boss_debug_remaining,
+                                    boss_chase_miss=_boss_chase_miss,
+                                    boss_appr_miss=boss_appr_miss,
+                                    boss_steps=boss_approach_steps,
+                                    item_hint=self._has_recent_boss_item_hint(max_age_s=2.0),
+                                    force_loot=_boss_item_force_loot,
+                                    candidate_active=bool(_boss_buffer_hits),
+                                    ui_noise=_boss_ui_noise_detected,
+                                    contact_confirmed=_boss_contact_confirmed,
+                                    skill_fired=_boss_skill_fired,
+                                ),
+                                dedupe_key="boss-debug-patrolling",
+                                dedupe_window=0.12,
+                            )
                         if direction and not _boss_chasing:
                             patrol_skip_count = 0
 
@@ -10205,77 +11142,64 @@ class GameModeDialog(ctk.CTkToplevel):
                                     import pyautogui as _pag2
                                     import numpy as _np2
                                     import cv2 as _cv22
-                                    from ..analyzer.template_matcher import TemplateMatcher as _TM2
                                     _boss_ip = all_targets[target_idx][4] if len(all_targets[target_idx]) > 4 else None
                                     _char_ip = all_targets[target_idx][5] if len(all_targets[target_idx]) > 5 else None
                                     if _boss_ip and not self._stop_event.is_set():
+                                        _boss_region2 = self._get_waypoint_image_region(target_idx, "boss")
                                         _ss2 = _pag2.screenshot()
                                         _scr2 = _np2.array(_ss2)
                                         _scr2 = _cv22.cvtColor(_scr2, _cv22.COLOR_RGB2BGR)
-                                        _m2 = _TM2()
-                                        _r2 = _m2.match_binary(_scr2, _boss_ip, threshold=0.8)
+                                        _evidence2 = self._get_boss_frame_detector().detect_frame(
+                                            _scr2,
+                                            _boss_ip,
+                                            _char_ip,
+                                            search_region=_boss_region2,
+                                            full_screen_fallback=bool(_boss_region2),
+                                            force_full_screen=False,
+                                            relaxed_boss=False,
+                                            relaxed_char=False,
+                                            allow_screen_center_anchor=False,
+                                        )
+                                        _det2 = dict(_evidence2.raw_det or {})
                                         time.sleep(0)  # GIL 해제
-                                        if _r2.found:
+                                        _r2 = _evidence2.raw_result
+                                        if _r2 and _r2.found:
                                             _rechk_found = True
-                                            _sh2, _sw2 = _scr2.shape[:2]
-                                            _cpx2, _cpy2 = _sw2 // 2, _sh2 // 2
-                                            _char_det2 = False
-                                            if _char_ip:
-                                                try:
-                                                    _cr2 = _m2.match_binary(_scr2, _char_ip, threshold=0.8)
-                                                    time.sleep(0)  # GIL 해제
-                                                    if _cr2.found:
-                                                        _cpx2, _cpy2 = _cr2.center_x, _cr2.center_y
-                                                        _char_det2 = True
-                                                except Exception:
-                                                    pass
-                                            _dx2 = _r2.center_x - _cpx2
-                                            _dy2 = _r2.center_y - _cpy2
-                                            _edx2 = round(_dx2 / 44)
-                                            _edy2 = round(_dy2 / 44)
-                                            _td2 = abs(_edy2)  # X offset 무시 (UI NAME 고정)
+                                            _char_det2 = bool(_evidence2.char_found)
+                                            _anchor_ok2 = bool(_evidence2.anchor_valid)
+                                            _anchor_source2 = str(_evidence2.anchor_source or "")
+                                            _trusted_anchor2 = bool(_evidence2.trusted_anchor)
+                                            _dx2 = int(_evidence2.dx_px or 0)
+                                            _dy2 = int(_evidence2.dy_px or 0)
+                                            _edx2 = int(_evidence2.dx_tiles or 0)
+                                            _edy2 = int(_evidence2.dy_tiles or 0)
+                                            _td2 = int(_evidence2.tile_dist or 0)
+                                            _pix2 = float(_evidence2.pixel_dist or 0.0)
                                             if _td2 > 20:
                                                 # UI 오탐 — 재감지 무시
                                                 _rechk_found = False
-                                            elif _td2 <= 1 and _char_det2:
+                                            elif _trusted_anchor2 and (_char_det2 or _anchor_ok2) and _td2 <= APPROACH_TILE_MAX and _pix2 <= APPROACH_PIXEL_MAX:
                                                 # 추적 목표 근처에 도착 + 캐릭터 감지 확인 → approaching 진입
                                                 _at_target = (abs(current_x - _move_target[0]) + abs(current_y - _move_target[1])) <= 2
                                                 if _at_target:
-                                                    _boss_chase_miss = 0
-                                                    _boss_chasing = False
-                                                    _clear_boss_chase_recent_samples()
-                                                    boss_mode = "approaching"
-                                                    boss_appr_miss = 0
-                                                    stuck_count = 0
-                                                    total_stuck_count = 0
-                                                    last_dir = None
-                                                    current_path = []
-                                                    path_index = 0
-                                                    path_pos_index = {}
-                                                    pathfinder.invalidate_path()
-                                                    _clear_boss_patrol_route_cache()
-                                                    # X축 스캔 상태 초기화 (좌우 교대 탐색용)
-                                                    self._appr_x_step = 0
-                                                    self._appr_x_dir = 1  # 1=right, -1=left
-                                                    self._appr_x_max = 2  # 한 방향 최대 스텝
-                                                    if boss_skill_enabled and boss_skill_key:
-                                                        try:
-                                                            get_input_controller().key_down(boss_skill_key)
-                                                            try:
-                                                                time.sleep(0.05)
-                                                            finally:
-                                                                get_input_controller().key_up(boss_skill_key)
-                                                            self._key_press_count += 1
-                                                            last_boss_skill_time = time.time()
-                                                        except Exception:
-                                                            pass
-                                                    if _ui_update_ok:
-                                                        self._schedule_boss_ui_log(
-                                                            f"🎯 추적→접근! ({current_x},{current_y}) 거리={_td2}타일 → approaching",
-                                                            dedupe_key="boss-chase-to-approach",
-                                                            dedupe_window=0.4,
-                                                        )
-                                                    prev_x, prev_y = current_x, current_y
+                                                    _strict_contact2 = bool(_td2 <= CONTACT_TILE_MAX and _pix2 <= CONTACT_PIXEL_MAX)
+                                                    _enter_boss_approaching_state(
+                                                        current_x,
+                                                        current_y,
+                                                        dx_tiles=_edx2,
+                                                        dy_tiles=_edy2,
+                                                        contact_confirmed=_strict_contact2,
+                                                        start_skill=_strict_contact2,
+                                                        boss_result=_r2,
+                                                        boss_det=_det2,
+                                                        detect_ms=None,
+                                                        log_message=(
+                                                            f"🎯 추적→근접! ({current_x},{current_y}) 거리={_td2}타일 → approaching"
+                                                            if _strict_contact2 else
+                                                            f"🎯 추적→접근! ({current_x},{current_y}) 거리={_td2}타일 → 근접 정렬"
+                                                        ),
+                                                        debug_key="boss-debug-chase-approach-enter",
+                                                    )
                                                     time.sleep(0.05)
                                                     continue
                                                 else:
@@ -10318,16 +11242,16 @@ class GameModeDialog(ctk.CTkToplevel):
                                                         _rechk_found = False
                                                         self._boss_x_scan_dir *= -1  # 방향 전환
                                                         if _ui_update_ok:
-                                                            self._schedule_boss_ui_log(
-                                                                f"⚠️ Y근접({_td2}타일) X탐색 실패+우회불가",
-                                                                dedupe_key="boss-y-near-fail",
-                                                                dedupe_window=0.6,
-                                                            )
+                                                                    self._schedule_boss_ui_log(
+                                                                        f"⚠️ Y근접({_td2}타일) X탐색 실패+우회불가",
+                                                                        dedupe_key="boss-y-near-fail",
+                                                                        dedupe_window=0.6,
+                                                                    )
                                             else:
                                                 _chase_tx, _chase_ty = self._build_incremental_boss_chase_target(
                                                     current_x,
                                                     current_y,
-                                                    0,
+                                                    _edx2,
                                                     _edy2,
                                                     _td2,
                                                 )
@@ -10343,137 +11267,20 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if not _rechk_found and not self._stop_event.is_set():
                                     _boss_chase_miss += 1
                                     if _boss_chase_miss >= 15:
-                                        _boss_chasing = False
-                                        _clear_boss_chase_recent_samples()
-                                        _boss_chase_miss = 0
-                                        _clear_boss_patrol_route_cache()
-                                        _move_dist = abs(current_x - _move_target[0]) + abs(current_y - _move_target[1])
-                                        _arr_keys = all_targets[target_idx][6] if len(all_targets[target_idx]) > 6 else []
-                                        if _move_dist <= 1:
-                                            self._schedule_boss_ui_log(
-                                                f"✅ 보스 추적 종료! ({current_x},{current_y}) 재감지 실패 지속 → 다음 경유지 (키{len(_arr_keys)}개)",
-                                                dedupe_key="boss-chase-complete",
-                                                dedupe_window=1.0,
-                                            )
-                                            logger.info(f"[좌표모드] 보스 추적 종료 → 도착키 {len(_arr_keys)}개: {_arr_keys}")
-                                            self._stop_event.wait(2.0)
-                                            if not self._stop_event.is_set():
-                                                self._run_boss_item_and_arrival_flow(
-                                                    target_idx,
-                                                    all_targets,
-                                                    (current_x, current_y),
-                                                    self._stop_event,
-                                                    allow_item_loot=False,
-                                                )
-                                            _arm_boss_transition_cooldown(2.0)
-                                            _prev_idx = target_idx
-                                            target_idx += 1
-                                            _clear_segment_completion_commit()
-                                            if target_idx >= len(all_targets):
-                                                self._boss_segment_active = False
-                                                self._schedule_boss_ui_log("🎯 전체 완료!", dedupe_key="boss-final-complete", dedupe_window=1.0)
-                                                self._queue_normal_completion()
-                                                return
-                                            if self._stop_event.is_set():
-                                                break
-                                            self._stop_event.wait(0.5)
-                                            _prev_is_boss = all_targets[_prev_idx][3] if len(all_targets[_prev_idx]) > 3 else False
-                                            if use_map and (not _prev_is_boss or _is_mapping_test) and not _no_save:
-                                                if self._should_persist_segment_end(_prev_idx):
-                                                    self._game_map.end_pos = (current_x, current_y)
-                                                else:
-                                                    self._game_map.end_pos = None
-                                            self._boss_segment_active = False
-                                            if not self._switch_segment_map(target_idx, skip_save=(_prev_is_boss and not _is_mapping_test) or _no_save):
-                                                self._schedule_boss_ui_log("⚠️ 맵 구간 전환 실패", dedupe_key="boss-switch-fail", dedupe_window=1.0)
-                                                _arm_boss_transition_cooldown(3.0)
-                                                self._stop_event.wait(0.05)
-                                                continue
-                                            pathfinder = SimplePathfinder(self._game_map)
-                                            self._map_pathfinder = pathfinder
-                                            target_x, target_y = _pick_target(target_idx)
-                                            seg_name = all_targets[target_idx][2]
-                                            self._schedule_boss_ui_log(
-                                                f"▶ 다음 경유지: [{seg_name}] ({target_idx}/{len(all_targets)})",
-                                                dedupe_key="boss-next-segment",
-                                                dedupe_window=1.0,
-                                            )
-                                            stuck_count = 0
-                                            total_stuck_count = 0
-                                            current_path = []
-                                            path_index = 0
-                                            path_pos_index = {}
-                                            explored_from = {}
-                                            edge_fail_counts.clear()
-                                            blocked_dirs.clear()
-                                            frontier_blocked_until.clear()
-                                            _temporary_goal_detour = None
-                                            _temporary_goal_detour_origin = None
-                                            _pending_start_pos = None
-                                            last_auto_save_passable = -1
-                                            unknown_path_fails = 0
-                                            last_dir = None
-                                            recent_positions.clear()
-                                            _portal_protected.clear()
-                                            boss_no_frontier_count = 0
-                                            boss_mode = "exploring"
-                                            boss_patrol = None
-                                            explore_target = None
-                                            explore_target_tries = 0
-                                            probe_focus_target = None
-                                            probe_focus_stall = 0
-                                            explore_unreachable = set()
-                                            frontier_cooldown.clear()
-                                            boss_approach_steps = 0
-                                            boss_appr_miss = 0
-                                            _boss_chasing = False
-                                            _clear_boss_chase_recent_samples()
-                                            _boss_chase_miss = 0
-                                            patrol_skip_count = 0
-                                            _mt_has_starts, _segment_map_locked, full_mapping_exploring, _local_explore_phase, _resume_full_mapping = _compute_mapping_modes(target_idx)
-                                            _segment_full_mapping_guard = bool(full_mapping_exploring)
-                                            _segment_requires_full_completion = bool(
-                                                _is_mapping_test and _mt_has_starts and (not _segment_map_locked) and
-                                                (not _current_segment_map_complete())
-                                            )
-                                            _is_mapping_mode = _is_mapping_test or _mapping_guard_active()
-                                            _log_resume_full_mapping_state()
-                                            _local_explore_center = None
-                                            _local_explore_radius = _local_explore_default_radius
-                                            _phase2_best_dist = None
-                                            _phase2_stall_count = 0
-                                            _phase2_reprobe_count = 0
-                                            _phase2_reprobe_requested = False
-                                            _phase2_reprobe_reason = ""
-                                            is_boss_dungeon = all_targets[target_idx][3] or _local_explore_phase or _mapping_guard_active()
-                                            if is_boss_dungeon:
-                                                if _is_mapping_mode:
-                                                    boss_pre_teleport = False
-                                                    mapping_on = True
-                                                    mark_portal_entry = True
-                                                else:
-                                                    boss_pre_teleport = True
-                                                    mapping_on = False
-                                                    mark_portal_entry = False
-                                            else:
-                                                boss_pre_teleport = False
-                                                mapping_on = not _no_save
-                                                mark_portal_entry = True
-                                            if _segment_map_locked:
-                                                mapping_on = False
-                                            _arm_segment_transition_state(boss_pre_teleport, current_x, current_y)
-                                            time.sleep(0.05)
-                                            continue
-                                        boss_mode = "patrolling"
+                                        _enter_boss_patrolling_state(clear_detect_hints=True, clear_patrol_samples=False, arm_noise_seconds=None)
                                         if _ui_update_ok:
+                                            self._schedule_boss_ui_log(
+                                                f"🔄 보스 추적 종료! ({current_x},{current_y}) 재감지 실패 지속 → 순찰 복귀",
+                                                dedupe_key="boss-chase-reset",
+                                                dedupe_window=0.8,
+                                            )
                                             self._schedule_boss_ui_log(
                                                 f"🔍 보스 미감지 → 기존 순찰 재개 ({current_x},{current_y})",
                                                 dedupe_key="boss-repatrol",
                                                 dedupe_window=0.7,
                                             )
-                                        stuck_count = 0
-                                        total_stuck_count = 0
-                                        last_dir = None
+                                        self._stop_event.wait(0.05)
+                                        continue
                                     else:
                                         if _ui_update_ok:
                                             self._schedule_boss_ui_log(
@@ -10495,23 +11302,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                 patrol_total = len(self._game_map.patrol_points)
                                 skip_threshold = min(patrol_total, 15)
                                 if patrol_skip_count >= skip_threshold and patrol_total > 0:
-                                    boss_mode = "exploring"
-                                    boss_patrol = None
-                                    _clear_boss_patrol_route_cache()
-                                    _boss_chasing = False
-                                    _clear_boss_chase_recent_samples()
-                                    _boss_chase_miss = 0
-                                    last_dir = None
-                                    stuck_count = 0
-                                    total_stuck_count = 0
-                                    patrol_skip_count = 0
-                                    explore_target = None
-                                    explore_target_tries = 0
-                                    explore_unreachable = set()
-                                    frontier_cooldown.clear()
-                                    explored_from = {}
-                                    edge_fail_counts.clear()
-                                    unknown_path_fails = 0
+                                    _enter_boss_exploring_state()
                                     boss_no_frontier_count = 0
                                     boss_approach_steps = 0
                                     boss_appr_miss = 0
@@ -10607,12 +11398,15 @@ class GameModeDialog(ctk.CTkToplevel):
                             dedupe_window=0.25,
                         )
 
-                    _t_path_ms = int((time.time() - _t_iter_start) * 1000) - _t_ocr_ms - _t_boss_ms
+                    _t_path_ms = max(0, int((time.time() - _t_iter_start) * 1000) - _t_ocr_ms - _t_boss_ms)
                     _t_key_start = time.time()
                     _last_probe_target = _pending_probe_target
                     _last_move_target = _move_target
                     _last_move_mode = boss_mode
-                    press_key(direction)
+                    if _boss_chasing or boss_mode == "approaching":
+                        self._press_boss_follow_key(direction, stop_event=self._stop_event)
+                    else:
+                        press_key(direction)
                     _arm_step_watchdog(f"boss-{boss_mode}", (current_x, current_y), direction, _move_target)
                     _t_key_ms = int((time.time() - _t_key_start) * 1000)
                     _t_iter_total = int((time.time() - _t_iter_start) * 1000)
@@ -11374,7 +12168,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(bosstest_inner, text="👹 보스 테스트",
                      font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(bosstest_inner, text="테스트 시작 후 게임을 다시 활성화하면 보스를 찾아 실제로 붙습니다",
+        ctk.CTkLabel(bosstest_inner, text="실화면 검출을 메인으로 사용합니다. 자가검사는 템플릿 파일 확인용 보조 기능입니다",
                      font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(anchor="w")
 
         bosstest_boss_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
@@ -11390,6 +12184,19 @@ class GameModeDialog(ctk.CTkToplevel):
         ).pack(side="left", padx=(5, 0))
         self._bosstest_boss_preview = ctk.CTkLabel(bosstest_boss_row, text="없음", width=48, height=28)
         self._bosstest_boss_preview.pack(side="left", padx=(8, 0))
+        bosstest_ocr_row = ctk.CTkFrame(bosstest_inner, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        bosstest_ocr_row.pack(fill="x", pady=(6, 0))
+        self._bosstest_boss_ocr_label = ctk.CTkLabel(
+            bosstest_ocr_row,
+            text="보스 OCR: -",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#f2f2f2",
+            anchor="w",
+            justify="left",
+            cursor="hand2",
+        )
+        self._bosstest_boss_ocr_label.pack(fill="x", padx=10, pady=8)
+        self._bosstest_boss_ocr_label.bind("<Button-1>", lambda _event: self._copy_bosstest_result_text())
 
         bosstest_char_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
         bosstest_char_row.pack(fill="x", pady=(6, 0))
@@ -11422,16 +12229,47 @@ class GameModeDialog(ctk.CTkToplevel):
         bosstest_result_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
         bosstest_result_row.pack(fill="x", pady=(8, 0))
         self._bosstest_button = ctk.CTkButton(
-            bosstest_result_row, text="테스트", width=70, height=28,
+            bosstest_result_row, text="실화면 테스트", width=100, height=28,
             font=ctk.CTkFont(size=11), fg_color="#5e81ac", hover_color="#6e91bc",
             command=self._bosstest_run
         )
         self._bosstest_button.pack(side="left")
+        self._bosstest_cont_button = ctk.CTkButton(
+            bosstest_result_row, text="연속 테스트", width=90, height=28,
+            font=ctk.CTkFont(size=11), fg_color="#4c7a5a", hover_color="#5a8b69",
+            command=self._bosstest_run_continuous
+        )
+        self._bosstest_cont_button.pack(side="left", padx=(5, 0))
+        self._bosstest_failsave_button = ctk.CTkButton(
+            bosstest_result_row, text="실패 저장", width=80, height=28,
+            font=ctk.CTkFont(size=11), fg_color="#8f3f71", hover_color="#a34f83",
+            command=self._bosstest_save_failure_frame
+        )
+        self._bosstest_failsave_button.pack(side="left", padx=(5, 0))
+        self._bosstest_selfcheck_button = ctk.CTkButton(
+            bosstest_result_row, text="자가검사", width=80, height=28,
+            font=ctk.CTkFont(size=11), fg_color="#4c566a", hover_color="#5c667a",
+            command=self._bosstest_run_self_check
+        )
+        self._bosstest_selfcheck_button.pack(side="left", padx=(5, 0))
+        self._bosstest_copy_button = ctk.CTkButton(
+            bosstest_result_row, text="결과복사", width=84, height=28,
+            font=ctk.CTkFont(size=11), fg_color="#5c667a", hover_color="#6c768a",
+            command=self._copy_bosstest_result_text
+        )
+        self._bosstest_copy_button.pack(side="left", padx=(5, 0))
         self._bosstest_result_label = ctk.CTkLabel(
             bosstest_result_row, text="결과: -",
             font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"],
-            anchor="w", justify="left", wraplength=820)
+            anchor="w", justify="left", wraplength=820, cursor="hand2")
         self._bosstest_result_label.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self._bosstest_result_label.bind("<Button-1>", lambda _event: self._copy_bosstest_result_text())
+        self._bosstest_last_result_text = "결과: -"
+
+        bosstest_preview_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
+        bosstest_preview_row.pack(fill="x", pady=(6, 0))
+        self._bosstest_preview_label = ctk.CTkLabel(bosstest_preview_row, text="")
+        self._bosstest_preview_label.pack(side="left")
 
         itemtest_result_row = ctk.CTkFrame(bosstest_inner, fg_color="transparent")
         itemtest_result_row.pack(fill="x", pady=(6, 0))
@@ -13533,12 +14371,12 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.error(f"[미니맵] 키 입력 오류: {e}")
 
     def _press_boss_follow_key(self, direction: str, stop_event=None):
-        """보스 추적 전용 입력: 일반 이동보다 2배 강하게 붙기"""
+        """보스 추적 전용 입력: 일반 이동보다 촘촘하게 붙기"""
         key = self._config.move_keys.get(direction, direction)
         import pyautogui
         smooth_move = bool(getattr(self._config, 'smooth_move', False))
         interval = float(getattr(self._config, 'analysis_interval', 0.1) or 0.1)
-        follow_interval = max(0.02, interval * 2.0)
+        follow_interval = max(0.02, interval * 0.8)
 
         if not self._pyautogui_lock.acquire(timeout=0.3):
             # 다른 입력 스레드에 막혀 보스 테스트가 멈추는 현상 방지
@@ -13567,13 +14405,14 @@ class GameModeDialog(ctk.CTkToplevel):
                         time.sleep(0.005)
                 else:
                     get_input_controller().press(key)
+                    time.sleep(0.008)
                     get_input_controller().press(key)
                     self._key_press_count += 2
                     sleep_until = time.time() + follow_interval
                     while time.time() < sleep_until:
                         if stop_event is not None and stop_event.is_set():
                             break
-                        time.sleep(0.02)
+                        time.sleep(0.01)
             finally:
                 pyautogui.PAUSE = original_pause
         finally:
@@ -14816,6 +15655,107 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception:
             return str(path or '')
 
+    def _format_image_search_region(self, region) -> str:
+        if region and len(region) == 4:
+            return f"({region[0]}, {region[1]}) ~ ({region[2]}, {region[3]})"
+        return "전체화면"
+
+    def _resolve_template_image_path(self, image_path: str) -> str:
+        _raw = str(image_path or '').strip()
+        if not _raw:
+            return ''
+        _normalized = self._normalize_path_text(_raw)
+        if _normalized and Path(_normalized).exists():
+            return str(Path(_normalized))
+        _base = Path(_raw).name
+        if not _base:
+            return _raw
+        _template_candidate = DATA_DIR / 'templates' / _base
+        if _template_candidate.exists():
+            return str(_template_candidate)
+        return _raw
+
+    def _get_default_boss_preset_region(self):
+        for _preset in list_image_presets('boss', existing_only=False):
+            _region = _preset.get("region")
+            if isinstance(_region, (list, tuple)) and len(_region) == 4:
+                return [int(v) for v in _region]
+        return None
+
+    @staticmethod
+    def _normalize_confidence_value(value, *, default=None):
+        try:
+            if value is None:
+                return default
+            _conf = float(value)
+            if _conf > 1.0:
+                _conf /= 100.0
+            return max(0.1, min(0.99, _conf))
+        except Exception:
+            return default
+
+    def _get_boss_image_visual_threshold(self, image_path: str, *, default=None):
+        _preset = get_image_preset('boss', path=image_path)
+        if _preset:
+            _preset_conf = self._normalize_confidence_value(_preset.get("confidence"), default=None)
+            if _preset_conf is not None:
+                return _preset_conf
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        _normalized_path = self._normalize_path_text(image_path)
+        for wp in waypoints:
+            if len(wp) < 4 or not isinstance(wp[3], dict):
+                continue
+            _cfg = wp[3]
+            if self._normalize_path_text(_cfg.get('target_image', '')) != _normalized_path:
+                continue
+            _cfg_conf = self._normalize_confidence_value(_cfg.get("confidence"), default=None)
+            if _cfg_conf is not None:
+                return _cfg_conf
+        return default
+
+    def _ensure_image_preset_link(self, kind: str, image_path: str, *, default_region=None):
+        _resolved_path = self._resolve_template_image_path(image_path)
+        if not _resolved_path:
+            return '', None, False
+        _preset = get_image_preset(kind, path=_resolved_path)
+        if not _preset:
+            _base = Path(_resolved_path).name.lower()
+            for _item in list_image_presets(kind, existing_only=False):
+                if Path(str(_item.get('path', ''))).name.lower() == _base:
+                    _preset = _item
+                    break
+        _created = False
+        if not _preset and Path(_resolved_path).exists():
+            _preset_name = self._make_unique_image_preset_name(kind, Path(_resolved_path).stem)
+            _region = None
+            if kind == 'boss' and isinstance(default_region, (list, tuple)) and len(default_region) == 4:
+                _region = [int(v) for v in default_region]
+            upsert_image_preset(kind, _preset_name, _resolved_path, region=_region)
+            _preset = get_image_preset(kind, path=_resolved_path) or get_image_preset(kind, name=_preset_name)
+            _created = True
+        if _preset:
+            return str(_preset.get('path', '') or _resolved_path), _preset, _created
+        return _resolved_path, None, _created
+
+    @staticmethod
+    def _normalize_screen_region(region, screen_shape):
+        try:
+            if not region or len(region) != 4:
+                return None
+            _h, _w = screen_shape[:2]
+            _x1, _y1, _x2, _y2 = [int(v) for v in region]
+            _x0, _x1 = sorted((_x1, _x2))
+            _y0, _y1 = sorted((_y1, _y2))
+            _x0 = max(0, min(_w - 1, _x0))
+            _y0 = max(0, min(_h - 1, _y0))
+            _x1 = max(0, min(_w, _x1))
+            _y1 = max(0, min(_h, _y1))
+            if (_x1 - _x0) < 2 or (_y1 - _y0) < 2:
+                return None
+            return (_x0, _y0, _x1, _y1)
+        except Exception:
+            return None
+
     def _get_waypoint_image_path(self, idx: int, kind: str) -> str:
         waypoints = getattr(self._config, 'waypoints', []) or []
         if idx < 0 or idx >= len(waypoints):
@@ -14829,22 +15769,212 @@ class GameModeDialog(ctk.CTkToplevel):
             return str(wp[3].get('item_image', '') or '')
         return str(wp[3].get('character_image', '') or '')
 
+    def _get_waypoint_image_region(self, idx: int, kind: str):
+        _path = self._get_waypoint_image_path(idx, kind)
+        if _path:
+            _preset = get_image_preset(kind, path=_path)
+            if _preset:
+                _region = _preset.get("region")
+                if isinstance(_region, (list, tuple)) and len(_region) == 4:
+                    return [int(v) for v in _region]
+        # backward compatibility for legacy waypoint-local field
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx < 0 or idx >= len(waypoints):
+            return None
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return None
+        if kind == 'boss':
+            _legacy_region = wp[3].get('target_image_region')
+            if isinstance(_legacy_region, (list, tuple)) and len(_legacy_region) == 4:
+                return [int(v) for v in _legacy_region]
+        return None
+
+    def _apply_boss_preset_region_to_waypoints(self, image_path: str, region):
+        _normalized_path = self._normalize_path_text(image_path)
+        if not _normalized_path:
+            return []
+        _region = [int(v) for v in region] if isinstance(region, (list, tuple)) and len(region) == 4 else None
+        changed_indices = []
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        for idx, wp in enumerate(waypoints):
+            if len(wp) < 4 or not isinstance(wp[3], dict):
+                continue
+            if self._normalize_path_text(wp[3].get('target_image', '')) != _normalized_path:
+                continue
+            _current_region = wp[3].get('target_image_region')
+            _current_norm = [int(v) for v in _current_region] if isinstance(_current_region, (list, tuple)) and len(_current_region) == 4 else None
+            if _region is not None:
+                if _current_norm != _region:
+                    wp[3]['target_image_region'] = list(_region)
+                    changed_indices.append(idx)
+            else:
+                if 'target_image_region' in wp[3]:
+                    wp[3].pop('target_image_region', None)
+                    changed_indices.append(idx)
+        return changed_indices
+
+    def _replace_all_boss_images_with_preset(self, image_path: str, *, confidence: float = 0.70):
+        _resolved_path = self._resolve_template_image_path(image_path)
+        if not _resolved_path:
+            return []
+        _normalized_path = self._normalize_path_text(_resolved_path)
+        _boss_presets = list_image_presets('boss', existing_only=False)
+        _default_region = self._get_default_boss_preset_region()
+        _active_preset = get_image_preset('boss', path=_resolved_path)
+        _region = None
+        if _active_preset and isinstance(_active_preset.get("region"), (list, tuple)) and len(_active_preset.get("region", [])) == 4:
+            _region = [int(v) for v in _active_preset["region"]]
+        elif isinstance(_default_region, (list, tuple)) and len(_default_region) == 4:
+            _region = [int(v) for v in _default_region]
+        _confidence = self._normalize_confidence_value(confidence, default=0.70) or 0.70
+
+        _active_name = None
+        if _active_preset:
+            _active_name = str(_active_preset.get("name", "")).strip() or None
+        if not _active_name:
+            _active_name = self._make_unique_image_preset_name('boss', Path(_resolved_path).stem)
+        upsert_image_preset('boss', _active_name, _resolved_path, confidence=_confidence, region=_region)
+        set_image_preset_confidence('boss', path=_resolved_path, confidence=_confidence)
+        if _region is not None:
+            set_image_preset_region('boss', path=_resolved_path, region=_region)
+
+        _legacy_paths = {self._normalize_path_text(_resolved_path)}
+        for _preset in _boss_presets:
+            _preset_path = str(_preset.get('path', '')).strip()
+            if not _preset_path:
+                continue
+            _legacy_paths.add(self._normalize_path_text(_preset_path))
+
+        changed_indices = []
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        for idx, wp in enumerate(waypoints):
+            if len(wp) < 4 or not isinstance(wp[3], dict):
+                continue
+            _cfg = wp[3]
+            _target_image = str(_cfg.get('target_image', '') or '').strip()
+            if not _target_image:
+                continue
+            if self._normalize_path_text(_target_image) not in _legacy_paths:
+                continue
+            _changed = False
+            if self._normalize_path_text(_target_image) != _normalized_path:
+                _cfg['target_image'] = _resolved_path
+                _changed = True
+            _current_conf = self._normalize_confidence_value(_cfg.get('confidence'), default=None)
+            if _current_conf != _confidence:
+                _cfg['confidence'] = _confidence
+                _changed = True
+            if _region is not None:
+                _current_region = _cfg.get('target_image_region')
+                _current_region = [int(v) for v in _current_region] if isinstance(_current_region, (list, tuple)) and len(_current_region) == 4 else None
+                if _current_region != _region:
+                    _cfg['target_image_region'] = list(_region)
+                    _changed = True
+            elif 'target_image_region' in _cfg:
+                _cfg.pop('target_image_region', None)
+                _changed = True
+            if _changed:
+                changed_indices.append(idx)
+
+        for _preset in _boss_presets:
+            _preset_name = str(_preset.get('name', '')).strip()
+            _preset_path = self._normalize_path_text(_preset.get('path', ''))
+            if not _preset_name or _preset_path == _normalized_path:
+                continue
+            remove_image_preset('boss', _preset_name)
+        return changed_indices
+
+    def _repair_existing_boss_waypoint_links(self):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        _default_region = self._get_default_boss_preset_region()
+        changed_indices = []
+        for idx, wp in enumerate(waypoints):
+            if len(wp) < 4 or not isinstance(wp[3], dict):
+                continue
+            _img_cfg = wp[3]
+            _target_image = str(_img_cfg.get('target_image', '') or '').strip()
+            if not _target_image:
+                continue
+            _legacy_region = _img_cfg.get('target_image_region')
+            _seed_region = _legacy_region if isinstance(_legacy_region, (list, tuple)) and len(_legacy_region) == 4 else _default_region
+            _resolved_path, _preset, _created = self._ensure_image_preset_link('boss', _target_image, default_region=_seed_region)
+            if _preset is None:
+                continue
+            _target_norm = self._normalize_path_text(_target_image)
+            _resolved_norm = self._normalize_path_text(_resolved_path)
+            if _target_norm != _resolved_norm:
+                _img_cfg['target_image'] = _resolved_path
+                changed_indices.append(idx)
+            _preset_region = _preset.get("region")
+            if isinstance(_preset_region, (list, tuple)) and len(_preset_region) == 4:
+                _normalized_region = [int(v) for v in _preset_region]
+                _current_region = _img_cfg.get('target_image_region')
+                _current_normalized = [int(v) for v in _current_region] if isinstance(_current_region, (list, tuple)) and len(_current_region) == 4 else None
+                if _current_normalized != _normalized_region:
+                    _img_cfg['target_image_region'] = list(_normalized_region)
+                    changed_indices.append(idx)
+            elif _created and isinstance(_seed_region, (list, tuple)) and len(_seed_region) == 4:
+                _img_cfg['target_image_region'] = [int(v) for v in _seed_region]
+                changed_indices.append(idx)
+        if changed_indices:
+            self._save_config()
+            for _idx in sorted(set(changed_indices)):
+                self._update_card_image_status(_idx)
+        return changed_indices
+
     def _set_waypoint_image_path(self, idx: int, kind: str, image_path: str):
         wp, img_cfg = self._ensure_waypoint_image_cfg(idx)
         if img_cfg is None:
             return
+        changed_indices = []
         if kind == 'boss':
-            img_cfg['target_image'] = image_path
+            _resolved_path = self._resolve_template_image_path(image_path)
+            _preset = get_image_preset(kind, path=_resolved_path)
+            _region = _preset.get("region") if _preset else self._get_default_boss_preset_region()
+            upsert_image_preset(kind, Path(_resolved_path).stem, _resolved_path, confidence=0.70, region=_region)
+            changed_indices = self._replace_all_boss_images_with_preset(_resolved_path, confidence=0.70)
+            img_cfg['target_image'] = _resolved_path
             img_cfg.setdefault('target_images', [])
-            img_cfg.setdefault('confidence', 0.65)
+            img_cfg['confidence'] = 0.70
             img_cfg.setdefault('search_radius', 0)
             img_cfg.setdefault('action_x', None)
             img_cfg.setdefault('action_y', None)
             img_cfg.setdefault('move_mouse_before_search', False)
+            if isinstance(_region, (list, tuple)) and len(_region) == 4:
+                img_cfg['target_image_region'] = [int(v) for v in _region]
+            else:
+                img_cfg.pop('target_image_region', None)
         elif kind == 'item':
             img_cfg['item_image'] = image_path
         else:
             img_cfg['character_image'] = image_path
+        self._save_config()
+        for _idx in sorted(set(changed_indices + [idx])):
+            self._update_card_image_status(_idx)
+
+    def _set_waypoint_image_region(self, idx: int, kind: str, region):
+        wp, img_cfg = self._ensure_waypoint_image_cfg(idx)
+        if img_cfg is None:
+            return
+        if kind == 'boss':
+            img_cfg['target_image_region'] = [int(v) for v in region] if region and len(region) == 4 else None
+            self._save_config()
+            self._update_card_image_status(idx)
+
+    def _clear_waypoint_image_region(self, idx: int, kind: str):
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        if idx < 0 or idx >= len(waypoints):
+            return
+        wp = waypoints[idx]
+        if len(wp) < 4 or not isinstance(wp[3], dict):
+            return
+        if kind == 'boss':
+            wp[3].pop('target_image_region', None)
+        if not wp[3]:
+            wp[3] = None
+            while len(wp) > 3 and wp[-1] is None:
+                wp.pop()
         self._save_config()
         self._update_card_image_status(idx)
 
@@ -14864,6 +15994,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 'action_x',
                 'action_y',
                 'move_mouse_before_search',
+                'target_image_region',
             ]:
                 wp[3].pop(key, None)
         elif kind == 'item':
@@ -14929,6 +16060,27 @@ class GameModeDialog(ctk.CTkToplevel):
         list_frame = ctk.CTkScrollableFrame(dlg, fg_color=COLORS['bg_dark'], height=360)
         list_frame.pack(fill='both', expand=True, padx=10, pady=(10, 5))
         row_refs = {}
+        region_label = None
+
+        def get_active_preset():
+            current_path = self._normalize_path_text(current_path_getter())
+            if selected_name:
+                _preset = get_image_preset(kind, name=selected_name)
+                if _preset:
+                    return _preset
+            if current_path:
+                return get_image_preset(kind, path=current_path)
+            return None
+
+        def refresh_region_label():
+            if region_label is None:
+                return
+            _preset = get_active_preset()
+            _region = _preset.get("region") if _preset else None
+            region_label.configure(
+                text=f"범위: {self._format_image_search_region(_region)}",
+                text_color=COLORS["accent"] if _region else COLORS["text_secondary"],
+            )
 
         def refresh_rows():
             nonlocal selected_name, row_refs
@@ -14941,10 +16093,18 @@ class GameModeDialog(ctk.CTkToplevel):
                 selected_name = None
 
             current_path = self._normalize_path_text(current_path_getter())
+            if not selected_name and current_path:
+                _current_preset = next(
+                    (item for item in presets if self._normalize_path_text(item.get('path', '')) == current_path),
+                    None,
+                )
+                if _current_preset:
+                    selected_name = str(_current_preset.get('name', '')).strip() or None
 
             def refresh_selection():
                 for _name, data in row_refs.items():
                     data['row'].configure(fg_color='#213246' if _name == selected_name else COLORS['bg_card'])
+                refresh_region_label()
 
             def select_item(_name):
                 nonlocal selected_name
@@ -14971,6 +16131,8 @@ class GameModeDialog(ctk.CTkToplevel):
             for item in presets:
                 preset_name = str(item.get('name', '')).strip()
                 preset_path = str(item.get('path', '')).strip()
+                preset_region = item.get("region")
+                region_badge = None
                 row = ctk.CTkFrame(list_frame, fg_color=COLORS['bg_card'], corner_radius=6, height=46)
                 row.pack(fill='x', padx=4, pady=3)
                 row.pack_propagate(False)
@@ -14994,7 +16156,17 @@ class GameModeDialog(ctk.CTkToplevel):
                     text_color=COLORS['text_primary'],
                     anchor='w',
                 )
-                name_label.pack(side='left', fill='x', expand=True, padx=(0, 8))
+                name_label.pack(side='left', fill='x', expand=True, padx=(0, 4))
+
+                if kind == 'boss':
+                    region_badge = ctk.CTkLabel(
+                        row,
+                        text=self._format_image_search_region(preset_region),
+                        font=ctk.CTkFont(size=10),
+                        text_color=COLORS["accent"] if preset_region else COLORS["text_secondary"],
+                        anchor='e',
+                    )
+                    region_badge.pack(side='right', padx=(0, 8))
 
                 active = bool(current_path and self._normalize_path_text(preset_path) == current_path)
                 apply_btn = ctk.CTkButton(
@@ -15010,14 +16182,17 @@ class GameModeDialog(ctk.CTkToplevel):
                 apply_btn.pack(side='right', padx=(4, 8))
 
                 row_refs[preset_name] = {'row': row, 'apply_btn': apply_btn}
-                for widget in (row, thumb, name_label):
+                bind_widgets = [row, thumb, name_label]
+                if region_badge is not None:
+                    bind_widgets.append(region_badge)
+                for widget in bind_widgets:
                     widget.bind('<Button-1>', lambda _e, n=preset_name: select_item(n))
             refresh_selection()
 
         def add_image():
             nonlocal selected_name
             image_path = filedialog.askopenfilename(
-                title=f'{title} 선택',
+                title=f'{dialog_title} 선택',
                 filetypes=[
                     ('이미지 파일', '*.png *.jpg *.jpeg *.bmp *.gif'),
                     ('모든 파일', '*.*'),
@@ -15056,9 +16231,93 @@ class GameModeDialog(ctk.CTkToplevel):
         btn_row.pack(fill='x', padx=10, pady=(0, 10))
         ctk.CTkButton(btn_row, text='이미지등록', width=90, height=30, command=add_image).pack(side='left')
         ctk.CTkButton(btn_row, text='이미지삭제', width=90, height=30, command=delete_image).pack(side='left', padx=6)
+        if kind == 'boss':
+            def _select_image_region():
+                from .analyzer_view import ScreenRegionSelector
+
+                _preset = get_active_preset()
+                if not _preset:
+                    logger.info("[좌표모드] 보스 이미지 범위를 지정하려면 먼저 보스 이미지를 선택하세요")
+                    return
+                existing_region = _preset.get("region")
+                dlg.withdraw()
+
+                def on_region_select(x1, y1, x2, y2):
+                    _region = [x1, y1, x2, y2]
+                    try:
+                        set_image_preset_region(kind, name=str(_preset.get("name", "")).strip(), region=_region)
+                        _changed = self._apply_boss_preset_region_to_waypoints(str(_preset.get("path", "")).strip(), _region)
+                        if _changed:
+                            self._save_config()
+                            for _idx in sorted(set(_changed)):
+                                self._update_card_image_status(_idx)
+                    finally:
+                        refresh_rows()
+                        dlg.deiconify()
+                        dlg.grab_set()
+                        dlg.focus_force()
+
+                def on_cancel():
+                    dlg.deiconify()
+                    dlg.grab_set()
+                    dlg.focus_force()
+
+                self.after(100, lambda: ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region))
+
+            def _clear_image_region():
+                _preset = get_active_preset()
+                if not _preset:
+                    return
+                set_image_preset_region(kind, name=str(_preset.get("name", "")).strip(), region=None)
+                _changed = self._apply_boss_preset_region_to_waypoints(str(_preset.get("path", "")).strip(), None)
+                if _changed:
+                    self._save_config()
+                    for _idx in sorted(set(_changed)):
+                        self._update_card_image_status(_idx)
+                refresh_rows()
+
+            ctk.CTkButton(
+                btn_row,
+                text='이미지 범위',
+                width=90,
+                height=30,
+                command=_select_image_region,
+            ).pack(side='left')
+            ctk.CTkButton(
+                btn_row,
+                text='초기화',
+                width=70,
+                height=30,
+                fg_color=COLORS["bg_card"],
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_secondary"],
+                command=_clear_image_region,
+            ).pack(side='left', padx=6)
+            region_label = ctk.CTkLabel(
+                btn_row,
+                text="범위: 전체화면",
+                font=ctk.CTkFont(size=11),
+                text_color=COLORS["text_secondary"],
+                anchor='w',
+            )
+            region_label.pack(side='left', padx=(6, 0), fill='x', expand=True)
+            refresh_region_label()
         ctk.CTkButton(btn_row, text='취소', width=70, height=30, fg_color=COLORS['border'], command=dlg.destroy).pack(side='right')
 
     def _open_waypoint_image_picker(self, idx: int, kind: str):
+        if kind == 'boss':
+            self._repair_existing_boss_waypoint_links()
+            _current_path = self._get_waypoint_image_path(idx, kind)
+            if _current_path:
+                _preset = get_image_preset(kind, path=_current_path)
+                _changed = self._apply_boss_preset_region_to_waypoints(
+                    _current_path,
+                    _preset.get("region") if _preset else None,
+                )
+                if _changed:
+                    self._save_config()
+                    for _changed_idx in sorted(set(_changed)):
+                        self._update_card_image_status(_changed_idx)
         title = {'boss': '보스 이미지', 'character': '캐릭터 이미지', 'item': '아이템 이미지'}.get(kind, '이미지')
         self._open_image_preset_picker(
             kind=kind,
@@ -17128,7 +18387,22 @@ class GameModeDialog(ctk.CTkToplevel):
                 screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
 
                 matcher = TemplateMatcher()
-                result = matcher.match_binary(screen, self._imgtest_image_path, threshold=0.8)
+                _template_info = matcher.inspect_template_localization(self._imgtest_image_path)
+                if not _template_info.get("valid", True):
+                    text = (
+                        "무효 템플릿 "
+                        f"(구조 불량: {_template_info.get('width')}x{_template_info.get('height')}, "
+                        f"열패턴={_template_info.get('unique_cols')}, "
+                        f"delta={_template_info.get('mean_col_delta', 0.0):.2f})"
+                    )
+                    color = "#e05050"
+                    try:
+                        self.after(0, lambda t=text, c=color: self._imgtest_result_label.configure(text=t, text_color=c))
+                    except (tk.TclError, RuntimeError):
+                        pass
+                    return
+                _imgtest_threshold = self._get_boss_image_visual_threshold(self._imgtest_image_path, default=0.8) or 0.8
+                result = matcher.match_binary(screen, self._imgtest_image_path, threshold=_imgtest_threshold, allow_flip=True)
 
                 if result.found:
                     text = f"발견! 인식률={result.confidence:.1%} 위치=({result.center_x},{result.center_y})"
@@ -17162,6 +18436,22 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._load_thumb(_path, _label, size=42)
             else:
                 _label.configure(image=None, text="없음")
+        _ocr_label = getattr(self, "_bosstest_boss_ocr_label", None)
+        if _ocr_label is not None:
+            _boss_path = self._resolve_template_image_path(getattr(self, "_bosstest_boss_image_path", None) or "")
+            if _boss_path and Path(_boss_path).exists():
+                try:
+                    _ocr_text = self._get_boss_ocr_target_text(_boss_path)
+                except Exception as e:
+                    _ocr_text = ""
+                    _ocr_label.configure(text=f"보스 OCR: 오류 - {e}", text_color="#e05050")
+                else:
+                    _ocr_label.configure(
+                        text=f"보스 OCR: {_ocr_text or '(없음)'}",
+                        text_color=COLORS["text_secondary"] if _ocr_text else "#e0a050",
+                    )
+            else:
+                _ocr_label.configure(text="보스 OCR: -", text_color=COLORS["text_secondary"])
 
     def _load_boss_template_bgr(self, template_path: str):
         """보스/캐릭터 템플릿 BGR 로드 (간단 캐시)"""
@@ -17181,29 +18471,210 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception:
             return None
 
-    def _match_color_focus(self, screen: np.ndarray, template_path: str, threshold: float = 0.58):
+    def _get_boss_detect_matcher(self, *template_paths: str):
+        """보스 탐지용 TemplateMatcher 재사용.
+
+        순찰 중 보스 탐지는 매우 자주 호출되므로 matcher 인스턴스를 유지해
+        템플릿/마스크 캐시를 재활용한다. 단, 템플릿 파일이 바뀌면 즉시 새 matcher로 교체한다.
+        """
+        from ..analyzer.template_matcher import TemplateMatcher
+
+        signature = []
+        for template_path in template_paths:
+            if not template_path:
+                continue
+            try:
+                p = Path(template_path)
+                signature.append((str(p), p.stat().st_mtime))
+            except Exception:
+                signature.append((str(template_path), None))
+        signature = tuple(signature)
+
+        matcher = getattr(self, "_boss_detect_matcher", None)
+        cached_signature = getattr(self, "_boss_detect_matcher_signature", None)
+        if matcher is None or cached_signature != signature:
+            matcher = TemplateMatcher()
+            self._boss_detect_matcher = matcher
+            self._boss_detect_matcher_signature = signature
+        return matcher
+
+    def _get_boss_ocr_target_text(self, boss_img_path: str) -> str:
+        _path = str(boss_img_path or "").strip()
+        if not _path:
+            return ""
+        try:
+            _mtime = Path(_path).stat().st_mtime
+        except Exception:
+            _mtime = 0.0
+        _cache = getattr(self, "_boss_ocr_text_cache", None)
+        if not isinstance(_cache, dict):
+            _cache = {}
+            self._boss_ocr_text_cache = _cache
+        _cached = _cache.get(_path)
+        if _cached and float(_cached.get("mtime", 0.0) or 0.0) == float(_mtime):
+            return str(_cached.get("text", "") or "")
+
+        _preset = get_image_preset("boss", path=_path)
+        _preset_raw_text = str((_preset or {}).get("ocr_text", "") or "").strip()
+        _preset_text = normalize_ocr_text(_preset_raw_text)
+        _preset_text_valid = bool(_preset_text) and "?" not in _preset_raw_text and bool(re.search(r"[가-힣A-Za-z0-9]", _preset_raw_text))
+        if _preset_text_valid:
+            _cache[_path] = {"mtime": _mtime, "text": _preset_text}
+            return _preset_text
+
+        _template = self._load_boss_template_bgr(_path)
+        if _template is None:
+            _cache[_path] = {"mtime": _mtime, "text": ""}
+            return ""
+
+        _lang = str(getattr(get_config().analyzer, "ocr_language", "kor+eng") or "kor+eng")
+        _ocr_text = normalize_ocr_text(extract_template_target_text(_template, lang=_lang))
+        _cache[_path] = {"mtime": _mtime, "text": _ocr_text}
+        if _ocr_text:
+            try:
+                set_image_preset_ocr_text("boss", path=_path, ocr_text=_ocr_text)
+            except Exception:
+                pass
+        return _ocr_text
+
+    def _clear_boss_text_detect_history(self, *, channel: str | None = None):
+        _history = getattr(self, "_boss_text_detect_history", None)
+        if not isinstance(_history, dict):
+            self._boss_text_detect_history = {}
+            return
+        if not channel:
+            _history.clear()
+            return
+        _prefix = f"{str(channel)}|"
+        for _key in list(_history.keys()):
+            if str(_key).startswith(_prefix):
+                _history.pop(_key, None)
+
+    def _stabilize_boss_text_match(self, boss_img_path: str, target_text: str, ocr_match):
+        if ocr_match is None:
+            return ocr_match
+        _channel = "bosstest" if bool(getattr(self, "_bosstest_running", False)) else "runtime"
+        _history = getattr(self, "_boss_text_detect_history", None)
+        if not isinstance(_history, dict):
+            _history = {}
+            self._boss_text_detect_history = _history
+        _target = normalize_ocr_text(target_text)
+        _key = f"{_channel}|{str(boss_img_path or '').strip()}|{_target}"
+        _now = time.time()
+        _window_s = 1.0 if _channel == "bosstest" else 0.70
+        _recent_window_s = 0.45 if _channel == "bosstest" else 0.35
+        _required_hits = 2
+        _immediate_threshold = 0.90
+        _coherent_dx = 72
+        _coherent_dy = 48
+        _samples = [
+            _item for _item in list(_history.get(_key, []))
+            if (_now - float(_item.get("ts", 0.0) or 0.0)) <= _window_s
+        ]
+        _sample = {
+            "ts": _now,
+            "found": bool(getattr(ocr_match, "found", False)),
+            "score": float(getattr(ocr_match, "score", 0.0) or getattr(ocr_match, "confidence", 0.0) or 0.0),
+            "text": str(getattr(ocr_match, "text", "") or ""),
+            "normalized_text": str(getattr(ocr_match, "normalized_text", "") or ""),
+            "x": int(getattr(ocr_match, "x", 0) or 0),
+            "y": int(getattr(ocr_match, "y", 0) or 0),
+            "width": int(getattr(ocr_match, "width", 0) or 0),
+            "height": int(getattr(ocr_match, "height", 0) or 0),
+            "center_x": int(getattr(ocr_match, "center_x", 0) or 0),
+            "center_y": int(getattr(ocr_match, "center_y", 0) or 0),
+            "variant": str(getattr(ocr_match, "variant", "") or ""),
+        }
+        _samples.append(_sample)
+        _samples = _samples[-6:]
+        _history[_key] = _samples
+
+        if _sample["found"] and _sample["score"] >= _immediate_threshold:
+            return ocr_match
+
+        _hits = [s for s in _samples if bool(s.get("found"))]
+        if not _hits:
+            return ocr_match
+        _anchor = max(_hits, key=lambda s: (float(s.get("score", 0.0) or 0.0), float(s.get("ts", 0.0) or 0.0)))
+        _coherent_hits = [
+            s for s in _hits
+            if abs(int(s.get("center_x", 0) or 0) - int(_anchor.get("center_x", 0) or 0)) <= _coherent_dx
+            and abs(int(s.get("center_y", 0) or 0) - int(_anchor.get("center_y", 0) or 0)) <= _coherent_dy
+            and (_now - float(s.get("ts", 0.0) or 0.0)) <= _recent_window_s
+        ]
+        if len(_coherent_hits) < _required_hits:
+            return ocr_match
+        _best = max(_coherent_hits, key=lambda s: (float(s.get("score", 0.0) or 0.0), float(s.get("ts", 0.0) or 0.0)))
+        return type(ocr_match)(
+            found=True,
+            text=str(_best.get("text", "") or _target),
+            normalized_text=str(_best.get("normalized_text", "") or _target),
+            confidence=float(_best.get("score", 0.0) or 0.0),
+            score=float(_best.get("score", 0.0) or 0.0),
+            x=int(_best.get("x", 0) or 0),
+            y=int(_best.get("y", 0) or 0),
+            width=int(_best.get("width", 0) or 0),
+            height=int(_best.get("height", 0) or 0),
+            center_x=int(_best.get("center_x", 0) or 0),
+            center_y=int(_best.get("center_y", 0) or 0),
+            variant=str(_best.get("variant", "") or getattr(ocr_match, "variant", "")),
+        )
+
+    def _match_boss_text_ocr(self, screen: np.ndarray, boss_img_path: str, *, fast_mode_override: bool | None = None, max_time_s: float | None = None):
+        from ..analyzer.template_matcher import MatchResult
+
+        _target_text = self._get_boss_ocr_target_text(boss_img_path)
+        if not _target_text:
+            return MatchResult(found=False), _target_text, None
+
+        _lang = str(getattr(get_config().analyzer, "ocr_language", "kor+eng") or "kor+eng")
+        _template = self._load_boss_template_bgr(boss_img_path)
+        _short_hangul = bool(re.fullmatch(r"[가-힣]{1,2}", str(_target_text or "")))
+        _min_score = 0.72 if _short_hangul else 0.90
+        _ocr_match = find_target_text_match(
+            screen,
+            _target_text,
+            lang=_lang,
+            min_score=_min_score,
+            template_bgr=_template,
+            fast_mode=bool(getattr(self, "_bosstest_running", False)) if fast_mode_override is None else bool(fast_mode_override),
+            max_time_s=max_time_s,
+        )
+        _ocr_match = self._stabilize_boss_text_match(boss_img_path, _target_text, _ocr_match)
+        if not _ocr_match.found:
+            return MatchResult(found=False, confidence=float(_ocr_match.confidence or 0.0)), _target_text, _ocr_match
+
+        _match = MatchResult(
+            found=True,
+            x=int(_ocr_match.x),
+            y=int(_ocr_match.y),
+            width=int(_ocr_match.width),
+            height=int(_ocr_match.height),
+            confidence=float(max(_ocr_match.score, _ocr_match.confidence)),
+            center_x=int(_ocr_match.center_x),
+            center_y=int(_ocr_match.center_y),
+        )
+        return _match, _target_text, _ocr_match
+
+    def _match_color_focus(self, screen: np.ndarray, template_path: str, threshold: float = 0.58, allow_flip: bool = False):
         """색상 포커스 매칭: 템플릿의 강한 색 글자만 추려서 매칭"""
         from ..analyzer.template_matcher import MatchResult
 
-        try:
-            template = self._load_boss_template_bgr(template_path)
-            if template is None:
-                return MatchResult(found=False)
-
+        def _match_variant(template_variant: np.ndarray):
             screen_h, screen_w = screen.shape[:2]
-            template_h, template_w = template.shape[:2]
+            template_h, template_w = template_variant.shape[:2]
             if template_w > screen_w or template_h > screen_h:
                 return MatchResult(found=False)
 
-            tmpl_hsv = cv2.cvtColor(template, cv2.COLOR_BGR2HSV)
+            tmpl_hsv = cv2.cvtColor(template_variant, cv2.COLOR_BGR2HSV)
             h = tmpl_hsv[:, :, 0].astype(np.int16)
             s = tmpl_hsv[:, :, 1]
             v = tmpl_hsv[:, :, 2]
 
             candidate = (s >= 70) & (v >= 45)
             if int(np.count_nonzero(candidate)) < 8:
-                tmax = template.max(axis=2)
-                tmin = template.min(axis=2)
+                tmax = template_variant.max(axis=2)
+                tmin = template_variant.min(axis=2)
                 candidate = ((tmax - tmin) >= 35) & (tmax >= 90)
             if int(np.count_nonzero(candidate)) < 8:
                 return MatchResult(found=False)
@@ -17261,6 +18732,22 @@ class GameModeDialog(ctk.CTkToplevel):
                 center_x=center_x,
                 center_y=center_y,
             )
+
+        try:
+            template = self._load_boss_template_bgr(template_path)
+            if template is None:
+                return MatchResult(found=False)
+
+            variants = [template]
+            if allow_flip:
+                variants.append(cv2.flip(template, 1))
+
+            best_result = MatchResult(found=False)
+            for variant in variants:
+                current = _match_variant(variant)
+                if current.confidence > best_result.confidence:
+                    best_result = current
+            return best_result
         except Exception:
             return MatchResult(found=False)
 
@@ -17274,6 +18761,7 @@ class GameModeDialog(ctk.CTkToplevel):
         color_threshold: float,
         focus_threshold: float,
         use_focus: bool = True,
+        allow_flip: bool = False,
         allow_single_strong: bool = False,
         single_strong_threshold: float = 0.95,
         recent_hint=None,
@@ -17282,9 +18770,9 @@ class GameModeDialog(ctk.CTkToplevel):
         """이진/일반/색포커스 매칭을 교차 검증해 안정된 결과만 채택"""
         from ..analyzer.template_matcher import MatchResult
 
-        binary_res = matcher.match_binary(screen, template_path, threshold=binary_threshold)
-        color_res = matcher.match(screen, template_path, threshold=color_threshold, use_mask=True)
-        focus_res = self._match_color_focus(screen, template_path, threshold=focus_threshold) if use_focus else MatchResult(found=False)
+        binary_res = matcher.match_binary(screen, template_path, threshold=binary_threshold, allow_flip=allow_flip)
+        color_res = matcher.match(screen, template_path, threshold=color_threshold, use_mask=True, allow_flip=allow_flip)
+        focus_res = self._match_color_focus(screen, template_path, threshold=focus_threshold, allow_flip=allow_flip) if use_focus else MatchResult(found=False)
 
         candidates = [("binary", binary_res), ("color", color_res), ("focus", focus_res)]
         found = [(name, res) for name, res in candidates if getattr(res, "found", False)]
@@ -17382,39 +18870,218 @@ class GameModeDialog(ctk.CTkToplevel):
             "cluster": best_cluster,
         }
 
-    def _detect_boss_pair(self, screen: np.ndarray, boss_img_path: str, char_img_path: str):
-        """보스/캐릭터 템플릿을 함께 감지하고 거리 정보를 계산"""
-        from ..analyzer.template_matcher import TemplateMatcher
+    @staticmethod
+    def _build_boss_detect_roi(screen_shape, boss_hint=None, char_hint=None):
+        try:
+            _sh, _sw = int(screen_shape[0]), int(screen_shape[1])
+        except Exception:
+            return None
+        _hints = []
+        for _hint in (boss_hint, char_hint):
+            try:
+                if _hint is not None:
+                    _hints.append((int(_hint[0]), int(_hint[1])))
+            except Exception:
+                continue
+        if not _hints:
+            return None
+        _xs = [p[0] for p in _hints]
+        _ys = [p[1] for p in _hints]
+        _pad_x = 220
+        _pad_y = 180
+        _x0 = max(0, min(_xs) - _pad_x)
+        _y0 = max(0, min(_ys) - _pad_y)
+        _x1 = min(_sw, max(_xs) + _pad_x)
+        _y1 = min(_sh, max(_ys) + _pad_y)
+        _min_w = min(_sw, 420)
+        _min_h = min(_sh, 320)
+        if (_x1 - _x0) < _min_w:
+            _cx = (min(_xs) + max(_xs)) // 2
+            _x0 = max(0, min(_sw - _min_w, _cx - (_min_w // 2)))
+            _x1 = min(_sw, _x0 + _min_w)
+        if (_y1 - _y0) < _min_h:
+            _cy = (min(_ys) + max(_ys)) // 2
+            _y0 = max(0, min(_sh - _min_h, _cy - (_min_h // 2)))
+            _y1 = min(_sh, _y0 + _min_h)
+        if _x0 >= _x1 or _y0 >= _y1:
+            return None
+        return (int(_x0), int(_y0), int(_x1), int(_y1))
 
-        matcher = TemplateMatcher()
+    @staticmethod
+    def _translate_match_result(result, offset_x: int, offset_y: int):
+        from ..analyzer.template_matcher import MatchResult
+
+        if result is None:
+            return None
+        if not getattr(result, "found", False):
+            return MatchResult(found=False, confidence=float(getattr(result, "confidence", 0.0) or 0.0))
+        return MatchResult(
+            found=True,
+            x=int(result.x) + int(offset_x),
+            y=int(result.y) + int(offset_y),
+            width=int(result.width),
+            height=int(result.height),
+            confidence=float(result.confidence),
+            center_x=int(result.center_x) + int(offset_x),
+            center_y=int(result.center_y) + int(offset_y),
+        )
+
+    def _translate_detect_consensus(self, info: dict, offset_x: int, offset_y: int):
+        if not info:
+            return info
+        _translated = dict(info)
+        for _key in ("result", "binary", "color", "focus"):
+            if _key in _translated:
+                _translated[_key] = self._translate_match_result(_translated.get(_key), offset_x, offset_y)
+        _cluster = []
+        for _name, _res in (_translated.get("cluster") or []):
+            _cluster.append((_name, self._translate_match_result(_res, offset_x, offset_y)))
+        _translated["cluster"] = _cluster
+        return _translated
+
+    def _match_boss_binary_fast(self, screen: np.ndarray, boss_img_path: str, char_img_path: str | None = None):
+        _boss_threshold = self._get_boss_image_visual_threshold(boss_img_path, default=0.84) or 0.84
         _last_boss_center = getattr(self, "_boss_detect_last_boss_center", None)
         _last_char_center = getattr(self, "_boss_detect_last_char_center", None)
+        _now = time.time()
+        _last_boss_seen_at = float(getattr(self, "_boss_detect_last_boss_seen_at", 0.0) or 0.0)
+        _last_char_seen_at = float(getattr(self, "_boss_detect_last_char_seen_at", 0.0) or 0.0)
+        if _last_boss_center is not None and (_now - _last_boss_seen_at) > 1.5:
+            _last_boss_center = None
+        if _last_char_center is not None and (_now - _last_char_seen_at) > 1.5:
+            _last_char_center = None
+        _roi = self._build_boss_detect_roi(screen.shape, _last_boss_center, _last_char_center)
+        _matcher = self._get_boss_detect_matcher(boss_img_path, char_img_path or "")
+        if _roi is None:
+            return _matcher.match_binary(screen, boss_img_path, threshold=_boss_threshold, allow_flip=True)
+        _x0, _y0, _x1, _y1 = _roi
+        _crop = screen[_y0:_y1, _x0:_x1]
+        _res = _matcher.match_binary(_crop, boss_img_path, threshold=_boss_threshold, allow_flip=True)
+        return self._translate_match_result(_res, _x0, _y0)
+
+    def _detect_boss_pair(
+        self,
+        screen: np.ndarray,
+        boss_img_path: str,
+        char_img_path: str,
+        *,
+        search_region=None,
+        force_full_screen: bool = False,
+        relaxed_boss: bool = False,
+        relaxed_char: bool = False,
+        allow_screen_center_anchor: bool = False,
+    ):
+        """보스/캐릭터 템플릿을 함께 감지하고 거리 정보를 계산"""
+        matcher = self._get_boss_detect_matcher(boss_img_path, char_img_path)
+        _last_boss_center = getattr(self, "_boss_detect_last_boss_center", None)
+        _last_char_center = getattr(self, "_boss_detect_last_char_center", None)
+        _now = time.time()
+        _last_boss_seen_at = float(getattr(self, "_boss_detect_last_boss_seen_at", 0.0) or 0.0)
+        _last_char_seen_at = float(getattr(self, "_boss_detect_last_char_seen_at", 0.0) or 0.0)
+        if _last_boss_center is not None and (_now - _last_boss_seen_at) > 1.5:
+            _last_boss_center = None
+        if _last_char_center is not None and (_now - _last_char_seen_at) > 1.5:
+            _last_char_center = None
+        _base_region = self._normalize_screen_region(search_region, screen.shape)
+        _screen_base = screen
+        _base_offset_x = 0
+        _base_offset_y = 0
+        _boss_hint_base = _last_boss_center
+        _char_hint_base = _last_char_center
+        if _base_region is not None:
+            _bx0, _by0, _bx1, _by1 = _base_region
+            _screen_base = screen[_by0:_by1, _bx0:_bx1]
+            _base_offset_x = _bx0
+            _base_offset_y = _by0
+            if _last_boss_center is not None:
+                if _bx0 <= int(_last_boss_center[0]) < _bx1 and _by0 <= int(_last_boss_center[1]) < _by1:
+                    _boss_hint_base = (int(_last_boss_center[0]) - _bx0, int(_last_boss_center[1]) - _by0)
+                else:
+                    _boss_hint_base = None
+            if _last_char_center is not None:
+                if _bx0 <= int(_last_char_center[0]) < _bx1 and _by0 <= int(_last_char_center[1]) < _by1:
+                    _char_hint_base = (int(_last_char_center[0]) - _bx0, int(_last_char_center[1]) - _by0)
+                else:
+                    _char_hint_base = None
+
+        _roi = None if force_full_screen else self._build_boss_detect_roi(_screen_base.shape, _boss_hint_base, _char_hint_base)
+        _screen_view = _screen_base
+        _offset_x = _base_offset_x
+        _offset_y = _base_offset_y
+        _boss_hint_local = _boss_hint_base
+        _char_hint_local = _char_hint_base
+        if _roi is not None:
+            _x0, _y0, _x1, _y1 = _roi
+            _screen_view = _screen_base[_y0:_y1, _x0:_x1]
+            _offset_x = _base_offset_x + _x0
+            _offset_y = _base_offset_y + _y0
+            if _boss_hint_base is not None:
+                _boss_hint_local = (int(_boss_hint_base[0]) - _x0, int(_boss_hint_base[1]) - _y0)
+            if _char_hint_base is not None:
+                _char_hint_local = (int(_char_hint_base[0]) - _x0, int(_char_hint_base[1]) - _y0)
+        _boss_visual_threshold = self._get_boss_image_visual_threshold(boss_img_path, default=None)
+        _boss_binary_threshold = 0.80 if relaxed_boss else 0.84
+        _boss_color_threshold = 0.60 if relaxed_boss else 0.64
+        _boss_focus_threshold = 0.40 if relaxed_boss else 0.45
+        _boss_single_threshold = 0.90 if relaxed_boss else 0.93
+        if _boss_visual_threshold is not None:
+            _boss_binary_threshold = min(_boss_binary_threshold, float(_boss_visual_threshold))
+            _boss_single_threshold = min(_boss_single_threshold, float(_boss_visual_threshold))
+        _boss_hint_radius = 96 if relaxed_boss else 72
+        _char_binary_threshold = 0.74 if relaxed_char else 0.78
+        _char_color_threshold = 0.56 if relaxed_char else 0.60
+        _char_focus_threshold = 0.38 if relaxed_char else 0.42
+        _char_single_threshold = 0.90 if relaxed_char else 0.94
+        _char_hint_radius = 56 if relaxed_char else 44
+
+        _boss_ocr_res, _boss_ocr_target_text, _boss_ocr_match = self._match_boss_text_ocr(_screen_view, boss_img_path)
         boss_info = self._detect_template_consensus(
-            screen, boss_img_path,
+            _screen_view, boss_img_path,
             matcher=matcher,
-            binary_threshold=0.84,
-            color_threshold=0.64,
-            focus_threshold=0.45,
+            binary_threshold=_boss_binary_threshold,
+            color_threshold=_boss_color_threshold,
+            focus_threshold=_boss_focus_threshold,
             use_focus=True,
+            allow_flip=True,
             allow_single_strong=True,
-            single_strong_threshold=0.93,
-            recent_hint=_last_boss_center,
-            recent_hint_radius=72,
+            single_strong_threshold=_boss_single_threshold,
+            recent_hint=_boss_hint_local,
+            recent_hint_radius=_boss_hint_radius,
         )
+        boss_info["ocr_target_text"] = _boss_ocr_target_text
+        boss_info["ocr_match_text"] = getattr(_boss_ocr_match, "text", "") if _boss_ocr_match is not None else ""
+        boss_info["ocr_variant"] = getattr(_boss_ocr_match, "variant", "") if _boss_ocr_match is not None else ""
+        if not bool(getattr(boss_info.get("result"), "found", False)) and getattr(_boss_ocr_res, "found", False):
+            boss_info = {
+                "result": _boss_ocr_res,
+                "binary": _boss_ocr_res,
+                "color": _boss_ocr_res,
+                "focus": _boss_ocr_res,
+                "cluster": [("ocr_text", _boss_ocr_res)],
+                "fallback_source": "ocr_text",
+                "ocr_target_text": _boss_ocr_target_text,
+                "ocr_match_text": getattr(_boss_ocr_match, "text", "") if _boss_ocr_match is not None else "",
+                "ocr_variant": getattr(_boss_ocr_match, "variant", "") if _boss_ocr_match is not None else "",
+            }
         char_info = None
         if char_img_path:
             char_info = self._detect_template_consensus(
-                screen, char_img_path,
+                _screen_view, char_img_path,
                 matcher=matcher,
-                binary_threshold=0.78,
-                color_threshold=0.60,
-                focus_threshold=0.42,
+                binary_threshold=_char_binary_threshold,
+                color_threshold=_char_color_threshold,
+                focus_threshold=_char_focus_threshold,
                 use_focus=True,
+                allow_flip=True,
                 allow_single_strong=True,
-                single_strong_threshold=0.94,
-                recent_hint=_last_char_center,
-                recent_hint_radius=44,
+                single_strong_threshold=_char_single_threshold,
+                recent_hint=_char_hint_local,
+                recent_hint_radius=_char_hint_radius,
             )
+        if _roi is not None:
+            boss_info = self._translate_detect_consensus(boss_info, _offset_x, _offset_y)
+            if char_info:
+                char_info = self._translate_detect_consensus(char_info, _offset_x, _offset_y)
 
         boss_result = boss_info["result"]
         char_result = char_info["result"] if char_info else None
@@ -17425,8 +19092,10 @@ class GameModeDialog(ctk.CTkToplevel):
 
         if boss_found:
             self._boss_detect_last_boss_center = (int(boss_result.center_x), int(boss_result.center_y))
+            self._boss_detect_last_boss_seen_at = _now
         if char_found:
             self._boss_detect_last_char_center = (int(char_result.center_x), int(char_result.center_y))
+            self._boss_detect_last_char_seen_at = _now
 
         data = {
             "boss_found": boss_found,
@@ -17435,6 +19104,13 @@ class GameModeDialog(ctk.CTkToplevel):
             "char_result": char_result,
             "boss_info": boss_info,
             "char_info": char_info,
+            "boss_match_source": boss_info.get("fallback_source"),
+            "boss_target_text": boss_info.get("ocr_target_text"),
+            "boss_match_text": boss_info.get("ocr_match_text"),
+            "boss_ocr_variant": boss_info.get("ocr_variant"),
+            "roi": _roi if _base_region is None else (_offset_x, _offset_y, _offset_x + _screen_view.shape[1], _offset_y + _screen_view.shape[0]),
+            "roi_applied": _roi is not None or _base_region is not None,
+            "search_region": list(_base_region) if _base_region is not None else None,
             "char_anchor_source": None,
             "char_anchor_valid": False,
             "dx_px": None,
@@ -17445,19 +19121,25 @@ class GameModeDialog(ctk.CTkToplevel):
             "pixel_dist": None,
         }
         if boss_found:
+            char_anchor_valid = False
             if char_found:
                 char_anchor_source = "template"
                 char_anchor_center = (int(char_result.center_x), int(char_result.center_y))
+                char_anchor_valid = True
             elif _last_char_center is not None:
                 try:
                     char_anchor_center = (int(_last_char_center[0]), int(_last_char_center[1]))
                     char_anchor_source = "recent_char"
+                    char_anchor_valid = True
                 except Exception:
                     char_anchor_center = None
             if char_anchor_center is None:
                 _sh, _sw = screen.shape[:2]
-                char_anchor_center = (int(_sw // 2), int(_sh // 2))
+                _screen_center = (int(_sw // 2), int(_sh // 2))
+                char_anchor_center = _screen_center
                 char_anchor_source = "screen_center"
+                if allow_screen_center_anchor:
+                    char_anchor_valid = True
 
         if boss_found and char_anchor_center is not None:
             dx_px = int(boss_result.center_x - char_anchor_center[0])
@@ -17466,7 +19148,7 @@ class GameModeDialog(ctk.CTkToplevel):
             dy_tiles = int(round(dy_px / 44))
             data.update({
                 "char_anchor_source": char_anchor_source,
-                "char_anchor_valid": True,
+                "char_anchor_valid": bool(char_anchor_valid),
                 "dx_px": dx_px,
                 "dy_px": dy_px,
                 "dx_tiles": dx_tiles,
@@ -17476,14 +19158,84 @@ class GameModeDialog(ctk.CTkToplevel):
             })
         return data
 
+    def _detect_boss_pair_with_region_fallback(
+        self,
+        screen: np.ndarray,
+        boss_img_path: str,
+        char_img_path: str,
+        *,
+        search_region=None,
+        relaxed_boss: bool = False,
+        relaxed_char: bool = False,
+        allow_screen_center_anchor: bool = False,
+        full_screen_fallback: bool = False,
+    ):
+        _det = self._detect_boss_pair(
+            screen,
+            boss_img_path,
+            char_img_path,
+            search_region=search_region,
+            force_full_screen=False,
+            relaxed_boss=relaxed_boss,
+            relaxed_char=relaxed_char,
+            allow_screen_center_anchor=allow_screen_center_anchor,
+        )
+        _det["detect_reason"] = "region"
+        if not full_screen_fallback or not search_region or bool(_det.get("boss_found")):
+            return _det
+        _fallback_det = self._detect_boss_pair(
+            screen,
+            boss_img_path,
+            char_img_path,
+            search_region=None,
+            force_full_screen=True,
+            relaxed_boss=True,
+            relaxed_char=True,
+            allow_screen_center_anchor=allow_screen_center_anchor,
+        )
+        _fallback_det["detect_reason"] = "full_screen_fallback"
+        return _fallback_det
+
+    def _get_boss_frame_detector(self) -> BossDetector:
+        _detector = getattr(self, "_boss_frame_detector", None)
+        if _detector is None:
+            _detector = BossDetector(
+                detect_pair_with_region_fallback=self._detect_boss_pair_with_region_fallback,
+                detect_pair=self._detect_boss_pair,
+            )
+            self._boss_frame_detector = _detector
+        return _detector
+
+    @staticmethod
+    def _make_boss_detection_from_evidence(evidence: BossFrameEvidence | None) -> BossDetection | None:
+        if evidence is None:
+            return None
+        return BossDetection(
+            found=bool(evidence.found),
+            confidence=float(evidence.confidence or 0.0),
+            dx_px=int(evidence.dx_px or 0),
+            dy_px=int(evidence.dy_px or 0),
+            dx_tiles=int(evidence.dx_tiles or 0),
+            dy_tiles=int(evidence.dy_tiles or 0),
+            tile_dist=int(evidence.tile_dist or 0),
+            pixel_dist=float(evidence.pixel_dist or 0.0),
+            char_found=bool(evidence.char_found),
+            anchor_valid=bool(evidence.anchor_valid),
+            anchor_source=evidence.anchor_source,
+            roi_applied=bool(evidence.roi_applied),
+            match_source=evidence.match_source,
+            visual_found=bool(evidence.visual_found),
+            ocr_fallback_used=bool(evidence.ocr_fallback_used),
+            visual_source=evidence.visual.source,
+        )
+
     @staticmethod
     def _get_boss_detect_interval(*, boss_mode: str, boss_chasing: bool, recent_steps: int) -> int:
-        """보스 추적/근접 중에는 재감지 간격을 낮춰 끊김을 줄인다."""
-        if boss_mode == "approaching" or boss_chasing:
-            return 1
-        if int(recent_steps or 0) > 0:
-            return 2
-        return 5
+        return boss_sm_get_detect_interval(
+            boss_mode=boss_mode,
+            boss_chasing=boss_chasing,
+            recent_steps=recent_steps,
+        )
 
     @staticmethod
     def _clip_boss_chase_delta(delta_tiles, step_limit: int) -> int:
@@ -17497,49 +19249,96 @@ class GameModeDialog(ctk.CTkToplevel):
         return _sign * min(abs(_delta), max(1, int(step_limit or 1)))
 
     def _build_incremental_boss_chase_target(self, current_x: int, current_y: int, dx_tiles, dy_tiles, tile_dist) -> tuple[int, int]:
-        """보스 추적 목표를 짧은 스텝으로 잘라 연속 추적으로 보정한다."""
-        try:
-            _dx = int(dx_tiles or 0)
-            _dy = int(dy_tiles or 0)
-        except Exception:
-            return current_x, current_y
+        return boss_sm_build_incremental_chase_target(
+            current_x,
+            current_y,
+            dx_tiles,
+            dy_tiles,
+            tile_dist,
+            is_passable=self._game_map.is_passable,
+            start_pos=self._game_map.start_pos,
+        )
 
-        _step_limit = 1 if int(tile_dist or 0) <= 2 else 2
-        _step_dx = self._clip_boss_chase_delta(_dx, _step_limit)
-        _step_dy = self._clip_boss_chase_delta(_dy, _step_limit)
-        if _step_dx == 0 and _step_dy == 0:
-            if abs(_dx) >= abs(_dy) and _dx != 0:
-                _step_dx = 1 if _dx > 0 else -1
-            elif _dy != 0:
-                _step_dy = 1 if _dy > 0 else -1
-            else:
-                return current_x, current_y
+    @staticmethod
+    def _format_boss_debug_value(value) -> str:
+        if value is None:
+            return "-"
+        if isinstance(value, float):
+            return f"{value:.1f}"
+        return str(value)
 
-        _target_x = current_x + _step_dx
-        _target_y = current_y + _step_dy
-        _start_pos = self._game_map.start_pos
-        if (
-            self._game_map.is_passable(_target_x, _target_y)
-            and (_start_pos is None or (_target_x, _target_y) != _start_pos)
-        ):
-            return _target_x, _target_y
-
-        _prefer_offsets = [
-            (0, 0), (1, 0), (-1, 0), (0, 1), (0, -1),
-            (1, 1), (-1, 1), (1, -1), (-1, -1),
+    def _build_boss_debug_snapshot(
+        self,
+        *,
+        boss_mode: str,
+        current_x: int,
+        current_y: int,
+        boss_patrol=None,
+        boss_chasing: bool = False,
+        boss_detect_attempted: bool = False,
+        boss_detect_interval: int | None = None,
+        boss_detect_ms: int | None = None,
+        boss_visible: bool = False,
+        boss_result=None,
+        boss_det: dict | None = None,
+        move_target=None,
+        direction=None,
+        remaining: int | None = None,
+        boss_chase_miss: int = 0,
+        boss_appr_miss: int = 0,
+        boss_steps: int = 0,
+        item_hint: bool = False,
+        force_loot: bool = False,
+        candidate_active: bool = False,
+        ui_noise: bool = False,
+        contact_confirmed: bool = False,
+        skill_fired: bool = False,
+    ) -> str:
+        _debug_mode = MODE_CHASING if boss_chasing and boss_mode == MODE_PATROLLING else boss_mode
+        _parts = [
+            f"mode={_debug_mode}",
+            f"pos=({current_x},{current_y})",
+            f"detect={'Y' if boss_detect_attempted else 'N'}",
+            f"intv={self._format_boss_debug_value(boss_detect_interval)}",
+            f"ms={self._format_boss_debug_value(boss_detect_ms)}",
+            f"boss={'Y' if boss_visible else 'N'}",
+            f"candidate={'Y' if candidate_active else 'N'}",
+            f"chase={'Y' if boss_chasing else 'N'}",
+            f"chase_miss={boss_chase_miss}",
+            f"appr_miss={boss_appr_miss}",
+            f"steps={boss_steps}",
+            f"item_hint={'Y' if item_hint else 'N'}",
+            f"force_loot={'Y' if force_loot else 'N'}",
+            f"noise={'Y' if ui_noise else 'N'}",
+            f"contact={'Y' if contact_confirmed else 'N'}",
+            f"skill={'Y' if skill_fired else 'N'}",
         ]
-        for _r in range(1, 3):
-            for _off_x, _off_y in _prefer_offsets:
-                _cand_x = _target_x + (_off_x * _r)
-                _cand_y = _target_y + (_off_y * _r)
-                if (_cand_x, _cand_y) == (current_x, current_y):
-                    continue
-                if not self._game_map.is_passable(_cand_x, _cand_y):
-                    continue
-                if _start_pos is not None and (_cand_x, _cand_y) == _start_pos:
-                    continue
-                return _cand_x, _cand_y
-        return current_x, current_y
+        if boss_patrol is not None:
+            try:
+                _progress = boss_patrol.get_progress()
+                _parts.append(f"patrol={_progress.get('visited', 0)}/{_progress.get('total', 0)}")
+                _parts.append(f"patrol_goal={self._format_boss_debug_value(_progress.get('current_target'))}")
+            except Exception:
+                pass
+        if move_target is not None:
+            _parts.append(f"move={self._format_boss_debug_value(move_target)}")
+        if direction:
+            _parts.append(f"dir={direction}")
+        if remaining is not None:
+            _parts.append(f"rem={remaining}")
+        if boss_result is not None and getattr(boss_result, "found", False):
+            try:
+                _parts.append(f"conf={boss_result.confidence:.1%}")
+            except Exception:
+                pass
+        if boss_det:
+            _parts.append(f"anchor={self._format_boss_debug_value(boss_det.get('char_anchor_source'))}")
+            _parts.append(f"dx={self._format_boss_debug_value(boss_det.get('dx_px'))}")
+            _parts.append(f"dy={self._format_boss_debug_value(boss_det.get('dy_px'))}")
+            _parts.append(f"td={self._format_boss_debug_value(boss_det.get('tile_dist'))}")
+            _parts.append(f"roi={'Y' if boss_det.get('roi_applied') else 'N'}")
+            _parts.append(f"src={self._format_boss_debug_value(boss_det.get('boss_match_source'))}")
+        return "🧪 보스진단 " + " ".join(_parts)
 
     def _detect_item_template(self, screen: np.ndarray, item_img_path: str):
         """아이템 템플릿 감지"""
@@ -18060,20 +19859,28 @@ class GameModeDialog(ctk.CTkToplevel):
     def _bosstest_select(self, kind: str):
         """보스 테스트용 이미지 선택"""
         def _current_path() -> str:
-            return (
+            _raw = (
                 self._bosstest_boss_image_path if kind == "boss"
                 else self._bosstest_char_image_path
             ) or ""
+            return self._resolve_template_image_path(_raw)
 
         def _apply_path(path: str) -> None:
+            _resolved_path = self._resolve_template_image_path(path)
             if kind == "boss":
-                self._bosstest_boss_image_path = path
-                self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(path).name}")
+                _resolved_path, _preset, _created = self._ensure_image_preset_link("boss", _resolved_path)
+                _resolved_path = _resolved_path or path
             else:
-                self._bosstest_char_image_path = path
-                self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(path).name}")
+                _resolved_path, _preset, _created = self._ensure_image_preset_link("character", _resolved_path)
+                _resolved_path = _resolved_path or path
+            if kind == "boss":
+                self._bosstest_boss_image_path = _resolved_path
+                self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(_resolved_path).name}")
+            else:
+                self._bosstest_char_image_path = _resolved_path
+                self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(_resolved_path).name}")
             self._update_bosstest_previews()
-            self._bosstest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+            self._set_bosstest_result_text("결과: 대기 중", COLORS["text_secondary"])
 
         def _clear_path() -> None:
             if kind == "boss":
@@ -18083,7 +19890,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._bosstest_char_image_path = None
                 self._bosstest_char_label.configure(text="캐릭터 이미지: 없음")
             self._update_bosstest_previews()
-            self._bosstest_result_label.configure(text="결과: 대기 중", text_color=COLORS["text_secondary"])
+            self._set_bosstest_result_text("결과: 대기 중", COLORS["text_secondary"])
 
         self._open_image_preset_picker(
             kind=kind,
@@ -18092,6 +19899,505 @@ class GameModeDialog(ctk.CTkToplevel):
             apply_path_callback=_apply_path,
             clear_path_callback=_clear_path,
         )
+
+    @staticmethod
+    def _load_bosstest_template_image(image_path: str):
+        try:
+            _path = str(image_path or "").strip()
+            if not _path:
+                return None
+            with Image.open(_path) as _img:
+                return _img.convert("RGBA").copy()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _compose_bosstest_scene(*, boss_image: Image.Image | None = None, char_image: Image.Image | None = None):
+        _images = [img for img in (boss_image, char_image) if img is not None]
+        if not _images:
+            raise ValueError("보스테스트 합성용 이미지가 없습니다")
+
+        _max_w = max(int(img.width) for img in _images)
+        _max_h = max(int(img.height) for img in _images)
+        _canvas_w = max(640, _max_w + 320)
+        _canvas_h = max(360, _max_h + 240)
+        _canvas = Image.new("RGBA", (_canvas_w, _canvas_h), (0, 0, 0, 255))
+        _centers: dict[str, tuple[int, int]] = {}
+
+        def _paste_center(_key: str, _img: Image.Image, _center: tuple[int, int]):
+            _x = int(round(_center[0] - (_img.width / 2)))
+            _y = int(round(_center[1] - (_img.height / 2)))
+            _x = max(0, min(_canvas_w - _img.width, _x))
+            _y = max(0, min(_canvas_h - _img.height, _y))
+            _canvas.alpha_composite(_img, (_x, _y))
+            _centers[_key] = (_x + (_img.width // 2), _y + (_img.height // 2))
+
+        if boss_image is not None and char_image is not None:
+            _pair_gap_x = max(88, (boss_image.width // 2) + (char_image.width // 2) + 40)
+            _pair_gap_y = 44
+            _char_center = ((_canvas_w // 2) - (_pair_gap_x // 2), _canvas_h // 2)
+            _boss_center = ((_canvas_w // 2) + (_pair_gap_x // 2), (_canvas_h // 2) + _pair_gap_y)
+            _paste_center("character", char_image, _char_center)
+            _paste_center("boss", boss_image, _boss_center)
+        elif boss_image is not None:
+            _paste_center("boss", boss_image, (_canvas_w // 2, _canvas_h // 2))
+        elif char_image is not None:
+            _paste_center("character", char_image, (_canvas_w // 2, _canvas_h // 2))
+
+        _scene_rgb = _canvas.convert("RGB")
+        _scene = cv2.cvtColor(np.array(_scene_rgb), cv2.COLOR_RGB2BGR)
+        return _scene, _centers
+
+    def _run_bosstest_self_check(self, boss_img_path: str, char_img_path: str | None = None):
+        _boss_img = self._load_bosstest_template_image(boss_img_path)
+        if _boss_img is None:
+            raise ValueError("보스 이미지를 불러오지 못했습니다")
+
+        _char_img = None
+        if char_img_path:
+            _char_img = self._load_bosstest_template_image(char_img_path)
+            if _char_img is None:
+                raise ValueError("캐릭터 이미지를 불러오지 못했습니다")
+
+        _saved_detect_state = {
+            "_boss_detect_last_boss_center": getattr(self, "_boss_detect_last_boss_center", None),
+            "_boss_detect_last_char_center": getattr(self, "_boss_detect_last_char_center", None),
+            "_boss_detect_last_boss_seen_at": float(getattr(self, "_boss_detect_last_boss_seen_at", 0.0) or 0.0),
+            "_boss_detect_last_char_seen_at": float(getattr(self, "_boss_detect_last_char_seen_at", 0.0) or 0.0),
+        }
+
+        try:
+            self._boss_detect_last_boss_center = None
+            self._boss_detect_last_char_center = None
+            self._boss_detect_last_boss_seen_at = 0.0
+            self._boss_detect_last_char_seen_at = 0.0
+
+            _matcher = self._get_boss_detect_matcher(boss_img_path, char_img_path or "")
+
+            _boss_only_scene, _boss_only_centers = self._compose_bosstest_scene(boss_image=_boss_img)
+            _boss_quick = self._match_boss_binary_fast(_boss_only_scene, boss_img_path, char_img_path or "")
+            self._boss_detect_last_boss_center = None
+            self._boss_detect_last_char_center = None
+            self._boss_detect_last_boss_seen_at = 0.0
+            self._boss_detect_last_char_seen_at = 0.0
+            _boss_full = self._detect_boss_pair(_boss_only_scene, boss_img_path, "")
+
+            _char_only = None
+            _char_only_centers = {}
+            if _char_img is not None and char_img_path:
+                _char_only_scene, _char_only_centers = self._compose_bosstest_scene(char_image=_char_img)
+                _char_only = self._detect_template_consensus(
+                    _char_only_scene,
+                    char_img_path,
+                    matcher=_matcher,
+                    binary_threshold=0.78,
+                    color_threshold=0.60,
+                    focus_threshold=0.42,
+                    use_focus=True,
+                    allow_single_strong=True,
+                    single_strong_threshold=0.94,
+                    recent_hint=None,
+                    recent_hint_radius=44,
+                )
+
+            _pair = None
+            _pair_centers = {}
+            if _char_img is not None and char_img_path:
+                self._boss_detect_last_boss_center = None
+                self._boss_detect_last_char_center = None
+                self._boss_detect_last_boss_seen_at = 0.0
+                self._boss_detect_last_char_seen_at = 0.0
+                _pair_scene, _pair_centers = self._compose_bosstest_scene(boss_image=_boss_img, char_image=_char_img)
+                _pair = self._detect_boss_pair(_pair_scene, boss_img_path, char_img_path)
+
+            return {
+                "boss_quick": _boss_quick,
+                "boss_full": _boss_full,
+                "boss_only_centers": _boss_only_centers,
+                "char_only": _char_only,
+                "char_only_centers": _char_only_centers,
+                "pair": _pair,
+                "pair_centers": _pair_centers,
+            }
+        finally:
+            self._boss_detect_last_boss_center = _saved_detect_state["_boss_detect_last_boss_center"]
+            self._boss_detect_last_char_center = _saved_detect_state["_boss_detect_last_char_center"]
+            self._boss_detect_last_boss_seen_at = _saved_detect_state["_boss_detect_last_boss_seen_at"]
+            self._boss_detect_last_char_seen_at = _saved_detect_state["_boss_detect_last_char_seen_at"]
+
+    def _snapshot_boss_detect_state(self):
+        return {
+            "_boss_detect_last_boss_center": getattr(self, "_boss_detect_last_boss_center", None),
+            "_boss_detect_last_char_center": getattr(self, "_boss_detect_last_char_center", None),
+            "_boss_detect_last_boss_seen_at": float(getattr(self, "_boss_detect_last_boss_seen_at", 0.0) or 0.0),
+            "_boss_detect_last_char_seen_at": float(getattr(self, "_boss_detect_last_char_seen_at", 0.0) or 0.0),
+            "_boss_text_detect_history": dict(getattr(self, "_boss_text_detect_history", {}) or {}),
+        }
+
+    def _restore_boss_detect_state(self, state):
+        self._boss_detect_last_boss_center = state.get("_boss_detect_last_boss_center")
+        self._boss_detect_last_char_center = state.get("_boss_detect_last_char_center")
+        self._boss_detect_last_boss_seen_at = float(state.get("_boss_detect_last_boss_seen_at", 0.0) or 0.0)
+        self._boss_detect_last_char_seen_at = float(state.get("_boss_detect_last_char_seen_at", 0.0) or 0.0)
+        self._boss_text_detect_history = dict(state.get("_boss_text_detect_history", {}) or {})
+
+    def _get_bosstest_search_region(self):
+        _path = str(getattr(self, "_bosstest_boss_image_path", "") or "").strip()
+        if not _path:
+            return None
+        _preset = get_image_preset("boss", path=_path)
+        _region = _preset.get("region") if _preset else None
+        if isinstance(_region, (list, tuple)) and len(_region) == 4:
+            return [int(v) for v in _region]
+        return None
+
+    def _capture_bosstest_screen_bgr(self):
+        screenshot = _safe_grab()
+        if screenshot is None:
+            raise RuntimeError("스크린샷 캡처 실패 (타임아웃)")
+        screen = np.array(screenshot)
+        return cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
+
+    def _translate_bosstest_match_result(self, result, offset_x: int, offset_y: int):
+        if not result or not getattr(result, "found", False):
+            return result
+        from ..analyzer.template_matcher import MatchResult
+
+        _x = int(getattr(result, "x", 0) or 0) + int(offset_x)
+        _y = int(getattr(result, "y", 0) or 0) + int(offset_y)
+        _w = int(getattr(result, "width", 0) or 0)
+        _h = int(getattr(result, "height", 0) or 0)
+        _cx = int(getattr(result, "center_x", 0) or 0) + int(offset_x)
+        _cy = int(getattr(result, "center_y", 0) or 0) + int(offset_y)
+        return MatchResult(
+            found=True,
+            x=_x,
+            y=_y,
+            width=_w,
+            height=_h,
+            confidence=float(getattr(result, "confidence", 0.0) or 0.0),
+            center_x=_cx,
+            center_y=_cy,
+        )
+
+    def _build_bosstest_ocr_payload(self, screen_bgr: np.ndarray, boss_img_path: str, char_img_path: str | None = None, search_region=None):
+        from ..analyzer.template_matcher import MatchResult
+
+        _target_text = self._get_boss_ocr_target_text(boss_img_path)
+        _search_region = self._normalize_screen_region(search_region, screen_bgr.shape)
+        _configured_region = list(_search_region) if _search_region is not None else None
+        _char_path = self._resolve_template_image_path(char_img_path or "")
+        if not _char_path or not Path(_char_path).exists():
+            _char_path = ""
+
+        _evidence = self._get_boss_frame_detector().detect_frame(
+            screen_bgr,
+            boss_img_path,
+            _char_path,
+            search_region=_search_region,
+            relaxed_boss=False,
+            relaxed_char=False,
+            full_screen_fallback=bool(_search_region),
+            force_full_screen=False,
+            allow_ocr_fallback=True,
+            allow_screen_center_anchor=False,
+        )
+        _det = dict(_evidence.raw_det or {})
+        _boss_found = bool(_evidence.found)
+        _used_fullscreen_fallback = str(_evidence.detect_reason or "") == "full_screen_fallback"
+        _boss_match_text = str(_evidence.boss_match_text or "")
+        _boss_variant = str(_evidence.boss_ocr_variant or "")
+        _boss_conf = float(_evidence.confidence or 0.0)
+        _boss_result = _evidence.raw_result if _evidence.raw_result is not None else MatchResult(found=False, confidence=_boss_conf)
+        _detect_reason = str(_evidence.detect_reason or ("region" if _search_region is not None else "full_screen"))
+        if not _boss_found:
+            _detect_reason = (
+                "region_visual_no_match_after_fallback"
+                if _used_fullscreen_fallback else
+                "visual_no_match"
+            )
+        _stabilized_state = (
+            "visual_first"
+            if _evidence.visual_found else
+            ("ocr_fallback" if _evidence.ocr_fallback_used else "no_match")
+        )
+
+        return {
+            "boss_found": _boss_found,
+            "char_found": bool(_evidence.char_found),
+            "boss_result": _boss_result,
+            "char_result": _det.get("char_result"),
+            "boss_info": _det.get("boss_info"),
+            "char_info": _det.get("char_info"),
+            "boss_match_source": _evidence.match_source or _det.get("boss_match_source"),
+            "visual_source": _evidence.visual.source,
+            "ocr_fallback_used": bool(_evidence.ocr_fallback_used),
+            "stabilized_state": _stabilized_state,
+            "boss_target_text": _evidence.boss_target_text or _target_text,
+            "boss_match_text": _boss_match_text,
+            "boss_ocr_variant": _boss_variant,
+            "roi": _det.get("roi"),
+            "roi_applied": bool(_evidence.roi_applied),
+            "search_region": list(_search_region) if _search_region is not None else None,
+            "configured_region": _configured_region,
+            "used_fullscreen_fallback": _used_fullscreen_fallback,
+            "char_anchor_source": _evidence.anchor_source,
+            "char_anchor_valid": bool(_evidence.anchor_valid),
+            "dx_px": int(_evidence.dx_px or 0) if _boss_found else None,
+            "dy_px": int(_evidence.dy_px or 0) if _boss_found else None,
+            "dx_tiles": int(_evidence.dx_tiles or 0) if _boss_found else None,
+            "dy_tiles": int(_evidence.dy_tiles or 0) if _boss_found else None,
+            "tile_dist": int(_evidence.tile_dist or 0) if _boss_found else None,
+            "pixel_dist": float(_evidence.pixel_dist or 0.0) if _boss_found else None,
+            "detect_reason": _detect_reason,
+        }
+
+    def _build_bosstest_overlay_bgr(self, screen_bgr: np.ndarray, det: dict, search_region):
+        _view = screen_bgr.copy()
+        _h, _w = _view.shape[:2]
+
+        def _draw_box(_res, _color):
+            if not _res or not getattr(_res, "found", False):
+                return
+            _x = int(getattr(_res, "x", 0) or 0)
+            _y = int(getattr(_res, "y", 0) or 0)
+            _rw = int(getattr(_res, "width", 0) or 0)
+            _rh = int(getattr(_res, "height", 0) or 0)
+            cv2.rectangle(_view, (_x, _y), (_x + _rw, _y + _rh), _color, 2)
+            cv2.drawMarker(
+                _view,
+                (int(getattr(_res, "center_x", 0) or 0), int(getattr(_res, "center_y", 0) or 0)),
+                _color,
+                markerType=cv2.MARKER_CROSS,
+                markerSize=14,
+                thickness=2,
+            )
+
+        def _draw_detect_circle(_res, _color, *, _label: str = "BOSS"):
+            if not _res or not getattr(_res, "found", False):
+                return
+            _x = int(getattr(_res, "x", 0) or 0)
+            _y = int(getattr(_res, "y", 0) or 0)
+            _rw = max(1, int(getattr(_res, "width", 0) or 0))
+            _rh = max(1, int(getattr(_res, "height", 0) or 0))
+            _cx = int(getattr(_res, "center_x", 0) or 0)
+            _cy = int(getattr(_res, "center_y", 0) or 0)
+            _radius = max(14, int(max(_rw, _rh) * 0.9))
+            cv2.circle(_view, (_cx, _cy), _radius, _color, 3)
+            cv2.circle(_view, (_cx, _cy), max(6, _radius // 5), _color, 2)
+            _tick_a = (_cx - max(6, _radius // 4), _cy + max(2, _radius // 10))
+            _tick_b = (_cx - max(2, _radius // 10), _cy + max(6, _radius // 4))
+            _tick_c = (_cx + max(8, _radius // 3), _cy - max(8, _radius // 5))
+            cv2.line(_view, _tick_a, _tick_b, _color, 3)
+            cv2.line(_view, _tick_b, _tick_c, _color, 3)
+            _label_y = max(18, _y - 8)
+            cv2.putText(
+                _view,
+                str(_label or "BOSS"),
+                (max(0, _x), _label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                _color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        if search_region and len(search_region) == 4:
+            _x1, _y1, _x2, _y2 = [int(v) for v in search_region]
+            cv2.rectangle(_view, (_x1, _y1), (_x2, _y2), (255, 180, 0), 2)
+        _roi = det.get("roi")
+        if isinstance(_roi, (list, tuple)) and len(_roi) == 4:
+            _x1, _y1, _x2, _y2 = [int(v) for v in _roi]
+            cv2.rectangle(_view, (_x1, _y1), (_x2, _y2), (0, 220, 255), 1)
+
+        _draw_box(det.get("boss_result"), (70, 70, 255))
+        _draw_box(det.get("char_result"), (70, 220, 90))
+        _draw_detect_circle(det.get("boss_result"), (40, 210, 255), _label="BOSS")
+
+        if det.get("char_anchor_source") == "screen_center":
+            cv2.drawMarker(
+                _view,
+                (_w // 2, _h // 2),
+                (255, 255, 255),
+                markerType=cv2.MARKER_TILTED_CROSS,
+                markerSize=18,
+                thickness=2,
+            )
+
+        _boss_res = det.get("boss_result")
+        _boss_conf = float(getattr(_boss_res, "confidence", 0.0) or 0.0)
+        _lines = [
+            f"boss={'Y' if det.get('boss_found') else 'N'} conf={_boss_conf:.1%} reason={det.get('detect_reason') or '-'}",
+            f"anchor={det.get('char_anchor_source') or '-'} valid={'Y' if det.get('char_anchor_valid') else 'N'} src={det.get('boss_match_source') or '-'} visual={det.get('visual_source') or '-'}",
+            f"text={det.get('boss_target_text') or '-'} match={det.get('boss_match_text') or '-'}",
+            f"dx={self._format_boss_debug_value(det.get('dx_px'))} dy={self._format_boss_debug_value(det.get('dy_px'))} td={self._format_boss_debug_value(det.get('tile_dist'))} px={self._format_boss_debug_value(det.get('pixel_dist'))} state={det.get('stabilized_state') or '-'}",
+            f"region={self._format_image_search_region(search_region)} roi={'Y' if det.get('roi_applied') else 'N'}",
+        ]
+        _y = 24
+        for _line in _lines:
+            cv2.putText(_view, _line, (12, _y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(_view, _line, (12, _y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (240, 240, 240), 1, cv2.LINE_AA)
+            _y += 22
+        return _view
+
+    def _make_bosstest_preview_image(self, screen_bgr: np.ndarray, det: dict, search_region):
+        _overlay = self._build_bosstest_overlay_bgr(screen_bgr, det, search_region)
+        _h, _w = _overlay.shape[:2]
+        _max_w = 420
+        if _w > _max_w:
+            _new_h = max(1, int(round(_h * (_max_w / _w))))
+            _overlay = cv2.resize(_overlay, (_max_w, _new_h), interpolation=cv2.INTER_AREA)
+        _pil = Image.fromarray(cv2.cvtColor(_overlay, cv2.COLOR_BGR2RGB))
+        return ctk.CTkImage(light_image=_pil, dark_image=_pil, size=_pil.size)
+
+    def _show_bosstest_preview(self, ctk_img):
+        self._bosstest_preview_image = ctk_img
+        self._bosstest_preview_label.configure(image=ctk_img, text="")
+
+    def _save_bosstest_debug_frame(self, payload: dict, *, prefix: str) -> str:
+        _out_dir = DATA_DIR / "debug" / "bosstest"
+        _out_dir.mkdir(parents=True, exist_ok=True)
+        _stamp = time.strftime("%Y%m%d_%H%M%S")
+        _base = f"{prefix}_{_stamp}_{int((time.time() % 1) * 1000):03d}"
+        _png_path = _out_dir / f"{_base}.png"
+        _json_path = _out_dir / f"{_base}.json"
+        _overlay = self._build_bosstest_overlay_bgr(payload["screen_bgr"], payload["det"], payload["search_region"])
+        _ok, _buf = cv2.imencode(".png", _overlay)
+        if not _ok:
+            raise RuntimeError("보스테스트 실패 프레임 인코딩 실패")
+        _buf.tofile(str(_png_path))
+        _meta = {
+            "boss_image": self._bosstest_boss_image_path,
+            "character_image": self._bosstest_char_image_path,
+            "search_region": payload.get("search_region"),
+            "boss_found": bool(payload["det"].get("boss_found")),
+            "char_found": bool(payload["det"].get("char_found")),
+            "detect_reason": payload["det"].get("detect_reason"),
+            "boss_match_source": payload["det"].get("boss_match_source"),
+            "char_anchor_source": payload["det"].get("char_anchor_source"),
+            "char_anchor_valid": bool(payload["det"].get("char_anchor_valid")),
+            "dx_px": payload["det"].get("dx_px"),
+            "dy_px": payload["det"].get("dy_px"),
+            "tile_dist": payload["det"].get("tile_dist"),
+            "pixel_dist": payload["det"].get("pixel_dist"),
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _json_path.write_text(json.dumps(_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(_png_path)
+
+    def _run_bosstest_live_detect_once(self):
+        _screen_bgr = self._capture_bosstest_screen_bgr()
+        _search_region = self._get_bosstest_search_region()
+        _boss_image_path = self._resolve_template_image_path(self._bosstest_boss_image_path or "")
+        _char_image_path = self._resolve_template_image_path(self._bosstest_char_image_path or "")
+        if not _boss_image_path or not Path(_boss_image_path).exists():
+            raise RuntimeError("보스 이미지 경로가 유효하지 않습니다")
+        if _char_image_path and not Path(_char_image_path).exists():
+            _char_image_path = ""
+        _det_box = {}
+        _err_box = {}
+
+        def _detect():
+            try:
+                _det_box["value"] = self._build_bosstest_ocr_payload(
+                    _screen_bgr,
+                    _boss_image_path,
+                    _char_image_path,
+                    search_region=_search_region,
+                )
+            except Exception as e:
+                _err_box["value"] = e
+
+        _t = threading.Thread(target=_detect, daemon=True)
+        _t.start()
+        _t.join(timeout=2.0)
+        if _t.is_alive():
+            raise RuntimeError("보스테스트 탐지 타임아웃 (2.0초)")
+        if "value" in _err_box:
+            raise _err_box["value"]
+        _det = _det_box.get("value")
+        if not isinstance(_det, dict):
+            raise RuntimeError("보스테스트 탐지 결과가 비어 있습니다")
+        return {
+            "screen_bgr": _screen_bgr,
+            "search_region": _search_region,
+            "det": _det,
+        }
+
+    def _run_bosstest_live_session(self, *, sample_count: int = 1, interval_s: float = 0.12):
+        _saved_state = self._snapshot_boss_detect_state()
+        _results = []
+        try:
+            self._clear_boss_text_detect_history(channel="bosstest")
+            self._boss_detect_last_boss_center = None
+            self._boss_detect_last_char_center = None
+            self._boss_detect_last_boss_seen_at = 0.0
+            self._boss_detect_last_char_seen_at = 0.0
+            for _idx in range(max(1, int(sample_count))):
+                _payload = self._run_bosstest_live_detect_once()
+                _results.append(_payload)
+                if _idx + 1 < sample_count:
+                    time.sleep(max(0.05, float(interval_s)))
+        finally:
+            self._restore_boss_detect_state(_saved_state)
+
+        _boss_hits = sum(1 for _item in _results if _item["det"].get("boss_found"))
+        _conf_list = [
+            float(getattr(_item["det"].get("boss_result"), "confidence", 0.0) or 0.0)
+            for _item in _results
+            if _item["det"].get("boss_result") is not None
+        ]
+        _avg_conf = (sum(_conf_list) / len(_conf_list)) if _conf_list else 0.0
+        _best_conf = max(_conf_list) if _conf_list else 0.0
+        return {
+            "samples": len(_results),
+            "boss_hits": _boss_hits,
+            "avg_conf": _avg_conf,
+            "best_conf": _best_conf,
+            "results": _results,
+            "last": _results[-1] if _results else None,
+            "last_failed": next((_item for _item in reversed(_results) if not _item["det"].get("boss_found")), None),
+        }
+
+    def _set_bosstest_buttons_enabled(self, enabled: bool, *, main_text: str | None = None):
+        _main_text = main_text or "실화면 테스트"
+        self._bosstest_button.configure(
+            text=_main_text,
+            state="normal" if enabled else "disabled",
+            fg_color="#5e81ac" if enabled else "#4c566a",
+            hover_color="#6e91bc" if enabled else "#4c566a",
+        )
+        for _btn in [
+            getattr(self, "_bosstest_cont_button", None),
+            getattr(self, "_bosstest_failsave_button", None),
+            getattr(self, "_bosstest_selfcheck_button", None),
+            getattr(self, "_bosstest_copy_button", None),
+        ]:
+            if _btn is None:
+                continue
+            _btn.configure(state="normal" if enabled else "disabled")
+
+    def _set_bosstest_result_text(self, text: str, color: str):
+        _text = str(text or "")
+        self._bosstest_last_result_text = _text
+        self._bosstest_result_label.configure(text=_text, text_color=color)
+
+    def _copy_bosstest_result_text(self, *_args):
+        _parts = [str(getattr(self, "_bosstest_last_result_text", "") or "").strip()]
+        _ocr_text = str(getattr(getattr(self, "_bosstest_boss_ocr_label", None), "cget", lambda *_: "")("text") or "").strip()
+        if _ocr_text:
+            _parts.append(_ocr_text)
+        _payload = "\n".join([_item for _item in _parts if _item])
+        if not _payload:
+            self._append_log("[보스테스트] 복사할 결과가 없음", force=True)
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(_payload)
+            self.update()
+            self._append_log("[보스테스트] 결과 복사 완료", force=True)
+        except Exception as e:
+            self._append_log(f"[보스테스트] 결과 복사 실패: {e}", force=True)
 
     def _itemtest_select(self):
         """아이템 테스트용 이미지 선택"""
@@ -18119,53 +20425,27 @@ class GameModeDialog(ctk.CTkToplevel):
         )
 
     def _bosstest_run(self):
-        """보스 테스트 시작/중지"""
+        """실화면 1프레임 보스 검출 테스트"""
+        self._bosstest_boss_image_path = self._resolve_template_image_path(self._bosstest_boss_image_path or "") or self._bosstest_boss_image_path
+        self._bosstest_char_image_path = self._resolve_template_image_path(self._bosstest_char_image_path or "") or self._bosstest_char_image_path
         if getattr(self, "_bosstest_running", False):
-            self._bosstest_stop_event.set()
-            self._bosstest_release_key()
-            self._bosstest_running = False
-            self._append_log("[보스테스트] 중지 요청", force=True)
-            try:
-                self._bosstest_button.configure(text="테스트", fg_color="#5e81ac", hover_color="#6e91bc")
-                self._bosstest_result_label.configure(
-                    text="결과: 보스 테스트 중지", text_color=COLORS["text_secondary"])
-            except (tk.TclError, RuntimeError):
-                pass
             return
 
-        if not self._bosstest_boss_image_path or not self._bosstest_char_image_path:
-            self._bosstest_result_label.configure(
-                text="결과: 보스 이미지와 캐릭터 이미지를 먼저 선택하세요",
-                text_color="#e05050",
-            )
+        if not self._bosstest_boss_image_path:
+            self._set_bosstest_result_text("결과: 보스 이미지를 먼저 선택하세요", "#e05050")
             return
 
-        self._bosstest_stop_event.clear()
         self._bosstest_running = True
-        self._append_log("[보스테스트] 시작", force=True)
-        self._bosstest_button.configure(text="중지", fg_color="#bf616a", hover_color="#cf717f")
-        self._bosstest_result_label.configure(
-            text="결과: 2초 안에 게임 창을 활성화하세요...",
-            text_color=COLORS["text_secondary"],
-        )
+        self._append_log("[보스테스트] 실화면 테스트 시작", force=True)
+        self._set_bosstest_buttons_enabled(False, main_text="검사중...")
+        self._set_bosstest_result_text("결과: 실화면 1프레임 검출 중...", COLORS["text_secondary"])
         self.update_idletasks()
 
         def _run():
-            current_key = None
             try:
-                import pyautogui
-                analysis_interval = max(0.08, float(getattr(self._config, "analysis_interval", 0.1) or 0.1))
-                _raw_arrival = int(getattr(self._config, "arrival_threshold", 30) or 30)
-                arrival_threshold = max(6, int(round(_raw_arrival * 0.5)))
-                stable_hits = 0
-                miss_count = 0
-
-                time.sleep(2.0)
-
                 def _set_status(text: str, color: str = COLORS["text_secondary"]):
                     try:
-                        self.after(0, lambda t=text, c=color: self._bosstest_result_label.configure(
-                            text=t, text_color=c))
+                        self.after(0, lambda t=text, c=color: self._set_bosstest_result_text(t, c))
                     except (tk.TclError, RuntimeError):
                         pass
 
@@ -18178,168 +20458,344 @@ class GameModeDialog(ctk.CTkToplevel):
                 def _fmt_conf(res) -> str:
                     return f"{float(getattr(res, 'confidence', 0.0)):.1%}"
 
-                _trace("게임 창 활성화 대기 2초")
+                _session = self._run_bosstest_live_session(sample_count=1, interval_s=0.12)
+                _payload = _session["last"]
+                if _payload is None:
+                    raise RuntimeError("실화면 테스트 결과가 없습니다")
+                self._bosstest_last_live_payload = _payload
+                _det = _payload["det"]
+                _preview = self._make_bosstest_preview_image(_payload["screen_bgr"], _det, _payload["search_region"])
+                try:
+                    self.after(0, lambda img=_preview: self._show_bosstest_preview(img))
+                except (tk.TclError, RuntimeError):
+                    pass
 
-                while not self._bosstest_stop_event.is_set():
-                    screenshot = pyautogui.screenshot()
-                    screen = np.array(screenshot)
-                    screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
+                _boss_res = _det.get("boss_result")
+                _boss_found = bool(_det.get("boss_found"))
+                _trace(
+                    "실화면 검출: "
+                    f"boss={_boss_found} conf={_fmt_conf(_boss_res)} "
+                    f"reason={_det.get('detect_reason') or '-'} "
+                    f"state={_det.get('stabilized_state') or '-'} "
+                    f"visual={_det.get('visual_source') or '-'} "
+                    f"ocr_fb={'Y' if _det.get('ocr_fallback_used') else 'N'} "
+                    f"variant={_det.get('boss_ocr_variant') or '-'} "
+                    f"text={_det.get('boss_target_text') or '-'} "
+                    f"match={_det.get('boss_match_text') or '-'} "
+                    f"anchor={_det.get('char_anchor_source') or '-'} "
+                    f"dx={self._format_boss_debug_value(_det.get('dx_px'))} "
+                    f"dy={self._format_boss_debug_value(_det.get('dy_px'))} "
+                    f"td={self._format_boss_debug_value(_det.get('tile_dist'))}"
+                )
 
-                    detected = self._detect_boss_pair(
-                        screen,
-                        self._bosstest_boss_image_path,
-                        self._bosstest_char_image_path,
-                    )
-                    boss_found = bool(detected.get("boss_found"))
-                    char_found = bool(detected.get("char_found"))
-                    boss_result = detected["boss_result"]
-                    char_result = detected["char_result"]
-                    boss_info = detected["boss_info"] or {}
-                    char_info = detected["char_info"] or {}
-                    boss_binary = boss_info.get("binary")
-                    boss_color = boss_info.get("color")
-                    boss_focus = boss_info.get("focus")
-                    char_binary = char_info.get("binary")
-                    char_color = char_info.get("color")
-                    char_focus = char_info.get("focus")
-
-                    _trace(
-                        "감지 "
-                        f"boss_found={boss_found} char_found={char_found} "
-                        f"boss(bin={_fmt_conf(boss_binary)} col={_fmt_conf(boss_color)} focus={_fmt_conf(boss_focus)}) "
-                        f"char(bin={_fmt_conf(char_binary)} col={_fmt_conf(char_color)} focus={_fmt_conf(char_focus)})"
-                    )
-
-                    if not boss_found or not char_found:
-                        stable_hits = max(0, stable_hits - 1)
-                        miss_count += 1
-                        if current_key:
-                            _trace(f"이동중단: {current_key} (감지실패)")
-                            current_key = None
-                            self._bosstest_current_key = None
-                        boss_msg = (
-                            f"보스 미발견(bin {getattr(boss_binary, 'confidence', 0.0):.1%}/col {getattr(boss_color, 'confidence', 0.0):.1%}/focus {getattr(boss_focus, 'confidence', 0.0):.1%})"
-                            if not boss_found else
-                            f"보스 확인(bin {getattr(boss_binary, 'confidence', 0.0):.1%}/col {getattr(boss_color, 'confidence', 0.0):.1%}/focus {getattr(boss_focus, 'confidence', 0.0):.1%})"
-                        )
-                        char_msg = (
-                            f"캐릭터 미발견(bin {getattr(char_binary, 'confidence', 0.0):.1%}/col {getattr(char_color, 'confidence', 0.0):.1%}/focus {getattr(char_focus, 'confidence', 0.0):.1%})"
-                            if not char_found else
-                            f"캐릭터 확인(bin {getattr(char_binary, 'confidence', 0.0):.1%}/col {getattr(char_color, 'confidence', 0.0):.1%}/focus {getattr(char_focus, 'confidence', 0.0):.1%})"
-                        )
-                        _trace(f"감지실패 miss={miss_count} stable={stable_hits} | {boss_msg} | {char_msg}")
-                        _set_status(f"결과: {boss_msg} / {char_msg}", "#e05050")
-                        time.sleep(analysis_interval)
-                        continue
-
-                    miss_count = 0
-                    stable_hits += 1
-                    dx_pixel = detected["dx_px"]
-                    dy_pixel = detected["dy_px"]
-                    distance = detected["pixel_dist"]
-                    est_dx_tiles = detected["dx_tiles"]
-                    est_dy_tiles = detected["dy_tiles"]
-
-                    _trace(
-                        f"상대거리 stable={stable_hits} "
-                        f"dx={dx_pixel:+.0f}px dy={dy_pixel:+.0f}px "
-                        f"tile=({est_dx_tiles:+d},{est_dy_tiles:+d}) dist={distance:.1f}"
-                    )
-
-                    if abs(dx_pixel) > abs(dy_pixel):
-                        direction = "right" if dx_pixel > 0 else "left"
-                    else:
-                        direction = "down" if dy_pixel > 0 else "up"
-
-                    if stable_hits < 2:
-                        _trace(
-                            f"재확인중 stable={stable_hits} "
-                            f"boss={boss_result.confidence:.1%} char={char_result.confidence:.1%}"
-                        )
-                        _pressed_key, _step_ms, _smooth_used = self._press_boss_follow_key(direction, stop_event=self._bosstest_stop_event)
-                        current_key = _pressed_key
-                        self._bosstest_current_key = _pressed_key
-                        _trace(f"재확인이동: {_pressed_key} dir={direction} step={_step_ms}ms smooth={_smooth_used}")
-                        _set_status(
-                            f"결과: 재확인중 boss({boss_result.confidence:.1%}) "
-                            f"char({char_result.confidence:.1%}) "
-                            f"dx={dx_pixel:+.0f}px dy={dy_pixel:+.0f}px",
-                            COLORS["text_secondary"],
-                        )
-                        time.sleep(analysis_interval)
-                        continue
-
-                    if distance <= arrival_threshold:
-                        if current_key:
-                            _trace(f"이동중단: {current_key} (근접완료)")
-                            current_key = None
-                            self._bosstest_current_key = None
-                        _trace(
-                            f"근접완료 boss=({boss_result.center_x},{boss_result.center_y}) "
-                            f"char=({char_result.center_x},{char_result.center_y}) "
-                            f"tile=({est_dx_tiles:+d},{est_dy_tiles:+d})"
-                        )
-                        _set_status(
-                            f"결과: 근접 완료 boss({boss_result.center_x},{boss_result.center_y}) "
-                            f"char({char_result.center_x},{char_result.center_y}) "
-                            f"추정타일=({est_dx_tiles:+d},{est_dy_tiles:+d})",
-                            "#50c878",
-                        )
-                        time.sleep(analysis_interval)
-                        continue
-
-                    new_key = self._config.move_keys.get(direction, direction)
-
-                    if new_key != current_key:
-                        if current_key:
-                            _trace(f"방향전환: {current_key}→{new_key}")
-                        current_key = new_key
-                        self._bosstest_current_key = new_key
-                    else:
-                        _trace(f"이동 유지: {new_key} dir={direction}")
-
-                    _pressed_key, _step_ms, _smooth_used = self._press_boss_follow_key(direction, stop_event=self._bosstest_stop_event)
-                    self._bosstest_current_key = _pressed_key
-                    _trace(f"이동키 입력: {_pressed_key} dir={direction} step={_step_ms}ms smooth={_smooth_used}")
-
+                if _boss_found:
                     _set_status(
-                        f"결과: 추적중 dir={direction} boss({boss_result.center_x},{boss_result.center_y}) "
-                        f"char({char_result.center_x},{char_result.center_y}) "
-                        f"dx={dx_pixel:+.0f}px dy={dy_pixel:+.0f}px "
-                        f"추정타일=({est_dx_tiles:+d},{est_dy_tiles:+d})",
-                        "#5e81ac",
+                        f"결과: 실화면 검출 성공 conf={_fmt_conf(_boss_res)} "
+                        f"reason={_det.get('detect_reason') or '-'} "
+                        f"state={_det.get('stabilized_state') or '-'} "
+                        f"visual={_det.get('visual_source') or '-'} "
+                        f"ocr_fb={'Y' if _det.get('ocr_fallback_used') else 'N'} "
+                        f"variant={_det.get('boss_ocr_variant') or '-'} "
+                        f"text={_det.get('boss_target_text') or '-'} "
+                        f"match={_det.get('boss_match_text') or '-'} "
+                        f"anchor={_det.get('char_anchor_source') or '-'} "
+                        f"dx={self._format_boss_debug_value(_det.get('dx_px'))} "
+                        f"dy={self._format_boss_debug_value(_det.get('dy_px'))} "
+                        f"td={self._format_boss_debug_value(_det.get('tile_dist'))}",
+                        "#50c878",
                     )
-                    time.sleep(analysis_interval)
+                else:
+                    _set_status(
+                        f"결과: 실화면 검출 실패 conf={_fmt_conf(_boss_res)} "
+                        f"reason={_det.get('detect_reason') or '-'} "
+                        f"state={_det.get('stabilized_state') or '-'} "
+                        f"visual={_det.get('visual_source') or '-'} "
+                        f"ocr_fb={'Y' if _det.get('ocr_fallback_used') else 'N'} "
+                        f"variant={_det.get('boss_ocr_variant') or '-'} "
+                        f"text={_det.get('boss_target_text') or '-'} "
+                        f"match={_det.get('boss_match_text') or '-'} "
+                        f"anchor={_det.get('char_anchor_source') or '-'} "
+                        f"region={self._format_image_search_region(_det.get('configured_region') or _payload.get('search_region'))}",
+                        "#e05050",
+                    )
+                try:
+                    _ocr_preview = str(_det.get("boss_target_text") or "-")
+                    self.after(
+                        0,
+                        lambda t=_ocr_preview, m=str(_det.get("boss_match_text") or ""): self._bosstest_boss_ocr_label.configure(
+                            text=f"보스 OCR: {t}" + (f"  |  실화면 매치: {m}" if m else ""),
+                            text_color="#f2f2f2",
+                        ),
+                    )
+                except (tk.TclError, RuntimeError):
+                    pass
             except Exception as e:
                 try:
                     self.after(0, lambda err=str(e): self._append_log(f"[보스테스트] 오류: {err}", force=True))
                 except (tk.TclError, RuntimeError):
                     pass
                 try:
-                    self.after(0, lambda err=str(e): self._bosstest_result_label.configure(
-                        text=f"결과: 오류 - {err}", text_color="#e05050"))
+                    self.after(0, lambda err=str(e): self._set_bosstest_result_text(f"결과: 오류 - {err}", "#e05050"))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda err=str(e): self._bosstest_boss_ocr_label.configure(
+                        text=f"보스 OCR: 오류 - {err}", text_color="#ff8f8f"))
                 except (tk.TclError, RuntimeError):
                     pass
             finally:
-                try:
-                    if current_key:
-                        import pyautogui
-                        get_input_controller().key_up(current_key)
-                        try:
-                            self.after(0, lambda k=current_key: self._append_log(f"[보스테스트] 이동키 해제: {k} (종료)", force=True))
-                        except (tk.TclError, RuntimeError):
-                            pass
-                except Exception:
-                    pass
-                self._bosstest_current_key = None
                 self._bosstest_running = False
                 try:
                     self.after(0, lambda: self._append_log("[보스테스트] 종료", force=True))
                 except (tk.TclError, RuntimeError):
                     pass
                 try:
-                    self.after(0, lambda: self._bosstest_button.configure(
-                        text="테스트", fg_color="#5e81ac", hover_color="#6e91bc"))
+                    self.after(0, lambda: self._set_bosstest_buttons_enabled(True))
+                except (tk.TclError, RuntimeError):
+                    pass
+
+        self._bosstest_thread = threading.Thread(target=_run, daemon=True)
+        self._bosstest_thread.start()
+
+    def _bosstest_run_continuous(self):
+        """실화면 연속 보스 검출 테스트"""
+        self._bosstest_boss_image_path = self._resolve_template_image_path(self._bosstest_boss_image_path or "") or self._bosstest_boss_image_path
+        self._bosstest_char_image_path = self._resolve_template_image_path(self._bosstest_char_image_path or "") or self._bosstest_char_image_path
+        if getattr(self, "_bosstest_running", False):
+            return
+        if not self._bosstest_boss_image_path:
+            self._set_bosstest_result_text("결과: 보스 이미지를 먼저 선택하세요", "#e05050")
+            return
+
+        self._bosstest_running = True
+        self._append_log("[보스테스트] 연속 테스트 시작", force=True)
+        self._set_bosstest_buttons_enabled(False, main_text="검사중...")
+        self._set_bosstest_result_text("결과: 실화면 연속 검출 중...", COLORS["text_secondary"])
+        self.update_idletasks()
+
+        def _run():
+            try:
+                _session = self._run_bosstest_live_session(sample_count=15, interval_s=0.12)
+                _payload = _session["last"]
+                if _payload is None:
+                    raise RuntimeError("연속 테스트 결과가 없습니다")
+                self._bosstest_last_live_payload = _payload
+                _preview = self._make_bosstest_preview_image(_payload["screen_bgr"], _payload["det"], _payload["search_region"])
+                try:
+                    self.after(0, lambda img=_preview: self._show_bosstest_preview(img))
+                except (tk.TclError, RuntimeError):
+                    pass
+                _avg = _session["avg_conf"]
+                _best = _session["best_conf"]
+                _hits = int(_session["boss_hits"])
+                _samples = int(_session["samples"])
+                self._append_log(
+                    f"[보스테스트] 연속 검출 요약: hit={_hits}/{_samples} avg={_avg:.1%} best={_best:.1%}",
+                    force=True,
+                )
+                _color = "#50c878" if _hits > 0 else "#e05050"
+                self._set_bosstest_result_text(
+                    f"결과: 연속 { _hits }/{ _samples } 프레임 검출 avg={_avg:.1%} best={_best:.1%}",
+                    _color,
+                )
+            except Exception as e:
+                try:
+                    self.after(0, lambda err=str(e): self._append_log(f"[보스테스트] 오류: {err}", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda err=str(e): self._set_bosstest_result_text(f"결과: 오류 - {err}", "#e05050"))
+                except (tk.TclError, RuntimeError):
+                    pass
+            finally:
+                self._bosstest_running = False
+                try:
+                    self.after(0, lambda: self._append_log("[보스테스트] 종료", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda: self._set_bosstest_buttons_enabled(True))
+                except (tk.TclError, RuntimeError):
+                    pass
+
+        self._bosstest_thread = threading.Thread(target=_run, daemon=True)
+        self._bosstest_thread.start()
+
+    def _bosstest_save_failure_frame(self):
+        """현재 실화면에서 실패 프레임 저장"""
+        self._bosstest_boss_image_path = self._resolve_template_image_path(self._bosstest_boss_image_path or "") or self._bosstest_boss_image_path
+        self._bosstest_char_image_path = self._resolve_template_image_path(self._bosstest_char_image_path or "") or self._bosstest_char_image_path
+        if getattr(self, "_bosstest_running", False):
+            return
+        if not self._bosstest_boss_image_path:
+            self._set_bosstest_result_text("결과: 보스 이미지를 먼저 선택하세요", "#e05050")
+            return
+
+        self._bosstest_running = True
+        self._append_log("[보스테스트] 실패 프레임 저장 시작", force=True)
+        self._set_bosstest_buttons_enabled(False, main_text="검사중...")
+        self._set_bosstest_result_text("결과: 실패 프레임 판별 중...", COLORS["text_secondary"])
+        self.update_idletasks()
+
+        def _run():
+            try:
+                _session = self._run_bosstest_live_session(sample_count=1, interval_s=0.12)
+                _payload = _session["last"]
+                if _payload is None:
+                    raise RuntimeError("실패 프레임 테스트 결과가 없습니다")
+                self._bosstest_last_live_payload = _payload
+                _preview = self._make_bosstest_preview_image(_payload["screen_bgr"], _payload["det"], _payload["search_region"])
+                try:
+                    self.after(0, lambda img=_preview: self._show_bosstest_preview(img))
+                except (tk.TclError, RuntimeError):
+                    pass
+                if _payload["det"].get("boss_found"):
+                    self._append_log("[보스테스트] 현재 프레임은 검출 성공이라 실패 프레임을 저장하지 않음", force=True)
+                    self._set_bosstest_result_text("결과: 현재 프레임은 검출 성공이라 저장하지 않음", COLORS["text_secondary"])
+                else:
+                    _saved = self._save_bosstest_debug_frame(_payload, prefix="bosstest_fail")
+                    self._append_log(f"[보스테스트] 실패 프레임 저장: {_saved}", force=True)
+                    self._set_bosstest_result_text(f"결과: 실패 프레임 저장 완료 - {Path(_saved).name}", "#50c878")
+            except Exception as e:
+                try:
+                    self.after(0, lambda err=str(e): self._append_log(f"[보스테스트] 오류: {err}", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda err=str(e): self._set_bosstest_result_text(f"결과: 오류 - {err}", "#e05050"))
+                except (tk.TclError, RuntimeError):
+                    pass
+            finally:
+                self._bosstest_running = False
+                try:
+                    self.after(0, lambda: self._append_log("[보스테스트] 종료", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda: self._set_bosstest_buttons_enabled(True))
+                except (tk.TclError, RuntimeError):
+                    pass
+
+        self._bosstest_thread = threading.Thread(target=_run, daemon=True)
+        self._bosstest_thread.start()
+
+    def _bosstest_run_self_check(self):
+        """보스 이미지 자가검사 실행"""
+        self._bosstest_boss_image_path = self._resolve_template_image_path(self._bosstest_boss_image_path or "") or self._bosstest_boss_image_path
+        self._bosstest_char_image_path = self._resolve_template_image_path(self._bosstest_char_image_path or "") or self._bosstest_char_image_path
+        if getattr(self, "_bosstest_running", False):
+            return
+
+        if not self._bosstest_boss_image_path:
+            self._set_bosstest_result_text("결과: 보스 이미지를 먼저 선택하세요", "#e05050")
+            return
+
+        self._bosstest_running = True
+        self._append_log("[보스테스트] 자가검사 시작", force=True)
+        self._set_bosstest_buttons_enabled(False, main_text="검사중...")
+        self._set_bosstest_result_text("결과: 템플릿 자가검사 중...", COLORS["text_secondary"])
+        self.update_idletasks()
+
+        def _run():
+            try:
+                def _set_status(text: str, color: str = COLORS["text_secondary"]):
+                    try:
+                        self.after(0, lambda t=text, c=color: self._set_bosstest_result_text(t, c))
+                    except (tk.TclError, RuntimeError):
+                        pass
+
+                def _trace(message: str):
+                    try:
+                        self.after(0, lambda m=message: self._append_log(f"[보스테스트] {m}", force=True))
+                    except (tk.TclError, RuntimeError):
+                        pass
+
+                def _fmt_conf(res) -> str:
+                    return f"{float(getattr(res, 'confidence', 0.0)):.1%}"
+
+                _results = self._run_bosstest_self_check(
+                    self._bosstest_boss_image_path,
+                    self._bosstest_char_image_path,
+                )
+
+                _boss_quick = _results["boss_quick"]
+                _boss_full = _results["boss_full"]
+                _char_only = _results["char_only"]
+                _pair = _results["pair"]
+
+                _boss_full_res = (_boss_full or {}).get("boss_result")
+                _boss_quick_ok = bool(getattr(_boss_quick, "found", False))
+                _boss_full_ok = bool((_boss_full or {}).get("boss_found"))
+                _char_only_res = (_char_only or {}).get("result") if _char_only else None
+                _char_only_ok = bool(getattr(_char_only_res, "found", False)) if _char_only else None
+                _pair_boss_ok = bool((_pair or {}).get("boss_found")) if _pair is not None else None
+                _pair_char_ok = bool((_pair or {}).get("char_found")) if _pair is not None else None
+
+                _trace(f"보스 단독 quick: found={_boss_quick_ok} conf={_fmt_conf(_boss_quick)}")
+                _trace(
+                    "보스 단독 full: "
+                    f"found={_boss_full_ok} conf={_fmt_conf(_boss_full_res)} "
+                    f"src={(_boss_full or {}).get('boss_match_source') or '-'}"
+                )
+                if _char_only is not None:
+                    _trace(f"캐릭터 단독 full: found={_char_only_ok} conf={_fmt_conf(_char_only_res)}")
+                else:
+                    _trace("캐릭터 단독 full: 건너뜀 (캐릭터 이미지 없음)")
+                if _pair is not None:
+                    _trace(
+                        "보스/캐릭터 pair: "
+                        f"boss={_pair_boss_ok} char={_pair_char_ok} "
+                        f"dx={self._format_boss_debug_value(_pair.get('dx_px'))} "
+                        f"dy={self._format_boss_debug_value(_pair.get('dy_px'))} "
+                        f"td={self._format_boss_debug_value(_pair.get('tile_dist'))} "
+                        f"px={self._format_boss_debug_value(_pair.get('pixel_dist'))}"
+                    )
+                else:
+                    _trace("보스/캐릭터 pair: 건너뜀 (캐릭터 이미지 없음)")
+
+                _overall_ok = bool(_boss_quick_ok and _boss_full_ok)
+                if _char_only is not None:
+                    _overall_ok = bool(_overall_ok and _char_only_ok and _pair_boss_ok and _pair_char_ok)
+
+                if _overall_ok:
+                    _set_status(
+                        f"결과: 자가검사 성공 quick={_fmt_conf(_boss_quick)} full={_fmt_conf(_boss_full_res)} "
+                        + (
+                            f"pair(dx={self._format_boss_debug_value(_pair.get('dx_px'))},dy={self._format_boss_debug_value(_pair.get('dy_px'))},td={self._format_boss_debug_value(_pair.get('tile_dist'))})"
+                            if _pair is not None else
+                            "pair=건너뜀"
+                        ),
+                        "#50c878",
+                    )
+                    _trace("자가검사 결과: 성공")
+                else:
+                    _set_status(
+                        f"결과: 자가검사 실패 quick={_fmt_conf(_boss_quick)} full={_fmt_conf(_boss_full_res)} "
+                        + (
+                            f"pair(boss={_pair_boss_ok} char={_pair_char_ok})"
+                            if _pair is not None else
+                            "pair=건너뜀"
+                        ),
+                        "#e05050",
+                    )
+                    _trace("자가검사 결과: 실패")
+            except Exception as e:
+                try:
+                    self.after(0, lambda err=str(e): self._append_log(f"[보스테스트] 오류: {err}", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda err=str(e): self._set_bosstest_result_text(f"결과: 오류 - {err}", "#e05050"))
+                except (tk.TclError, RuntimeError):
+                    pass
+            finally:
+                self._bosstest_running = False
+                try:
+                    self.after(0, lambda: self._append_log("[보스테스트] 종료", force=True))
+                except (tk.TclError, RuntimeError):
+                    pass
+                try:
+                    self.after(0, lambda: self._set_bosstest_buttons_enabled(True))
                 except (tk.TclError, RuntimeError):
                     pass
 
@@ -22404,3 +24860,4 @@ class PlayerView(BaseView):
                 dispatcher.close()
             except Exception:
                 pass
+

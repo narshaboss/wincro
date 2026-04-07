@@ -1,13 +1,10 @@
-﻿### 2026-04-03: 자동사냥 플랜/트리거 갱신 릴리스 (v1.0.199)
-- data/plans/plan_20260118_174859.json
-  - 자동사냥 플랜에 enabled 필드를 일관되게 반영하고, 일부 단계의 트리거 이미지/신뢰도를 최신 캡처 기준으로 갱신했다.
-- data/templates/trigger_20260403_104151_383_crop_f37057.png
-- data/templates/trigger_20260403_104303_709_crop_f48001.png
-- data/templates/trigger_20260403_104622_623_crop_6a73e7.png
-- data/templates/trigger_20260403_104646_466_crop_6e074b.png
-  - 자동사냥 플랜이 참조하는 신규 트리거 크롭을 추가했다.
-- 제외 범위
-  - 보스굴/OCR/특화모드 미완성 변경은 이번 릴리스에 포함하지 않았다.
+﻿### 2026-04-07: Full update release prep (v1.0.200)
+
+- Bumped app/release metadata to `1.0.200`.
+- Updated release workflow title format to `v<version> app title`.
+- Included current auto-hunt plan updates and current boss/special-mode workspace changes in this full update.
+- Normalized remaining old boss waypoint character-image reference in the active boss plan before release.
+
 ### 2026-03-23: ?꾩뿰??蹂댁뒪援?0,0 sentinel 紐⑺몴 諛⑹뼱 + ?대? 留??대쫫 ?뺣━ (v1.0.177)
 
 - `src/ui/player_view.py`
@@ -2091,7 +2088,6 @@ self._mini_total_repeat = 1
   - `APP_VERSION` `1.0.169` -> `1.0.171`
 
 ---
-
 
 
 

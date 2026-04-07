@@ -126,10 +126,10 @@ jobs:
           $tag = "${{ steps.meta.outputs.tag }}"
           $zipPath = "${{ steps.package.outputs.zip_path }}"
           $notesPath = Join-Path $env:RUNNER_TEMP "release_notes.txt"
-          $title = "작업도우미 v$version"
+          $title = "v$version 작업도우미"
 
           @"
-          작업도우미 v$version
+          v$version 작업도우미
 
           Automated release package.
           "@ | Set-Content -Path $notesPath -Encoding utf8

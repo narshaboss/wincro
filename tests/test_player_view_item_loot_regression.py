@@ -60,7 +60,7 @@ def test_item_test_ui_and_runtime_helpers_exist():
 def test_boss_completion_paths_use_item_flow_before_arrival_keys():
     text = _read()
 
-    assert text.count("_run_boss_item_and_arrival_flow(") >= 4
+    assert text.count("_run_boss_item_and_arrival_flow(") >= 2
     assert "allow_item_loot=False" in text
     assert "self._handle_escape_hotkey" in text
 
@@ -113,15 +113,15 @@ def test_boss_dungeon_loop_runs_passive_item_detection_and_reuses_hint():
     assert "🎁 아이템 탐색 시작\" + (\" (상시탐지 힌트)\"" in text
 
 
-def test_boss_dungeon_item_detection_triggers_immediate_loot_transition():
+def test_boss_dungeon_item_detection_keeps_hint_only_until_kill_confirm():
     text = _read()
 
     assert "_boss_item_force_loot = False" in text
-    assert "🎁 아이템 감지 → 즉시 루팅 전환" in text
-    assert "if _boss_item_force_loot:" in text
-    assert "boss_appr_miss = 10" in text
-    assert "✅ 아이템 감지! (" in text
-    assert "self._stop_event.wait(0.35 if _boss_item_force_loot else 2.0)" in text
+    assert "🎁 아이템 후보 감지" in text
+    assert "boss-item-passive-hint" in text
+    assert "🎁 아이템 감지 → 즉시 루팅 전환" not in text
+    assert "boss-item-force-loot" not in text
+    assert "_boss_item_force_loot or (" not in text
 
 
 def test_item_loot_sequence_always_uses_z_before_click():
