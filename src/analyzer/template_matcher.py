@@ -1,7 +1,7 @@
-"""
-WinCro 이미지 템플릿 매칭 모듈
+﻿"""
+WinCro ????? ???????? ???
 
-OpenCV를 사용한 이미지 템플릿 매칭 기능을 제공합니다.
+OpenCV???????????? ???????? ?????????????
 """
 
 import cv2
@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class MatchResult:
-    """템플릿 매칭 결과"""
+    """???????? ???"""
     found: bool
     x: int = 0
     y: int = 0
@@ -31,60 +31,60 @@ class MatchResult:
 
     @property
     def center(self) -> Tuple[int, int]:
-        """중심 좌표"""
+        """??? ???"""
         return (self.center_x, self.center_y)
 
     @property
     def region(self) -> Tuple[int, int, int, int]:
-        """영역 (x, y, width, height)"""
+        """??? (x, y, width, height)"""
         return (self.x, self.y, self.width, self.height)
 
 
 class TemplateMatcher:
     """
-    템플릿 매칭 클래스
+    ???????? ?????
 
-    화면에서 특정 이미지를 찾는 기능을 제공합니다.
-    마스크 기반 매칭을 지원하여 배경 변화에 강건합니다.
+    ?????? ??? ?????????? ?????????????
+    ???????? ??????????????? ????? ????????
     """
 
-    # 캐시 크기 제한 (메모리 누수 방지)
+    # ??? ??? ??? (???????? ???)
     _MAX_CACHE_SIZE = 50
 
     def __init__(self):
-        """템플릿 매처 초기화"""
+        """Initialize template matcher."""
         self._config = get_config()
         self._cache: Dict[str, np.ndarray] = {}
         self._mask_cache: Dict[str, np.ndarray] = {}
 
     def _load_template(self, template_path: str) -> Optional[np.ndarray]:
         """
-        템플릿 이미지 로드
+        ?????????? ???
 
         Args:
-            template_path: 템플릿 이미지 경로
+            template_path: ?????????? ???
 
         Returns:
-            Optional[np.ndarray]: 로드된 이미지 또는 None
+            Optional[np.ndarray]: ?????????? ??? None
         """
-        # 캐시 확인
+        # ??? ???
         if template_path in self._cache:
             return self._cache[template_path]
 
         try:
             path = Path(template_path)
             if not path.exists():
-                logger.error(f"템플릿 파일을 찾을 수 없음: {template_path}")
+                logger.error(f"????????????? ?????: {template_path}")
                 return None
 
-            # 한글 경로 지원
+            # ??? ??? ????
             img_array = np.fromfile(str(path), np.uint8)
             template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if template is None:
-                logger.error(f"템플릿 이미지 로드 실패: {template_path}")
+                logger.error(f"?????????? ??? ???: {template_path}")
                 return None
 
-            # 캐시 크기 제한 - FIFO 방식으로 가장 먼저 추가된 항목 제거
+            # ??? ??? ??? - FIFO ?????? ??????? ???????? ???
             if len(self._cache) >= self._MAX_CACHE_SIZE:
                 try:
                     oldest_key = next(iter(self._cache))
@@ -92,21 +92,21 @@ class TemplateMatcher:
                 except (StopIteration, KeyError):
                     pass
 
-            # 캐시에 저장
+            # ?????????
             self._cache[template_path] = template
             return template
 
         except Exception as e:
-            logger.error(f"템플릿 로드 오류: {e}")
+            logger.error(f"???????? ???: {e}")
             return None
 
     def _load_mask(self, template_path: str) -> Optional[np.ndarray]:
         """
-        템플릿에 대응하는 마스크 이미지 로드
+        ?????? ????????????????? ???
 
-        마스크 파일명: 원본이름_mask.png
+        ?????????? ??????_mask.png
         """
-        # 캐시 확인
+        # ??? ???
         if template_path in self._mask_cache:
             return self._mask_cache[template_path]
 
@@ -117,14 +117,14 @@ class TemplateMatcher:
             if not mask_path.exists():
                 return None
 
-            # 마스크 로드 (그레이스케일)
+            # ???????? (??????????
             img_array = np.fromfile(str(mask_path), np.uint8)
             mask = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
 
             if mask is None:
                 return None
 
-            # 캐시 크기 제한
+            # ??? ??? ???
             if len(self._mask_cache) >= self._MAX_CACHE_SIZE:
                 try:
                     oldest_key = next(iter(self._mask_cache))
@@ -133,12 +133,65 @@ class TemplateMatcher:
                     pass
 
             self._mask_cache[template_path] = mask
-            logger.debug(f"마스크 로드 성공: {mask_path}")
+            logger.debug(f"???????? ???: {mask_path}")
             return mask
 
         except Exception as e:
-            logger.debug(f"마스크 로드 실패: {e}")
+            logger.debug(f"???????? ???: {e}")
             return None
+
+    @staticmethod
+    def _inspect_template_localization_image(
+        template: np.ndarray,
+        mask: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """위치 추정용 템플릿 구조를 점검한다."""
+        if template is None:
+            return {"valid": False, "reason": "missing_template"}
+
+        if len(template.shape) == 3:
+            gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = template.copy()
+
+        h, w = gray.shape[:2]
+        area = int(h * w)
+        unique_cols = 0
+        mean_col_delta = 0.0
+        if w > 0:
+            unique_cols = len({gray[:, i].tobytes() for i in range(w)})
+        if w > 1:
+            mean_col_delta = float(np.mean([
+                np.mean(np.abs(gray[:, i].astype(np.float32) - gray[:, i + 1].astype(np.float32)))
+                for i in range(w - 1)
+            ]))
+
+        has_sidecar_mask = mask is not None and mask.shape[:2] == gray.shape[:2] and int(np.count_nonzero(mask)) > 0
+        invalid = bool(
+            not has_sidecar_mask
+            and area < 128
+            and w <= 6
+            and unique_cols <= 2
+            and mean_col_delta < 2.5
+        )
+
+        return {
+            "valid": not invalid,
+            "reason": "degenerate_tiny_template" if invalid else "ok",
+            "width": int(w),
+            "height": int(h),
+            "area": area,
+            "unique_cols": int(unique_cols),
+            "mean_col_delta": float(mean_col_delta),
+            "has_sidecar_mask": bool(has_sidecar_mask),
+        }
+
+    def inspect_template_localization(self, template_path: str) -> Dict[str, Any]:
+        template = self._load_template(template_path)
+        if template is None:
+            return {"valid": False, "reason": "missing_template"}
+        mask = self._load_mask(template_path)
+        return self._inspect_template_localization_image(template, mask)
 
     def match(
         self,
@@ -147,171 +200,169 @@ class TemplateMatcher:
         threshold: Optional[float] = None,
         method: int = cv2.TM_CCOEFF_NORMED,
         use_mask: bool = True,
+        allow_flip: bool = False,
     ) -> MatchResult:
         """
-        화면에서 템플릿 이미지 찾기 (마스크 지원)
-
+        ?????? ?????????? ??? (?????????
         Args:
-            screen: 검색할 화면 이미지
-            template_path: 템플릿 이미지 경로
-            threshold: 매칭 임계값 (None이면 설정값 사용)
-            method: OpenCV 템플릿 매칭 방법
-            use_mask: 마스크 사용 여부 (기본 True, 마스크 파일 있으면 자동 적용)
-
+            screen: ????? ??? ?????
+            template_path: ?????????? ???
+            threshold: ??? ?????(None??? ????????)
+            method: OpenCV ???????? ???
+            use_mask: ???????? ??? (??? True, ???????? ???????? ???)
+            allow_flip: ???????? ??? fallback ??? ???
         Returns:
-            MatchResult: 매칭 결과
+            MatchResult: ??? ???
         """
         template = self._load_template(template_path)
         if template is None:
             return MatchResult(found=False)
-
         if threshold is None:
             threshold = self._config.analyzer.template_match_threshold
-
-        # 마스크 로드 시도
         mask = None
         if use_mask:
             mask = self._load_mask(template_path)
-
-        try:
-            # 템플릿 크기 검증 (화면보다 크면 매칭 불가)
-            screen_h, screen_w = screen.shape[:2]
-            template_h, template_w = template.shape[:2]
-            if template_w > screen_w or template_h > screen_h:
-                logger.warning(f"템플릿이 화면보다 큼: 템플릿({template_w}x{template_h}) > 화면({screen_w}x{screen_h})")
-                return MatchResult(found=False)
-
-            # 마스크가 있으면 마스크 매칭 사용
-            if mask is not None:
-                # 마스크 매칭은 TM_CCORR_NORMED 또는 TM_SQDIFF 사용
-                # TM_CCORR_NORMED가 마스크와 가장 잘 작동
-                result = cv2.matchTemplate(screen, template, cv2.TM_CCORR_NORMED, mask=mask)
-                time.sleep(0)  # GIL 해제
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                confidence = max_val
-                top_left = max_loc
-                logger.debug(f"마스크 매칭 사용: {Path(template_path).name}, 신뢰도: {confidence:.3f}")
-            else:
-                # 일반 매칭
-                result = cv2.matchTemplate(screen, template, method)
-                time.sleep(0)  # GIL 해제
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-                # 방법에 따라 최적 위치 선택
-                if method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]:
-                    confidence = 1 - min_val
-                    top_left = min_loc
-                else:
-                    confidence = max_val
-                    top_left = max_loc
-
-            # 임계값 확인
-            if confidence >= threshold:
-                h, w = template.shape[:2]
-                center_x = top_left[0] + w // 2
-                center_y = top_left[1] + h // 2
-
-                return MatchResult(
-                    found=True,
-                    x=top_left[0],
-                    y=top_left[1],
-                    width=w,
-                    height=h,
-                    confidence=confidence,
-                    center_x=center_x,
-                    center_y=center_y,
-                )
-
-            return MatchResult(found=False, confidence=confidence)
-
-        except Exception as e:
-            logger.error(f"템플릿 매칭 오류: {e}")
+        _template_info = self._inspect_template_localization_image(template, mask)
+        if not _template_info.get("valid", True):
+            logger.warning(
+                "위치 추정에 부적합한 템플릿 차단: %s (%sx%s, cols=%s, delta=%.2f)",
+                Path(template_path).name,
+                _template_info.get("width"),
+                _template_info.get("height"),
+                _template_info.get("unique_cols"),
+                _template_info.get("mean_col_delta", 0.0),
+            )
             return MatchResult(found=False)
-
+        try:
+            screen_h, screen_w = screen.shape[:2]
+            variants = [("base", template, mask)]
+            if allow_flip:
+                variants.append(("flip", cv2.flip(template, 1), cv2.flip(mask, 1) if mask is not None else None))
+            best_result = MatchResult(found=False)
+            for variant_name, variant_template, variant_mask in variants:
+                template_h, template_w = variant_template.shape[:2]
+                if template_w > screen_w or template_h > screen_h:
+                    continue
+                if variant_mask is not None:
+                    result = cv2.matchTemplate(screen, variant_template, cv2.TM_CCORR_NORMED, mask=variant_mask)
+                    result = np.nan_to_num(result, nan=-1.0, posinf=-1.0, neginf=-1.0)
+                    time.sleep(0)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    confidence = float(max_val)
+                    top_left = max_loc
+                    logger.debug(f"???????? ???: {Path(template_path).name} [{variant_name}], ????? {confidence:.3f}")
+                else:
+                    result = cv2.matchTemplate(screen, variant_template, method)
+                    time.sleep(0)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                    if method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]:
+                        confidence = float(1 - min_val)
+                        top_left = min_loc
+                    else:
+                        confidence = float(max_val)
+                        top_left = max_loc
+                current = MatchResult(
+                    found=confidence >= threshold,
+                    x=int(top_left[0]),
+                    y=int(top_left[1]),
+                    width=int(template_w),
+                    height=int(template_h),
+                    confidence=confidence,
+                    center_x=int(top_left[0]) + template_w // 2,
+                    center_y=int(top_left[1]) + template_h // 2,
+                )
+                if current.confidence > best_result.confidence:
+                    best_result = current
+            return best_result
+        except Exception as e:
+            logger.error(f"???????? ???: {e}")
+            return MatchResult(found=False)
     def match_binary(
         self,
         screen: np.ndarray,
         template_path: str,
         threshold: Optional[float] = None,
+        allow_flip: bool = False,
     ) -> MatchResult:
         """
-        마스크 매칭 — 글자 픽셀만 비교, 배경 완전 무시
-
-        템플릿에서 글자 영역만 마스크로 추출하고,
-        matchTemplate의 mask 파라미터로 글자 부분만 비교합니다.
+        ???????? ??????????????, ??? ??? ???
+        ??????????????????????? ??????,
+        matchTemplate??mask ????????????????? ????????
         """
         template = self._load_template(template_path)
         if template is None:
             return MatchResult(found=False)
-
         if threshold is None:
             threshold = 0.5
-
+        sidecar_mask = self._load_mask(template_path)
+        _template_info = self._inspect_template_localization_image(template, sidecar_mask)
+        if not _template_info.get("valid", True):
+            logger.warning(
+                "이진 매칭에 부적합한 템플릿 차단: %s (%sx%s, cols=%s, delta=%.2f)",
+                Path(template_path).name,
+                _template_info.get("width"),
+                _template_info.get("height"),
+                _template_info.get("unique_cols"),
+                _template_info.get("mean_col_delta", 0.0),
+            )
+            return MatchResult(found=False)
         try:
-            screen_h, screen_w = screen.shape[:2]
-            template_h, template_w = template.shape[:2]
-            if template_w > screen_w or template_h > screen_h:
-                return MatchResult(found=False)
-
-            # 그레이스케일 변환
             if len(screen.shape) == 3:
                 screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
             else:
                 screen_gray = screen.copy()
-            if len(template.shape) == 3:
-                tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-            else:
-                tmpl_gray = template.copy()
-
-            # 마스크 생성: Otsu로 글자 영역 추출
-            _, tmpl_bin = cv2.threshold(tmpl_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            # 글자가 소수(어두운 쪽)면 반전 → 글자=255
-            if np.mean(tmpl_bin) > 127:
-                mask = cv2.bitwise_not(tmpl_bin)
-            else:
-                mask = tmpl_bin.copy()
-
-            # 마스크 약간 팽창 (글자 경계 포함)
-            kernel = np.ones((2, 2), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=1)
-
-            # 마스크 커버리지 검증: 너무 적으면 마스크 매칭이 불안정 → 마스크 없이 매칭
-            total_pixels = mask.shape[0] * mask.shape[1]
-            mask_pixels = int(np.count_nonzero(mask))
-            mask_ratio = mask_pixels / total_pixels if total_pixels > 0 else 0
-
-            if mask_ratio < 0.15 or mask_pixels < 200:
-                # 마스크 픽셀이 15% 미만이거나 200개 미만 → 마스크 없이 일반 매칭
-                logger.debug(f"[마스크매칭] 마스크 커버리지 낮음 ({mask_ratio:.1%}, {mask_pixels}px) → 마스크 없이 매칭")
-                result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED)
-                time.sleep(0)  # GIL 해제
-            else:
-                # TM_SQDIFF_NORMED + mask: 차이가 클수록 벌점 (0=완벽, 1=최악)
-                result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED, mask=mask)
-                time.sleep(0)  # GIL 해제
-
-            min_val, _, min_loc, _ = cv2.minMaxLoc(result)
-
-            # 신뢰도 변환: 0(최악)~1(완벽)
-            confidence = 1.0 - min_val
-
-            if confidence >= threshold:
-                h, w = template.shape[:2]
-                return MatchResult(
-                    found=True,
-                    x=min_loc[0], y=min_loc[1],
-                    width=w, height=h,
+            variants = [("base", template, sidecar_mask)]
+            if allow_flip:
+                variants.append(("flip", cv2.flip(template, 1), cv2.flip(sidecar_mask, 1) if sidecar_mask is not None else None))
+            best_result = MatchResult(found=False)
+            screen_h, screen_w = screen_gray.shape[:2]
+            for variant_name, variant_template, variant_sidecar_mask in variants:
+                template_h, template_w = variant_template.shape[:2]
+                if template_w > screen_w or template_h > screen_h:
+                    continue
+                if len(variant_template.shape) == 3:
+                    tmpl_gray = cv2.cvtColor(variant_template, cv2.COLOR_BGR2GRAY)
+                else:
+                    tmpl_gray = variant_template.copy()
+                mask = variant_sidecar_mask
+                if mask is None:
+                    _, tmpl_bin = cv2.threshold(tmpl_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    if np.mean(tmpl_bin) > 127:
+                        mask = cv2.bitwise_not(tmpl_bin)
+                    else:
+                        mask = tmpl_bin.copy()
+                    kernel = np.ones((2, 2), np.uint8)
+                    mask = cv2.dilate(mask, kernel, iterations=1)
+                total_pixels = mask.shape[0] * mask.shape[1]
+                mask_pixels = int(np.count_nonzero(mask))
+                mask_ratio = mask_pixels / total_pixels if total_pixels > 0 else 0
+                min_mask_pixels = max(8, int(total_pixels * 0.08))
+                if mask_ratio < 0.10 or mask_pixels < min_mask_pixels:
+                    logger.debug(f"[???????? {variant_name}] ??????????? ??? ({mask_ratio:.1%}, {mask_pixels}px) ?????????? ???")
+                    result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED)
+                    time.sleep(0)
+                else:
+                    result = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_SQDIFF_NORMED, mask=mask)
+                    result = np.nan_to_num(result, nan=1.0, posinf=1.0, neginf=1.0)
+                    time.sleep(0)
+                min_val, _, min_loc, _ = cv2.minMaxLoc(result)
+                confidence = 1.0 - float(min_val)
+                current = MatchResult(
+                    found=confidence >= threshold,
+                    x=int(min_loc[0]),
+                    y=int(min_loc[1]),
+                    width=int(template_w),
+                    height=int(template_h),
                     confidence=confidence,
-                    center_x=min_loc[0] + w // 2,
-                    center_y=min_loc[1] + h // 2,
+                    center_x=int(min_loc[0]) + template_w // 2,
+                    center_y=int(min_loc[1]) + template_h // 2,
                 )
-
-            return MatchResult(found=False, confidence=confidence)
-
+                if current.confidence > best_result.confidence:
+                    best_result = current
+            return best_result
         except Exception as e:
-            logger.error(f"마스크 매칭 오류: {e}")
+            logger.error(f"???????? ???: {e}")
             return MatchResult(found=False)
-
     def match_all(
         self,
         screen: np.ndarray,
@@ -320,16 +371,16 @@ class TemplateMatcher:
         max_results: int = 10,
     ) -> List[MatchResult]:
         """
-        화면에서 템플릿 이미지의 모든 위치 찾기
+        ?????? ??????????????? ??? ???
 
         Args:
-            screen: 검색할 화면 이미지
-            template_path: 템플릿 이미지 경로
-            threshold: 매칭 임계값
-            max_results: 최대 결과 수
+            screen: ????? ??? ?????
+            template_path: ?????????? ???
+            threshold: ??? ?????
+            max_results: ??? ??? ??
 
         Returns:
-            List[MatchResult]: 매칭 결과 목록
+            List[MatchResult]: ??? ??? ???
         """
         template = self._load_template(template_path)
         if template is None:
@@ -342,24 +393,24 @@ class TemplateMatcher:
             h, w = template.shape[:2]
             screen_h, screen_w = screen.shape[:2]
 
-            # 크기 체크
+            # ??? ???
             if h > screen_h or w > screen_w:
-                logger.warning(f"템플릿({w}x{h})이 화면({screen_w}x{screen_h})보다 큼 - 스킵")
+                logger.warning(f"?????{w}x{h})?????({screen_w}x{screen_h})??? ??- ???")
                 return []
 
             result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-            time.sleep(0)  # GIL 해제
+            time.sleep(0)  # GIL ???
 
-            # 임계값 이상인 모든 위치 찾기
+            # ????????????? ??? ???
             locations = np.where(result >= threshold)
             matches = []
 
-            for pt in zip(*locations[::-1]):  # x, y 순서로 변환
+            for pt in zip(*locations[::-1]):  # x, y ?????????
                 confidence = result[pt[1], pt[0]]
                 center_x = pt[0] + w // 2
                 center_y = pt[1] + h // 2
 
-                # 중복 제거 (근접한 위치)
+                # ??? ??? (????????)
                 is_duplicate = False
                 for existing in matches:
                     if abs(existing.x - pt[0]) < w // 2 and abs(existing.y - pt[1]) < h // 2:
@@ -381,12 +432,12 @@ class TemplateMatcher:
                 if len(matches) >= max_results:
                     break
 
-            # 신뢰도 순으로 정렬
+            # ?????????????
             matches.sort(key=lambda m: m.confidence, reverse=True)
             return matches
 
         except Exception as e:
-            logger.error(f"템플릿 매칭 오류: {e}")
+            logger.error(f"???????? ???: {e}")
             return []
 
     def match_with_scale(
@@ -396,72 +447,73 @@ class TemplateMatcher:
         threshold: Optional[float] = None,
         scale_range: Tuple[float, float] = (0.8, 1.2),
         scale_steps: int = 5,
+        allow_flip: bool = False,
     ) -> MatchResult:
         """
-        다양한 스케일에서 템플릿 이미지 찾기
-
+        ??????????????????????? ???
         Args:
-            screen: 검색할 화면 이미지
-            template_path: 템플릿 이미지 경로
-            threshold: 매칭 임계값
-            scale_range: 스케일 범위 (min, max)
-            scale_steps: 스케일 단계 수
-
+            screen: ????? ??? ?????
+            template_path: ?????????? ???
+            threshold: ??? ?????
+            scale_range: ???????? (min, max)
+            scale_steps: ???????? ??
+            allow_flip: ???????? ??? fallback ??? ???
         Returns:
-            MatchResult: 최적 매칭 결과
+            MatchResult: ??? ??? ???
         """
         template = self._load_template(template_path)
         if template is None:
             return MatchResult(found=False)
-
         if threshold is None:
             threshold = self._config.analyzer.template_match_threshold
-
+        _template_info = self._inspect_template_localization_image(template, self._load_mask(template_path))
+        if not _template_info.get("valid", True):
+            logger.warning(
+                "스케일 매칭에 부적합한 템플릿 차단: %s (%sx%s, cols=%s, delta=%.2f)",
+                Path(template_path).name,
+                _template_info.get("width"),
+                _template_info.get("height"),
+                _template_info.get("unique_cols"),
+                _template_info.get("mean_col_delta", 0.0),
+            )
+            return MatchResult(found=False)
         best_result = MatchResult(found=False)
         scales = np.linspace(scale_range[0], scale_range[1], scale_steps)
-
         screen_h, screen_w = screen.shape[:2]
-
+        variants = [template]
+        if allow_flip:
+            variants.append(cv2.flip(template, 1))
         for scale in scales:
-            # 템플릿 크기 조정
-            h, w = template.shape[:2]
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-
-            # 템플릿이 너무 작거나 화면보다 큰 경우 스킵
-            if new_w < 10 or new_h < 10:
-                continue
-            if new_w > screen_w or new_h > screen_h:
-                continue
-
-            scaled_template = cv2.resize(template, (new_w, new_h))
-
-            try:
-                # 스케일된 템플릿으로 직접 매칭 수행
-                result_map = cv2.matchTemplate(screen, scaled_template, cv2.TM_CCOEFF_NORMED)
-                time.sleep(0)  # GIL 해제
-                _, max_val, _, max_loc = cv2.minMaxLoc(result_map)
-
-                if max_val >= threshold and max_val > best_result.confidence:
-                    center_x = max_loc[0] + new_w // 2
-                    center_y = max_loc[1] + new_h // 2
-
-                    best_result = MatchResult(
-                        found=True,
-                        x=max_loc[0],
-                        y=max_loc[1],
-                        width=new_w,
-                        height=new_h,
-                        confidence=max_val,
-                        center_x=center_x,
-                        center_y=center_y,
-                    )
-            except cv2.error as e:
-                logger.debug(f"스케일 {scale:.2f} 매칭 오류: {e}")
-                continue
-
+            for variant_template in variants:
+                h, w = variant_template.shape[:2]
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                if new_w < 10 or new_h < 10:
+                    continue
+                if new_w > screen_w or new_h > screen_h:
+                    continue
+                scaled_template = cv2.resize(variant_template, (new_w, new_h))
+                try:
+                    result_map = cv2.matchTemplate(screen, scaled_template, cv2.TM_CCOEFF_NORMED)
+                    time.sleep(0)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result_map)
+                    if max_val >= threshold and max_val > best_result.confidence:
+                        center_x = max_loc[0] + new_w // 2
+                        center_y = max_loc[1] + new_h // 2
+                        best_result = MatchResult(
+                            found=True,
+                            x=max_loc[0],
+                            y=max_loc[1],
+                            width=new_w,
+                            height=new_h,
+                            confidence=max_val,
+                            center_x=center_x,
+                            center_y=center_y,
+                        )
+                except cv2.error as e:
+                    logger.debug(f"?????{scale:.2f} ??? ???: {e}")
+                    continue
         return best_result
-
     def match_with_rotation(
         self,
         screen: np.ndarray,
@@ -471,17 +523,17 @@ class TemplateMatcher:
         angle_steps: int = 5,
     ) -> MatchResult:
         """
-        다양한 회전 각도에서 템플릿 이미지 찾기
+        ???????? ?????? ?????????? ???
 
         Args:
-            screen: 검색할 화면 이미지
-            template_path: 템플릿 이미지 경로
-            threshold: 매칭 임계값
-            angle_range: 회전 각도 범위
-            angle_steps: 각도 단계 수
+            screen: ????? ??? ?????
+            template_path: ?????????? ???
+            threshold: ??? ?????
+            angle_range: ??? ??? ???
+            angle_steps: ??? ??? ??
 
         Returns:
-            MatchResult: 최적 매칭 결과
+            MatchResult: ??? ??? ???
         """
         template = self._load_template(template_path)
         if template is None:
@@ -494,20 +546,20 @@ class TemplateMatcher:
         angles = np.linspace(angle_range[0], angle_range[1], angle_steps)
 
         for angle in angles:
-            # 템플릿 회전
+            # ????????
             h, w = template.shape[:2]
             center = (w // 2, h // 2)
             rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
             rotated_template = cv2.warpAffine(template, rotation_matrix, (w, h))
 
             try:
-                # 회전된 템플릿이 화면보다 큰지 확인
+                # ??????????? ?????? ??? ???
                 screen_h, screen_w = screen.shape[:2]
                 if w > screen_w or h > screen_h:
                     continue
 
                 result_map = cv2.matchTemplate(screen, rotated_template, cv2.TM_CCOEFF_NORMED)
-                time.sleep(0)  # GIL 해제
+                time.sleep(0)  # GIL ???
                 _, max_val, _, max_loc = cv2.minMaxLoc(result_map)
 
                 if max_val >= threshold and max_val > best_result.confidence:
@@ -522,7 +574,7 @@ class TemplateMatcher:
                         center_y=max_loc[1] + h // 2,
                     )
             except cv2.error as e:
-                logger.debug(f"회전 {angle:.1f}도 매칭 오류: {e}")
+                logger.debug(f"??? {angle:.1f}????? ???: {e}")
                 continue
 
         return best_result
@@ -534,15 +586,15 @@ class TemplateMatcher:
         region: Optional[Tuple[int, int, int, int]] = None,
     ) -> Optional[str]:
         """
-        템플릿 이미지 저장
+        ?????????? ????
 
         Args:
-            image: 소스 이미지
-            name: 템플릿 이름
-            region: 저장할 영역 (x, y, w, h), None이면 전체
+            image: ??? ?????
+            name: ????????
+            region: ????? ??? (x, y, w, h), None??? ???
 
         Returns:
-            Optional[str]: 저장된 파일 경로 또는 None
+            Optional[str]: ????? ??? ??? ??? None
         """
         try:
             templates_dir = DATA_DIR / "templates"
@@ -556,18 +608,18 @@ class TemplateMatcher:
             path = templates_dir / f"{safe_name}.png"
 
             cv2.imwrite(str(path), image)
-            logger.info(f"템플릿 저장: {path}")
+            logger.info(f"????????? {path}")
             return str(path)
 
         except Exception as e:
-            logger.error(f"템플릿 저장 실패: {e}")
+            logger.error(f"????????????: {e}")
             return None
 
     def clear_cache(self) -> None:
-        """템플릿 캐시 초기화"""
+        """Initialize template matcher."""
         self._cache.clear()
         self._mask_cache.clear()
-        logger.debug("템플릿 캐시 초기화")
+        logger.debug("cache cleared")
 
     def compare_images(
         self,
@@ -575,21 +627,21 @@ class TemplateMatcher:
         image2: np.ndarray,
     ) -> float:
         """
-        두 이미지의 유사도 비교
+        ?????????????????
 
         Args:
-            image1: 첫 번째 이미지
-            image2: 두 번째 이미지
+            image1: ????? ?????
+            image2: ????? ?????
 
         Returns:
-            float: 유사도 (0 ~ 1)
+            float: ?????(0 ~ 1)
         """
         try:
-            # 크기 맞추기
+            # ??? ?????
             if image1.shape != image2.shape:
                 image2 = cv2.resize(image2, (image1.shape[1], image1.shape[0]))
 
-            # 그레이스케일 변환
+            # ??????????????
             if len(image1.shape) == 3:
                 gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
             else:
@@ -600,78 +652,78 @@ class TemplateMatcher:
             else:
                 gray2 = image2
 
-            # 구조적 유사도 계산 (간단 버전)
+            # ????????????? (??? ???)
             diff = cv2.absdiff(gray1, gray2)
             similarity = 1.0 - (np.mean(diff) / 255.0)
 
             return float(similarity)
 
         except Exception as e:
-            logger.error(f"이미지 비교 오류: {e}")
+            logger.error(f"????? ??? ???: {e}")
             return 0.0
 
 
 def generate_text_mask(image: np.ndarray, method: str = "auto") -> np.ndarray:
     """
-    텍스트/글씨 이미지에서 마스크 생성 (배경 제외, 글씨만 포함)
+    ????????????????? ???????? (??? ???, ????? ???)
 
     Args:
-        image: BGR 이미지
-        method: 마스크 생성 방법
-            - "auto": 자동 감지 (엣지 + 색상 조합)
-            - "edge": 엣지 기반
-            - "color": 색상 기반 (배경색 제외)
+        image: BGR ?????
+        method: ???????? ???
+            - "auto": ??? ??? (??? + ??? ???)
+            - "edge": ??? ???
+            - "color": ??? ??? (????????)
 
     Returns:
-        np.ndarray: 마스크 이미지 (255=매칭영역, 0=무시영역)
+        np.ndarray: ?????????? (255=??????, 0=??????)
     """
     if image is None or image.size == 0:
         return np.ones((10, 10), dtype=np.uint8) * 255
 
     h, w = image.shape[:2]
 
-    # 그레이스케일 변환
+    # ??????????????
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
         gray = image.copy()
 
     if method == "edge":
-        # 엣지 기반 마스크
+        # ??? ??? ?????
         edges = cv2.Canny(gray, 50, 150)
-        # 엣지 확장 (dilate)
+        # ??? ??? (dilate)
         kernel = np.ones((3, 3), np.uint8)
         mask = cv2.dilate(edges, kernel, iterations=2)
         return mask
 
     elif method == "color":
-        # 색상 기반 마스크 (코너 픽셀을 배경색으로 추정)
+        # ??? ??? ?????(??? ????????????????)
         corners = [
             image[0, 0],
             image[0, w-1],
             image[h-1, 0],
             image[h-1, w-1]
         ]
-        # 가장 흔한 코너 색상을 배경으로 추정
+        # ??????? ??? ??????????? ???
         bg_color = np.median(corners, axis=0).astype(np.uint8)
 
-        # 배경색과 다른 픽셀 = 전경 (글씨)
+        # ?????? ??? ??? = ??? (????
         diff = np.abs(image.astype(np.int16) - bg_color.astype(np.int16))
         diff_sum = np.sum(diff, axis=2) if len(image.shape) == 3 else diff
         mask = (diff_sum > 30).astype(np.uint8) * 255
 
-        # 노이즈 제거
+        # ????????
         kernel = np.ones((2, 2), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         return mask
 
     else:  # auto
-        # 자동: 배경색 추정 후 글씨 영역 추출
+        # ???: ???????? ????????? ???
 
         if len(image.shape) == 3:
-            # 컬러 이미지
-            # 1. 배경색 추정 (4개 코너의 평균)
+            # ??? ?????
+            # 1. ???????? (4??????????)
             corners = np.array([
                 image[0, 0],
                 image[0, w-1],
@@ -680,98 +732,102 @@ def generate_text_mask(image: np.ndarray, method: str = "auto") -> np.ndarray:
             ], dtype=np.float32)
             bg_color = np.mean(corners, axis=0)
 
-            # 2. 각 픽셀과 배경색의 차이 계산
+            # 2. ????????????? ??? ???
             diff = np.sqrt(np.sum((image.astype(np.float32) - bg_color) ** 2, axis=2))
 
-            # 3. 임계값 자동 결정 (Otsu 방식)
+            # 3. ???????? ??? (Otsu ???)
             diff_normalized = (diff / diff.max() * 255).astype(np.uint8)
             _, mask = cv2.threshold(diff_normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         else:
-            # 그레이스케일
+            # ??????????
             corners = [gray[0, 0], gray[0, w-1], gray[h-1, 0], gray[h-1, w-1]]
             bg_val = np.mean(corners)
             diff = np.abs(gray.astype(np.float32) - bg_val)
             diff_normalized = (diff / max(diff.max(), 1) * 255).astype(np.uint8)
             _, mask = cv2.threshold(diff_normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        # 4. 노이즈 제거 및 구멍 메우기
+        # 4. ???????? ????? ?????
         kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # 구멍 메우기
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)   # 노이즈 제거
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # ??? ?????
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)   # ????????
 
         return mask
 
 
 def save_image_with_mask(image: np.ndarray, save_path: str) -> Tuple[str, Optional[str]]:
     """
-    이미지와 마스크를 함께 저장
+    ??????? ?????? ??? ????
 
     Args:
-        image: BGR 이미지
-        save_path: 저장 경로
+        image: BGR ?????
+        save_path: ???????
 
     Returns:
-        Tuple[str, Optional[str]]: (이미지 경로, 마스크 경로 or None)
+        Tuple[str, Optional[str]]: (????? ???, ???????? or None)
     """
     try:
-        # 이미지 저장
+        # ????? ????
         cv2.imwrite(save_path, image)
 
-        # 마스크 생성 및 저장
+        # ???????? ??????
         mask = generate_text_mask(image)
         path = Path(save_path)
         mask_path = path.parent / f"{path.stem}_mask{path.suffix}"
         cv2.imwrite(str(mask_path), mask)
 
-        logger.info(f"이미지+마스크 저장: {save_path}")
+        logger.info(f"?????+????????? {save_path}")
         return save_path, str(mask_path)
 
     except Exception as e:
-        logger.error(f"이미지+마스크 저장 실패: {e}")
+        logger.error(f"?????+????????????: {e}")
         return save_path, None
 
 
 def generate_mask_for_existing_image(image_path: str) -> Optional[str]:
     """
-    기존 이미지에 대한 마스크 생성
+    ??? ???????????????????
 
     Args:
-        image_path: 이미지 경로
+        image_path: ????? ???
 
     Returns:
-        Optional[str]: 마스크 경로 or None
+        Optional[str]: ???????? or None
     """
     try:
         path = Path(image_path)
         if not path.exists():
             return None
 
-        # 이미지 로드
+        # ????? ???
         img_array = np.fromfile(str(path), np.uint8)
         image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if image is None:
             return None
 
-        # 마스크 생성
+        # ????????
         mask = generate_text_mask(image)
 
-        # 마스크 저장
+        # ?????????
         mask_path = path.parent / f"{path.stem}_mask{path.suffix}"
         cv2.imwrite(str(mask_path), mask)
 
-        logger.info(f"마스크 생성: {mask_path}")
+        logger.info(f"????????: {mask_path}")
         return str(mask_path)
 
     except Exception as e:
-        logger.error(f"마스크 생성 실패: {e}")
+        logger.error(f"???????? ???: {e}")
         return None
 
 
-# 전역 템플릿 매처 인스턴스
+# ??? ???????? ??????
 template_matcher = TemplateMatcher()
 
 
 def get_template_matcher() -> TemplateMatcher:
-    """템플릿 매처 헬퍼 함수"""
+    """???????? ??? ???"""
     return template_matcher
+
+
+
+

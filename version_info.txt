@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 0, 200, 0),
+    prodvers=(1, 0, 200, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,11 +18,11 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'윈크로'),
             StringStruct(u'FileDescription', u'작업 자동화 도우미'),
-            StringStruct(u'FileVersion', u'10.0.22621.0'),
+            StringStruct(u'FileVersion', u'1.0.200.0'),
             StringStruct(u'InternalName', u'작업도우미'),
             StringStruct(u'OriginalFilename', u'작업도우미.exe'),
             StringStruct(u'ProductName', u'작업도우미'),
-            StringStruct(u'ProductVersion', u'10.0.22621.0'),
+            StringStruct(u'ProductVersion', u'1.0.200.0'),
           ]
         )
       ]

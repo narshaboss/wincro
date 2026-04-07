@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,21 @@ def _sanitize_named_items(items: Any, *, require_path: bool = False, require_key
             if not path:
                 continue
             normalized["path"] = path
+            confidence = item.get("confidence")
+            try:
+                if confidence is not None:
+                    normalized["confidence"] = float(confidence)
+            except Exception:
+                pass
+            region = item.get("region")
+            if isinstance(region, (list, tuple)) and len(region) == 4:
+                try:
+                    normalized["region"] = [int(v) for v in region]
+                except Exception:
+                    pass
+            ocr_text = str(item.get("ocr_text", "")).strip()
+            if ocr_text:
+                normalized["ocr_text"] = ocr_text
         if require_keys:
             keys = _copy_keys(item.get("keys", []))
             if not keys:
@@ -111,6 +127,52 @@ def list_image_presets(kind: str, *, existing_only: bool = True) -> list[dict[st
     return result
 
 
+def get_image_preset(kind: str, *, name: str | None = None, path: str | None = None) -> dict[str, Any] | None:
+    key = _image_preset_key(kind)
+    preset_name = str(name or "").strip()
+    preset_path = str(path or "").strip()
+    items = deepcopy(load_waypoint_presets()[key])
+    for item in items:
+        if preset_name and str(item.get("name", "")).strip() == preset_name:
+            return item
+        if preset_path and str(item.get("path", "")).strip() == preset_path:
+            return item
+    if preset_path:
+        _matched = _find_image_preset_by_fingerprint(items, preset_path)
+        if _matched is not None:
+            return _matched
+    return None
+
+
+def _hash_file(path: str) -> str:
+    _path = Path(str(path or "").strip())
+    if not _path.exists() or not _path.is_file():
+        return ""
+    _h = hashlib.sha256()
+    with _path.open("rb") as _f:
+        for _chunk in iter(lambda: _f.read(65536), b""):
+            if not _chunk:
+                break
+            _h.update(_chunk)
+    return _h.hexdigest()
+
+
+def _find_image_preset_by_fingerprint(items: list[dict[str, Any]], preset_path: str) -> dict[str, Any] | None:
+    try:
+        _target_hash = _hash_file(preset_path)
+    except Exception:
+        _target_hash = ""
+    if not _target_hash:
+        return None
+    for item in items:
+        try:
+            if _hash_file(str(item.get("path", "")).strip()) == _target_hash:
+                return item
+        except Exception:
+            continue
+    return None
+
+
 def upsert_arrival_key_preset(name: str, keys: list[dict[str, Any]]) -> None:
     preset_name = str(name).strip()
     if not preset_name:
@@ -134,7 +196,15 @@ def remove_arrival_key_preset(name: str) -> None:
     save_waypoint_presets(data)
 
 
-def upsert_image_preset(kind: str, name: str, path: str) -> None:
+def upsert_image_preset(
+    kind: str,
+    name: str,
+    path: str,
+    *,
+    confidence: float | None = None,
+    region: list[int] | None = None,
+    ocr_text: str | None = None,
+) -> None:
     preset_name = str(name).strip()
     preset_path = str(path).strip()
     if not preset_name:
@@ -143,8 +213,123 @@ def upsert_image_preset(kind: str, name: str, path: str) -> None:
         raise ValueError("image path is required")
     key = _image_preset_key(kind)
     data = load_waypoint_presets()
+    existing = next((dict(item) for item in data[key] if item.get("name") == preset_name), None)
     items = [item for item in data[key] if item.get("name") != preset_name]
-    items.insert(0, {"name": preset_name, "path": preset_path})
+    payload: dict[str, Any] = {"name": preset_name, "path": preset_path}
+    try:
+        if confidence is not None:
+            payload["confidence"] = float(confidence)
+        elif (existing or {}).get("confidence") is not None:
+            payload["confidence"] = float(existing["confidence"])
+    except Exception:
+        pass
+    if isinstance(region, (list, tuple)) and len(region) == 4:
+        payload["region"] = [int(v) for v in region]
+    elif isinstance((existing or {}).get("region"), (list, tuple)) and len((existing or {}).get("region", [])) == 4:
+        payload["region"] = [int(v) for v in existing["region"]]
+    _ocr_text = str(ocr_text or "").strip()
+    if _ocr_text:
+        payload["ocr_text"] = _ocr_text
+    elif str((existing or {}).get("ocr_text", "")).strip():
+        payload["ocr_text"] = str(existing["ocr_text"]).strip()
+    items.insert(0, payload)
+    data[key] = items
+    save_waypoint_presets(data)
+
+
+def set_image_preset_confidence(kind: str, *, name: str | None = None, path: str | None = None, confidence: float | None = None) -> None:
+    key = _image_preset_key(kind)
+    preset_name = str(name or "").strip()
+    preset_path = str(path or "").strip()
+    if not preset_name and not preset_path:
+        raise ValueError("preset name or path is required")
+    data = load_waypoint_presets()
+    updated = False
+    items: list[dict[str, Any]] = []
+    for item in data[key]:
+        matches = False
+        if preset_name and str(item.get("name", "")).strip() == preset_name:
+            matches = True
+        if preset_path and str(item.get("path", "")).strip() == preset_path:
+            matches = True
+        if matches:
+            new_item = dict(item)
+            try:
+                if confidence is not None:
+                    new_item["confidence"] = float(confidence)
+                else:
+                    new_item.pop("confidence", None)
+            except Exception:
+                new_item.pop("confidence", None)
+            items.append(new_item)
+            updated = True
+        else:
+            items.append(item)
+    if not updated:
+        raise ValueError("image preset not found")
+    data[key] = items
+    save_waypoint_presets(data)
+
+
+def set_image_preset_region(kind: str, *, name: str | None = None, path: str | None = None, region: list[int] | None = None) -> None:
+    key = _image_preset_key(kind)
+    preset_name = str(name or "").strip()
+    preset_path = str(path or "").strip()
+    if not preset_name and not preset_path:
+        raise ValueError("preset name or path is required")
+    data = load_waypoint_presets()
+    updated = False
+    items: list[dict[str, Any]] = []
+    for item in data[key]:
+        matches = False
+        if preset_name and str(item.get("name", "")).strip() == preset_name:
+            matches = True
+        if preset_path and str(item.get("path", "")).strip() == preset_path:
+            matches = True
+        if matches:
+            new_item = dict(item)
+            if isinstance(region, (list, tuple)) and len(region) == 4:
+                new_item["region"] = [int(v) for v in region]
+            else:
+                new_item.pop("region", None)
+            items.append(new_item)
+            updated = True
+        else:
+            items.append(item)
+    if not updated:
+        raise ValueError("image preset not found")
+    data[key] = items
+    save_waypoint_presets(data)
+
+
+def set_image_preset_ocr_text(kind: str, *, name: str | None = None, path: str | None = None, ocr_text: str | None = None) -> None:
+    key = _image_preset_key(kind)
+    preset_name = str(name or "").strip()
+    preset_path = str(path or "").strip()
+    if not preset_name and not preset_path:
+        raise ValueError("preset name or path is required")
+    data = load_waypoint_presets()
+    updated = False
+    items: list[dict[str, Any]] = []
+    for item in data[key]:
+        matches = False
+        if preset_name and str(item.get("name", "")).strip() == preset_name:
+            matches = True
+        if preset_path and str(item.get("path", "")).strip() == preset_path:
+            matches = True
+        if matches:
+            new_item = dict(item)
+            _ocr_text = str(ocr_text or "").strip()
+            if _ocr_text:
+                new_item["ocr_text"] = _ocr_text
+            else:
+                new_item.pop("ocr_text", None)
+            items.append(new_item)
+            updated = True
+        else:
+            items.append(item)
+    if not updated:
+        raise ValueError("image preset not found")
     data[key] = items
     save_waypoint_presets(data)
 

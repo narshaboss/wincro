@@ -1019,14 +1019,14 @@
           0,
           "흑해골굴9굴",
           {
-            "target_image": "wp_img_fc6c3934.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -1069,7 +1069,13 @@
             "map_locked": true,
             "group_parent": "국내성 흑해골굴",
             "route_walls": [],
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -1509,14 +1515,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -1559,7 +1565,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -1869,14 +1881,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -1919,7 +1931,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "2.평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -2229,14 +2247,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -2279,7 +2297,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "3.평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -2589,14 +2613,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -2639,7 +2663,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "4.평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -3078,14 +3108,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -3128,7 +3158,13 @@
             "map_locked": false,
             "route_walls": [],
             "group_parent": "평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -3438,14 +3474,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -3488,7 +3524,13 @@
             "map_locked": false,
             "route_walls": [],
             "group_parent": "2.평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -3798,14 +3840,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -3848,7 +3890,13 @@
             "map_locked": false,
             "route_walls": [],
             "group_parent": "3.평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -4158,14 +4206,14 @@
           0,
           "평양흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -4208,7 +4256,13 @@
             "map_locked": false,
             "route_walls": [],
             "group_parent": "4.평양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ]
       ],
@@ -4587,14 +4641,14 @@
           0,
           "졸본흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -4637,7 +4691,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "졸본성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -4947,14 +5007,14 @@
           0,
           "졸본흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -4997,7 +5057,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "2.졸본성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -5307,14 +5373,14 @@
           0,
           "졸본흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -5357,7 +5423,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "3.졸본성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -5667,14 +5739,14 @@
           0,
           "졸본흑해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -5717,7 +5789,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "4.졸본성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -6156,14 +6234,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -6206,7 +6284,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "숙군성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -6516,14 +6600,7 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
-            "target_images": [],
-            "confidence": 0.8022727272727272,
-            "search_radius": 0,
-            "action_x": null,
-            "action_y": null,
-            "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -6876,14 +6953,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -6926,7 +7003,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "3.숙군성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -7236,14 +7319,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -7286,7 +7369,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "4.숙군성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -7725,14 +7814,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -7775,7 +7864,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "선양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -8085,14 +8180,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -8135,7 +8230,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "2.선양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -8445,14 +8546,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -8495,7 +8596,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "3.선양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -8805,14 +8912,14 @@
           0,
           "숙군성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -8855,7 +8962,13 @@
             "map_locked": true,
             "route_walls": [],
             "group_parent": "4.선양성 흑해골굴",
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -9302,14 +9415,14 @@
           0,
           "집안성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -9352,7 +9465,13 @@
             "route_walls": [],
             "group_parent": "집안성 흑해골굴",
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -9670,14 +9789,14 @@
           0,
           "집안성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -9720,7 +9839,13 @@
             "route_walls": [],
             "group_parent": "2.집안성 흑해골굴",
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -10038,14 +10163,14 @@
           0,
           "집안성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -10088,7 +10213,13 @@
             "route_walls": [],
             "group_parent": "3.집안성 흑해골굴",
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -10406,14 +10537,14 @@
           0,
           "집안성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -10456,7 +10587,13 @@
             "route_walls": [],
             "group_parent": "4.집안성 흑해골굴",
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -10904,14 +11041,14 @@
           0,
           "산해관 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -10955,7 +11092,13 @@
             "group_parent": "산해관 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -11275,14 +11418,14 @@
           0,
           "산해관 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -11326,7 +11469,13 @@
             "group_parent": "2.산해관 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -11646,14 +11795,14 @@
           0,
           "산해관 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -11697,7 +11846,13 @@
             "group_parent": "3.산해관 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -12017,14 +12172,14 @@
           0,
           "산해관 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -12068,7 +12223,13 @@
             "group_parent": "4.산해관 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -12526,14 +12687,14 @@
           0,
           "신성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -12577,7 +12738,13 @@
             "group_parent": "신성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -12905,14 +13072,14 @@
           0,
           "신성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -12956,7 +13123,13 @@
             "group_parent": "2.신성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -13284,14 +13457,14 @@
           0,
           "신성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -13335,7 +13508,13 @@
             "group_parent": "3.신성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -13663,14 +13842,14 @@
           0,
           "신성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -13714,7 +13893,13 @@
             "group_parent": "4.신성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -14171,14 +14356,14 @@
           0,
           "용성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -14222,7 +14407,13 @@
             "group_parent": "용성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -14550,14 +14741,14 @@
           0,
           "용성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -14601,7 +14792,13 @@
             "group_parent": "2.용성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -14929,14 +15126,14 @@
           0,
           "용성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -14980,7 +15177,13 @@
             "group_parent": "3.용성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -15308,14 +15511,14 @@
           0,
           "용성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -15359,7 +15562,13 @@
             "group_parent": "4.용성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -15817,14 +16026,14 @@
           0,
           "개주  해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -15868,7 +16077,13 @@
             "group_parent": "개주 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -16196,14 +16411,14 @@
           0,
           "개주  해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -16247,7 +16462,13 @@
             "group_parent": "2.개주 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -16575,14 +16796,14 @@
           0,
           "개주  해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -16626,7 +16847,13 @@
             "group_parent": "3.개주 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -16954,14 +17181,14 @@
           0,
           "개주  해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -17005,7 +17232,13 @@
             "group_parent": "4.개주 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -17464,14 +17697,14 @@
           0,
           "후연성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -17515,7 +17748,13 @@
             "group_parent": "후연성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -17843,14 +18082,14 @@
           0,
           "후연성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -17894,7 +18133,13 @@
             "group_parent": "2.후연성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -18222,14 +18467,14 @@
           0,
           "후연성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -18273,7 +18518,13 @@
             "group_parent": "3.후연성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [
@@ -18601,14 +18852,14 @@
           0,
           "후연성 해골굴9굴",
           {
-            "target_image": "wp_img_c917ed11.png",
+            "target_image": "wp_img_580daf0b.png",
             "target_images": [],
-            "confidence": 0.8022727272727272,
+            "confidence": 0.7,
             "search_radius": 0,
             "action_x": null,
             "action_y": null,
             "move_mouse_before_search": false,
-            "character_image": "wp_char_96c7fb74.png",
+            "character_image": "wp_char_1e24f011.png",
             "arrival_keys": [
               {
                 "key": "6",
@@ -18652,7 +18903,13 @@
             "group_parent": "4.후연성 흑해골굴",
             "skip_initial_map_copy": true,
             "map_locked": true,
-            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png"
+            "item_image": "C:\\Projects\\wincro\\data\\templates\\wp_item_6645f0a0.png",
+            "target_image_region": [
+              14,
+              35,
+              1400,
+              884
+            ]
           }
         ],
         [

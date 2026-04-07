@@ -48,14 +48,22 @@
   ],
   "boss_image_presets": [
     {
-      "name": "wp_img_0ad2e066",
-      "path": "C:\\Projects\\wincro\\data\\templates\\wp_img_fc6c3934.png"
+      "name": "trigger_20260403_135608_768_crop_888c90",
+      "path": "C:\\Projects\\wincro\\data\\templates\\wp_img_580daf0b.png",
+      "confidence": 0.7,
+      "region": [
+        14,
+        35,
+        1400,
+        884
+      ],
+      "ocr_text": "이"
     }
   ],
   "character_image_presets": [
     {
-      "name": "wp_char_64b6dd3e",
-      "path": "C:\\Projects\\wincro\\data\\templates\\wp_char_b902b9e2.png"
+      "name": "trigger_20260403_143926_465_crop_e12ab3",
+      "path": "C:\\Projects\\wincro\\data\\templates\\wp_char_1e24f011.png"
     }
   ],
   "item_image_presets": [

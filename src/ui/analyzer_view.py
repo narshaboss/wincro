@@ -26,6 +26,15 @@ from ..analyzer import get_video_analyzer, AnalysisProgress
 from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from ..database import get_db, Recording, Sequence
 from .main_window import BaseView, COLORS
+from .image_crop_utils import (
+    apply_brush,
+    apply_mask_overlay_rgb,
+    auto_extract_foreground_mask,
+    fit_image_to_box,
+    get_sidecar_mask_path,
+    load_sidecar_mask,
+    normalize_binary_mask,
+)
 from .ui_batcher import UiCallbackDispatcher
 from .virtual_scroll import VirtualScrollFrame
 
@@ -249,6 +258,12 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._min_scale = 0.1
         self._max_scale = 3.0
         self._crop_coords = None  # 크롭 좌표 저장
+        self._crop_mask = None
+        self._full_image_mask = None
+        self._edit_mode = "select"
+        self._painting = False
+        self._brush_radius = 14
+        self._last_paint_point = None
 
         # 이미지 내비게이션
         self._image_list = image_list or []
@@ -259,6 +274,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._start_y = 0
         self._rect_id = None
         self._selecting = False
+        self._overlay_photo = None
 
         # 팬(이동) 관련
         self._pan_start_x = 0
@@ -294,6 +310,13 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._original_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if self._original_image is not None:
                 self._original_image = cv2.cvtColor(self._original_image, cv2.COLOR_BGR2RGB)
+                h, w = self._original_image.shape[:2]
+                self._full_image_mask = load_sidecar_mask(self._image_path, (h, w))
+                if self._full_image_mask is not None:
+                    self._crop_coords = (0, 0, w, h)
+                    self._crop_mask = self._full_image_mask.copy()
+                else:
+                    self._crop_mask = None
         except Exception as e:
             logger.error(f"이미지 로드 실패: {e}")
 
@@ -343,12 +366,13 @@ class ImageCropDialog(ctk.CTkToplevel):
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
         top_frame.pack(fill="x", padx=20, pady=(5, 5))
 
-        ctk.CTkLabel(
+        self._guide_label = ctk.CTkLabel(
             top_frame,
-            text="마우스 휠: 확대/축소  |  좌클릭 드래그: 영역 선택  |  우클릭 드래그: 이동",
+            text="좌클릭 드래그: 영역 선택  |  마스크 모드에서는 좌클릭 브러시  |  우클릭 드래그: 이동  |  휠: 확대/축소",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_muted"],
-        ).pack(side="left")
+        )
+        self._guide_label.pack(side="left")
 
         # 줌 컨트롤
         zoom_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
@@ -402,6 +426,106 @@ class ImageCropDialog(ctk.CTkToplevel):
             fg_color=COLORS["bg_card"],
             hover_color=COLORS["bg_card_hover"],
         ).pack(side="left", padx=2)
+
+        mode_frame = ctk.CTkFrame(self, fg_color="transparent")
+        mode_frame.pack(fill="x", padx=20, pady=(0, 5))
+
+        ctk.CTkLabel(
+            mode_frame,
+            text="편집 모드",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 10))
+
+        self._select_mode_btn = ctk.CTkButton(
+            mode_frame,
+            text="영역 선택",
+            width=90,
+            height=30,
+            command=lambda: self._set_edit_mode("select"),
+            fg_color=COLORS["accent_blue"],
+            hover_color="#2563eb",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._select_mode_btn.pack(side="left", padx=4)
+
+        self._erase_mode_btn = ctk.CTkButton(
+            mode_frame,
+            text="마스크 지우기",
+            width=100,
+            height=30,
+            command=lambda: self._set_edit_mode("erase"),
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._erase_mode_btn.pack(side="left", padx=4)
+
+        self._restore_mode_btn = ctk.CTkButton(
+            mode_frame,
+            text="마스크 복원",
+            width=100,
+            height=30,
+            command=lambda: self._set_edit_mode("restore"),
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._restore_mode_btn.pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            mode_frame,
+            text="마스크 초기화",
+            width=110,
+            height=30,
+            command=self._reset_crop_mask,
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(12, 4))
+
+        self._auto_mask_btn = ctk.CTkButton(
+            mode_frame,
+            text="자동 배경 제거",
+            width=120,
+            height=30,
+            command=self._auto_extract_crop_mask,
+            fg_color=COLORS["accent_orange"],
+            hover_color="#ea580c",
+            text_color="white",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._auto_mask_btn.pack(side="left", padx=4)
+
+        ctk.CTkLabel(
+            mode_frame,
+            text="브러시",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(16, 6))
+
+        self._brush_slider = ctk.CTkSlider(
+            mode_frame,
+            from_=4,
+            to=40,
+            number_of_steps=18,
+            width=120,
+            command=self._on_brush_size_change,
+        )
+        self._brush_slider.set(self._brush_radius)
+        self._brush_slider.pack(side="left", padx=4)
+
+        self._brush_label = ctk.CTkLabel(
+            mode_frame,
+            text=f"{self._brush_radius}px",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["accent_blue"],
+            width=48,
+        )
+        self._brush_label.pack(side="left", padx=4)
 
         # 이미지 내비게이션 (여러 이미지가 있을 때만 표시)
         if len(self._image_list) > 1 and self._current_index >= 0:
@@ -464,6 +588,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             command=self._save_crop,
             width=100,
             height=40,
+            state="disabled" if self._crop_coords is None else "normal",
             fg_color=COLORS["success"],
             hover_color="#2ea44f",
             text_color="white",
@@ -652,6 +777,11 @@ class ImageCropDialog(ctk.CTkToplevel):
         )
         self._preview_label.pack(pady=5)
 
+        self._set_edit_mode("select")
+        if self._crop_coords is not None:
+            self._refresh_preview()
+            self._save_btn.configure(state="normal")
+
     def _update_canvas_image(self):
         """현재 스케일로 캔버스에 이미지 표시"""
         if self._original_image is None:
@@ -663,7 +793,24 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 스케일된 이미지 생성
         self._display_image = cv2.resize(self._original_image, (display_w, display_h))
-        pil_image = Image.fromarray(self._display_image)
+        display_image = self._display_image.copy()
+
+        if self._crop_coords is not None and self._crop_mask is not None:
+            crop_x1, crop_y1, crop_x2, crop_y2 = self._crop_coords
+            disp_x1 = int(crop_x1 * self._scale)
+            disp_y1 = int(crop_y1 * self._scale)
+            disp_x2 = max(disp_x1 + 1, int(crop_x2 * self._scale))
+            disp_y2 = max(disp_y1 + 1, int(crop_y2 * self._scale))
+            overlay_mask = cv2.resize(
+                self._crop_mask,
+                (max(1, disp_x2 - disp_x1), max(1, disp_y2 - disp_y1)),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            crop_view = display_image[disp_y1:disp_y2, disp_x1:disp_x2]
+            if crop_view.size != 0:
+                display_image[disp_y1:disp_y2, disp_x1:disp_x2] = apply_mask_overlay_rgb(crop_view, overlay_mask)
+
+        pil_image = Image.fromarray(display_image)
         self._photo_image = ImageTk.PhotoImage(pil_image)
 
         # 캔버스 초기화 및 이미지 표시
@@ -676,6 +823,22 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._img_canvas_x = img_x
         self._img_canvas_y = img_y
         self._canvas.create_image(img_x, img_y, anchor="nw", image=self._photo_image, tags="image")
+
+        if self._crop_coords is not None:
+            crop_x1, crop_y1, crop_x2, crop_y2 = self._crop_coords
+            rect_x1 = img_x + int(crop_x1 * self._scale)
+            rect_y1 = img_y + int(crop_y1 * self._scale)
+            rect_x2 = img_x + int(crop_x2 * self._scale)
+            rect_y2 = img_y + int(crop_y2 * self._scale)
+            self._rect_id = self._canvas.create_rectangle(
+                rect_x1,
+                rect_y1,
+                rect_x2,
+                rect_y2,
+                outline="#58a6ff",
+                width=2,
+                dash=(6, 4),
+            )
 
         # 줌 레이블 업데이트
         if hasattr(self, '_zoom_label'):
@@ -699,6 +862,171 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._scale = min(self._canvas_width / w, self._canvas_height / h)
         self._canvas_offset_x = 0
         self._canvas_offset_y = 0
+        self._update_canvas_image()
+
+    def _set_edit_mode(self, mode: str):
+        self._edit_mode = mode
+        button_specs = {
+            "select": (self._select_mode_btn, COLORS["accent_blue"], "white"),
+            "erase": (self._erase_mode_btn, COLORS["error"], "white"),
+            "restore": (self._restore_mode_btn, COLORS["success"], "white"),
+        }
+        for key, (button, active_color, active_text) in button_specs.items():
+            if key == mode:
+                button.configure(fg_color=active_color, text_color=active_text)
+            else:
+                button.configure(fg_color=COLORS["bg_card"], text_color=COLORS["text_secondary"])
+        if hasattr(self, "_guide_label"):
+            if mode == "select":
+                text = "좌클릭 드래그: 영역 선택  |  우클릭 드래그: 이동  |  휠: 확대/축소"
+            elif mode == "erase":
+                text = "좌클릭 드래그: 마스크 제거  |  선택 영역 내부만 편집됨  |  우클릭 드래그: 이동"
+            else:
+                text = "좌클릭 드래그: 마스크 복원  |  선택 영역 내부만 편집됨  |  우클릭 드래그: 이동"
+            self._guide_label.configure(text=text)
+
+    def _on_brush_size_change(self, value):
+        self._brush_radius = max(1, int(float(value)))
+        if hasattr(self, "_brush_label"):
+            self._brush_label.configure(text=f"{self._brush_radius}px")
+
+    def _reset_crop_mask(self):
+        if self._crop_coords is None:
+            return
+        x1, y1, x2, y2 = self._crop_coords
+        width = max(0, x2 - x1)
+        height = max(0, y2 - y1)
+        if width <= 0 or height <= 0:
+            return
+        self._crop_mask = np.full((height, width), 255, dtype=np.uint8)
+        self._refresh_preview()
+        self._update_canvas_image()
+
+    def _auto_extract_crop_mask(self):
+        if self._original_image is None or self._crop_coords is None:
+            return
+        x1, y1, x2, y2 = self._crop_coords
+        cropped = self._original_image[y1:y2, x1:x2].copy()
+        if cropped.size == 0:
+            return
+        self._crop_mask = auto_extract_foreground_mask(cropped)
+        self._refresh_preview()
+        self._update_canvas_image()
+
+    def _canvas_to_original_point(self, canvas_x: int, canvas_y: int) -> Optional[tuple[int, int]]:
+        if self._original_image is None:
+            return None
+        img_x = getattr(self, "_img_canvas_x", 0)
+        img_y = getattr(self, "_img_canvas_y", 0)
+        rel_x = canvas_x - img_x
+        rel_y = canvas_y - img_y
+        if rel_x < 0 or rel_y < 0:
+            return None
+        orig_x = int(rel_x / self._scale)
+        orig_y = int(rel_y / self._scale)
+        h, w = self._original_image.shape[:2]
+        if orig_x < 0 or orig_y < 0 or orig_x >= w or orig_y >= h:
+            return None
+        return orig_x, orig_y
+
+    def _canvas_rect_to_crop_coords(self, end_x: int, end_y: int) -> Optional[tuple[int, int, int, int]]:
+        if self._original_image is None:
+            return None
+
+        x1 = min(self._start_x, end_x)
+        y1 = min(self._start_y, end_y)
+        x2 = max(self._start_x, end_x)
+        y2 = max(self._start_y, end_y)
+        if x2 - x1 < 5 or y2 - y1 < 5:
+            return None
+
+        p1 = self._canvas_to_original_point(x1, y1)
+        p2 = self._canvas_to_original_point(x2, y2)
+        if p1 is None and p2 is None:
+            return None
+
+        h, w = self._original_image.shape[:2]
+        if p1 is None:
+            p1 = (0, 0)
+        if p2 is None:
+            p2 = (w - 1, h - 1)
+
+        orig_x1, orig_y1 = p1
+        orig_x2, orig_y2 = p2
+        orig_x1 = max(0, min(orig_x1, w - 1))
+        orig_y1 = max(0, min(orig_y1, h - 1))
+        orig_x2 = max(0, min(orig_x2, w - 1))
+        orig_y2 = max(0, min(orig_y2, h - 1))
+        if orig_x1 > orig_x2:
+            orig_x1, orig_x2 = orig_x2, orig_x1
+        if orig_y1 > orig_y2:
+            orig_y1, orig_y2 = orig_y2, orig_y1
+        orig_x2 = min(w, orig_x2 + 1)
+        orig_y2 = min(h, orig_y2 + 1)
+        if orig_x2 - orig_x1 < 2 or orig_y2 - orig_y1 < 2:
+            return None
+        return orig_x1, orig_y1, orig_x2, orig_y2
+
+    def _set_crop_selection(self, coords: tuple[int, int, int, int]):
+        if self._original_image is None:
+            return
+        self._crop_coords = coords
+        x1, y1, x2, y2 = coords
+        self._crop_mask = auto_extract_foreground_mask(self._original_image[y1:y2, x1:x2].copy())
+        self._save_btn.configure(state="normal")
+        self._refresh_preview()
+        self._update_canvas_image()
+
+    def _refresh_preview(self):
+        if self._original_image is None or self._crop_coords is None:
+            return
+        x1, y1, x2, y2 = self._crop_coords
+        cropped = self._original_image[y1:y2, x1:x2].copy()
+        crop_mask = normalize_binary_mask(self._crop_mask, cropped.shape[:2])
+        if cropped.size == 0 or crop_mask.size == 0:
+            return
+        preview_image = apply_mask_overlay_rgb(cropped, crop_mask)
+        preview_resized, _ = fit_image_to_box(preview_image, 180, 180)
+        pil_preview = Image.fromarray(preview_resized)
+        self._cropped_photo = ImageTk.PhotoImage(pil_preview)
+        self._preview_canvas.delete("all")
+        offset_x = (180 - preview_resized.shape[1]) // 2
+        offset_y = (180 - preview_resized.shape[0]) // 2
+        self._preview_canvas.create_image(offset_x, offset_y, anchor="nw", image=self._cropped_photo)
+        masked_pixels = int(np.count_nonzero(crop_mask == 0))
+        self._preview_label.configure(
+            text=f"{cropped.shape[1]} x {cropped.shape[0]} px | 마스크 {masked_pixels}px",
+            text_color=COLORS["text_primary"],
+        )
+
+    def _apply_mask_brush_at_canvas(self, canvas_x: int, canvas_y: int, *, erase: bool, refresh: bool = True):
+        if self._crop_coords is None or self._crop_mask is None:
+            return
+        original_point = self._canvas_to_original_point(canvas_x, canvas_y)
+        if original_point is None:
+            return
+        orig_x, orig_y = original_point
+        x1, y1, _, _ = self._crop_coords
+        local_x = orig_x - x1
+        local_y = orig_y - y1
+        if local_x < 0 or local_y < 0 or local_x >= self._crop_mask.shape[1] or local_y >= self._crop_mask.shape[0]:
+            return
+        radius = max(1, int(self._brush_radius / max(self._scale, 0.1)))
+        apply_brush(self._crop_mask, (local_x, local_y), radius, erase=erase)
+        if refresh:
+            self._refresh_preview()
+            self._update_canvas_image()
+
+    def _draw_mask_line(self, start_point: tuple[int, int], end_point: tuple[int, int], *, erase: bool):
+        x1, y1 = start_point
+        x2, y2 = end_point
+        steps = max(abs(x2 - x1), abs(y2 - y1), 1)
+        for step in range(steps + 1):
+            t = step / steps
+            px = int(round(x1 + (x2 - x1) * t))
+            py = int(round(y1 + (y2 - y1) * t))
+            self._apply_mask_brush_at_canvas(px, py, erase=erase, refresh=False)
+        self._refresh_preview()
         self._update_canvas_image()
 
     def _on_mouse_wheel(self, event):
@@ -732,6 +1060,11 @@ class ImageCropDialog(ctk.CTkToplevel):
 
     def _on_mouse_down(self, event):
         """마우스 버튼 누름"""
+        if self._edit_mode in ("erase", "restore") and self._crop_coords is not None:
+            self._painting = True
+            self._last_paint_point = (event.x, event.y)
+            self._apply_mask_brush_at_canvas(event.x, event.y, erase=self._edit_mode == "erase")
+            return
         self._start_x = event.x
         self._start_y = event.y
         self._selecting = True
@@ -742,6 +1075,14 @@ class ImageCropDialog(ctk.CTkToplevel):
 
     def _on_mouse_drag(self, event):
         """마우스 드래그"""
+        if self._painting and self._edit_mode in ("erase", "restore"):
+            current_point = (event.x, event.y)
+            if self._last_paint_point is None:
+                self._last_paint_point = current_point
+            self._draw_mask_line(self._last_paint_point, current_point, erase=self._edit_mode == "erase")
+            self._last_paint_point = current_point
+            return
+
         if not self._selecting:
             return
 
@@ -760,6 +1101,10 @@ class ImageCropDialog(ctk.CTkToplevel):
 
     def _on_mouse_up(self, event):
         """마우스 버튼 놓음"""
+        if self._painting:
+            self._painting = False
+            self._last_paint_point = None
+            return
         self._selecting = False
         self._end_x = event.x
         self._end_y = event.y
@@ -767,88 +1112,13 @@ class ImageCropDialog(ctk.CTkToplevel):
 
     def _update_preview(self, end_x: int, end_y: int):
         """미리보기 업데이트"""
-        if self._original_image is None:
+        coords = self._canvas_rect_to_crop_coords(end_x, end_y)
+        if coords is None:
             return
-
-        # 좌표 정규화
-        x1 = min(self._start_x, end_x)
-        y1 = min(self._start_y, end_y)
-        x2 = max(self._start_x, end_x)
-        y2 = max(self._start_y, end_y)
-
-        # 최소 크기 확인
-        if x2 - x1 < 5 or y2 - y1 < 5:
-            return
-
-        # 캔버스 좌표에서 이미지 좌표로 변환 (오프셋 고려)
-        img_x = getattr(self, '_img_canvas_x', 0)
-        img_y = getattr(self, '_img_canvas_y', 0)
-
-        # 이미지 영역 내의 좌표로 변환
-        rel_x1 = x1 - img_x
-        rel_y1 = y1 - img_y
-        rel_x2 = x2 - img_x
-        rel_y2 = y2 - img_y
-
-        # 원본 이미지 좌표로 변환 (스케일 적용)
-        orig_x1 = int(rel_x1 / self._scale)
-        orig_y1 = int(rel_y1 / self._scale)
-        orig_x2 = int(rel_x2 / self._scale)
-        orig_y2 = int(rel_y2 / self._scale)
-
-        # 좌표 순서 정규화 (음수 방지)
-        if orig_x1 > orig_x2:
-            orig_x1, orig_x2 = orig_x2, orig_x1
-        if orig_y1 > orig_y2:
-            orig_y1, orig_y2 = orig_y2, orig_y1
-
-        # 경계 체크
-        h, w = self._original_image.shape[:2]
-        orig_x1 = max(0, min(orig_x1, w))
-        orig_y1 = max(0, min(orig_y1, h))
-        orig_x2 = max(0, min(orig_x2, w))
-        orig_y2 = max(0, min(orig_y2, h))
-
-        # 크롭된 이미지 추출
-        cropped = self._original_image[orig_y1:orig_y2, orig_x1:orig_x2]
-
-        if cropped.size == 0:
-            return
-
-        # 크롭 좌표 저장
-        self._crop_coords = (orig_x1, orig_y1, orig_x2, orig_y2)
-
-        # 미리보기 크기에 맞게 리사이즈
-        crop_h, crop_w = cropped.shape[:2]
-        # Division by zero 방지
-        if crop_w <= 0 or crop_h <= 0:
-            return
-        preview_scale = min(180 / crop_w, 180 / crop_h)
-        preview_w = int(crop_w * preview_scale)
-        preview_h = int(crop_h * preview_scale)
-
-        preview_resized = cv2.resize(cropped, (preview_w, preview_h))
-        pil_preview = Image.fromarray(preview_resized)
-        self._cropped_photo = ImageTk.PhotoImage(pil_preview)
-
-        # 미리보기 캔버스 업데이트
-        self._preview_canvas.delete("all")
-        # 중앙에 배치
-        offset_x = (180 - preview_w) // 2
-        offset_y = (180 - preview_h) // 2
-        self._preview_canvas.create_image(offset_x, offset_y, anchor="nw", image=self._cropped_photo)
-
-        # 크기 정보 표시
-        self._preview_label.configure(
-            text=f"{orig_x2 - orig_x1} x {orig_y2 - orig_y1} px",
-            text_color=COLORS["text_primary"]
-        )
-
-        # 저장 버튼 활성화
-        self._save_btn.configure(state="normal")
+        self._set_crop_selection(coords)
 
     def _save_crop(self):
-        """크롭 저장 - 원본 유지하고 새 파일로 저장 + 마스크 자동 생성"""
+        """크롭 저장 - 원본 유지하고 새 파일 + 자유형 마스크를 함께 저장"""
         from tkinter import messagebox
         import os
         import uuid
@@ -871,10 +1141,12 @@ class ImageCropDialog(ctk.CTkToplevel):
         logger.info(f"[크롭] 크롭 좌표: ({orig_x1}, {orig_y1}) ~ ({orig_x2}, {orig_y2})")
         logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}")
 
-        # 크롭
-        cropped = self._original_image[orig_y1:orig_y2, orig_x1:orig_x2]
+        # 크롭 + 현재 자유형 마스크 추출
+        x1, y1, x2, y2 = self._crop_coords
+        cropped = self._original_image[y1:y2, x1:x2].copy()
+        crop_mask = normalize_binary_mask(self._crop_mask, cropped.shape[:2])
 
-        if cropped.size == 0:
+        if cropped.size == 0 or crop_mask.size == 0:
             messagebox.showwarning("알림", "크롭된 영역이 비어있습니다.\n다시 선택하세요.")
             return
 
@@ -891,13 +1163,16 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 크롭 파일명: 원본이름_crop_랜덤.확장자
             new_filename = f"{stem}_crop_{uuid.uuid4().hex[:6]}{suffix}"
             new_path = parent / new_filename
+            mask_path = get_sidecar_mask_path(new_path)
 
-            # 새 파일로 저장 (원본은 그대로 유지)
+            # 새 파일과 자유형 마스크를 함께 저장
             success = cv2.imwrite(str(new_path), cropped_bgr)
+            mask_success = cv2.imwrite(str(mask_path), crop_mask)
 
-            if success:
+            if success and mask_success:
                 new_size = os.path.getsize(str(new_path)) if new_path.exists() else 0
                 logger.info(f"[크롭] 새 파일 저장: {new_path}")
+                logger.info(f"[크롭] 마스크 저장: {mask_path}")
                 logger.info(f"[크롭] 원본 유지: {self._image_path}")
                 logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}, 파일크기: {new_size} bytes")
 
@@ -905,8 +1180,8 @@ class ImageCropDialog(ctk.CTkToplevel):
                     self._on_crop(str(new_path))
                 self.destroy()
             else:
-                logger.error(f"[크롭] cv2.imwrite 실패: {new_path}")
-                messagebox.showerror("오류", f"이미지 저장에 실패했습니다.\n경로: {new_path}")
+                logger.error(f"[크롭] 저장 실패: image={new_path}, mask={mask_path}, image_ok={success}, mask_ok={mask_success}")
+                messagebox.showerror("오류", f"이미지 또는 마스크 저장에 실패했습니다.\n경로: {new_path}")
 
         except Exception as e:
             logger.error(f"크롭 저장 오류: {e}")
@@ -920,9 +1195,13 @@ class ImageCropDialog(ctk.CTkToplevel):
             try:
                 # 파일 삭제
                 image_path = Path(self._image_path)
+                mask_path = get_sidecar_mask_path(image_path)
                 if image_path.exists():
                     image_path.unlink()
                     logger.info(f"이미지 파일 삭제: {self._image_path}")
+                if mask_path.exists():
+                    mask_path.unlink()
+                    logger.info(f"마스크 파일 삭제: {mask_path}")
 
                 # 콜백 호출
                 if self._on_delete:
@@ -1204,6 +1483,8 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 크롭 상태 초기화
         self._crop_coords = None
+        self._crop_mask = None
+        self._full_image_mask = None
         self._canvas_offset_x = 0
         self._canvas_offset_y = 0
 
@@ -1229,8 +1510,11 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 미리보기 초기화
         if hasattr(self, '_preview_canvas'):
             self._preview_canvas.delete("all")
-        if hasattr(self, '_preview_label'):
+        if hasattr(self, '_preview_label') and self._crop_coords is None:
             self._preview_label.configure(text="영역을 선택하세요", text_color=COLORS["text_muted"])
+        if self._crop_coords is not None:
+            self._refresh_preview()
+            self._save_btn.configure(state="normal")
 
         # 내비게이션 버튼 상태 업데이트
         self._update_nav_buttons()

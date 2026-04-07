@@ -42,6 +42,42 @@ def test_image_preset_filters_missing_files(tmp_path, monkeypatch):
     assert item == [{"name": "item_a", "path": str(item_file)}]
 
 
+def test_image_preset_path_lookup_falls_back_to_same_file_fingerprint(tmp_path, monkeypatch):
+    preset_file = tmp_path / "waypoint_presets.json"
+    image_a = tmp_path / "boss_a.png"
+    image_b = tmp_path / "boss_b.png"
+    image_a.write_bytes(b"same-boss-template")
+    image_b.write_bytes(b"same-boss-template")
+    monkeypatch.setattr(wp, "PRESET_FILE", preset_file)
+
+    wp.upsert_image_preset("boss", "boss_a", str(image_a), region=[1, 2, 3, 4], ocr_text="원각")
+
+    preset = wp.get_image_preset("boss", path=str(image_b))
+
+    assert preset is not None
+    assert preset["name"] == "boss_a"
+    assert preset["path"] == str(image_a)
+    assert preset["region"] == [1, 2, 3, 4]
+    assert preset["ocr_text"] == "원각"
+
+
+def test_image_preset_persists_confidence(tmp_path, monkeypatch):
+    preset_file = tmp_path / "waypoint_presets.json"
+    image_file = tmp_path / "boss.png"
+    image_file.write_bytes(b"boss")
+    monkeypatch.setattr(wp, "PRESET_FILE", preset_file)
+
+    wp.upsert_image_preset("boss", "boss_a", str(image_file), confidence=0.7, region=[1, 2, 3, 4])
+    preset = wp.get_image_preset("boss", path=str(image_file))
+
+    assert preset is not None
+    assert preset["confidence"] == 0.7
+
+    wp.set_image_preset_confidence("boss", path=str(image_file), confidence=0.72)
+    preset = wp.get_image_preset("boss", path=str(image_file))
+    assert preset["confidence"] == 0.72
+
+
 def test_image_preset_remove_roundtrip(tmp_path, monkeypatch):
     preset_file = tmp_path / "waypoint_presets.json"
     image_file = tmp_path / "boss.png"
@@ -171,8 +207,8 @@ def test_bosstest_and_itemtest_image_selection_use_saved_preset_picker():
     assert "self._open_image_preset_picker(" in boss_item_slice
     assert 'dialog_title="보스 이미지 선택" if kind == "boss" else "캐릭터 이미지 선택"' in boss_item_slice
     assert 'dialog_title="아이템 이미지 선택"' in boss_item_slice
-    assert 'self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(path).name}")' in boss_item_slice
-    assert 'self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(path).name}")' in boss_item_slice
+    assert 'self._bosstest_boss_label.configure(text=f"보스 이미지: {Path(_resolved_path).name}")' in boss_item_slice
+    assert 'self._bosstest_char_label.configure(text=f"캐릭터 이미지: {Path(_resolved_path).name}")' in boss_item_slice
     assert 'self._itemtest_item_label.configure(text=f"아이템 이미지: {Path(path).name}")' in boss_item_slice
 
 

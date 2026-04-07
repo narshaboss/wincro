@@ -1,4 +1,11 @@
-﻿### 2026-03-23: ?꾩뿰??蹂댁뒪援?0,0 sentinel 紐⑺몴 諛⑹뼱 + ?대? 留??대쫫 ?뺣━ (v1.0.177)
+﻿### 2026-04-07: Full update release prep (v1.0.200)
+
+- Bumped app/release metadata to `1.0.200`.
+- Updated release workflow title format to `v<version> app title`.
+- Included current auto-hunt plan updates and current boss/special-mode workspace changes in this full update.
+- Normalized remaining old boss waypoint character-image reference in the active boss plan before release.
+
+### 2026-03-23: ?꾩뿰??蹂댁뒪援?0,0 sentinel 紐⑺몴 諛⑹뼱 + ?대? 留??대쫫 ?뺣━ (v1.0.177)
 
 - `src/ui/player_view.py`
   - ?꾩뿰???좎꽦 怨꾩뿴 蹂댁뒪援댁쿂??紐⑺몴 醫뚰몴瑜?`(0,0)` sentinel濡??먮뒗 援ш컙?먯꽌 `(0,0)` OCR ?ㅻ룆???뺤긽 醫뚰몴濡??듦낵?쒗궎吏 ?딅룄濡?諛⑹뼱?덈떎.

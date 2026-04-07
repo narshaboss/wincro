@@ -53,16 +53,33 @@ def test_route_only_local_avoid_requires_goal_rejoin_path():
     assert "if not _local_avoid_candidate_reaches_goal((_nx, _ny)):" in text
 
 
-def test_route_only_failed_chokepoint_preserves_corridor_axis_when_no_side_path():
+def test_route_only_failed_chokepoint_uses_bounded_retry_and_escape():
     text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
 
+    assert "ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD = 6" in text
+    assert "def _stop_route_only_chokepoint_retry(_blocked_dir):" in text
+    assert "⚠️ 유일통로 반복실패 → 첫칸 재시도 중단" in text
     choke_slice = text[
         text.index("if _route_failed_chokepoint:"):
         text.index("if _local_avoid_mode:")
     ]
+    assert "if _blocked_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD:" in choke_slice
+    assert "return _stop_route_only_chokepoint_retry(_blocked_primary_dir)" in choke_slice
     assert "_route_relaxed_dir_override = _blocked_primary_dir" in choke_slice
-    assert "🧭 유일통로 첫칸 유지" in text
     assert "return _blocked_primary_dir" in choke_slice
+
+
+def test_route_only_relaxed_path_chokepoint_override_stops_after_threshold():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+
+    helper_slice = text[
+        text.index("def _apply_route_only_relaxed_result(_route_result, _route_avoid):"):
+        text.index("# ── 전체테스트/부분실행 맵기반 직행 모드")
+    ]
+    assert "_relaxed_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _relaxed_first_dir), 0)" in helper_slice
+    assert "_stop_chokepoint_retry = (" in helper_slice
+    assert "_relaxed_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD" in helper_slice
+    assert "_stop_route_only_chokepoint_retry(_relaxed_first_dir)" in helper_slice
 
 
 def test_route_only_can_use_local_avoid_even_when_segment_has_starts():
