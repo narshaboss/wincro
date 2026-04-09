@@ -27,16 +27,16 @@
   ],
   "navigation_mode": "coordinate",
   "coord_x_region": [
-    1487,
-    892,
-    1537,
-    915
+    911,
+    756,
+    953,
+    786
   ],
   "coord_y_region": [
-    1547,
-    894,
-    1590,
-    915
+    972,
+    762,
+    1009,
+    781
   ],
   "obstacle_detection_enabled": true,
   "stuck_threshold": 3,

@@ -2534,6 +2534,15 @@ class AnalyzerView(BaseView):
 
         self.create_button(
             header,
+            text="+ 플랜추가",
+            command=self._create_plan,
+            style="primary",
+            width=90,
+            height=26,
+        ).pack(side="left")
+
+        self.create_button(
+            header,
             text="새로고침",
             command=self._load_plans_async,
             style="ghost",
@@ -2661,6 +2670,21 @@ class AnalyzerView(BaseView):
         dialog = PlanDetailDialog(self, plan)
         self.wait_window(dialog)
         self._load_recordings()  # 녹화 목록도 새로고침 (이름 동기화)
+        self._load_plans()
+
+    def _create_plan(self):
+        """빈 플랜 생성 후 즉시 수정 다이얼로그 오픈"""
+        from .player_view import PlanDetailDialog
+
+        plan = AutomationPlan(
+            name="새 플랜",
+            description="분석된 재생 목록에서 직접 추가한 플랜",
+            user_verified=True,
+            modified=True,
+        )
+        dialog = PlanDetailDialog(self, plan)
+        self.wait_window(dialog)
+        self._load_recordings()
         self._load_plans()
 
     def _delete_plan(self, plan: AutomationPlan):

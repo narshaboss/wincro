@@ -1,3 +1,10 @@
+### 2026-04-09: Miruksa plan grouping + analyzed-plan create entry (v1.0.201)
+
+- Added `+ ????` to the analyzed playlist card so a new editable `AutomationPlan` can be created directly from the analyzer screen.
+- Added the Miruksa plan file and grouped its duplicated waypoints under the top parent waypoint to reduce card/render overhead in the editor.
+- Included Miruksa local map files in the release payload so the new plan does not open with missing per-waypoint map assets.
+- Bumped app/release metadata to `1.0.201`.
+
 ﻿### 2026-04-07: Full update release prep (v1.0.200)
 
 - Bumped app/release metadata to `1.0.200`.

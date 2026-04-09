@@ -1,0 +1,900 @@
+{
+  "plan_id": "plan_20260409_135552",
+  "name": "미륵사",
+  "description": "분석된 재생 목록에서 직접 추가한 플랜",
+  "initial_rules": [
+    {
+      "rule_id": "rule_6bc2141e",
+      "rule_type": "fixed_sequence",
+      "description": "특화모드",
+      "action_type": "game_mode",
+      "action_x": null,
+      "action_y": null,
+      "action_text": null,
+      "action_keys": [],
+      "drag_to_x": null,
+      "drag_to_y": null,
+      "drag_duration": null,
+      "scroll_amount": 0,
+      "target_image": "game_character_trigger_20260130_015924_341.png",
+      "target_images": [],
+      "trigger_image": null,
+      "trigger_x": null,
+      "trigger_y": null,
+      "confidence": 0.8,
+      "search_radius": 0,
+      "search_region": null,
+      "move_mouse_before_search": false,
+      "wait_after": 0.5,
+      "wait_random": false,
+      "enabled": true,
+      "wait_random_range": 0.3,
+      "typing_random": false,
+      "typing_delay": 0.1,
+      "typing_delay_range": 0.05,
+      "timeout": 30.0,
+      "skip_on_not_found": false,
+      "repeat_count": 1,
+      "repeat_delay": 0.5,
+      "repeat_delay_random": false,
+      "repeat_delay_random_range": 0.3,
+      "timestamp": 0.0,
+      "parent_id": null,
+      "children": [],
+      "is_monitoring_mode": false,
+      "monitoring_final_image": null,
+      "monitoring_watches": []
+    }
+  ],
+  "monitoring_rules": [],
+  "created_at": "2026-04-09T13:55:52.686736",
+  "video_path": null,
+  "input_log_path": null,
+  "user_verified": true,
+  "modified": true,
+  "total_repeat_count": 1000,
+  "game_modes": {
+    "rule_6bc2141e": {
+      "enabled": true,
+      "name": "",
+      "character_image": "game_character_trigger_20260130_015924_341.png",
+      "target_image": "game_target_trigger_20260130_015118_673.png",
+      "obstacle_images": [],
+      "move_keys": {
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right"
+      },
+      "analysis_interval": 0.1,
+      "confidence": 0.8,
+      "character_confidence": 0.9,
+      "target_confidence": 0.8,
+      "arrival_threshold": 30,
+      "search_region": null,
+      "smooth_move": true,
+      "move_skill_key": "4",
+      "move_skill_distance": 150,
+      "auto_skill_key": "5",
+      "auto_skill_cooldown_image": "game_auto_skill_cd_trigger_20260215_005639_490_crop_50c94a.png",
+      "auto_skill_cd_region": [
+        11,
+        34,
+        233,
+        231
+      ],
+      "navigation_mode": "coordinate",
+      "coord_x_region": [
+        911,
+        756,
+        953,
+        786
+      ],
+      "coord_y_region": [
+        972,
+        762,
+        1009,
+        781
+      ],
+      "target_x": 0,
+      "target_y": 0,
+      "waypoints": [
+        [
+          10,
+          0,
+          "미륵사",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": []
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사2)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사3)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사4)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사5)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사6)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사7)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사8)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사9)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사10)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사11)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사12)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사13)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사14)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사15)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사16)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사17)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사18)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사19)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사20)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사21)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사22)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사23)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사24)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사25)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사26)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사27)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사28)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사29)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ],
+        [
+          10,
+          0,
+          "미륵사(복사30)",
+          {
+            "route_starts": [],
+            "route_ends": [
+              {
+                "x": 10,
+                "y": 0
+              },
+              {
+                "x": 11,
+                "y": 0
+              },
+              {
+                "x": 12,
+                "y": 0
+              }
+            ],
+            "route_walls": [],
+            "map_locked": true,
+            "group_parent": "미륵사"
+          }
+        ]
+      ],
+      "final_waypoint_idx": -1,
+      "obstacle_detection_enabled": true,
+      "stuck_threshold": 3,
+      "detour_distance": 8,
+      "diagonal_movement_enabled": false,
+      "oscillation_threshold": 3,
+      "detour_distance_max": 8,
+      "escape_skill_enabled": true,
+      "escape_skill_key": "q",
+      "escape_skill_cooldown": 4.0,
+      "escape_skill_stuck_threshold": 10,
+      "escape_skill_direction_count": 5,
+      "escape_skill_wait_after": 0.5,
+      "minimap_config": null,
+      "mapping_enabled": true,
+      "boss_skill_enabled": true,
+      "boss_skill_key": "q",
+      "boss_skill_cooldown": 4.0,
+      "move_skill_enabled": false,
+      "auto_skill_enabled": true,
+      "move_skill_cooldown": 5.0,
+      "auto_skill_cooldown": 5.0
+    }
+  }
+}
