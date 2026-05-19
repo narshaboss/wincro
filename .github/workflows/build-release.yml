@@ -1,9 +1,12 @@
 name: Build and Release
+run-name: ${{ github.ref_type == 'tag' && format('{0} Build and Release', github.ref_name) || github.event.head_commit.message || github.ref_name }}
 
 on:
   push:
     branches:
       - master
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
