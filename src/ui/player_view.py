@@ -48,8 +48,9 @@ from ..player.rule_executor import RuleExecutor
 from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
 from .main_window import BaseView
+from .player_map_runtime import GameModeMapRuntime
 from .theme import COLORS
-from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
+from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
 from .constants import (
     ACTION_NAMES, ACTION_NAMES_SHORT, ACTION_COLORS,
     convert_to_monitor_action, collect_all_actions, assign_new_ids,
@@ -3382,6 +3383,7 @@ class GameModeDialog(ctk.CTkToplevel):
             flush_interval_ms=40,
             max_items_per_flush=180,
         )
+        self._map_runtime = GameModeMapRuntime(self)
 
         from ..analyzer.automation_models import GameModeConfig
         if config_rule_id and config_rule_id in plan.game_modes:
@@ -3420,22 +3422,21 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def after(self, ms, func=None, *args):
         """Worker thread의 after() 호출을 메인스레드 dispatcher로 우회한다."""
-        if func is None:
-            return super().after(ms)
-        dispatcher = getattr(self, "_ui_dispatcher", None)
-        if dispatcher is None or threading.current_thread() is threading.main_thread():
-            return super().after(ms, func, *args)
+        return dispatch_widget_after(
+            self,
+            getattr(self, "_ui_dispatcher", None),
+            super(GameModeDialog, self).after,
+            ms,
+            func,
+            *args,
+        )
 
-        def _schedule_on_main():
-            try:
-                if not self.winfo_exists():
-                    return
-                super(GameModeDialog, self).after(ms, func, *args)
-            except (tk.TclError, RuntimeError):
-                pass
-
-        dispatcher.post(_schedule_on_main)
-        return None
+    def _get_map_runtime(self) -> GameModeMapRuntime:
+        runtime = getattr(self, "_map_runtime", None)
+        if runtime is None:
+            runtime = GameModeMapRuntime(self)
+            self._map_runtime = runtime
+        return runtime
 
     def _mark_stop_reason(self, reason, detail="", overwrite=False):
         """실행 중지 원인을 기록한다."""
@@ -5749,10 +5750,17 @@ class GameModeDialog(ctk.CTkToplevel):
             _start_pos = self._game_map.start_pos
             _recent_set = set(recent_positions[-8:])
             _base_dist = abs(_cx - _gx) + abs(_cy - _gy)
+            _bdx, _bdy = DIRECTIONS_4.get(_blocked_dir, (0, 0))
+            _blocked_next = (_cx + _bdx, _cy + _bdy) if _blocked_dir else None
             _best = None
 
             def _local_avoid_candidate_reaches_goal(_cand_pos):
-                _avoid = {_cand_pos}
+                _avoid = {(_cx, _cy)}
+                if _blocked_next is not None and _blocked_next not in {_cand_pos, _goal_pos}:
+                    _avoid.add(_blocked_next)
+                for _ppos in _portal_protected:
+                    if _ppos not in {_cand_pos, _goal_pos}:
+                        _avoid.add(_ppos)
                 _res = pathfinder.find_path(
                     _cand_pos,
                     _goal_pos,
@@ -6544,143 +6552,144 @@ class GameModeDialog(ctk.CTkToplevel):
 
             # 경유지 이동 단계(비-프런티어): 경로 첫 방향이 차단되면
             # 해당 방향을 현재 타일에서 시도 후보에서 제외하고 대체 경로를 우선 시도
-                if _blocked_primary_dir and not _frontier_probe_phase:
-                    _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
-                    if _route_only_mode:
-                        _segment_has_starts = _segment_has_route_starts(target_idx)
-                        _local_avoid_mode = not _segment_has_starts
-                        _route_failed_chokepoint = _is_route_only_failed_chokepoint(
-                            cx, cy, _blocked_primary_dir, target_pos
-                        )
-                        if _blocked_edge_fail < AVOID_EDGE_FAIL_THRESHOLD:
-                            if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                    self._append_log(f"🧭 경로재시도: ({x},{y}) {d2}"))
-                            return _blocked_primary_dir
-                        if _route_failed_chokepoint:
-                            _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
-                            if _local_dir:
-                                if _ui_update_ok and iteration % 10 == 0:
-                                    self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
-                                        self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
-                                return _local_dir
-                            if _blocked_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD:
-                                return _stop_route_only_chokepoint_retry(_blocked_primary_dir)
-                            _route_relaxed_dir_override = _blocked_primary_dir
-                            if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                    self._append_log(f"🧭 유일통로 첫칸 유지: ({x},{y}) {d2}"))
-                            return _blocked_primary_dir
-                        _route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
-                        if _route_local_dir:
-                            if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_route_local_dir:
-                                    self._append_log(f"🧭 경로막힘 국소회피: ({x},{y}) {d2}→{a2}"))
-                            return _route_local_dir
-                        if _local_avoid_mode:
-                            _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
-                            if _local_dir:
-                                if _ui_update_ok and iteration % 10 == 0:
-                                    self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
-                                        self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
-                                return _local_dir
-                        tried = explored_from.get(current_pos, set())
-                        tried.add(_blocked_primary_dir)
-                        explored_from[current_pos] = tried
-                        if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 국소회피 실패: ({x},{y}) {d2} 유지금지"))
-                        return None
-                    _bdx, _bdy = DIRECTIONS_4.get(_blocked_primary_dir, (0, 0))
-                    _blocked_next = (cx + _bdx, cy + _bdy)
-                    _alt_avoid = set(_dir_avoid)
-                    _alt_avoid.add(_blocked_next)
-                    _portal_avoid = _build_avoid_set(target_pos)
-                    if _portal_avoid:
-                        _alt_avoid.update(_portal_avoid)
-                    _alt_result = pathfinder.find_path(
-                        current_pos, target_pos,
-                        allow_unknown=True,
-                        stop_event=self._stop_event,
-                        max_iterations=max(_manhattan * 30, 20000),
-                        unknown_cost=3,
-                        allow_soft_blocked=True,
-                        respect_blocked_edges=True,
-                        avoid_set=_alt_avoid if _alt_avoid else None
+            if _blocked_primary_dir and not _frontier_probe_phase:
+                _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
+                _segment_has_starts = _segment_has_route_starts(target_idx)
+                if _route_only_mode:
+                    _local_avoid_mode = not _segment_has_starts
+                    _route_failed_chokepoint = _is_route_only_failed_chokepoint(
+                        cx, cy, _blocked_primary_dir, target_pos
                     )
-                    if self._stop_event.is_set():
-                        return None
-                    if _alt_result.found and _alt_result.directions:
-                        current_path = _alt_result.path
-                        path_index = 0
-                        _rebuild_path_index()
-                        _alt_dir = _alt_result.directions[0]
-                        if _can_take_path_dir(_alt_dir):
-                            if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_alt_dir:
-                                self._append_log(f"🧭 경로우회: ({x},{y}) {d2}→{a2}"))
-                            return _alt_dir
-                    _route_chokepoint = _is_route_chokepoint(current_pos, target_pos, _blocked_next, allow_unknown=True)
-                    _preserve_failed_edge = (
-                        _segment_has_starts and
-                        _blocked_edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
-                        _route_chokepoint
-                    )
-                    if _preserve_failed_edge:
-                        tried = explored_from.get(current_pos, set())
-                        tried.add(_blocked_primary_dir)
-                        explored_from[current_pos] = tried
-                        if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 유일통로 재시도 중단: ({x},{y}) {d2}"))
-                        return None
-                    # 대체 경로가 전혀 없거나, relaxed 경로의 첫 칸이 아직 방향차단만 걸린 상태라면
-                    # 하드블록이 아닌 한 몇 번은 그대로 밀어본다. 그렇지 않으면 특화/부분실행/
-                    # 일반테스트가 모두 같은 자리에서 방향없음으로 굳을 수 있다.
-                    _next_is_retryable = (
-                        use_map and
-                        not self._game_map.is_blocked(_blocked_next[0], _blocked_next[1]) and
-                        _blocked_next not in _portal_protected
-                    )
-                    if _next_is_retryable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
-                        if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 경로직진 재시도: ({x},{y}) {d2}"))
-                        return _blocked_primary_dir
-                    # 다음 칸이 맵상 passable이고 우회로가 없으면, 방향차단을 존중하되
-                    # 몇 번은 해당 방향을 계속 밀어 임시 점유가 풀리길 기다린다.
-                    _next_is_map_passable = (
-                        use_map and
-                        self._game_map.is_passable(_blocked_next[0], _blocked_next[1]) and
-                        not self._game_map.is_blocked(_blocked_next[0], _blocked_next[1])
-                    )
-                    if _next_is_map_passable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
-                        if _ui_update_ok and iteration % 10 == 0:
-                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                    self._append_log(f"🧭 좁은목 재시도: ({x},{y}) {d2}"))
-                        return _blocked_primary_dir
-                    if _route_chokepoint and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
-                        if _ui_update_ok and iteration % 10 == 0:
-                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 유일통로 재시도: ({x},{y}) {d2}"))
-                        return _blocked_primary_dir
-                    tried = explored_from.get(current_pos, set())
-                    tried.add(_blocked_primary_dir)
-                    explored_from[current_pos] = tried
-                    return None
-                elif _strict_route_mode:
-                    # 경유지 이동 단계: 1회 실패는 일시 흔들림일 수 있어 같은 방향 1회 재시도
                     if _blocked_edge_fail < AVOID_EDGE_FAIL_THRESHOLD:
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                                self._append_log(f"🧭 경유지 경로재시도: ({x},{y}) {d2}"))
+                                self._append_log(f"🧭 경로재시도: ({x},{y}) {d2}"))
                         return _blocked_primary_dir
+                    if _route_failed_chokepoint:
+                        _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                        if _local_dir:
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
+                                    self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
+                            return _local_dir
+                        if _blocked_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD:
+                            return _stop_route_only_chokepoint_retry(_blocked_primary_dir)
+                        _route_relaxed_dir_override = _blocked_primary_dir
+                        if _ui_update_ok and iteration % 10 == 0:
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                                self._append_log(f"🧭 유일통로 첫칸 유지: ({x},{y}) {d2}"))
+                        return _blocked_primary_dir
+                    _route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                    if _route_local_dir:
+                        if _ui_update_ok and iteration % 10 == 0:
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_route_local_dir:
+                                self._append_log(f"🧭 경로막힘 국소회피: ({x},{y}) {d2}→{a2}"))
+                        return _route_local_dir
+                    if _local_avoid_mode:
+                        _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
+                        if _local_dir:
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
+                                    self._append_log(f"🧭 국소회피: ({x},{y}) {d2}→{a2}"))
+                            return _local_dir
                     tried = explored_from.get(current_pos, set())
                     tried.add(_blocked_primary_dir)
                     explored_from[current_pos] = tried
                     if _ui_update_ok and iteration % 10 == 0:
                         self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
-                            self._append_log(f"🧭 경유지 차단회피: ({x},{y}) {d2} 제외"))
+                            self._append_log(f"🧭 국소회피 실패: ({x},{y}) {d2} 유지금지"))
+                    return None
+                _bdx, _bdy = DIRECTIONS_4.get(_blocked_primary_dir, (0, 0))
+                _blocked_next = (cx + _bdx, cy + _bdy)
+                _alt_avoid = set(_dir_avoid)
+                _alt_avoid.add(_blocked_next)
+                _portal_avoid = _build_avoid_set(target_pos)
+                if _portal_avoid:
+                    _alt_avoid.update(_portal_avoid)
+                _alt_result = pathfinder.find_path(
+                    current_pos, target_pos,
+                    allow_unknown=True,
+                    stop_event=self._stop_event,
+                    max_iterations=max(_manhattan * 30, 20000),
+                    unknown_cost=3,
+                    allow_soft_blocked=True,
+                    respect_blocked_edges=True,
+                    avoid_set=_alt_avoid if _alt_avoid else None
+                )
+                if self._stop_event.is_set():
+                    return None
+                if _alt_result.found and _alt_result.directions:
+                    current_path = _alt_result.path
+                    path_index = 0
+                    _rebuild_path_index()
+                    _alt_dir = _alt_result.directions[0]
+                    if _can_take_path_dir(_alt_dir):
+                        if _ui_update_ok and iteration % 10 == 0:
+                            self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_alt_dir:
+                                self._append_log(f"🧭 경로우회: ({x},{y}) {d2}→{a2}"))
+                        return _alt_dir
+                _route_chokepoint = _is_route_chokepoint(current_pos, target_pos, _blocked_next, allow_unknown=True)
+                _preserve_failed_edge = (
+                    _segment_has_starts and
+                    _blocked_edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and
+                    _route_chokepoint
+                )
+                if _preserve_failed_edge:
+                    tried = explored_from.get(current_pos, set())
+                    tried.add(_blocked_primary_dir)
+                    explored_from[current_pos] = tried
+                    if _ui_update_ok and iteration % 10 == 0:
+                        self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                            self._append_log(f"🧭 유일통로 재시도 중단: ({x},{y}) {d2}"))
+                    return None
+                # 대체 경로가 전혀 없거나, relaxed 경로의 첫 칸이 아직 방향차단만 걸린 상태라면
+                # 하드블록이 아닌 한 몇 번은 그대로 밀어본다. 그렇지 않으면 특화/부분실행/
+                # 일반테스트가 모두 같은 자리에서 방향없음으로 굳을 수 있다.
+                _next_is_retryable = (
+                    use_map and
+                    not self._game_map.is_blocked(_blocked_next[0], _blocked_next[1]) and
+                    _blocked_next not in _portal_protected
+                )
+                if _next_is_retryable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
+                    if _ui_update_ok and iteration % 10 == 0:
+                        self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                            self._append_log(f"🧭 경로직진 재시도: ({x},{y}) {d2}"))
+                    return _blocked_primary_dir
+                # 다음 칸이 맵상 passable이고 우회로가 없으면, 방향차단을 존중하되
+                # 몇 번은 해당 방향을 계속 밀어 임시 점유가 풀리길 기다린다.
+                _next_is_map_passable = (
+                    use_map and
+                    self._game_map.is_passable(_blocked_next[0], _blocked_next[1]) and
+                    not self._game_map.is_blocked(_blocked_next[0], _blocked_next[1])
+                )
+                if _next_is_map_passable and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
+                    if _ui_update_ok and iteration % 10 == 0:
+                        self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                            self._append_log(f"🧭 좁은목 재시도: ({x},{y}) {d2}"))
+                    return _blocked_primary_dir
+                if _route_chokepoint and _blocked_edge_fail < EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD:
+                    if _ui_update_ok and iteration % 10 == 0:
+                        self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                            self._append_log(f"🧭 유일통로 재시도: ({x},{y}) {d2}"))
+                    return _blocked_primary_dir
+                tried = explored_from.get(current_pos, set())
+                tried.add(_blocked_primary_dir)
+                explored_from[current_pos] = tried
+                return None
+            elif _strict_route_mode and _blocked_primary_dir:
+                _blocked_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _blocked_primary_dir), 0)
+                # 경유지 이동 단계: 1회 실패는 일시 흔들림일 수 있어 같은 방향 1회 재시도
+                if _blocked_edge_fail < AVOID_EDGE_FAIL_THRESHOLD:
+                    if _ui_update_ok and iteration % 10 == 0:
+                        self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                            self._append_log(f"🧭 경유지 경로재시도: ({x},{y}) {d2}"))
+                    return _blocked_primary_dir
+                tried = explored_from.get(current_pos, set())
+                tried.add(_blocked_primary_dir)
+                explored_from[current_pos] = tried
+                if _ui_update_ok and iteration % 10 == 0:
+                    self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir:
+                        self._append_log(f"🧭 경유지 차단회피: ({x},{y}) {d2} 제외"))
 
             if _route_only_mode and not (_blocked_primary_dir is None and none_dir_streak >= 3):
                 # 전체테스트/부분실행은 맵 기준 최단경로만 따라간다.
@@ -13336,383 +13345,45 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _sanitize_segment_end_pos(self, game_map_ref, segment_idx: int):
         """end_pos를 저장하지 않는 구간이면 메모리에서도 제거"""
-        if game_map_ref is not None:
-            self._sanitize_segment_start_pos(game_map_ref, segment_idx)
-        if game_map_ref is not None:
-            self._sanitize_segment_placeholder_target_tile(game_map_ref, segment_idx)
-        if game_map_ref is not None and not self._should_persist_segment_end(segment_idx):
-            game_map_ref.end_pos = None
+        return self._get_map_runtime().sanitize_segment_end_pos(game_map_ref, segment_idx)
 
     def _verify_saved_map_file(self, map_path: str, expected_passable: int = None) -> bool:
         """저장된 맵 파일이 최소한의 구조를 만족하는지 검증한다."""
-        import json
-        import os
-        try:
-            if not map_path or not os.path.exists(map_path):
-                return False
-            if os.path.getsize(map_path) <= 2:
-                return False
-            with open(map_path, 'r', encoding='utf-8-sig') as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                return False
-            passable = data.get("passable", [])
-            blocked = data.get("blocked", [])
-            if not isinstance(passable, list) or not isinstance(blocked, list):
-                return False
-            if expected_passable is not None and len(passable) != int(expected_passable):
-                return False
-            return True
-        except Exception:
-            return False
+        return self._get_map_runtime().verify_saved_map_file(map_path, expected_passable=expected_passable)
 
     def _log_map_anomaly(self, message: str):
         """맵 로드/전환 이상을 별도 태그로 기록한다."""
-        try:
-            logger.warning(f"[맵핑이상] {message}")
-        except Exception:
-            pass
-        try:
-            self.after(0, lambda m=message: self._append_log(f"⚠️ 맵핑이상: {m}"))
-        except Exception:
-            pass
+        return self._get_map_runtime().log_map_anomaly(message)
 
     def _bind_game_map_segment(self, game_map_ref, segment_idx: int):
-        try:
-            if game_map_ref is not None:
-                setattr(game_map_ref, "_segment_idx", int(segment_idx))
-        except Exception:
-            pass
+        return self._get_map_runtime().bind_game_map_segment(game_map_ref, segment_idx)
 
     def _resolve_game_map_segment_idx(self, game_map_ref, fallback_idx: int) -> int:
-        try:
-            _bound_idx = getattr(game_map_ref, "_segment_idx", None)
-        except Exception:
-            _bound_idx = None
-        if isinstance(_bound_idx, int) and _bound_idx >= 0:
-            if _bound_idx != fallback_idx:
-                logger.info(f"[맵핑이상] 저장 세그먼트 보정: {fallback_idx}->{_bound_idx}")
-            return _bound_idx
-        return fallback_idx
+        return self._get_map_runtime().resolve_game_map_segment_idx(game_map_ref, fallback_idx)
 
     def _auto_save_map(self, segment_idx: int = None, game_map_ref=None, critical: bool = False) -> str:
         """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장, 롤링 백업 포함)"""
-        _trace_t0 = time.time()
-        if segment_idx is None:
-            segment_idx = getattr(self, '_current_segment_idx', 0)
-        if game_map_ref is None:
-            game_map_ref = self._game_map
-        segment_idx = self._resolve_game_map_segment_idx(game_map_ref, segment_idx)
-        if getattr(self, "_segment_switch_in_progress", False) and not critical:
-            logger.info("[맵핑] 전환 중 일반 맵 저장 건너뜀")
-            return ""
-        self._sanitize_segment_end_pos(game_map_ref, segment_idx)
-        # 보스 경유지 중에는 맵 저장 차단 (오염 방지)
-        if getattr(self, '_boss_segment_active', False):
-            try:
-                self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 보스 경유지 활성"))
-            except (tk.TclError, RuntimeError):
-                pass
-            return ""
-        # 맵 잠금 구간에서는 저장 차단
-        if self._is_segment_map_locked(segment_idx):
-            return ""
-        # 빈 맵 저장 방지 (구간 전환 직후 기존 파일 덮어쓰기 방지)
-        if not getattr(game_map_ref, 'passable', None):
-            try:
-                self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: passable 비어있음"))
-            except (tk.TclError, RuntimeError):
-                pass
-            return ""
-        import os, shutil
-        acquire_deadline = time.monotonic() + (5.0 if critical else 1.5)
-        acquired = False
-        while time.monotonic() < acquire_deadline:
-            acquired = self._map_save_lock.acquire(timeout=0.2)
-            if acquired:
-                break
-        if not acquired:
-            try:
-                self.after(0, lambda: self._append_log("⚠️ 맵 저장 건너뜀: 락 획득 실패"))
-            except (tk.TclError, RuntimeError):
-                pass
-            logger.warning(f"[맵핑] 맵 저장 락 획득 실패 ({'critical' if critical else 'normal'})")
-            return ""
-        if not getattr(game_map_ref, 'passable', None):
-            self._map_save_lock.release()
-            return ""
-        try:
-            seg_name = self._get_segment_display_name(segment_idx)
-            map_path = self._get_segment_map_name(segment_idx)
-            if critical:
-                logger.info(
-                    f"[전환추적] critical 맵 저장 시작: seg='{seg_name}' idx={segment_idx} path={map_path}"
-                )
-            from pathlib import Path
-            Path(map_path).parent.mkdir(parents=True, exist_ok=True)
-            # 롤링 백업: 기존 파일 → .bak1 → .bak2 → .bak3 (최대 3개 유지)
-            if os.path.exists(map_path):
-                try:
-                    bak3 = map_path + ".bak3"
-                    bak2 = map_path + ".bak2"
-                    bak1 = map_path + ".bak1"
-                    if os.path.exists(bak3):
-                        os.remove(bak3)
-                    if os.path.exists(bak2):
-                        shutil.move(bak2, bak3)
-                    if os.path.exists(bak1):
-                        shutil.move(bak1, bak2)
-                    shutil.copy2(map_path, bak1)
-                except Exception as _bk_e:
-                    logger.debug(f"[맵핑] 롤링 백업 실패 (무시): {_bk_e}")
-            _p_count = len(game_map_ref.passable)
-            game_map_ref.save(map_path)
-            if critical and not self._verify_saved_map_file(map_path, expected_passable=_p_count):
-                logger.warning(f"[맵핑] 저장 검증 실패 → 1회 재시도: {map_path}")
-                game_map_ref.save(map_path)
-                if not self._verify_saved_map_file(map_path, expected_passable=_p_count):
-                    raise RuntimeError(f"맵 저장 검증 실패: {map_path}")
-            logger.info(f"[맵핑] '{seg_name}' 맵 저장: {map_path}")
-            if critical:
-                logger.info(
-                    f"[전환추적] critical 맵 저장 완료: seg='{seg_name}' idx={segment_idx} "
-                    f"dt={time.time() - _trace_t0:.3f}s path={map_path}"
-                )
-            try:
-                self.after(0, lambda sn=seg_name, pc=_p_count, mp=map_path:
-                    self._append_log(f"💾 맵 저장: '{sn}' ({pc}타일) → {mp}"))
-            except (tk.TclError, RuntimeError):
-                pass
-            return map_path
-        finally:
-            self._map_save_lock.release()
+        return self._get_map_runtime().auto_save_map(
+            segment_idx=segment_idx,
+            game_map_ref=game_map_ref,
+            critical=critical,
+        )
 
     def _backup_map(self):
         """맵핑 전 백업 저장 (현재 선택된 구간 맵)"""
-        import os
-        import shutil
-        segment_idx = getattr(self, '_current_segment_idx', 0)
-        seg_name = self._get_segment_display_name(segment_idx)
-        map_path = self._get_segment_map_name(segment_idx)
-        backup_path = map_path.replace("_map.json", "_map.backup.json")
-
-        if os.path.exists(map_path):
-            shutil.copy2(map_path, backup_path)
-            stats = self._game_map.get_statistics()
-            logger.info(f"[맵핑] '{seg_name}' 백업 저장: {backup_path} ({stats['total_tiles']}개 타일)")
-            self._has_map_backup = True
-        else:
-            self._has_map_backup = False
+        return self._get_map_runtime().backup_map()
 
     def _restore_map(self):
         """맵 백업에서 복원 (현재 선택된 구간 맵)"""
-        import os
-        from tkinter import messagebox
-
-        segment_idx = getattr(self, '_current_segment_idx', 0)
-        seg_name = self._get_segment_display_name(segment_idx)
-        map_path = self._get_segment_map_name(segment_idx)
-        backup_path = map_path.replace("_map.json", "_map.backup.json")
-
-        if not os.path.exists(backup_path):
-            messagebox.showwarning("되돌리기", f"'{seg_name}' 맵의 백업 파일이 없습니다.\n맵핑을 한 번도 하지 않았거나 백업이 삭제되었습니다.")
-            return
-
-        if not messagebox.askyesno("되돌리기", f"'{seg_name}' 맵을 맵핑 전 상태로 되돌리시겠습니까?\n현재 맵 데이터가 백업으로 대체됩니다."):
-            return
-
-        # 복원
-        from ..player.game_map import GameMap
-        from ..player.simple_pathfinder import SimplePathfinder
-        from ..player.map_explorer import MapExplorer
-        self._game_map = GameMap(name=self._config.name or "autosave")
-        if self._game_map.load(backup_path):
-            self._map_pathfinder = SimplePathfinder(self._game_map)
-            self._map_explorer = MapExplorer(self._game_map)
-            self._game_map.save(map_path)
-
-            stats = self._game_map.get_statistics()
-            self._update_mapping_status()
-            messagebox.showinfo("되돌리기", f"'{seg_name}' 복원 완료!\n이동가능: {stats['passable_tiles']}개\n벽: {stats['blocked_tiles']}개\n임시벽: {stats.get('soft_blocked_tiles', 0)}개")
-            logger.info(f"[맵핑] '{seg_name}' 백업에서 복원: {stats['total_tiles']}개 타일")
-        else:
-            messagebox.showerror("되돌리기", "백업 파일 로드 실패")
+        return self._get_map_runtime().restore_map()
 
     def _switch_segment_map(self, new_segment_idx: int, skip_save: bool = False) -> bool:
-        """구간 맵 전환 (현재 맵 저장 → 새 구간 맵 로드 → pathfinder 갱신). 성공 시 True."""
-        import os
-        from ..player.game_map import GameMap
-        from ..player.simple_pathfinder import SimplePathfinder
-        from ..player.map_explorer import MapExplorer
-
-        # 중지 요청 시 맵 전환 생략 (lock 대기 방지)
-        if self._stop_event.is_set():
-            return False
-
-        _trace_t0 = time.time()
-        self._segment_switch_in_progress = True
-        logger.info(
-            f"[전환추적] 구간전환 시작: current_idx={getattr(self, '_current_segment_idx', 0)} "
-            f"new_idx={new_segment_idx} skip_save={skip_save}"
-        )
-        # 굴 전환 시 현재 구간 저장을 동기적으로 수행하면
-        # os.fsync/os.replace 구간에서 전환 스레드가 멎을 수 있다.
-        # 전환은 즉시 진행하고, 현재 구간 저장은 이전 GameMap 객체를 분리해 백그라운드로 넘긴다.
-        acquired = False
-        try:
-            # 현재 맵 저장 (skip_save=True면 건너뜀 — 보스 경유지 등 오염 방지)
-            # 맵 잠금 구간도 저장 건너뜀
-            _current_seg_idx = getattr(self, '_current_segment_idx', 0)
-            if (not skip_save and
-                not self._is_segment_map_locked(_current_seg_idx)):
-                try:
-                    segment_idx = self._resolve_game_map_segment_idx(self._game_map, _current_seg_idx)
-                    map_path = self._get_segment_map_name(segment_idx)
-                    from pathlib import Path
-                    Path(map_path).parent.mkdir(parents=True, exist_ok=True)
-                    _old_map_ref = self._game_map
-                    _old_seg_name = self._get_segment_display_name(segment_idx)
-                    self._sanitize_segment_end_pos(_old_map_ref, segment_idx)
-                    def _save_old_segment_async(_map=_old_map_ref, _path=map_path, _name=_old_seg_name):
-                        try:
-                            _map.save(_path)
-                            logger.info(f"[맵핑] '{_name}' 맵 저장: {_path}")
-                        except Exception as _save_e:
-                            logger.error(f"[맵핑] 현재 맵 저장 실패: {_save_e}")
-                    threading.Thread(target=_save_old_segment_async, daemon=True).start()
-                    logger.info(
-                        f"[전환추적] 구간전환 이전맵 저장 분리: idx={segment_idx} seg='{_old_seg_name}' path={map_path}"
-                    )
-                except Exception as e:
-                    logger.error(f"[맵핑] 현재 맵 저장 실패: {e}")
-                    logger.warning("[맵핑] 현재 구간 저장 실패 → 저장만 건너뛰고 전환 계속")
-            else:
-                if skip_save or self._is_segment_map_locked(_current_seg_idx):
-                    logger.info(f"[맵핑] 보스 경유지 → 맵 저장 건너뜀 (오염 방지)")
-
-            # 새 구간으로 전환
-            old_name = self._get_segment_display_name(getattr(self, '_current_segment_idx', 0))
-            self._current_segment_idx = new_segment_idx
-            self._runtime_reload_segment_idx = None
-            self._runtime_reload_cooldown_until = 0.0
-            self._mapping_segment_completion_committed_idx = None
-            self._start_registered = False  # 새 구간에서 start_pos 재등록 필요
-            new_name = self._get_segment_display_name(new_segment_idx)
-            self._game_map = GameMap(name=f"{self._config.name or 'autosave'}_{new_name}")
-            self._bind_game_map_segment(self._game_map, new_segment_idx)
-            self._map_pathfinder = SimplePathfinder(self._game_map)
-            self._map_explorer = MapExplorer(self._game_map)
-
-            # 새 구간 맵 로드 (lock 안에서 수행 — auto_save가 빈 맵을 덮어쓰는 경합 방지)
-            map_path = self._get_segment_map_name(new_segment_idx)
-            if os.path.exists(map_path):
-                logger.info(
-                    f"[전환추적] 구간전환 맵 로드 시작: new_idx={new_segment_idx} seg='{new_name}' path={map_path}"
-                )
-                _loaded_ok = self._game_map.load(map_path)
-                if not _loaded_ok:
-                    self._log_map_anomaly(
-                        f"구간전환 로드 실패: idx={new_segment_idx} seg='{new_name}' path={map_path}"
-                    )
-                time.sleep(0)  # GIL 해제 (맵 로드 후)
-                _loaded_start_before = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
-                self._sanitize_segment_end_pos(self._game_map, new_segment_idx)
-                _loaded_start_after = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
-                # 굴 전환 직후에는 맵 로드/저장만 최대한 짧게 끝내고,
-                # 무거운 연결 복구는 첫 실제 경로 실패 시 런타임 복구 경로에서 수행한다.
-                # 그렇지 않으면 start-based 세그먼트 전환마다 backup 스캔/A*가 동기 실행되어
-                # UI가 잠기는 체감 프리징이 날 수 있다.
-                _connectivity_repaired = False
-                if _loaded_start_before != _loaded_start_after:
-                    logger.warning(
-                        "[맵핑] '%s' start_pos 자동복구: %s -> %s",
-                        new_name,
-                        _loaded_start_before,
-                        _loaded_start_after,
-                    )
-                if _connectivity_repaired:
-                    logger.warning(f"[맵핑] '{new_name}' 끊긴 연결 자동복구 저장 보류")
-                stats = self._game_map.get_statistics()
-                if stats['total_tiles'] <= 1:
-                    self._log_map_anomaly(
-                        f"구간전환 결과 비정상: idx={new_segment_idx} seg='{new_name}' "
-                        f"tiles={stats['total_tiles']} path={map_path}"
-                    )
-                logger.info(f"[맵핑] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
-                logger.info(
-                    f"[전환추적] 구간전환 맵 로드 완료: old='{old_name}' new='{new_name}' "
-                    f"tiles={stats['total_tiles']} dt={time.time() - _trace_t0:.3f}s"
-                )
-            elif self._uses_transient_local_map(new_segment_idx):
-                logger.info(f"[맵핑] '{old_name}'→'{new_name}' 전환, 로컬 경유지 런타임 새 맵 사용")
-                logger.info(
-                    f"[전환추적] 구간전환 런타임 새 맵: old='{old_name}' new='{new_name}' "
-                    f"dt={time.time() - _trace_t0:.3f}s"
-                )
-            else:
-                logger.info(f"[맵핑] '{old_name}'→'{new_name}' 전환, 새 맵 생성")
-                logger.info(
-                    f"[전환추적] 구간전환 새 맵 생성: old='{old_name}' new='{new_name}' "
-                    f"dt={time.time() - _trace_t0:.3f}s"
-                )
-            return True
-        finally:
-            logger.info(
-                f"[전환추적] 구간전환 종료: current_idx={getattr(self, '_current_segment_idx', 0)} "
-                f"dt={time.time() - _trace_t0:.3f}s"
-            )
-            self._segment_switch_in_progress = False
+        """?? ? ?? (?? ? ?? -> ? ?? ? ?? -> pathfinder ??). ?? ? True."""
+        return self._get_map_runtime().switch_segment_map(new_segment_idx, skip_save=skip_save)
 
     def _reload_current_segment_map_runtime(self, segment_idx: int) -> bool:
-        """현재 세그먼트 맵을 디스크 기준으로 깨끗하게 다시 읽어 메모리 오염을 제거한다.
-
-        잠금된 start-based 세그먼트는 플레이/전체/부분 실행 중 런타임 상태가 잠깐 섞이면
-        맵 파일은 정상이어도 메모리상 경로가 끊긴 것처럼 보일 수 있다.
-        이때만 현재 세그먼트 맵을 다시 읽어 같은 경로 탐색을 한 번 더 시도한다.
-        """
-        import os
-        from ..player.game_map import GameMap
-        from ..player.simple_pathfinder import SimplePathfinder
-        from ..player.map_explorer import MapExplorer
-
-        map_path = self._get_segment_map_name(segment_idx)
-        if not map_path or not os.path.exists(map_path):
-            return False
-
-        seg_name = self._get_segment_display_name(segment_idx)
-        try:
-            fresh_map = GameMap(name=f"{self._config.name or 'autosave'}_{seg_name}")
-            self._bind_game_map_segment(fresh_map, segment_idx)
-            _loaded_ok = fresh_map.load(map_path)
-            if not _loaded_ok:
-                self._log_map_anomaly(
-                    f"런타임 재로드 실패: idx={segment_idx} seg='{seg_name}' path={map_path}"
-                )
-            _loaded_start_before = tuple(fresh_map.start_pos) if fresh_map.start_pos is not None else None
-            self._sanitize_segment_end_pos(fresh_map, segment_idx)
-            _loaded_start_after = tuple(fresh_map.start_pos) if fresh_map.start_pos is not None else None
-            _connectivity_repaired = self._repair_segment_map_connectivity_from_backups(fresh_map, segment_idx, map_path)
-            _stats = fresh_map.get_statistics()
-            if _stats['total_tiles'] <= 1:
-                self._log_map_anomaly(
-                    f"런타임 재로드 결과 비정상: idx={segment_idx} seg='{seg_name}' "
-                    f"tiles={_stats['total_tiles']} path={map_path}"
-                )
-            if _loaded_start_before != _loaded_start_after or _connectivity_repaired:
-                try:
-                    fresh_map.save(map_path)
-                except Exception as e:
-                    logger.error(f"[맵핑] '{seg_name}' 런타임 재로드 자동복구 저장 실패: {e}")
-            self._game_map = fresh_map
-            self._map_pathfinder = SimplePathfinder(self._game_map)
-            self._map_explorer = MapExplorer(self._game_map)
-            self._runtime_reload_segment_idx = segment_idx
-            self._runtime_reload_cooldown_until = time.time() + 3.0
-            logger.warning(f"[맵핑] '{seg_name}' 런타임 맵 재로드")
-            return True
-        except Exception as e:
-            logger.error(f"[맵핑] '{seg_name}' 런타임 맵 재로드 실패: {e}")
-            return False
+        """?? ???? ?? ??? ???? ?? ?? ??? ??? ????."""
+        return self._get_map_runtime().reload_current_segment_map_runtime(segment_idx)
 
     def _stop_mapping(self):
         """맵핑 중지 - 즉시 반환, 절대 블로킹 없음"""
@@ -23230,22 +22901,14 @@ class PlayerView(BaseView):
 
     def after(self, ms, func=None, *args):
         """PlayerView의 worker-thread after() 호출을 메인스레드 dispatcher로 우회한다."""
-        if func is None:
-            return super().after(ms)
-        dispatcher = getattr(self, "_ui_dispatcher", None)
-        if dispatcher is None or threading.current_thread() is threading.main_thread():
-            return super().after(ms, func, *args)
-
-        def _schedule_on_main():
-            try:
-                if not self.winfo_exists():
-                    return
-                super(PlayerView, self).after(ms, func, *args)
-            except (tk.TclError, RuntimeError):
-                pass
-
-        dispatcher.post(_schedule_on_main)
-        return None
+        return dispatch_widget_after(
+            self,
+            getattr(self, "_ui_dispatcher", None),
+            super(PlayerView, self).after,
+            ms,
+            func,
+            *args,
+        )
 
     def _begin_external_execution(self, owner, mode: str = "부분실행") -> None:
         """PlanDetailDialog 같은 외부 실행원을 메인 재생 UI에 연결."""
@@ -24860,4 +24523,3 @@ class PlayerView(BaseView):
                 dispatcher.close()
             except Exception:
                 pass
-

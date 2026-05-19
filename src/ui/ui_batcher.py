@@ -7,6 +7,25 @@ from typing import Callable, Deque, Generic, List, Optional, TypeVar
 T = TypeVar("T")
 
 
+def dispatch_widget_after(widget, dispatcher, direct_after: Callable, ms, func=None, *args):
+    """Route worker-thread after() calls onto the Tk main thread."""
+    if func is None:
+        return direct_after(ms)
+    if dispatcher is None or threading.current_thread() is threading.main_thread():
+        return direct_after(ms, func, *args)
+
+    def _schedule_on_main():
+        try:
+            if not widget.winfo_exists():
+                return
+            direct_after(ms, func, *args)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    dispatcher.post(_schedule_on_main)
+    return None
+
+
 class UiCallbackDispatcher:
     """Batch UI callbacks onto the Tk main thread at a steady cadence."""
 

@@ -1,0 +1,18 @@
+{
+  "name": "autosave_경유지1",
+  "passable": [
+    [
+      15,
+      12
+    ]
+  ],
+  "blocked": [],
+  "soft_blocked": {},
+  "blocked_edges": [],
+  "patrol_points": [],
+  "start_pos": [
+    15,
+    12
+  ],
+  "end_pos": null
+}

@@ -18,11 +18,11 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'윈크로'),
             StringStruct(u'FileDescription', u'작업 자동화 도우미'),
-            StringStruct(u'FileVersion', u'1.0.201.0'),
+            StringStruct(u'FileVersion', u'1.0.202.0'),
             StringStruct(u'InternalName', u'작업도우미'),
             StringStruct(u'OriginalFilename', u'작업도우미.exe'),
             StringStruct(u'ProductName', u'작업도우미'),
-            StringStruct(u'ProductVersion', u'1.0.201.0'),
+            StringStruct(u'ProductVersion', u'1.0.202.0'),
           ]
         )
       ]

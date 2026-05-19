@@ -28,7 +28,7 @@ from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
 from ..player.rule_executor import RuleExecutor
-from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
+from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
 
 PLANS_DIR = DATA_DIR / "plans"
 
@@ -498,22 +498,14 @@ class MainWindow(ctk.CTk):
 
     def after(self, ms, func=None, *args):
         """백그라운드 스레드의 after() 호출을 메인스레드 dispatcher로 우회한다."""
-        if func is None:
-            return super().after(ms)
-        dispatcher = getattr(self, "_ui_dispatcher", None)
-        if dispatcher is None or threading.current_thread() is threading.main_thread():
-            return super().after(ms, func, *args)
-
-        def _schedule_on_main():
-            try:
-                if not self.winfo_exists():
-                    return
-                super(MainWindow, self).after(ms, func, *args)
-            except (tk.TclError, RuntimeError):
-                pass
-
-        dispatcher.post(_schedule_on_main)
-        return None
+        return dispatch_widget_after(
+            self,
+            getattr(self, "_ui_dispatcher", None),
+            super(MainWindow, self).after,
+            ms,
+            func,
+            *args,
+        )
 
     def _setup_ui(self):
         # 메인 컨테이너

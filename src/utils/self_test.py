@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 
 class TestStatus(Enum):
     """테스트 상태"""
+    __test__ = False
     PENDING = "pending"
     RUNNING = "running"
     PASSED = "passed"
@@ -31,6 +32,7 @@ class TestStatus(Enum):
 @dataclass
 class TestResult:
     """테스트 결과"""
+    __test__ = False
     name: str
     status: TestStatus
     message: str = ""

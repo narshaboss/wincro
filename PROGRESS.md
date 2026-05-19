@@ -1,3 +1,10 @@
+### 2026-05-19: Map runtime and route-only recovery hardening (v1.0.202)
+
+- Extracted map runtime save/switch/reload handling out of the main player view path.
+- Hardened route-only blocked-path fallback and local avoidance rejoin validation.
+- Added regression coverage for map-save wiring, route-only fallback reachability, and pathfinder rejoin behavior.
+- Bumped app/release metadata to `1.0.202`.
+
 ### 2026-04-09: Miruksa plan grouping + analyzed-plan create entry (v1.0.201)
 
 - Added `+ ????` to the analyzed playlist card so a new editable `AutomationPlan` can be created directly from the analyzer screen.

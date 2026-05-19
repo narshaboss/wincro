@@ -56,7 +56,7 @@
   "boss_skill_key": "q",
   "boss_skill_cooldown": 4.0,
   "move_skill_enabled": false,
-  "auto_skill_enabled": true,
+  "auto_skill_enabled": false,
   "move_skill_cooldown": 5.0,
   "auto_skill_cooldown": 5.0
 }

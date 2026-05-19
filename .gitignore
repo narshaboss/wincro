@@ -28,3 +28,12 @@ data/.keyfile
 !data/plans/
 !data/templates/
 !data/sequences/
+
+# 런타임 생성물
+.release_clone/
+data/update_cache.json
+data/digit_templates/debug_region_*.png
+data/maps/*.bak*
+data/maps/*.backup.json
+data/plans/*.broken_backup_*
+data/templates/trigger_*.png
