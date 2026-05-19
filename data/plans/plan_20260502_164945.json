@@ -23,7 +23,7 @@
       "trigger_image": "trigger_20260502_165448_069_crop_a1921e.png",
       "trigger_x": null,
       "trigger_y": null,
-      "confidence": 0.65,
+      "confidence": 0.8083928571428572,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -143,5 +143,5 @@
   "input_log_path": null,
   "user_verified": true,
   "modified": true,
-  "total_repeat_count": 1
+  "total_repeat_count": 1000
 }
