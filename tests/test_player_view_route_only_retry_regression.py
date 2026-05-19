@@ -143,6 +143,52 @@ def test_route_only_failed_chokepoint_uses_bounded_retry_and_escape():
     assert "return _blocked_primary_dir" in choke_slice
 
 
+def test_route_only_failed_chokepoint_can_nudge_before_retry_stop():
+    text = _player_view_text()
+
+    assert "def _pick_chokepoint_nudge_dir(_cx, _cy, _goal_pos, _blocked_dir):" in text
+    choke_slice = text[
+        text.index("if _route_failed_chokepoint:"):
+        text.index("if _local_avoid_mode:")
+    ]
+    assert "_nudge_dir = _pick_chokepoint_nudge_dir(" in choke_slice
+    assert "return _nudge_dir" in choke_slice
+    assert choke_slice.index("_nudge_dir = _pick_chokepoint_nudge_dir(") < choke_slice.index("return _stop_route_only_chokepoint_retry(_blocked_primary_dir)")
+
+
+def test_route_only_chokepoint_nudge_can_try_unknown_side_tile():
+    text = _player_view_text()
+
+    nudge_slice = text[
+        text.index("def _pick_chokepoint_nudge_dir(_cx, _cy, _goal_pos, _blocked_dir):"):
+        text.index("def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):")
+    ]
+    assert "_cand_passable = self._game_map.is_passable(_nx, _ny)" in nudge_slice
+    assert "if self._game_map.is_known(_nx, _ny):" in nudge_slice
+    assert "if not self._game_map.is_plausible_local_coord(_nx, _ny):" in nudge_slice
+    assert "0 if _cand_passable else 1" in nudge_slice
+
+
+def test_route_only_relaxed_chokepoint_tries_nudge_before_stop():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _apply_route_only_relaxed_result(_route_result, _route_avoid):"):
+        text.index("# ── 전체테스트/부분실행 맵기반 직행 모드")
+    ]
+    assert "_route_direct_dir_override = None" in text
+    assert "nonlocal _route_relaxed_dir_override, _route_direct_dir_override" in helper_slice
+    assert "_nudge_dir = _local_dir or _pick_chokepoint_nudge_dir(" in helper_slice
+    assert "_route_direct_dir_override = _nudge_dir" in helper_slice
+    assert helper_slice.index("_nudge_dir = _local_dir or _pick_chokepoint_nudge_dir(") < helper_slice.index("_stop_route_only_chokepoint_retry(_relaxed_first_dir)")
+    route_slice = text[
+        text.index("_route_result, _route_avoid = _apply_route_only_relaxed_result("):
+        text.index("if not (_route_result.found and _route_result.directions):")
+    ]
+    assert "if _route_direct_dir_override:" in route_slice
+    assert "return _route_direct_dir_override" in route_slice
+
+
 def test_route_only_relaxed_path_chokepoint_override_stops_after_threshold():
     text = _player_view_text()
 

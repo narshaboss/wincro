@@ -215,6 +215,26 @@ def _rule_is_enabled(rule: AutomationRule) -> bool:
     return bool(getattr(rule, "enabled", True))
 
 
+def _is_manual_partial_monitor_parent(rule: AutomationRule) -> bool:
+    """Manual partial-run should enter concrete children, not wait on a monitor parent."""
+    return bool(
+        _rule_is_enabled(rule)
+        and getattr(rule, "children", None)
+        and (
+            getattr(rule, "is_monitoring_mode", False)
+            or bool(getattr(rule, "monitoring_watches", None))
+        )
+    )
+
+
+def _manual_partial_start_index(flat_rules: List[AutomationRule], rule: AutomationRule, rule_index: int) -> int:
+    if rule_index < 0:
+        return rule_index
+    if _is_manual_partial_monitor_parent(rule) and rule_index + 1 < len(flat_rules):
+        return rule_index + 1
+    return rule_index
+
+
 class PlanDetailDialog(ctk.CTkToplevel):
     """자동화 계획 상세보기/수정 다이얼로그"""
 
@@ -308,7 +328,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             try:
                 if running and current_rule_id == rule_id:
                     run_btn.configure(
-                        text="▶",
+                        text="■",
                         width=30,
                         fg_color=COLORS["error"],
                         hover_color="#c0392b",
@@ -2115,11 +2135,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
             logger.warning(f"[부분실행] rule_id={rule.rule_id}를 찾지 못함, 단일 실행")
             rules_to_run = [rule]
         else:
+            start_index = _manual_partial_start_index(all_rules_flat, rule, rule_index)
+            if start_index != rule_index:
+                first_child = all_rules_flat[start_index]
+                logger.info(
+                    "[부분실행] 모니터링 부모 직접실행 방지: parent_idx=%s -> child_idx=%s, first_child=%s",
+                    rule_index,
+                    start_index,
+                    first_child.description or first_child.action_type,
+                )
             # 해당 인덱스부터 끝까지 모든 규칙 포함
             # executor가 다시 평탄화하므로 children을 비운 복사본 사용
             import copy
             rules_to_run = []
-            for r in all_rules_flat[rule_index:]:
+            for r in all_rules_flat[start_index:]:
                 r_copy = copy.copy(r)
                 r_copy.children = []  # children 비움 (이미 평탄화됨)
                 rules_to_run.append(r_copy)
@@ -5804,6 +5833,52 @@ class GameModeDialog(ctk.CTkToplevel):
                     _best = (_score, _cand_dir)
             return _best[1] if _best is not None else None
 
+        def _pick_chokepoint_nudge_dir(_cx, _cy, _goal_pos, _blocked_dir):
+            if _goal_pos is None:
+                return None
+            _gx, _gy = int(_goal_pos[0]), int(_goal_pos[1])
+            if _blocked_dir in ("left", "right"):
+                _side_dirs = ("up", "down")
+                _axis_score = lambda _nx, _ny: abs(_ny - _gy)
+            else:
+                _side_dirs = ("left", "right")
+                _axis_score = lambda _nx, _ny: abs(_nx - _gx)
+            _start_pos = self._game_map.start_pos
+            _recent_set = set(recent_positions[-8:])
+            _base_dist = abs(_cx - _gx) + abs(_cy - _gy)
+            _reverse_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
+            _best = None
+            for _cand_dir in _side_dirs:
+                if _is_dir_blocked(_cx, _cy, _cand_dir, iteration):
+                    continue
+                _sdx, _sdy = DIRECTIONS_4.get(_cand_dir, (0, 0))
+                _nx, _ny = _cx + _sdx, _cy + _sdy
+                if _start_pos is not None and (_nx, _ny) == _start_pos:
+                    continue
+                if _is_portal_step_forbidden(_nx, _ny, _goal_pos, (_cx, _cy)):
+                    continue
+                if self._game_map.is_blocked(_nx, _ny) or self._game_map.is_soft_blocked(_nx, _ny):
+                    continue
+                _cand_passable = self._game_map.is_passable(_nx, _ny)
+                if not _cand_passable:
+                    if self._game_map.is_known(_nx, _ny):
+                        continue
+                    if not self._game_map.is_plausible_local_coord(_nx, _ny):
+                        continue
+                _dist = abs(_nx - _gx) + abs(_ny - _gy)
+                if _dist > _base_dist + 2:
+                    continue
+                _score = (
+                    _axis_score(_nx, _ny),
+                    _dist,
+                    0 if _cand_passable else 1,
+                    1 if (_nx, _ny) in _recent_set else 0,
+                    1 if _cand_dir == _reverse_last else 0,
+                )
+                if _best is None or _score < _best[0]:
+                    _best = (_score, _cand_dir)
+            return _best[1] if _best is not None else None
+
         def _is_route_only_failed_chokepoint(_cx, _cy, _dir, _goal_pos):
             if not _segment_has_route_starts(target_idx):
                 return False
@@ -5967,6 +6042,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _strict_route_mode = ((_is_mapping_test and not _frontier_probe_phase) or _route_only_mode)
             _blocked_primary_dir = None  # 경유지 이동 단계에서 경로차단 시 fallback 난수탐색 방지
             _route_relaxed_dir_override = None
+            _route_direct_dir_override = None
             # 디버그: 상태 출력 (iteration 50의 배수)
             _fpd_debug_this_call = (iteration % 50 == 0)
             _cleanup_blocked_dirs(iteration)
@@ -6167,7 +6243,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 return None
 
             def _apply_route_only_relaxed_result(_route_result, _route_avoid):
-                nonlocal _route_relaxed_dir_override
+                nonlocal _route_relaxed_dir_override, _route_direct_dir_override
 
                 if (not (_route_result.found and _route_result.directions) and
                     _route_avoid and _dir_avoid):
@@ -6186,7 +6262,15 @@ class GameModeDialog(ctk.CTkToplevel):
                             _relaxed_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD
                         )
                         if _stop_chokepoint_retry:
-                            _stop_route_only_chokepoint_retry(_relaxed_first_dir)
+                            _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _relaxed_first_dir)
+                            _nudge_dir = _local_dir or _pick_chokepoint_nudge_dir(cx, cy, target_pos, _relaxed_first_dir)
+                            if _nudge_dir:
+                                _route_direct_dir_override = _nudge_dir
+                                if _ui_update_ok and iteration % 10 == 0:
+                                    self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir, a2=_nudge_dir:
+                                        self._append_log(f"🧭 유일통로 중단전 보정: ({cx2},{cy2}) {d2}→{a2}"))
+                            else:
+                                _stop_route_only_chokepoint_retry(_relaxed_first_dir)
                         elif _allow_route_dir_relax or _route_chokepoint_override:
                             _route_result = _relaxed_result
                             _route_avoid = _relaxed_avoid
@@ -6247,6 +6331,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
                 if self._stop_event.is_set():
                     return None
+                if _route_direct_dir_override:
+                    return _route_direct_dir_override
 
                 if not (_route_result.found and _route_result.directions):
                     _edge_relaxed_probe = pathfinder.find_path(
@@ -6572,6 +6658,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
                                     self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
                             return _local_dir
+                        _nudge_dir = _pick_chokepoint_nudge_dir(cx, cy, target_pos, _blocked_primary_dir)
+                        if _nudge_dir:
+                            if _ui_update_ok and iteration % 10 == 0:
+                                self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_nudge_dir:
+                                    self._append_log(f"🧭 유일통로 턱정렬: ({x},{y}) {d2}→{a2}"))
+                            return _nudge_dir
                         if _blocked_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD:
                             return _stop_route_only_chokepoint_retry(_blocked_primary_dir)
                         _route_relaxed_dir_override = _blocked_primary_dir
@@ -12967,6 +13059,19 @@ class GameModeDialog(ctk.CTkToplevel):
             return []
 
         game_modes = getattr(plan, "game_modes", {}) or {}
+        active_game_rule_ids = set()
+
+        def _collect_active_game_rules(rules):
+            for rule in rules or []:
+                try:
+                    if getattr(rule, "action_type", "") == "game_mode":
+                        active_game_rule_ids.add(getattr(rule, "rule_id", ""))
+                    _collect_active_game_rules(getattr(rule, "children", []) or [])
+                except Exception:
+                    continue
+
+        _collect_active_game_rules(getattr(plan, "initial_rules", []) or [])
+        _collect_active_game_rules(getattr(plan, "monitoring_rules", []) or [])
 
         def _normalize_points(items):
             norm = []
@@ -12997,6 +13102,8 @@ class GameModeDialog(ctk.CTkToplevel):
         candidates = []
         for other_rule_id, other_cfg in game_modes.items():
             if other_rule_id == current_rule_id:
+                continue
+            if active_game_rule_ids and other_rule_id not in active_game_rule_ids:
                 continue
             other_waypoints = getattr(other_cfg, "waypoints", []) or []
             if len(other_waypoints) < len(current_signature):
