@@ -36,4 +36,3 @@ data/digit_templates/debug_region_*.png
 data/maps/*.bak*
 data/maps/*.backup.json
 data/plans/*.broken_backup_*
-data/templates/trigger_*.png
