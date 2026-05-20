@@ -10,7 +10,7 @@ import time
 import numpy as np
 import threading
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 from PIL import Image, ImageGrab
 
 try:
@@ -64,6 +64,7 @@ class DigitTemplateMatcher:
 
     def __init__(self):
         self.templates: dict = {}  # {digit: numpy array}
+        self._template_mask_cache: Dict[str, np.ndarray] = {}
         self._load_templates()
 
     def _load_templates(self):
@@ -80,6 +81,7 @@ class DigitTemplateMatcher:
                 self.templates[digit] = np.array(template_list, dtype=np.uint8)
                 logger.debug(f"[템플릿] 숫자 '{digit}' 로드됨")
 
+            self._template_mask_cache.clear()
             logger.info(f"[템플릿] {len(self.templates)}개 숫자 템플릿 로드 완료")
         except Exception as e:
             logger.error(f"[템플릿] 로드 실패: {e}")
@@ -136,6 +138,7 @@ class DigitTemplateMatcher:
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
             self.templates[digit] = binary
+            self._template_mask_cache.clear()
             logger.info(f"[템플릿] 숫자 '{digit}' 캡처 완료 (크기: {binary.shape})")
 
             # 디버그용 이미지 저장
@@ -177,7 +180,200 @@ class DigitTemplateMatcher:
 
         return int(np.mean(widths)), int(np.mean(heights))
 
-    def read_number_from_region(self, region: List[int], screenshot: Optional[Image.Image] = None) -> Optional[int]:
+    @staticmethod
+    def _trim_foreground_mask(mask: np.ndarray) -> Optional[np.ndarray]:
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return None
+        return mask[int(ys.min()):int(ys.max()) + 1, int(xs.min()):int(xs.max()) + 1]
+
+    @staticmethod
+    def _foreground_mask_from_binary(binary: np.ndarray) -> np.ndarray:
+        dark = binary < 128
+        light = binary >= 128
+        foreground = dark if int(np.count_nonzero(dark)) <= int(np.count_nonzero(light)) else light
+        return (foreground.astype(np.uint8) * 255)
+
+    def _get_template_masks(self) -> Dict[str, np.ndarray]:
+        if self._template_mask_cache:
+            return self._template_mask_cache
+
+        masks: Dict[str, np.ndarray] = {}
+        for digit, template in self.templates.items():
+            mask = self._foreground_mask_from_binary(template)
+            trimmed = self._trim_foreground_mask(mask)
+            if trimmed is not None:
+                masks[str(digit)] = trimmed
+        self._template_mask_cache = masks
+        return masks
+
+    @staticmethod
+    def _component_boxes_from_mask(mask: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        if cv2 is None or mask.size == 0:
+            return []
+
+        h, w = mask.shape[:2]
+        try:
+            num, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+        except Exception:
+            return []
+
+        boxes: List[Tuple[int, int, int, int]] = []
+        min_area = max(3, int(h * w * 0.006))
+        max_width = max(18, int(w * 0.70))
+        for idx in range(1, num):
+            x, y, bw, bh, area = [int(v) for v in stats[idx]]
+            if area < min_area:
+                continue
+            if bh < max(5, int(h * 0.35)) or bh > int(h * 1.05):
+                continue
+            if bw < 2 or bw > max_width:
+                continue
+            center_y = y + (bh / 2)
+            if center_y < h * 0.12 or center_y > h * 0.92:
+                continue
+            boxes.append((x, y, x + bw, y + bh))
+
+        boxes.sort(key=lambda b: (b[0], b[1]))
+        return boxes
+
+    @staticmethod
+    def _trim_sparse_edges(mask: np.ndarray) -> Optional[np.ndarray]:
+        trimmed = DigitTemplateMatcher._trim_foreground_mask(mask)
+        if trimmed is None:
+            return None
+
+        result = trimmed
+        # Keep the original candidate elsewhere; this variant only removes single-pixel
+        # edge protrusions that come from screen noise touching a digit.
+        while result.shape[1] > 4 and int(np.count_nonzero(result[:, 0])) <= 1:
+            result = result[:, 1:]
+        while result.shape[1] > 4 and int(np.count_nonzero(result[:, -1])) <= 1:
+            result = result[:, :-1]
+        while result.shape[0] > 6 and int(np.count_nonzero(result[0, :])) <= 1:
+            result = result[1:, :]
+        while result.shape[0] > 6 and int(np.count_nonzero(result[-1, :])) <= 1:
+            result = result[:-1, :]
+        return result
+
+    def _score_digit_component(self, mask: np.ndarray) -> Optional[Tuple[str, float, Dict[str, float]]]:
+        component = self._trim_foreground_mask(mask)
+        if component is None or cv2 is None:
+            return None
+
+        variants = [component]
+        sparse_trimmed = self._trim_sparse_edges(component)
+        if sparse_trimmed is not None and sparse_trimmed.shape != component.shape:
+            variants.append(sparse_trimmed)
+
+        scores: Dict[str, float] = {}
+        for variant in variants:
+            for digit, template_mask in self._get_template_masks().items():
+                tmpl_h, tmpl_w = template_mask.shape[:2]
+                if tmpl_h <= 0 or tmpl_w <= 0:
+                    continue
+                resized = cv2.resize(variant, (tmpl_w, tmpl_h), interpolation=cv2.INTER_AREA)
+                _, resized = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+                candidate = resized > 0
+                template_fg = template_mask > 0
+                intersection = int(np.logical_and(candidate, template_fg).sum())
+                union = int(np.logical_or(candidate, template_fg).sum())
+                score = intersection / max(1, union)
+                if score > scores.get(digit, -1.0):
+                    scores[digit] = score
+
+        if not scores:
+            return None
+        best_digit = max(scores, key=scores.get)
+        return best_digit, scores[best_digit], scores
+
+    def _resolve_zero_one_ambiguity(
+        self,
+        digit: str,
+        score: float,
+        scores: Dict[str, float],
+        component_mask: np.ndarray,
+    ) -> str:
+        if digit != "1":
+            return digit
+
+        zero_score = scores.get("0", 0.0)
+        if zero_score < score - 0.12:
+            return digit
+
+        trimmed = self._trim_foreground_mask(component_mask)
+        if trimmed is None:
+            return digit
+
+        h, w = trimmed.shape[:2]
+        if h < 6 or w < 4:
+            return digit
+
+        mid = trimmed[int(h * 0.25):max(int(h * 0.75), int(h * 0.25) + 1), :]
+        left = int(np.count_nonzero(mid[:, :max(1, int(w * 0.35))]))
+        center = int(np.count_nonzero(mid[:, int(w * 0.35):max(int(w * 0.65), int(w * 0.35) + 1)]))
+        right = int(np.count_nonzero(mid[:, int(w * 0.65):]))
+
+        # A cut or thin zero still has ink on both side walls; a real one is mostly one-sided.
+        if left >= 2 and right >= 2 and center <= max(left, right) * 1.25:
+            return "0"
+        return digit
+
+    def _read_number_by_components(self, mask: np.ndarray, expected_digits: int = 3) -> Optional[int]:
+        boxes = self._component_boxes_from_mask(mask)
+        if len(boxes) < expected_digits:
+            return None
+
+        min_digit_score = 0.42
+        min_ambiguous_margin = 0.10
+        best_result: Optional[Tuple[float, int]] = None
+        for start in range(0, len(boxes) - expected_digits + 1):
+            group = boxes[start:start + expected_digits]
+            digits: List[str] = []
+            scores: List[float] = []
+            for x1, y1, x2, y2 in group:
+                component_mask = mask[y1:y2, x1:x2]
+                scored = self._score_digit_component(component_mask)
+                if scored is None:
+                    digits = []
+                    break
+                digit, score, score_map = scored
+                digit = self._resolve_zero_one_ambiguity(digit, score, score_map, component_mask)
+                sorted_scores = sorted(score_map.values(), reverse=True)
+                digit_score = score_map.get(digit, score)
+                second_score = sorted_scores[1] if len(sorted_scores) > 1 else 0.0
+                if digit_score < min_digit_score:
+                    digits = []
+                    break
+                if digit_score < 0.65 and (digit_score - second_score) < min_ambiguous_margin:
+                    digits = []
+                    break
+                digits.append(digit)
+                scores.append(digit_score)
+
+            if len(digits) != expected_digits:
+                continue
+            avg_score = sum(scores) / len(scores)
+            if avg_score < 0.24:
+                continue
+
+            # Prefer the group with the most digit-like shapes; this ignores X/Y labels or edge noise.
+            value = int("".join(digits))
+            if best_result is None or avg_score > best_result[0]:
+                best_result = (avg_score, value)
+
+        if best_result is None:
+            return None
+        logger.debug(f"[템플릿] 컴포넌트 인식: {best_result[1]} (신뢰도: {best_result[0]:.2f})")
+        return best_result[1]
+
+    def read_number_from_region(
+        self,
+        region: List[int],
+        screenshot: Optional[Image.Image] = None,
+        expected_digits: Optional[int] = None,
+        prefer_components: bool = False,
+    ) -> Optional[int]:
         """
         영역에서 여러 자리 숫자 읽기 (슬라이딩 윈도우 방식)
 
@@ -213,9 +409,15 @@ class DigitTemplateMatcher:
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             binary_inv = cv2.bitwise_not(binary)
 
+            if prefer_components and expected_digits:
+                for component_mask in (binary_inv, binary):
+                    result = self._read_number_by_components(component_mask, expected_digits=expected_digits)
+                    if result is not None:
+                        return result
+
             # 두 가지 버전으로 시도
             for img_binary in [binary, binary_inv]:
-                result = self._find_digits_sliding_window(img_binary)
+                result = self._find_digits_sliding_window(img_binary, max_digits=expected_digits)
                 if result is not None:
                     return result
 
@@ -235,7 +437,12 @@ class DigitTemplateMatcher:
             logger.error(f"[템플릿] 숫자 읽기 오류: {e}")
             return None
 
-    def _find_digits_sliding_window(self, binary: np.ndarray, threshold: float = 0.35) -> Optional[int]:
+    def _find_digits_sliding_window(
+        self,
+        binary: np.ndarray,
+        threshold: float = 0.35,
+        max_digits: Optional[int] = None,
+    ) -> Optional[int]:
         """
         슬라이딩 윈도우 방식으로 숫자 찾기
 
@@ -253,7 +460,10 @@ class DigitTemplateMatcher:
 
         # 템플릿 평균 너비 계산 (최대 자릿수 제한용)
         avg_tmpl_w, _ = self._get_template_size()
-        max_digits = max(1, int(img_w / (avg_tmpl_w * 0.7)))  # 영역 너비 기준 최대 자릿수
+        if max_digits is None:
+            max_digits = max(1, int(img_w / (avg_tmpl_w * 0.7)))  # 영역 너비 기준 최대 자릿수
+        else:
+            max_digits = max(1, int(max_digits))
 
         # 모든 템플릿에 대해 멀티스케일 매칭
         all_matches = []  # (center_x, x_pos, digit, score, width)
@@ -353,13 +563,25 @@ class DigitTemplateMatcher:
 
         return None
 
+    @staticmethod
+    def _is_valid_region(region) -> bool:
+        try:
+            return (
+                isinstance(region, (list, tuple)) and
+                len(region) == 4 and
+                int(region[2]) > int(region[0]) and
+                int(region[3]) > int(region[1])
+            )
+        except Exception:
+            return False
+
     def read_both_coordinates(
         self,
-        x_region: List[int],
-        y_region: List[int],
+        x_region: Optional[List[int]],
+        y_region: Optional[List[int]],
         x_prefix: str = "X",
         y_prefix: str = "Y",
-        stop_event=None
+        stop_event=None,
     ) -> Tuple[Optional[int], Optional[int]]:
         """
         X, Y 좌표 동시 읽기 (OCR 대체)
@@ -389,8 +611,32 @@ class DigitTemplateMatcher:
         # 스크린샷 캐시 (보스 이미지 검색 등에서 재사용)
         self._last_screenshot = screenshot
 
-        x_coord = self.read_number_from_region(x_region, screenshot)
-        y_coord = self.read_number_from_region(y_region, screenshot)
+        if not self._is_valid_region(x_region) or not self._is_valid_region(y_region):
+            self.last_coordinate_read_meta = {
+                "method": "individual",
+                "success": False,
+                "error": "invalid_individual_region",
+            }
+            return None, None
+
+        x_coord = self.read_number_from_region(
+            x_region,
+            screenshot,
+            expected_digits=3,
+            prefer_components=True,
+        )
+        y_coord = self.read_number_from_region(
+            y_region,
+            screenshot,
+            expected_digits=3,
+            prefer_components=True,
+        )
+        self.last_coordinate_read_meta = {
+            "method": "individual",
+            "success": x_coord is not None and y_coord is not None,
+            "x_region": list(x_region),
+            "y_region": list(y_region),
+        }
 
         return x_coord, y_coord
 

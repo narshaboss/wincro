@@ -3401,6 +3401,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._recent_runtime_issue_detail = ""
         self._recent_runtime_issue_at = 0.0
         self._recent_runtime_issue_hits = 0
+        self._last_runtime_coord_snapshot = None
+        self._last_ocr_coord_snapshot = None
+        self._last_valid_runtime_coord_snapshot = None
         self._synthetic_escape_guard_until = 0.0
         self._ui_call_queue = deque()
         self._ui_call_queue_lock = threading.Lock()
@@ -3484,6 +3487,84 @@ class GameModeDialog(ctk.CTkToplevel):
             )
         except Exception as e:
             logger.debug(f"[중단추적] 기록 실패: {e}")
+
+    def _remember_runtime_coordinate(self, x, y, *, source="ocr", iteration=None, target_idx=None, target=None):
+        """중단/오류 추적용으로 마지막 좌표 스냅샷을 보관한다."""
+        try:
+            _snapshot = {
+                "x": int(x),
+                "y": int(y),
+                "source": str(source or "unknown"),
+                "time": time.time(),
+            }
+            if iteration is not None:
+                try:
+                    _snapshot["iteration"] = int(iteration)
+                except Exception:
+                    _snapshot["iteration"] = iteration
+            if target_idx is not None:
+                try:
+                    _snapshot["target_idx"] = int(target_idx)
+                except Exception:
+                    _snapshot["target_idx"] = target_idx
+            if target is not None:
+                try:
+                    _tx, _ty = target
+                    _snapshot["target"] = (int(_tx), int(_ty))
+                except Exception:
+                    _snapshot["target"] = target
+
+            self._last_runtime_coord_snapshot = _snapshot
+            if _snapshot["source"] == "ocr":
+                self._last_ocr_coord_snapshot = _snapshot
+            if _snapshot["source"] in {
+                "arrival_recheck_arrived",
+                "transition_stable",
+                "movement_origin",
+            }:
+                self._last_valid_runtime_coord_snapshot = _snapshot
+        except Exception as e:
+            logger.debug(f"[좌표추적] 좌표 스냅샷 기록 실패: {e}")
+
+    def _format_runtime_coordinate_snapshot(self, snapshot):
+        if not snapshot:
+            return "없음"
+        try:
+            _parts = [f"({snapshot.get('x','?')},{snapshot.get('y','?')})"]
+            _source = snapshot.get("source")
+            if _source:
+                _parts.append(f"src={_source}")
+            if snapshot.get("iteration") is not None:
+                _parts.append(f"#{snapshot.get('iteration')}")
+            if snapshot.get("target_idx") is not None:
+                _parts.append(f"target_idx={snapshot.get('target_idx')}")
+            _target = snapshot.get("target")
+            if isinstance(_target, (tuple, list)) and len(_target) >= 2:
+                _parts.append(f"target=({_target[0]},{_target[1]})")
+            _ts = snapshot.get("time")
+            if _ts:
+                try:
+                    _age = max(0.0, time.time() - float(_ts))
+                    _parts.append(f"{_age:.1f}s전")
+                except Exception:
+                    pass
+            return " ".join(_parts)
+        except Exception:
+            return str(snapshot)
+
+    def _get_stop_coordinate_log_lines(self):
+        """중단 로그에 붙일 마지막 좌표 정보를 만든다."""
+        _valid = getattr(self, "_last_valid_runtime_coord_snapshot", None)
+        _latest = getattr(self, "_last_runtime_coord_snapshot", None)
+        _ocr = getattr(self, "_last_ocr_coord_snapshot", None)
+        _primary = _valid or _latest or _ocr
+        _lines = [f"📍 중단전 좌표: {self._format_runtime_coordinate_snapshot(_primary)}"]
+        if _primary and _ocr:
+            _primary_key = (_primary.get("x"), _primary.get("y"), _primary.get("source"), _primary.get("iteration"))
+            _ocr_key = (_ocr.get("x"), _ocr.get("y"), _ocr.get("source"), _ocr.get("iteration"))
+            if _primary_key != _ocr_key:
+                _lines.append(f"📍 마지막 OCR좌표: {self._format_runtime_coordinate_snapshot(_ocr)}")
+        return _lines
 
     def _remember_runtime_issue(self, issue, detail="", overwrite=False):
         """실행 중 발견한 최근 이상 징후를 기록한다."""
@@ -4061,8 +4142,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._mark_stop_reason("manual_or_external_stop", "_stop_execution entered without prior reason", overwrite=True)
         logger.info(
             f"[중단추적] stop_execution enter reason={self._stop_reason or 'unknown'} "
-            f"detail={self._stop_detail or '-'} key_count={self._key_press_count}"
+            f"detail={self._stop_detail or '-'} key_count={self._key_press_count} "
+            f"coord={self._format_runtime_coordinate_snapshot(getattr(self, '_last_valid_runtime_coord_snapshot', None) or getattr(self, '_last_runtime_coord_snapshot', None))}"
         )
+        _stop_coord_log_lines = self._get_stop_coordinate_log_lines()
         self._stop_event.set()
         self._is_running = False
         self._is_mapping = False
@@ -4073,8 +4156,10 @@ class GameModeDialog(ctk.CTkToplevel):
             if hasattr(self, '_mapping_test_btn'):
                 self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
             self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
-            self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회")
-            self._append_log(f"🧭 중단사유: {self._stop_reason or 'unknown'}")
+            self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회", force=True)
+            self._append_log(f"🧭 중단사유: {self._stop_reason or 'unknown'}", force=True)
+            for _coord_line in _stop_coord_log_lines:
+                self._append_log(_coord_line, force=True)
             # 맵핑 카드 버튼 복원
             if was_mapping and mapping_seg >= 0:
                 self._update_card_mapping_btn(mapping_seg, False)
@@ -7386,12 +7471,7 @@ class GameModeDialog(ctk.CTkToplevel):
             for _ in range(max(1, tries)):
                 if self._stop_event.is_set():
                     break
-                rx, ry = matcher.read_both_coordinates(
-                    self._config.coord_x_region,
-                    self._config.coord_y_region,
-                    "X", "Y",
-                    stop_event=self._stop_event
-                )
+                rx, ry = self._read_game_coordinates(matcher, stop_event=self._stop_event)
                 if rx is None or ry is None:
                     continue
                 try:
@@ -7448,12 +7528,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
                 # 좌표 읽기 (stop_event 전달 → 중지 시 즉시 반환)
                 _t_ocr_start = time.time()
-                current_x, current_y = matcher.read_both_coordinates(
-                    self._config.coord_x_region,
-                    self._config.coord_y_region,
-                    "X", "Y",
-                    stop_event=self._stop_event
-                )
+                current_x, current_y = self._read_game_coordinates(matcher, stop_event=self._stop_event)
                 _t_ocr_ms = int((time.time() - _t_ocr_start) * 1000)
                 if _step_watchdog_kind and _t_ocr_ms >= 1200:
                     _log_step_watchdog(
@@ -7486,6 +7561,14 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 좌표를 정수로 확실하게 변환
                 current_x = int(current_x)
                 current_y = int(current_y)
+                self._remember_runtime_coordinate(
+                    current_x,
+                    current_y,
+                    source="ocr",
+                    iteration=iteration,
+                    target_idx=target_idx,
+                    target=(target_x, target_y),
+                )
                 _ocr_zero_coord = (current_x == 0 and current_y == 0)
 
                 # OCR 오독 가드: 목표가 0,0이 아닌데 좌표가 갑자기 (0,0)으로 튀면 무시
@@ -7575,6 +7658,14 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._append_log(f"⚠️ 좌표 범위 초과 무시: ({cx},{cy})"))
                     self._stop_event.wait(0.1)
                     continue
+                self._remember_runtime_coordinate(
+                    current_x,
+                    current_y,
+                    source="basic_valid",
+                    iteration=iteration,
+                    target_idx=target_idx,
+                    target=(target_x, target_y),
+                )
 
                 # 구간 전환 직후 첫 1~2프레임은 경로실패/런타임 복구로 몰지 않고 좌표 안정화만 기다린다.
                 # 굴 전환 순간 좌표가 크게 바뀌는 것은 정상인데, 이 프레임을 일반 실패로 처리하면
@@ -7607,6 +7698,14 @@ class GameModeDialog(ctk.CTkToplevel):
                         _segment_transition_stable_hits = 0
                         _segment_transition_logged = False
                         prev_x, prev_y = current_x, current_y
+                        self._remember_runtime_coordinate(
+                            current_x,
+                            current_y,
+                            source="transition_stable",
+                            iteration=iteration,
+                            target_idx=target_idx,
+                            target=(target_x, target_y),
+                        )
                         last_dir = None
                         if _ui_update_ok:
                             self.after(0, lambda cx=current_x, cy=current_y:
@@ -11635,16 +11734,12 @@ class GameModeDialog(ctk.CTkToplevel):
                 # 방향키 입력 직전 도착 여부 재확인 (이동 중 도착 가능)
                 if dist <= 2:
                     _t_recheck = time.time()
-                    check_x, check_y = matcher.read_both_coordinates(
-                        self._config.coord_x_region,
-                        self._config.coord_y_region,
-                        stop_event=self._stop_event
-                    )
+                    check_x, check_y = self._read_game_coordinates(matcher, stop_event=self._stop_event)
                     _t_recheck_ms = int((time.time()-_t_recheck)*1000)
                     logger.debug(f"[타이밍] #{iteration} 도착재확인OCR: {_t_recheck_ms}ms")
                     if _ui_update_ok:
                         self.after(0, lambda m=_t_recheck_ms, i=iteration: self._append_log(f"⏱ #{i} 재확인OCR:{m}ms"))
-                    if check_x is not None:
+                    if check_x is not None and check_y is not None:
                         _cx, _cy = int(check_x), int(check_y)
                         # 도착좌표가 여러 개면 어느 하나라도 일치하면 도착
                         if _cur_re_dist:
@@ -11654,10 +11749,26 @@ class GameModeDialog(ctk.CTkToplevel):
                         if _check_arrived:
                             # 이미 도착! 방향키 누르지 않고 루프로
                             current_x, current_y = _cx, _cy
+                            self._remember_runtime_coordinate(
+                                current_x,
+                                current_y,
+                                source="arrival_recheck_arrived",
+                                iteration=iteration,
+                                target_idx=target_idx,
+                                target=(target_x, target_y),
+                            )
                             time.sleep(0.05)
                             continue
 
                 # 이동 (포탈 근접 시 짧은 탭으로 오버슈트 방지)
+                self._remember_runtime_coordinate(
+                    current_x,
+                    current_y,
+                    source="movement_origin",
+                    iteration=iteration,
+                    target_idx=target_idx,
+                    target=(target_x, target_y),
+                )
                 _t_key_start = time.time()
                 _last_probe_target = None
                 if dist <= 1:
@@ -17696,6 +17807,33 @@ class GameModeDialog(ctk.CTkToplevel):
             return f"({region[0]},{region[1]}) ~ ({region[2]},{region[3]})"
         return "미설정"
 
+    @staticmethod
+    def _valid_coord_region(region) -> bool:
+        try:
+            return (
+                isinstance(region, (list, tuple)) and
+                len(region) == 4 and
+                int(region[2]) > int(region[0]) and
+                int(region[3]) > int(region[1])
+            )
+        except Exception:
+            return False
+
+    def _has_coordinate_reader_config(self) -> bool:
+        return (
+            self._valid_coord_region(getattr(self._config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(self._config, "coord_y_region", None))
+        )
+
+    def _read_game_coordinates(self, matcher, *, stop_event=None):
+        """Read coordinates from the existing X/Y boxes using the upgraded matcher."""
+        return matcher.read_both_coordinates(
+            getattr(self._config, "coord_x_region", None),
+            getattr(self._config, "coord_y_region", None),
+            "X", "Y",
+            stop_event=stop_event,
+        )
+
     def _select_coord_region(self, coord_type: str):
         """좌표 OCR 영역 선택"""
         from .analyzer_view import ScreenRegionSelector
@@ -17740,7 +17878,11 @@ class GameModeDialog(ctk.CTkToplevel):
                     self.after(0, lambda: result_label.configure(text=f"템플릿 미완성", text_color="#ebcb8b"))
                     return
 
-                value = matcher.read_number_from_region(region)
+                value = matcher.read_number_from_region(
+                    region,
+                    expected_digits=3,
+                    prefer_components=True,
+                )
                 if value is not None:
                     self.after(0, lambda: result_label.configure(text=f"✓ {value}", text_color="#a3be8c"))
                 else:
@@ -20707,31 +20849,21 @@ class GameModeDialog(ctk.CTkToplevel):
 
         while self._monitoring:
             try:
-                x_region = getattr(self._config, 'coord_x_region', None)
-                y_region = getattr(self._config, 'coord_y_region', None)
-
-                x_val, y_val = None, None
-
-                # 스크린샷 한 번만 캡처
-                screenshot = _safe_grab()
-                if screenshot is None:
-                    time.sleep(1)
-                    continue
-
-                # X 좌표 읽기
-                if x_region and len(x_region) == 4:
-                    x_val = matcher.read_number_from_region(x_region, screenshot)
-
-                # Y 좌표 읽기
-                if y_region and len(y_region) == 4:
-                    y_val = matcher.read_number_from_region(y_region, screenshot)
+                x_val, y_val = self._read_game_coordinates(matcher)
+                read_meta = getattr(matcher, "last_coordinate_read_meta", {}) or {}
+                method = read_meta.get("method", "?")
+                split = read_meta.get("split")
+                if read_meta.get("fallback"):
+                    method = f"{method}->fallback"
+                if split:
+                    method = f"{method}/{split}"
 
                 # UI 라벨 업데이트 (로그 출력 제거 - 라벨에서 이미 표시됨)
                 x_text = f"X: {x_val}" if x_val is not None else "X: 인식실패"
                 y_text = f"Y: {y_val}" if y_val is not None else "Y: 인식실패"
                 x_color = "#a3be8c" if x_val is not None else "#bf616a"
                 y_color = "#a3be8c" if y_val is not None else "#bf616a"
-                status_text = f"인식 상태: 템플릿 | X={x_val}, Y={y_val}"
+                status_text = f"인식 상태: {method} | X={x_val}, Y={y_val}"
 
                 try:
                     def _update_monitor_labels(_xt=x_text, _xc=x_color, _yt=y_text, _yc=y_color, _st=status_text):

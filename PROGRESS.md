@@ -1,3 +1,9 @@
+### 2026-05-20: Coordinate OCR hardening and stop-coordinate logging (v1.0.206)
+
+- Hardened the existing X/Y coordinate-template reader without keeping the removed full coordinate-bar path.
+- Added play-mode stop diagnostics that log the stop reason plus the last movement-origin/basic-valid/OCR coordinate before stop.
+- Bumped app/release metadata to `1.0.206`.
+
 ### 2026-05-19: Map runtime and route-only recovery hardening (v1.0.202)
 
 - Extracted map runtime save/switch/reload handling out of the main player view path.
