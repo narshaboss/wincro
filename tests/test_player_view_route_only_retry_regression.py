@@ -166,7 +166,41 @@ def test_route_only_chokepoint_nudge_can_try_unknown_side_tile():
     assert "_cand_passable = self._game_map.is_passable(_nx, _ny)" in nudge_slice
     assert "if self._game_map.is_known(_nx, _ny):" in nudge_slice
     assert "if not self._game_map.is_plausible_local_coord(_nx, _ny):" in nudge_slice
+    assert "_forward_open = (" in nudge_slice
+    assert "0 if _forward_open else 1" in nudge_slice
     assert "0 if _cand_passable else 1" in nudge_slice
+
+
+def test_route_only_chokepoint_nudge_activates_persistent_detour():
+    text = _player_view_text()
+
+    assert "_route_chokepoint_detour = None" in text
+    assert "def _activate_route_chokepoint_detour(" in text
+    assert "def _get_active_route_chokepoint_detour(" in text
+    helper_slice = text[
+        text.index("def _apply_route_only_relaxed_result(_route_result, _route_avoid):"):
+        text.index("# ── 전체테스트/부분실행 맵기반 직행 모드")
+    ]
+    route_slice = text[
+        text.index("if _route_failed_chokepoint:"):
+        text.index("if _local_avoid_mode:")
+    ]
+    assert "_activate_route_chokepoint_detour(cx, cy, _relaxed_first_dir, _nudge_dir, target_pos)" in helper_slice
+    assert "_activate_route_chokepoint_detour(cx, cy, _blocked_primary_dir, _local_dir, target_pos)" in route_slice
+    assert "_activate_route_chokepoint_detour(cx, cy, _blocked_primary_dir, _nudge_dir, target_pos)" in route_slice
+
+
+def test_route_only_chokepoint_detour_avoids_origin_and_blocked_tile():
+    text = _player_view_text()
+
+    build_slice = text[
+        text.index("def _build_avoid_set(_goal=None, include_dir_avoid=True):"):
+        text.index("def _should_preserve_route_dir_avoid():")
+    ]
+    assert "_active_route_chokepoint_detour = (" in text
+    assert "_active_route_chokepoint_detour.get(\"origin\")" in build_slice
+    assert "_active_route_chokepoint_detour.get(\"blocked\")" in build_slice
+    assert "_avoid.add(_avoid_pos)" in build_slice
 
 
 def test_route_only_relaxed_chokepoint_tries_nudge_before_stop():

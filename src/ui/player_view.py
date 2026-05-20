@@ -4784,6 +4784,7 @@ class GameModeDialog(ctk.CTkToplevel):
         path_pos_index = {}  # 경로 위치 → 인덱스 역매핑 (O(1) 조회)
         _temporary_goal_detour = None  # 목표 타일이 일시적으로 막힐 때 우회할 인접 앵커
         _temporary_goal_detour_origin = None  # detour가 걸린 원래 목표 타일
+        _route_chokepoint_detour = None  # route-only 유일통로 동적 장애물 우회 상태
         recent_positions = []  # 최근 방문 위치 (반복 감지용)
         blocked_dirs = {}  # (x, y, dir) -> expire_iteration
         DIR_BLOCK_TTL_MIN = 6
@@ -5639,6 +5640,62 @@ class GameModeDialog(ctk.CTkToplevel):
             _temporary_goal_detour = None
             _temporary_goal_detour_origin = None
 
+        def _clear_route_chokepoint_detour():
+            nonlocal _route_chokepoint_detour
+            _route_chokepoint_detour = None
+
+        def _get_active_route_chokepoint_detour(_current_pos, _goal_pos):
+            nonlocal _route_chokepoint_detour
+            if not _route_chokepoint_detour:
+                return None
+            _goal_key = tuple(_goal_pos) if _goal_pos is not None else None
+            _current_key = tuple(_current_pos) if _current_pos is not None else None
+            if _goal_key is None or _route_chokepoint_detour.get("goal") != _goal_key:
+                _clear_route_chokepoint_detour()
+                return None
+            if int(_route_chokepoint_detour.get("expire", 0) or 0) <= int(iteration):
+                _clear_route_chokepoint_detour()
+                return None
+            if _current_key == _goal_key or _current_key == _route_chokepoint_detour.get("blocked"):
+                _clear_route_chokepoint_detour()
+                return None
+            return _route_chokepoint_detour
+
+        def _activate_route_chokepoint_detour(_cx, _cy, _blocked_dir, _side_dir, _goal_pos):
+            nonlocal _route_chokepoint_detour, current_path, path_index, path_pos_index
+            if _goal_pos is None or not _blocked_dir or not _side_dir:
+                return
+            _bdx, _bdy = DIRECTIONS_4.get(_blocked_dir, (0, 0))
+            _sdx, _sdy = DIRECTIONS_4.get(_side_dir, (0, 0))
+            if (_bdx, _bdy) == (0, 0) or (_sdx, _sdy) == (0, 0):
+                return
+            _origin = (int(_cx), int(_cy))
+            _blocked = (_origin[0] + _bdx, _origin[1] + _bdy)
+            _side = (_origin[0] + _sdx, _origin[1] + _sdy)
+            _goal = (int(_goal_pos[0]), int(_goal_pos[1]))
+            _reverse_side = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(_side_dir)
+            _route_chokepoint_detour = {
+                "origin": _origin,
+                "blocked": _blocked,
+                "side": _side,
+                "goal": _goal,
+                "blocked_dir": _blocked_dir,
+                "side_dir": _side_dir,
+                "expire": int(iteration) + 36,
+            }
+            _register_dir_block(_origin[0], _origin[1], _blocked_dir, iteration, ttl=18)
+            if _reverse_side:
+                _register_dir_block(_side[0], _side[1], _reverse_side, iteration, ttl=18)
+                explored_from.setdefault(_side, set()).add(_reverse_side)
+            explored_from.setdefault(_origin, set()).add(_blocked_dir)
+            current_path = []
+            path_index = 0
+            path_pos_index = {}
+            pathfinder.invalidate_path()
+            if _ui_update_ok and iteration % 10 == 0:
+                self.after(0, lambda o=_origin, b=_blocked, s=_side, g=_goal:
+                    self._append_log(f"🧭 유일통로 임시우회 고정: {o}→{s} avoid={b} goal={g}"))
+
         def _clear_step_watchdog():
             nonlocal _step_watchdog_kind, _step_watchdog_dir, _step_watchdog_from
             nonlocal _step_watchdog_target, _step_watchdog_started_at, _step_watchdog_log_bucket
@@ -5932,6 +5989,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _recent_set = set(recent_positions[-8:])
             _base_dist = abs(_cx - _gx) + abs(_cy - _gy)
             _reverse_last = {"up": "down", "down": "up", "left": "right", "right": "left"}.get(last_dir)
+            _bdx, _bdy = DIRECTIONS_4.get(_blocked_dir, (0, 0))
             _best = None
             for _cand_dir in _side_dirs:
                 if _is_dir_blocked(_cx, _cy, _cand_dir, iteration):
@@ -5953,9 +6011,19 @@ class GameModeDialog(ctk.CTkToplevel):
                 _dist = abs(_nx - _gx) + abs(_ny - _gy)
                 if _dist > _base_dist + 2:
                     continue
+                _fx, _fy = _nx + _bdx, _ny + _bdy
+                _forward_open = (
+                    not self._game_map.is_blocked(_fx, _fy) and
+                    not self._game_map.is_soft_blocked(_fx, _fy) and
+                    (
+                        self._game_map.is_passable(_fx, _fy) or
+                        (not self._game_map.is_known(_fx, _fy) and self._game_map.is_plausible_local_coord(_fx, _fy))
+                    )
+                )
                 _score = (
                     _axis_score(_nx, _ny),
                     _dist,
+                    0 if _forward_open else 1,
                     0 if _cand_passable else 1,
                     1 if (_nx, _ny) in _recent_set else 0,
                     1 if _cand_dir == _reverse_last else 0,
@@ -6128,6 +6196,9 @@ class GameModeDialog(ctk.CTkToplevel):
             _blocked_primary_dir = None  # 경유지 이동 단계에서 경로차단 시 fallback 난수탐색 방지
             _route_relaxed_dir_override = None
             _route_direct_dir_override = None
+            _active_route_chokepoint_detour = (
+                _get_active_route_chokepoint_detour(current_pos, target_pos) if _route_only_mode else None
+            )
             # 디버그: 상태 출력 (iteration 50의 배수)
             _fpd_debug_this_call = (iteration % 50 == 0)
             _cleanup_blocked_dirs(iteration)
@@ -6294,6 +6365,17 @@ class GameModeDialog(ctk.CTkToplevel):
                         _avoid.add((_ppx, _ppy))
                 if _detour_block_goal is not None and _detour_block_goal != _goal:
                     _avoid.add(_detour_block_goal)
+                if _active_route_chokepoint_detour is not None:
+                    for _avoid_pos in (
+                        _active_route_chokepoint_detour.get("origin"),
+                        _active_route_chokepoint_detour.get("blocked"),
+                    ):
+                        if not _avoid_pos:
+                            continue
+                        _avoid_pos = tuple(_avoid_pos)
+                        if _avoid_pos == current_pos or _avoid_pos == _goal:
+                            continue
+                        _avoid.add(_avoid_pos)
                 return _avoid if _avoid else None
 
             def _should_preserve_route_dir_avoid():
@@ -6350,6 +6432,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _relaxed_first_dir)
                             _nudge_dir = _local_dir or _pick_chokepoint_nudge_dir(cx, cy, target_pos, _relaxed_first_dir)
                             if _nudge_dir:
+                                _activate_route_chokepoint_detour(cx, cy, _relaxed_first_dir, _nudge_dir, target_pos)
                                 _route_direct_dir_override = _nudge_dir
                                 if _ui_update_ok and iteration % 10 == 0:
                                     self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir, a2=_nudge_dir:
@@ -6739,12 +6822,14 @@ class GameModeDialog(ctk.CTkToplevel):
                     if _route_failed_chokepoint:
                         _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
                         if _local_dir:
+                            _activate_route_chokepoint_detour(cx, cy, _blocked_primary_dir, _local_dir, target_pos)
                             if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_local_dir:
                                     self._append_log(f"🧭 유일통로 국소회피: ({x},{y}) {d2}→{a2}"))
                             return _local_dir
                         _nudge_dir = _pick_chokepoint_nudge_dir(cx, cy, target_pos, _blocked_primary_dir)
                         if _nudge_dir:
+                            _activate_route_chokepoint_detour(cx, cy, _blocked_primary_dir, _nudge_dir, target_pos)
                             if _ui_update_ok and iteration % 10 == 0:
                                 self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_nudge_dir:
                                     self._append_log(f"🧭 유일통로 턱정렬: ({x},{y}) {d2}→{a2}"))

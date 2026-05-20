@@ -1,3 +1,9 @@
+### 2026-05-20: Route chokepoint detour and plan asset update (v1.0.207)
+
+- Added a persistent route-only chokepoint detour so temporary one-tile obstacles do not cause immediate up/down backtracking.
+- Included the updated `plan_20260118_174859.json` plan and its referenced trigger crop/mask assets.
+- Bumped app/release metadata to `1.0.207`.
+
 ### 2026-05-20: Coordinate OCR hardening and stop-coordinate logging (v1.0.206)
 
 - Hardened the existing X/Y coordinate-template reader without keeping the removed full coordinate-bar path.
