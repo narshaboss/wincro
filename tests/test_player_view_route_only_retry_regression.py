@@ -203,6 +203,30 @@ def test_route_only_chokepoint_detour_avoids_origin_and_blocked_tile():
     assert "_avoid.add(_avoid_pos)" in build_slice
 
 
+def test_route_only_chokepoint_detour_blocks_cached_path_reentry():
+    text = _player_view_text()
+
+    cache_slice = text[
+        text.index("# 경로가 있고 현재 위치가 경로 상에 있으면 따라가기"):
+        text.index("_skip_to_explore = False")
+    ]
+    assert "_active_detour_path_blocked = False" in cache_slice
+    assert "next_pos in _detour_forbidden" in cache_slice
+    assert "_active_detour_path_blocked or" in cache_slice
+    assert "유일통로 우회경로 캐시차단" in cache_slice
+
+
+def test_route_only_chokepoint_detour_activation_log_is_not_throttled():
+    text = _player_view_text()
+
+    activate_slice = text[
+        text.index("def _activate_route_chokepoint_detour("):
+        text.index("def _clear_step_watchdog():")
+    ]
+    assert "유일통로 임시우회 고정" in activate_slice
+    assert "iteration % 10" not in activate_slice
+
+
 def test_route_only_relaxed_chokepoint_tries_nudge_before_stop():
     text = _player_view_text()
 

@@ -1,3 +1,9 @@
+### 2026-05-20: Chokepoint detour cache reentry fix (v1.0.208)
+
+- Blocked stale cached paths from re-entering the original chokepoint tile during route-only temporary detours.
+- Made the route-only chokepoint detour activation log visible on every activation instead of throttling it.
+- Bumped app/release metadata to `1.0.208`.
+
 ### 2026-05-20: Route chokepoint detour and plan asset update (v1.0.207)
 
 - Added a persistent route-only chokepoint detour so temporary one-tile obstacles do not cause immediate up/down backtracking.

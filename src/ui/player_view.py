@@ -5692,7 +5692,7 @@ class GameModeDialog(ctk.CTkToplevel):
             path_index = 0
             path_pos_index = {}
             pathfinder.invalidate_path()
-            if _ui_update_ok and iteration % 10 == 0:
+            if _ui_update_ok:
                 self.after(0, lambda o=_origin, b=_blocked, s=_side, g=_goal:
                     self._append_log(f"🧭 유일통로 임시우회 고정: {o}→{s} avoid={b} goal={g}"))
 
@@ -6329,12 +6329,28 @@ class GameModeDialog(ctk.CTkToplevel):
                         # 다음 타일이 벽/소프트블록/출발지이면 캐시 무효화 → A* 재계산
                         _is_start = (self._game_map.start_pos is not None and next_pos == self._game_map.start_pos)
                         _is_portal_step = _is_portal_step_forbidden(next_pos[0], next_pos[1], target_pos, current_pos)
+                        _active_detour_path_blocked = False
+                        if _active_route_chokepoint_detour is not None:
+                            _detour_forbidden = {
+                                tuple(_active_route_chokepoint_detour.get("origin") or ()),
+                                tuple(_active_route_chokepoint_detour.get("blocked") or ()),
+                            }
+                            _detour_forbidden.discard(())
+                            _active_detour_path_blocked = (
+                                next_pos in _detour_forbidden and
+                                next_pos != current_pos and
+                                next_pos != target_pos
+                            )
                         if use_map and (_is_start or _is_portal_step or
+                                        _active_detour_path_blocked or
                                         self._game_map.is_blocked(next_pos[0], next_pos[1]) or
                                         self._game_map.is_soft_blocked(next_pos[0], next_pos[1])):
                             current_path = None
                             path_index = 0
                             path_pos_index = {}
+                            if _active_detour_path_blocked and _ui_update_ok:
+                                self.after(0, lambda x=cx, y=cy, nx2=next_pos[0], ny2=next_pos[1]:
+                                    self._append_log(f"🧭 유일통로 우회경로 캐시차단: ({x},{y})→({nx2},{ny2})"))
                         else:
                             dx = next_pos[0] - cx
                             dy = next_pos[1] - cy
