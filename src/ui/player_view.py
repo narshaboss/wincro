@@ -5682,6 +5682,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 "blocked_dir": _blocked_dir,
                 "side_dir": _side_dir,
                 "expire": int(iteration) + 36,
+                "forced_steps": 0,
+                "max_forced_steps": 6,
             }
             _register_dir_block(_origin[0], _origin[1], _blocked_dir, iteration, ttl=18)
             if _reverse_side:
@@ -5695,6 +5697,116 @@ class GameModeDialog(ctk.CTkToplevel):
             if _ui_update_ok:
                 self.after(0, lambda o=_origin, b=_blocked, s=_side, g=_goal:
                     self._append_log(f"🧭 유일통로 임시우회 고정: {o}→{s} avoid={b} goal={g}"))
+
+        def _get_route_chokepoint_detour_forbidden_tiles(_detour, _current_pos, _goal_pos):
+            if not _detour:
+                return set()
+            _current_key = tuple(_current_pos) if _current_pos is not None else None
+            _goal_key = tuple(_goal_pos) if _goal_pos is not None else None
+            _origin = tuple(_detour.get("origin") or ())
+            _blocked = tuple(_detour.get("blocked") or ())
+            _forbidden = set()
+
+            if _origin and _origin not in {_current_key, _goal_key}:
+                _forbidden.add(_origin)
+
+            # The failed first tile is only forbidden while still at the origin.
+            # After the side nudge, many real L/J chokepoints must rejoin through
+            # that tile once the dynamic blocker moves; keeping it in avoid
+            # disconnects the corridor and produces endless "direction none".
+            if (
+                _blocked and
+                _current_key == _origin and
+                _blocked not in {_current_key, _goal_key}
+            ):
+                _forbidden.add(_blocked)
+            return _forbidden
+
+        def _is_route_chokepoint_detour_step_allowed(_pos, _goal_pos, _current_pos):
+            _x, _y = int(_pos[0]), int(_pos[1])
+            _next = (_x, _y)
+            _goal_key = tuple(_goal_pos) if _goal_pos is not None else None
+            if _goal_key is not None and _next == _goal_key:
+                return not self._game_map.is_blocked(_x, _y)
+            _start_pos = self._game_map.start_pos
+            if _start_pos is not None and _next == _start_pos:
+                return False
+            if _is_portal_step_forbidden(_x, _y, _goal_key, _current_pos):
+                return False
+            if self._game_map.is_blocked(_x, _y) or self._game_map.is_soft_blocked(_x, _y):
+                return False
+            if self._game_map.is_passable(_x, _y):
+                return True
+            if self._game_map.is_known(_x, _y):
+                return False
+            return self._game_map.is_plausible_local_coord(_x, _y)
+
+        def _get_route_chokepoint_detour_forced_dir(_cx, _cy, _goal_pos):
+            nonlocal current_path, path_index, path_pos_index
+            _detour = _get_active_route_chokepoint_detour((_cx, _cy), _goal_pos)
+            if not _detour:
+                return None
+            _blocked_dir = _detour.get("blocked_dir")
+            _dx, _dy = DIRECTIONS_4.get(_blocked_dir, (0, 0))
+            if (_dx, _dy) == (0, 0):
+                return None
+
+            _current = (int(_cx), int(_cy))
+            _goal_key = tuple(_goal_pos) if _goal_pos is not None else None
+            _origin = tuple(_detour.get("origin") or ())
+            _side = tuple(_detour.get("side") or ())
+            _blocked = tuple(_detour.get("blocked") or ())
+            if not _origin or not _side or not _blocked or _goal_key is None:
+                return None
+            if _current in {_origin, _blocked}:
+                return None
+
+            if _blocked_dir in ("left", "right"):
+                if _current[1] != _side[1]:
+                    return None
+                _axis_idx = 0
+            else:
+                if _current[0] != _side[0]:
+                    return None
+                _axis_idx = 1
+
+            _forced_steps = int(_detour.get("forced_steps", 0) or 0)
+            _max_forced_steps = int(_detour.get("max_forced_steps", 6) or 6)
+            if _forced_steps >= _max_forced_steps:
+                _clear_route_chokepoint_detour()
+                if _ui_update_ok:
+                    self.after(0, lambda pos=_current:
+                        self._append_log(f"🧭 유일통로 우회전진 한도초과: {pos} → 우회상태 해제"))
+                return None
+
+            _next = (_current[0] + _dx, _current[1] + _dy)
+            if _next in {_origin, _blocked}:
+                return None
+            _cur_axis_dist = abs(_current[_axis_idx] - _goal_key[_axis_idx])
+            _next_axis_dist = abs(_next[_axis_idx] - _goal_key[_axis_idx])
+            if _next_axis_dist > _cur_axis_dist:
+                return None
+            if _is_dir_blocked(_current[0], _current[1], _blocked_dir, iteration):
+                return None
+            if not _is_route_chokepoint_detour_step_allowed(_next, _goal_key, _current):
+                _register_dir_block(_current[0], _current[1], _blocked_dir, iteration, ttl=12)
+                explored_from.setdefault(_current, set()).add(_blocked_dir)
+                _clear_route_chokepoint_detour()
+                if _ui_update_ok:
+                    self.after(0, lambda pos=_current, d=_blocked_dir, nxt=_next:
+                        self._append_log(f"🧭 유일통로 우회전진 불가: {pos} {d}→{nxt}"))
+                return None
+
+            _detour["forced_steps"] = _forced_steps + 1
+            _detour["expire"] = max(int(_detour.get("expire", 0) or 0), int(iteration) + 8)
+            current_path = []
+            path_index = 0
+            path_pos_index = {}
+            pathfinder.invalidate_path()
+            if _ui_update_ok:
+                self.after(0, lambda pos=_current, d=_blocked_dir, nxt=_next, s=_detour["forced_steps"], m=_max_forced_steps:
+                    self._append_log(f"🧭 유일통로 우회전진: {pos} {d}→{nxt} ({s}/{m})"))
+            return _blocked_dir
 
         def _clear_step_watchdog():
             nonlocal _step_watchdog_kind, _step_watchdog_dir, _step_watchdog_from
@@ -6331,11 +6443,11 @@ class GameModeDialog(ctk.CTkToplevel):
                         _is_portal_step = _is_portal_step_forbidden(next_pos[0], next_pos[1], target_pos, current_pos)
                         _active_detour_path_blocked = False
                         if _active_route_chokepoint_detour is not None:
-                            _detour_forbidden = {
-                                tuple(_active_route_chokepoint_detour.get("origin") or ()),
-                                tuple(_active_route_chokepoint_detour.get("blocked") or ()),
-                            }
-                            _detour_forbidden.discard(())
+                            _detour_forbidden = _get_route_chokepoint_detour_forbidden_tiles(
+                                _active_route_chokepoint_detour,
+                                current_pos,
+                                target_pos,
+                            )
                             _active_detour_path_blocked = (
                                 next_pos in _detour_forbidden and
                                 next_pos != current_pos and
@@ -6382,15 +6494,11 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _detour_block_goal is not None and _detour_block_goal != _goal:
                     _avoid.add(_detour_block_goal)
                 if _active_route_chokepoint_detour is not None:
-                    for _avoid_pos in (
-                        _active_route_chokepoint_detour.get("origin"),
-                        _active_route_chokepoint_detour.get("blocked"),
+                    for _avoid_pos in _get_route_chokepoint_detour_forbidden_tiles(
+                        _active_route_chokepoint_detour,
+                        current_pos,
+                        _goal,
                     ):
-                        if not _avoid_pos:
-                            continue
-                        _avoid_pos = tuple(_avoid_pos)
-                        if _avoid_pos == current_pos or _avoid_pos == _goal:
-                            continue
                         _avoid.add(_avoid_pos)
                 return _avoid if _avoid else None
 
@@ -6546,6 +6654,11 @@ class GameModeDialog(ctk.CTkToplevel):
                             if _route_result.found and _route_result.directions and _ui_update_ok:
                                 self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
                                     self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))
+
+                if not (_route_result.found and _route_result.directions):
+                    _forced_detour_dir = _get_route_chokepoint_detour_forced_dir(cx, cy, target_pos)
+                    if _forced_detour_dir:
+                        return _forced_detour_dir
 
                 if _route_result.found and _route_result.directions:
                     current_path = _route_result.path

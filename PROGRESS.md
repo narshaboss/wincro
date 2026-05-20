@@ -1,3 +1,10 @@
+### 2026-05-20: Chokepoint detour rejoin fix (v1.0.209)
+
+- Changed route-only chokepoint detours to avoid the original tile while allowing the blocked gate tile to reopen after the side nudge.
+- Added bounded detour-forward recovery so active chokepoint detours do not fall into repeated "direction none" when A* cannot rejoin immediately.
+- Added a Jolbon 3-cave map regression that proves `(12,7)/(12,9)` can rejoin through `(13,8)` toward `(16,8)`.
+- Bumped app/release metadata to `1.0.209`.
+
 ### 2026-05-20: Chokepoint detour cache reentry fix (v1.0.208)
 
 - Blocked stale cached paths from re-entering the original chokepoint tile during route-only temporary detours.

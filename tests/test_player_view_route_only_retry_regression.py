@@ -190,16 +190,23 @@ def test_route_only_chokepoint_nudge_activates_persistent_detour():
     assert "_activate_route_chokepoint_detour(cx, cy, _blocked_primary_dir, _nudge_dir, target_pos)" in route_slice
 
 
-def test_route_only_chokepoint_detour_avoids_origin_and_blocked_tile():
+def test_route_only_chokepoint_detour_uses_phased_forbidden_tiles():
     text = _player_view_text()
 
+    helper_slice = text[
+        text.index("def _get_route_chokepoint_detour_forbidden_tiles("):
+        text.index("def _is_route_chokepoint_detour_step_allowed(")
+    ]
     build_slice = text[
         text.index("def _build_avoid_set(_goal=None, include_dir_avoid=True):"):
         text.index("def _should_preserve_route_dir_avoid():")
     ]
     assert "_active_route_chokepoint_detour = (" in text
-    assert "_active_route_chokepoint_detour.get(\"origin\")" in build_slice
-    assert "_active_route_chokepoint_detour.get(\"blocked\")" in build_slice
+    assert "def _get_route_chokepoint_detour_forbidden_tiles(" in text
+    assert "if _origin and _origin not in {_current_key, _goal_key}:" in helper_slice
+    assert "_current_key == _origin" in helper_slice
+    assert "_forbidden.add(_blocked)" in helper_slice
+    assert "_get_route_chokepoint_detour_forbidden_tiles(" in build_slice
     assert "_avoid.add(_avoid_pos)" in build_slice
 
 
@@ -211,9 +218,76 @@ def test_route_only_chokepoint_detour_blocks_cached_path_reentry():
         text.index("_skip_to_explore = False")
     ]
     assert "_active_detour_path_blocked = False" in cache_slice
+    assert "_get_route_chokepoint_detour_forbidden_tiles(" in cache_slice
     assert "next_pos in _detour_forbidden" in cache_slice
     assert "_active_detour_path_blocked or" in cache_slice
     assert "유일통로 우회경로 캐시차단" in cache_slice
+
+
+def test_route_only_chokepoint_detour_forces_forward_when_astar_cannot_rejoin():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _get_route_chokepoint_detour_forced_dir("):
+        text.index("def _clear_step_watchdog():")
+    ]
+    route_start = text.index("_route_result, _route_avoid = _apply_route_only_relaxed_result(")
+    route_end = text.index("if _route_result.found and _route_result.directions:", route_start)
+    route_slice = text[route_start:route_end]
+    assert "def _get_route_chokepoint_detour_forced_dir(" in text
+    assert "_detour[\"forced_steps\"] = _forced_steps + 1" in helper_slice
+    assert "_next_axis_dist > _cur_axis_dist" in helper_slice
+    assert "_is_route_chokepoint_detour_step_allowed(_next, _goal_key, _current)" in helper_slice
+    assert "_forced_detour_dir = _get_route_chokepoint_detour_forced_dir(cx, cy, target_pos)" in route_slice
+    assert "return _forced_detour_dir" in route_slice
+
+
+def test_jolbon_side_detour_rejoins_when_blocked_gate_is_relaxed():
+    map_path = next((ROOT / "data" / "maps").glob("9b87b454_15_*3*_map.json"))
+    game_map = GameMap(name="jolbon-route-detour")
+    assert game_map.load(str(map_path))
+    pathfinder = SimplePathfinder(game_map)
+
+    hard_avoid = {(12, 8), (13, 8)}
+    upper_blocked = pathfinder.find_path(
+        (12, 7),
+        (16, 8),
+        allow_unknown=True,
+        max_iterations=20000,
+        unknown_cost=3,
+        allow_soft_blocked=True,
+        respect_blocked_edges=True,
+        avoid_set=hard_avoid,
+    )
+    assert not upper_blocked.found
+
+    upper_rejoin = pathfinder.find_path(
+        (12, 7),
+        (16, 8),
+        allow_unknown=True,
+        max_iterations=20000,
+        unknown_cost=3,
+        allow_soft_blocked=True,
+        respect_blocked_edges=True,
+        avoid_set={(12, 8)},
+    )
+    assert upper_rejoin.found
+    assert upper_rejoin.path[:3] == [(12, 7), (13, 7), (13, 8)]
+    assert upper_rejoin.directions[:2] == ["right", "down"]
+
+    lower_rejoin = pathfinder.find_path(
+        (12, 9),
+        (16, 8),
+        allow_unknown=True,
+        max_iterations=20000,
+        unknown_cost=3,
+        allow_soft_blocked=True,
+        respect_blocked_edges=True,
+        avoid_set={(12, 8)},
+    )
+    assert lower_rejoin.found
+    assert lower_rejoin.path[:3] == [(12, 9), (13, 9), (13, 8)]
+    assert lower_rejoin.directions[:2] == ["right", "up"]
 
 
 def test_route_only_chokepoint_detour_activation_log_is_not_throttled():
