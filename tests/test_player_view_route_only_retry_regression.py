@@ -346,6 +346,52 @@ def test_route_only_can_use_local_avoid_even_when_segment_has_starts():
     assert "🧭 경로막힘 국소회피" in text
 
 
+def test_route_only_local_avoid_activates_persistent_bypass_detour():
+    text = _player_view_text()
+
+    route_slice = text[
+        text.index("_route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)"):
+        text.index("if _local_avoid_mode:")
+    ]
+    forbidden_slice = text[
+        text.index("def _get_route_chokepoint_detour_forbidden_tiles("):
+        text.index("def _is_route_chokepoint_detour_step_allowed(")
+    ]
+    assert "_activate_route_chokepoint_detour(" in route_slice
+    assert "keep_blocked_avoid=True" in route_slice
+    assert '"keep_blocked_avoid": bool(keep_blocked_avoid),' in text
+    assert 'bool(_detour.get("keep_blocked_avoid")) or _current_key == _origin' in forbidden_slice
+    assert "경로막힘 임시우회 고정" in text
+
+
+def test_local_bypass_avoid_prevents_side_tile_from_returning_to_origin():
+    game_map = GameMap(name="local-bypass-rejoin")
+    game_map.passable = {
+        (11, 21),
+        (11, 22),
+        (12, 21),
+        (12, 22),
+        (13, 21),
+        (13, 22),
+    }
+    pathfinder = SimplePathfinder(game_map)
+
+    backtrack = pathfinder.find_path((11, 21), (13, 22), allow_unknown=False)
+    bypass = pathfinder.find_path(
+        (11, 21),
+        (13, 22),
+        allow_unknown=False,
+        avoid_set={(11, 22), (12, 22)},
+    )
+
+    assert backtrack.found
+    assert backtrack.directions[0] == "down"
+    assert bypass.found
+    assert bypass.directions[:2] == ["right", "right"]
+    assert (11, 22) not in bypass.path
+    assert (12, 22) not in bypass.path[:-1]
+
+
 def test_stable_waypoint_goal_detour_is_disabled_for_route_chokepoints():
     text = _player_view_text()
 
@@ -375,6 +421,34 @@ def test_route_only_clears_stale_blocked_edges_when_edge_relaxed_probe_succeeds(
     assert "_cleared_edge_count = _clear_runtime_blocked_edges_for_path(" in text
     assert "_edge_relaxed_probe.path, _edge_relaxed_probe.directions" in text
     assert "🧭 경로복구: (" in text
+
+
+def test_route_only_stale_edge_recovery_preserves_freshly_marked_edges():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("runtime_blocked_edge_guard_until = {}"):
+        text.index("def _is_dir_blocked(x, y, d, now_iter):")
+    ]
+    clear_slice = text[
+        text.index("def _clear_runtime_blocked_edges_for_path(_path, _directions):"):
+        text.index("def press_key(direction):")
+    ]
+    mark_slice = text[
+        text.index("if _edge_mode:"):
+        text.index("if _ui_update_ok:", text.index("if _edge_mode:"))
+    ]
+    success_slice = text[
+        text.index("if moved:"):
+        text.index("# 왔던 방향의 반대를 explored_from에 기록")
+    ]
+
+    assert "FRESH_BLOCKED_EDGE_GUARD_TTL = 36" in text
+    assert "def _mark_fresh_blocked_edge(x, y, d, now_iter):" in helper_slice
+    assert "def _is_fresh_blocked_edge(x, y, d, now_iter):" in helper_slice
+    assert "if _is_fresh_blocked_edge(_px, _py, _dir, iteration):" in clear_slice
+    assert "_mark_fresh_blocked_edge(prev_x, prev_y, last_dir, iteration)" in mark_slice
+    assert "_clear_fresh_blocked_edge(prev_x, prev_y, last_dir)" in success_slice
 
 
 def test_route_only_relaxed_path_can_use_its_first_blocked_direction():

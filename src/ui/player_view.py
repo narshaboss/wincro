@@ -3488,6 +3488,30 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception as e:
             logger.debug(f"[중단추적] 기록 실패: {e}")
 
+    def _describe_stop_reason(self, reason):
+        """중단 사유 코드에 사람이 바로 판단할 수 있는 설명을 붙인다."""
+        descriptions = {
+            "max_stagnation_reached": "장기 정체: 목표까지 거리 개선 없이 반복 한계 도달",
+            "max_iterations_reached": "반복 한계: 경유지 처리 최대 반복 수 도달",
+            "coord_fail_limit": "좌표 인식 실패: OCR 좌표 읽기 연속 실패",
+            "manual_or_external_stop": "수동/외부 중지: 명시 사유 없이 중지 진입",
+            "manual_or_external_stop_after_recent_issue": "수동/외부 중지 직전 이상징후 감지",
+            "manual_stop_after_recent_issue": "수동 중지 직전 이상징후 감지",
+            "escape_hotkey": "ESC 핫키 수동 중지",
+            "dead_thread_forced_reset": "실행 스레드 종료 감지 후 강제 리셋",
+            "mapping_local_no_direction": "맵핑 방향 없음: 로컬 탐색 후보 고갈",
+            "abnormal_coord_jump": "비정상 좌표 점프 감지",
+            "coordinate_loop_exception": "좌표 이동 루프 예외",
+            "run_loop_exception": "실행 루프 예외",
+            "coordinate_loop_finally_unclassified": "좌표 루프 종료 사유 미분류",
+            "run_loop_finally_unclassified": "실행 루프 종료 사유 미분류",
+        }
+        return descriptions.get(str(reason or "unknown"), "분류되지 않은 중단 사유")
+
+    def _format_stop_reason_for_log(self):
+        _reason = getattr(self, "_stop_reason", "") or "unknown"
+        return f"{_reason} - {self._describe_stop_reason(_reason)}"
+
     def _remember_runtime_coordinate(self, x, y, *, source="ocr", iteration=None, target_idx=None, target=None):
         """중단/오류 추적용으로 마지막 좌표 스냅샷을 보관한다."""
         try:
@@ -3558,12 +3582,30 @@ class GameModeDialog(ctk.CTkToplevel):
         _latest = getattr(self, "_last_runtime_coord_snapshot", None)
         _ocr = getattr(self, "_last_ocr_coord_snapshot", None)
         _primary = _valid or _latest or _ocr
+        _seen = set()
+
+        def _snapshot_key(_snapshot):
+            if not _snapshot:
+                return None
+            return (
+                _snapshot.get("x"),
+                _snapshot.get("y"),
+                _snapshot.get("source"),
+                _snapshot.get("iteration"),
+                _snapshot.get("target_idx"),
+            )
+
         _lines = [f"📍 중단전 좌표: {self._format_runtime_coordinate_snapshot(_primary)}"]
-        if _primary and _ocr:
-            _primary_key = (_primary.get("x"), _primary.get("y"), _primary.get("source"), _primary.get("iteration"))
-            _ocr_key = (_ocr.get("x"), _ocr.get("y"), _ocr.get("source"), _ocr.get("iteration"))
-            if _primary_key != _ocr_key:
-                _lines.append(f"📍 마지막 OCR좌표: {self._format_runtime_coordinate_snapshot(_ocr)}")
+        _primary_key = _snapshot_key(_primary)
+        if _primary_key:
+            _seen.add(_primary_key)
+        _latest_key = _snapshot_key(_latest)
+        if _latest and _latest_key not in _seen and _latest.get("source") != "ocr":
+            _lines.append(f"📍 마지막 판정좌표: {self._format_runtime_coordinate_snapshot(_latest)}")
+            _seen.add(_latest_key)
+        _ocr_key = _snapshot_key(_ocr)
+        if _ocr and _ocr_key not in _seen:
+            _lines.append(f"📍 마지막 OCR좌표: {self._format_runtime_coordinate_snapshot(_ocr)}")
         return _lines
 
     def _remember_runtime_issue(self, issue, detail="", overwrite=False):
@@ -3932,7 +3974,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
                 try:
                     self._append_log("⚠️ 실행 강제리셋: dead_thread_forced_reset")
-                    self._append_log("🧭 중단사유: dead_thread_forced_reset")
+                    self._append_log(f"🧭 중단사유: {self._format_stop_reason_for_log()}")
                 except Exception:
                     pass
                 self._single_waypoint_mode = False
@@ -3959,7 +4001,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
                 try:
                     self._append_log("⚠️ 실행 강제리셋: dead_thread_forced_reset")
-                    self._append_log("🧭 중단사유: dead_thread_forced_reset")
+                    self._append_log(f"🧭 중단사유: {self._format_stop_reason_for_log()}")
                 except Exception:
                     pass
                 self._single_waypoint_mode = False
@@ -3993,7 +4035,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
                 try:
                     self._append_log("⚠️ 실행 강제리셋: dead_thread_forced_reset")
-                    self._append_log("🧭 중단사유: dead_thread_forced_reset")
+                    self._append_log(f"🧭 중단사유: {self._format_stop_reason_for_log()}")
                 except Exception:
                     pass
             elif getattr(self, '_is_mapping_test', False) and prev_idx == idx:
@@ -4142,6 +4184,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._mark_stop_reason("manual_or_external_stop", "_stop_execution entered without prior reason", overwrite=True)
         logger.info(
             f"[중단추적] stop_execution enter reason={self._stop_reason or 'unknown'} "
+            f"reason_desc={self._describe_stop_reason(self._stop_reason or 'unknown')} "
             f"detail={self._stop_detail or '-'} key_count={self._key_press_count} "
             f"coord={self._format_runtime_coordinate_snapshot(getattr(self, '_last_valid_runtime_coord_snapshot', None) or getattr(self, '_last_runtime_coord_snapshot', None))}"
         )
@@ -4157,7 +4200,9 @@ class GameModeDialog(ctk.CTkToplevel):
                 self._mapping_test_btn.configure(text="▶ 전체맵핑테스트", fg_color="#5e81ac")
             self._status_label.configure(text="상태: 중지됨", text_color="#d08770")
             self._append_log(f"실행 중지 - 총 키입력: {self._key_press_count}회", force=True)
-            self._append_log(f"🧭 중단사유: {self._stop_reason or 'unknown'}", force=True)
+            self._append_log(f"🧭 중단사유: {self._format_stop_reason_for_log()}", force=True)
+            if getattr(self, "_stop_detail", ""):
+                self._append_log(f"🧭 중단상세: {self._stop_detail}", force=True)
             for _coord_line in _stop_coord_log_lines:
                 self._append_log(_coord_line, force=True)
             # 맵핑 카드 버튼 복원
@@ -4625,6 +4670,8 @@ class GameModeDialog(ctk.CTkToplevel):
         ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD = 6  # 일반 특화모드 유일통로 첫칸 반복실패 시 재시도 중단
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
+        runtime_blocked_edge_guard_until = {}  # 방금 막은 엣지를 stale-edge 복구가 즉시 해제하지 못하게 보호
+        FRESH_BLOCKED_EDGE_GUARD_TTL = 36
         _portal_protected = set()      # 포탈 좌표 (절대 unblock 금지)
         _is_backtrack_dir = False      # find_path_direction이 백트래킹으로 반환했는지
         _pending_probe_target = None   # 이번 이동이 미탐색 직접진입인 경우 목표 좌표
@@ -4801,6 +4848,28 @@ class GameModeDialog(ctk.CTkToplevel):
             for _k, _exp in list(blocked_dirs.items()):
                 if now_iter >= _exp:
                     blocked_dirs.pop(_k, None)
+            for _k, _exp in list(runtime_blocked_edge_guard_until.items()):
+                if now_iter >= _exp:
+                    runtime_blocked_edge_guard_until.pop(_k, None)
+
+        def _mark_fresh_blocked_edge(x, y, d, now_iter):
+            runtime_blocked_edge_guard_until[_dir_key(x, y, d)] = int(now_iter) + FRESH_BLOCKED_EDGE_GUARD_TTL
+
+        def _clear_fresh_blocked_edge(x, y, d):
+            runtime_blocked_edge_guard_until.pop(_dir_key(x, y, d), None)
+
+        def _clear_runtime_blocked_edge_guards():
+            runtime_blocked_edge_guard_until.clear()
+
+        def _is_fresh_blocked_edge(x, y, d, now_iter):
+            _key = _dir_key(x, y, d)
+            _exp = runtime_blocked_edge_guard_until.get(_key)
+            if _exp is None:
+                return False
+            if int(now_iter) >= _exp:
+                runtime_blocked_edge_guard_until.pop(_key, None)
+                return False
+            return True
 
         def _is_dir_blocked(x, y, d, now_iter):
             _exp = blocked_dirs.get(_dir_key(x, y, d))
@@ -5544,6 +5613,7 @@ class GameModeDialog(ctk.CTkToplevel):
             explored_from = {}
             edge_fail_counts.clear()
             blocked_dirs.clear()
+            _clear_runtime_blocked_edge_guards()
             frontier_blocked_until.clear()
             _temporary_goal_detour = None
             _temporary_goal_detour_origin = None
@@ -5661,7 +5731,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 return None
             return _route_chokepoint_detour
 
-        def _activate_route_chokepoint_detour(_cx, _cy, _blocked_dir, _side_dir, _goal_pos):
+        def _activate_route_chokepoint_detour(_cx, _cy, _blocked_dir, _side_dir, _goal_pos, *, keep_blocked_avoid=False):
             nonlocal _route_chokepoint_detour, current_path, path_index, path_pos_index
             if _goal_pos is None or not _blocked_dir or not _side_dir:
                 return
@@ -5681,6 +5751,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 "goal": _goal,
                 "blocked_dir": _blocked_dir,
                 "side_dir": _side_dir,
+                "keep_blocked_avoid": bool(keep_blocked_avoid),
                 "expire": int(iteration) + 36,
                 "forced_steps": 0,
                 "max_forced_steps": 6,
@@ -5695,8 +5766,9 @@ class GameModeDialog(ctk.CTkToplevel):
             path_pos_index = {}
             pathfinder.invalidate_path()
             if _ui_update_ok:
-                self.after(0, lambda o=_origin, b=_blocked, s=_side, g=_goal:
-                    self._append_log(f"🧭 유일통로 임시우회 고정: {o}→{s} avoid={b} goal={g}"))
+                _detour_label = "경로막힘 임시우회 고정" if keep_blocked_avoid else "유일통로 임시우회 고정"
+                self.after(0, lambda o=_origin, b=_blocked, s=_side, g=_goal, label=_detour_label:
+                    self._append_log(f"🧭 {label}: {o}→{s} avoid={b} goal={g}"))
 
         def _get_route_chokepoint_detour_forbidden_tiles(_detour, _current_pos, _goal_pos):
             if not _detour:
@@ -5710,13 +5782,15 @@ class GameModeDialog(ctk.CTkToplevel):
             if _origin and _origin not in {_current_key, _goal_key}:
                 _forbidden.add(_origin)
 
-            # The failed first tile is only forbidden while still at the origin.
+            # Chokepoint detours usually need to rejoin through the failed first
+            # tile after a side nudge. Non-chokepoint local bypasses keep that
+            # tile forbidden so A* does not immediately return to the same gate.
             # After the side nudge, many real L/J chokepoints must rejoin through
             # that tile once the dynamic blocker moves; keeping it in avoid
             # disconnects the corridor and produces endless "direction none".
             if (
                 _blocked and
-                _current_key == _origin and
+                (bool(_detour.get("keep_blocked_avoid")) or _current_key == _origin) and
                 _blocked not in {_current_key, _goal_key}
             ):
                 _forbidden.add(_blocked)
@@ -6157,7 +6231,10 @@ class GameModeDialog(ctk.CTkToplevel):
         def _clear_runtime_blocked_edges_at(_cx, _cy):
             _cleared = 0
             for _dir in DIRECTIONS_4.keys():
+                if _is_fresh_blocked_edge(_cx, _cy, _dir, iteration):
+                    continue
                 if self._game_map.clear_blocked_edge(_cx, _cy, _dir):
+                    _clear_fresh_blocked_edge(_cx, _cy, _dir)
                     _cleared += 1
             return _cleared
 
@@ -6169,7 +6246,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _idx >= len(_path):
                     break
                 _px, _py = _path[_idx]
+                if _is_fresh_blocked_edge(_px, _py, _dir, iteration):
+                    continue
                 if self._game_map.clear_blocked_edge(_px, _py, _dir):
+                    _clear_fresh_blocked_edge(_px, _py, _dir)
                     _cleared += 1
             return _cleared
 
@@ -6972,6 +7052,14 @@ class GameModeDialog(ctk.CTkToplevel):
                         return _blocked_primary_dir
                     _route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)
                     if _route_local_dir:
+                        _activate_route_chokepoint_detour(
+                            cx,
+                            cy,
+                            _blocked_primary_dir,
+                            _route_local_dir,
+                            target_pos,
+                            keep_blocked_avoid=True,
+                        )
                         if _ui_update_ok and iteration % 10 == 0:
                             self.after(0, lambda x=cx, y=cy, d2=_blocked_primary_dir, a2=_route_local_dir:
                                 self._append_log(f"🧭 경로막힘 국소회피: ({x},{y}) {d2}→{a2}"))
@@ -8628,6 +8716,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         explored_from = {}
                         edge_fail_counts.clear()
                         blocked_dirs.clear()
+                        _clear_runtime_blocked_edge_guards()
                         frontier_blocked_until.clear()
                         _temporary_goal_detour = None
                         _temporary_goal_detour_origin = None
@@ -8805,6 +8894,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         explored_from = {}
                         edge_fail_counts.clear()
                         blocked_dirs.clear()
+                        _clear_runtime_blocked_edge_guards()
                         frontier_blocked_until.clear()
                         _temporary_goal_detour = None
                         _temporary_goal_detour_origin = None
@@ -8896,6 +8986,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             self._game_map.clear_soft_blocked(current_x, current_y)
                             if last_dir and prev_x is not None:
                                 self._game_map.clear_blocked_edge(prev_x, prev_y, last_dir)
+                                _clear_fresh_blocked_edge(prev_x, prev_y, last_dir)
                                 blocked_dirs.pop(_dir_key(prev_x, prev_y, last_dir), None)
                                 edge_fail_counts.pop(_dir_key(prev_x, prev_y, last_dir), None)
                             # 왔던 방향의 반대를 explored_from에 기록 (뒤로가기는 마지막에 시도)
@@ -9191,6 +9282,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                     ) and _edge_fail >= EDGE_FAIL_MARK_THRESHOLD
                                     if _edge_mode:
                                         _edge_marked = self._game_map.mark_blocked_edge(prev_x, prev_y, last_dir)
+                                        if _edge_marked or self._game_map.is_edge_blocked(prev_x, prev_y, last_dir):
+                                            _mark_fresh_blocked_edge(prev_x, prev_y, last_dir, iteration)
                                         if _edge_marked and _ui_update_ok:
                                             self.after(0, lambda px=prev_x, py=prev_y, wx=wall_x, wy=wall_y, d2=last_dir:
                                                 self._append_log(f"🧱 엣지차단: ({px},{py})→({wx},{wy}) {d2}"))
@@ -10484,6 +10577,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                                 explored_from = {}
                                                 edge_fail_counts.clear()
                                                 blocked_dirs.clear()
+                                                _clear_runtime_blocked_edge_guards()
                                                 frontier_blocked_until.clear()
                                                 _temporary_goal_detour = None
                                                 _temporary_goal_detour_origin = None
@@ -10598,6 +10692,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         explored_from = {}
                                         edge_fail_counts.clear()
                                         blocked_dirs.clear()
+                                        _clear_runtime_blocked_edge_guards()
                                         frontier_blocked_until.clear()
                                         _temporary_goal_detour = None
                                         _temporary_goal_detour_origin = None

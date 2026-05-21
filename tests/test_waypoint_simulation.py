@@ -10,10 +10,12 @@ from src.player.special_mode_harness import (
     PRESET_NORMAL,
     PRESET_ROUTE_STAGNATION,
     PRESET_SCAN,
+    SimulationFaultProfile,
     build_fault_profile,
     classify_scan_result,
     generate_scan_profiles,
     run_boss_harness,
+    run_route_harness,
 )
 from src.player.waypoint_simulation import (
     build_full_test_profiles,
@@ -89,6 +91,28 @@ def test_route_stagnation_preset_surfaces_failure_and_dynamic_monsters():
     assert len(monster_shapes) >= 1
     assert any(record.blocked_neighbor_tiles for record in scenario.records)
     assert any(record.no_detour for record in scenario.records)
+
+
+def test_route_harness_edge_failures_are_position_scoped():
+    game_map = GameMap(name="edge-scope")
+    game_map.passable = {(x, y) for x in range(2) for y in range(3)}
+    profile = SimulationFaultProfile(
+        name="edge-scope",
+        seed=1,
+        start=(0, 0),
+        goal=(1, 2),
+        is_boss_room=False,
+        move_fail_edges={(0, 0, "down")},
+        max_iterations=20,
+        max_stagnation=8,
+    )
+
+    result = run_route_harness(game_map, start=(0, 0), goal=(1, 2), profile=profile)
+
+    assert result.completed
+    assert result.final_pos == (1, 2)
+    assert any(((0, 0, "down"), 2) in record.edge_fail_counts for record in result.records)
+    assert all(((1, 0, "down"), 2) not in record.edge_fail_counts for record in result.records)
 
 
 def test_coord_glitch_preset_surfaces_coord_fault():

@@ -708,6 +708,45 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["text_secondary"],
         ).pack(side="right", padx=(5, 2))
 
+        # 플레이 모드에서 버전/자동업데이트 상태를 설정 화면 없이 바로 확인한다.
+        info_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        info_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        self._mini_version_label = ctk.CTkLabel(
+            info_frame,
+            text=f"버전 v{APP_VERSION}",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["accent_blue"],
+        )
+        self._mini_version_label.pack(side="left", padx=(10, 8), pady=6)
+
+        self._mini_auto_update_var = ctk.BooleanVar(value=bool(self._config.update.auto_check))
+        self._mini_auto_update_indicator = ctk.CTkButton(
+            info_frame,
+            text="",
+            width=18,
+            height=18,
+            corner_radius=9,
+            fg_color=COLORS["error"],
+            hover_color=COLORS["danger_hover"],
+            border_width=0,
+            command=self._toggle_mini_auto_update_from_indicator,
+        )
+        self._mini_auto_update_indicator.pack(side="right", padx=(0, 4), pady=6)
+
+        self._mini_auto_update_label = ctk.CTkLabel(
+            info_frame,
+            text="자동업데이트 확인 중",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        self._mini_auto_update_label.pack(side="right", padx=(8, 4), pady=6)
+        self._mini_auto_update_label.bind(
+            "<Button-1>",
+            lambda _event: self._toggle_mini_auto_update_from_indicator(),
+        )
+        self._update_mini_auto_update_label()
+
         # 컨트롤 프레임 (실행/중지 버튼)
         ctrl_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
         ctrl_frame.pack(fill="x", padx=10, pady=5)
@@ -803,6 +842,44 @@ class MainWindow(ctk.CTk):
                     self._mini_repeat_var.set(str(saved_repeat))
                     logger.info(f"[미니플레이어] 초기 재생횟수 로드: {saved_repeat}회")
                     break
+
+    def _update_mini_auto_update_label(self):
+        """플레이 모드 자동업데이트 상태 라벨 갱신."""
+        if not hasattr(self, "_mini_auto_update_label"):
+            return
+        enabled = bool(self._mini_auto_update_var.get())
+        status_color = COLORS["success"] if enabled else COLORS["error"]
+        self._mini_auto_update_label.configure(
+            text=f"자동업데이트 {'ON' if enabled else 'OFF'}",
+            text_color=status_color,
+        )
+        if hasattr(self, "_mini_auto_update_indicator"):
+            self._mini_auto_update_indicator.configure(
+                fg_color=status_color,
+                hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
+            )
+
+    def _toggle_mini_auto_update_from_indicator(self):
+        """원형 상태 표시 클릭 시 자동업데이트 ON/OFF를 전환한다."""
+        self._mini_auto_update_var.set(not bool(self._mini_auto_update_var.get()))
+        self._toggle_mini_auto_update()
+
+    def _toggle_mini_auto_update(self):
+        """플레이 모드에서 자동업데이트 설정을 즉시 저장한다."""
+        enabled = bool(self._mini_auto_update_var.get())
+        previous = bool(getattr(self._config.update, "auto_check", False))
+        try:
+            self._config.update.auto_check = enabled
+            save_config()
+            self._update_mini_auto_update_label()
+            self._mini_status.configure(text=f"자동업데이트 {'ON' if enabled else 'OFF'} 저장됨")
+            logger.info(f"[미니플레이어] 자동업데이트 설정 변경: {enabled}")
+        except Exception as e:
+            self._config.update.auto_check = previous
+            self._mini_auto_update_var.set(previous)
+            self._update_mini_auto_update_label()
+            self._mini_status.configure(text="⚠ 자동업데이트 저장 실패")
+            logger.error(f"[미니플레이어] 자동업데이트 설정 저장 실패: {e}")
 
     def _refresh_mini_plans_sync(self):
         """플랜 목록 새로고침 - 디스크에서 최신 버전 로드 (백그라운드 스레드에서 호출)"""

@@ -92,7 +92,7 @@ class SimulationTickRecord:
     reason: str = ""
     avoid_set: tuple[Coord, ...] = ()
     blocked_dirs: tuple[str, ...] = ()
-    edge_fail_counts: tuple[tuple[str, int], ...] = ()
+    edge_fail_counts: tuple[tuple[Edge, int], ...] = ()
     monster_blocks: tuple[Coord, ...] = ()
     blocked_neighbor_tiles: tuple[Coord, ...] = ()
     fault_flags: tuple[str, ...] = ()
@@ -418,7 +418,7 @@ def run_route_harness(
     steps: list[dict[str, Any]] = []
     records: list[SimulationTickRecord] = []
     blocked_dirs: Counter[str] = Counter()
-    edge_fail_counts: Counter[str] = Counter()
+    edge_fail_counts: Counter[Edge] = Counter()
     hard_failed_edges: set[Edge] = set()
     recent_positions: deque[Coord] = deque(maxlen=8)
     best_distance = _manhattan(start, goal)
@@ -437,9 +437,9 @@ def run_route_harness(
         if "blocked_dir_residual" in fault_flags:
             for direction in tuple(blocked_dirs):
                 blocked_dirs[direction] = max(blocked_dirs[direction], 3)
-        for direction, fail_count in edge_fail_counts.items():
+        for edge, fail_count in edge_fail_counts.items():
             if fail_count >= 2:
-                avoid_edges.add((current[0], current[1], direction))
+                avoid_edges.add(edge)
         blocked_neighbor_tiles, open_neighbor_tiles = _analyze_neighbor_constraints(
             game_map,
             current,
@@ -496,10 +496,11 @@ def run_route_harness(
             action = f"move:{direction}"
             move_failed = (current[0], current[1], direction) in profile.move_fail_edges or next_pos in monster_blocks
             if move_failed:
-                edge_fail_counts[direction] += 1
+                edge = (current[0], current[1], direction)
+                edge_fail_counts[edge] += 1
                 blocked_dirs[direction] = max(blocked_dirs[direction], 3)
-                if edge_fail_counts[direction] >= 2:
-                    hard_failed_edges.add((current[0], current[1], direction))
+                if edge_fail_counts[edge] >= 2:
+                    hard_failed_edges.add(edge)
                 _append_step(steps, "move_fail", current, f"이동 실패 ({current[0]},{current[1]}) → {direction}", goal=goal)
                 record_reason = "몬스터 또는 주입 실패"
                 stagnation += 1
@@ -599,7 +600,7 @@ def run_boss_harness(
     steps: list[dict[str, Any]] = []
     records: list[SimulationTickRecord] = []
     blocked_dirs: Counter[str] = Counter()
-    edge_fail_counts: Counter[str] = Counter()
+    edge_fail_counts: Counter[Edge] = Counter()
     hard_failed_edges: set[Edge] = set()
     stable_contact_frames = 0
     stagnation = 0
@@ -619,9 +620,9 @@ def run_boss_harness(
         prev_visible = visible
         monster_blocks = _build_monster_blocks(game_map, current, boss_pos, tick, profile.monster_patterns, boss_pos=boss_pos)
         avoid_edges = set(hard_failed_edges)
-        for direction, fail_count in edge_fail_counts.items():
+        for edge, fail_count in edge_fail_counts.items():
             if fail_count >= 2:
-                avoid_edges.add((current[0], current[1], direction))
+                avoid_edges.add(edge)
         blocked_neighbor_tiles, open_neighbor_tiles = _analyze_neighbor_constraints(
             game_map,
             current,
@@ -689,10 +690,11 @@ def run_boss_harness(
                     next_pos = path[1]
                     direction = _direction_between(current, next_pos) or "unknown"
                     if next_pos in monster_blocks:
-                        edge_fail_counts[direction] += 1
+                        edge = (current[0], current[1], direction)
+                        edge_fail_counts[edge] += 1
                         blocked_dirs[direction] = max(blocked_dirs[direction], 3)
-                        if edge_fail_counts[direction] >= 2:
-                            hard_failed_edges.add((current[0], current[1], direction))
+                        if edge_fail_counts[edge] >= 2:
+                            hard_failed_edges.add(edge)
                         _append_step(steps, "move_fail", current, f"보스 접근 실패 ({current[0]},{current[1]}) → {direction}", boss_pos=perceived_boss)
                         stagnation += 1
                     else:
