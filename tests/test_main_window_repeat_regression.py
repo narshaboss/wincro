@@ -47,3 +47,19 @@ def test_play_mode_shows_version_and_auto_update_toggle():
     assert 'hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"]' in text
     assert "self._config.update.auto_check = enabled" in text
     assert "save_config()" in text
+
+
+def test_play_mode_log_copy_button_is_visible_and_copies_full_log():
+    text = _read_text()
+    mini_slice = text[
+        text.index("def _create_mini_player_ui(self):"):
+        text.index("def _refresh_mini_plans_sync(self):")
+    ]
+
+    assert 'text="로그 전체복사"' in mini_slice
+    assert "command=self._copy_mini_log_to_clipboard" in mini_slice
+    assert "def _copy_mini_log_to_clipboard(self):" in text
+    assert 'self._mini_log_text.get("1.0", "end-1c").strip()' in text
+    assert "self.clipboard_clear()" in text
+    assert "self.clipboard_append(text)" in text
+    assert "로그 {line_count}줄 복사됨" in text

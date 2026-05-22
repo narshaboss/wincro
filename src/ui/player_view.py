@@ -5779,7 +5779,11 @@ class GameModeDialog(ctk.CTkToplevel):
             _blocked = tuple(_detour.get("blocked") or ())
             _forbidden = set()
 
-            if _origin and _origin not in {_current_key, _goal_key}:
+            if (
+                _origin and
+                not bool(_detour.get("allow_origin_rejoin")) and
+                _origin not in {_current_key, _goal_key}
+            ):
                 _forbidden.add(_origin)
 
             # Chokepoint detours usually need to rejoin through the failed first
@@ -6696,11 +6700,43 @@ class GameModeDialog(ctk.CTkToplevel):
                             return None
                     return _res
 
+                def _relax_detour_origin_if_path_is_cut(_route_result, _route_avoid):
+                    _detour = _active_route_chokepoint_detour
+                    if _detour is None or (_route_result is not None and _route_result.found and _route_result.directions):
+                        return _route_result, _route_avoid
+                    if not _route_avoid:
+                        return _route_result, _route_avoid
+                    _origin = tuple(_detour.get("origin") or ())
+                    if not _origin or _origin not in _route_avoid or bool(_detour.get("allow_origin_rejoin")):
+                        return _route_result, _route_avoid
+
+                    # ㄴ/역ㄴ 병목은 옆으로 한 칸 피한 뒤 원래 칸으로 재합류해야만
+                    # 경로가 이어지는 경우가 있다. 기본 금지는 유지하되, A*가 실제로
+                    # 끊겼을 때만 origin 재합류를 열어 무한 방향없음을 막는다.
+                    _detour["allow_origin_rejoin"] = True
+                    _relaxed_avoid = _build_avoid_set(target_pos)
+                    _relaxed_result = _run_route_only_path(_relaxed_avoid)
+                    if self._stop_event.is_set():
+                        return _route_result, _route_avoid
+                    if _relaxed_result is not None and _relaxed_result.found and _relaxed_result.directions:
+                        if _ui_update_ok:
+                            self._schedule_ui_log(
+                                f"🧭 유일통로 재합류 허용: {current_pos} origin={_origin}",
+                                dedupe_key=f"detour-origin-rejoin:{cx}:{cy}:{_origin[0]}:{_origin[1]}",
+                                dedupe_window=0.8,
+                            )
+                        return _relaxed_result, _relaxed_avoid
+                    _detour["allow_origin_rejoin"] = False
+                    return _route_result, _route_avoid
+
                 _route_result = _run_route_only_path(_route_avoid)
                 if self._stop_event.is_set():
                     return None
                 _allow_route_dir_relax = not _should_preserve_route_dir_avoid()
                 _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                if self._stop_event.is_set():
+                    return None
+                _route_result, _route_avoid = _relax_detour_origin_if_path_is_cut(_route_result, _route_avoid)
                 if self._stop_event.is_set():
                     return None
                 if _route_direct_dir_override:
@@ -6731,6 +6767,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
                             if self._stop_event.is_set():
                                 return None
+                            _route_result, _route_avoid = _relax_detour_origin_if_path_is_cut(_route_result, _route_avoid)
+                            if self._stop_event.is_set():
+                                return None
                             if _route_result.found and _route_result.directions and _ui_update_ok:
                                 self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
                                     self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))
@@ -6757,6 +6796,9 @@ class GameModeDialog(ctk.CTkToplevel):
                         if self._stop_event.is_set():
                             return None
                         _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                        if self._stop_event.is_set():
+                            return None
+                        _route_result, _route_avoid = _relax_detour_origin_if_path_is_cut(_route_result, _route_avoid)
                         if self._stop_event.is_set():
                             return None
                         if _route_result.found and _route_result.directions:
@@ -6799,6 +6841,9 @@ class GameModeDialog(ctk.CTkToplevel):
                             if self._stop_event.is_set():
                                 return None
                             _route_result, _route_avoid = _apply_route_only_relaxed_result(_route_result, _route_avoid)
+                            if self._stop_event.is_set():
+                                return None
+                            _route_result, _route_avoid = _relax_detour_origin_if_path_is_cut(_route_result, _route_avoid)
                             if self._stop_event.is_set():
                                 return None
                             if _route_result.found and _route_result.directions:
@@ -11879,6 +11924,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             explored_from.pop((current_x, current_y), None)
                             for _d in DIRECTIONS_4.keys():
                                 edge_fail_counts.pop(_dir_key(current_x, current_y, _d), None)
+                            _clear_route_chokepoint_detour()
                             current_path = []
                             path_index = 0
                             path_pos_index = {}
@@ -11980,6 +12026,7 @@ class GameModeDialog(ctk.CTkToplevel):
                         explored_from.pop((current_x, current_y), None)
                         for _d in DIRECTIONS_4.keys():
                             edge_fail_counts.pop(_dir_key(current_x, current_y, _d), None)
+                        _clear_route_chokepoint_detour()
                         current_path = []
                         path_index = 0
                         path_pos_index = {}

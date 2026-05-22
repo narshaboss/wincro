@@ -203,11 +203,32 @@ def test_route_only_chokepoint_detour_uses_phased_forbidden_tiles():
     ]
     assert "_active_route_chokepoint_detour = (" in text
     assert "def _get_route_chokepoint_detour_forbidden_tiles(" in text
-    assert "if _origin and _origin not in {_current_key, _goal_key}:" in helper_slice
+    assert 'not bool(_detour.get("allow_origin_rejoin"))' in helper_slice
     assert "_current_key == _origin" in helper_slice
     assert "_forbidden.add(_blocked)" in helper_slice
     assert "_get_route_chokepoint_detour_forbidden_tiles(" in build_slice
     assert "_avoid.add(_avoid_pos)" in build_slice
+
+
+def test_route_only_chokepoint_detour_relaxes_origin_when_astar_is_cut():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _relax_detour_origin_if_path_is_cut("):
+        text.index("_route_result = _run_route_only_path(_route_avoid)")
+    ]
+    none_recovery_slice = text[
+        text.index("if direction is None:"):
+        text.index("# UI 업데이트", text.index("if direction is None:"))
+    ]
+
+    assert 'def _relax_detour_origin_if_path_is_cut(_route_result, _route_avoid):' in text
+    assert '_detour["allow_origin_rejoin"] = True' in helper_slice
+    assert "_relaxed_result = _run_route_only_path(_relaxed_avoid)" in helper_slice
+    assert "유일통로 재합류 허용" in helper_slice
+    assert '_detour["allow_origin_rejoin"] = False' in helper_slice
+    assert "_relax_detour_origin_if_path_is_cut(_route_result, _route_avoid)" in text
+    assert "_clear_route_chokepoint_detour()" in none_recovery_slice
 
 
 def test_route_only_chokepoint_detour_blocks_cached_path_reentry():
@@ -288,6 +309,39 @@ def test_jolbon_side_detour_rejoins_when_blocked_gate_is_relaxed():
     assert lower_rejoin.found
     assert lower_rejoin.path[:3] == [(12, 9), (13, 9), (13, 8)]
     assert lower_rejoin.directions[:2] == ["right", "up"]
+
+
+def test_reverse_l_detour_rejoins_through_origin_when_required():
+    game_map = GameMap(name="reverse-l-origin-rejoin")
+    corridor = {
+        (19, 15),
+        (19, 14), (18, 14), (17, 14), (16, 14), (15, 14), (14, 14), (13, 14),
+        (13, 15), (13, 16), (13, 17), (13, 18), (13, 19), (13, 20), (13, 21), (13, 22),
+    }
+    game_map.passable = set(corridor)
+    pathfinder = SimplePathfinder(game_map)
+
+    blocked_origin = pathfinder.find_path(
+        (19, 15),
+        (13, 22),
+        allow_unknown=False,
+        allow_soft_blocked=True,
+        respect_blocked_edges=True,
+        avoid_set={(19, 14)},
+    )
+    rejoin_origin = pathfinder.find_path(
+        (19, 15),
+        (13, 22),
+        allow_unknown=False,
+        allow_soft_blocked=True,
+        respect_blocked_edges=True,
+        avoid_set=None,
+    )
+
+    assert not blocked_origin.found
+    assert rejoin_origin.found
+    assert rejoin_origin.path[:3] == [(19, 15), (19, 14), (18, 14)]
+    assert rejoin_origin.directions[:2] == ["up", "left"]
 
 
 def test_route_only_chokepoint_detour_activation_log_is_not_throttled():

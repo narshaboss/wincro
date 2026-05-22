@@ -803,12 +803,31 @@ class MainWindow(ctk.CTk):
         log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
         log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
+        log_header = ctk.CTkFrame(log_frame, fg_color="transparent")
+        log_header.pack(fill="x", padx=10, pady=(6, 3))
+
         ctk.CTkLabel(
-            log_frame,
+            log_header,
             text="실행 로그",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
-        ).pack(anchor="w", padx=10, pady=(5, 3))
+        ).pack(side="left")
+
+        self._mini_copy_log_btn = ctk.CTkButton(
+            log_header,
+            text="로그 전체복사",
+            width=104,
+            height=24,
+            corner_radius=12,
+            fg_color=COLORS["bg_card_hover"],
+            hover_color=COLORS["accent_blue"],
+            border_width=1,
+            border_color=COLORS["accent_blue"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._copy_mini_log_to_clipboard,
+        )
+        self._mini_copy_log_btn.pack(side="right")
 
         self._mini_log_text = ctk.CTkTextbox(
             log_frame,
@@ -880,6 +899,25 @@ class MainWindow(ctk.CTk):
             self._update_mini_auto_update_label()
             self._mini_status.configure(text="⚠ 자동업데이트 저장 실패")
             logger.error(f"[미니플레이어] 자동업데이트 설정 저장 실패: {e}")
+
+    def _copy_mini_log_to_clipboard(self):
+        """미니 플레이어 로그 전체를 클립보드에 복사한다."""
+        try:
+            if not hasattr(self, "_mini_log_text"):
+                return
+            text = self._mini_log_text.get("1.0", "end-1c").strip()
+            if not text:
+                self._mini_status.configure(text="복사할 로그 없음")
+                return
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update_idletasks()
+            line_count = len(text.splitlines())
+            self._mini_status.configure(text=f"로그 {line_count}줄 복사됨")
+            logger.info(f"[미니플레이어] 로그 전체복사: {line_count}줄")
+        except Exception as e:
+            self._mini_status.configure(text="⚠ 로그 복사 실패")
+            logger.error(f"[미니플레이어] 로그 복사 실패: {e}")
 
     def _refresh_mini_plans_sync(self):
         """플랜 목록 새로고침 - 디스크에서 최신 버전 로드 (백그라운드 스레드에서 호출)"""
