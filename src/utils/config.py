@@ -29,7 +29,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.211"
+APP_VERSION = "1.0.212"
 
 
 @dataclass
@@ -110,6 +110,13 @@ class PerformanceConfig:
 
 
 @dataclass
+class SystemConfig:
+    shutdown_enabled: bool = True
+    shutdown_time: str = "00:00"
+    shutdown_force: bool = True
+
+
+@dataclass
 class AppConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     analyzer: AnalyzerConfig = field(default_factory=AnalyzerConfig)
@@ -118,6 +125,7 @@ class AppConfig:
     arduino: ArduinoConfig = field(default_factory=ArduinoConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
+    system: SystemConfig = field(default_factory=SystemConfig)
     version: str = "1.0.0"
     first_run: bool = True
     last_opened: str = ""
@@ -220,6 +228,7 @@ class ConfigManager:
             "arduino": asdict(config.arduino),
             "update": asdict(config.update),
             "performance": asdict(config.performance),
+            "system": asdict(config.system),
             "version": config.version,
             "first_run": config.first_run,
             "last_opened": config.last_opened,
@@ -240,6 +249,7 @@ class ConfigManager:
             arduino=ArduinoConfig(**filter_known_keys(ArduinoConfig, data.get("arduino", {}))),
             update=UpdateConfig(**filter_known_keys(UpdateConfig, data.get("update", {}))),
             performance=PerformanceConfig(**filter_known_keys(PerformanceConfig, data.get("performance", {}))),
+            system=SystemConfig(**filter_known_keys(SystemConfig, data.get("system", {}))),
             version=data.get("version", "1.0.0"),
             first_run=data.get("first_run", True),
             last_opened=data.get("last_opened", ""),

@@ -255,7 +255,69 @@ class SettingsView(BaseView):
         # 구분선
         ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=5)
 
-        # 관리자 권한 섹션
+        # PC 자동종료 예약
+        shutdown_card = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=10)
+        shutdown_card.pack(fill="x", padx=10, pady=(4, 10))
+
+        shutdown_header = ctk.CTkFrame(shutdown_card, fg_color="transparent")
+        shutdown_header.pack(fill="x", padx=12, pady=(10, 4))
+
+        ctk.CTkLabel(
+            shutdown_header,
+            text="PC 자동종료 예약",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        self._shutdown_status_label = ctk.CTkLabel(
+            shutdown_header,
+            text="상태 확인 중",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_muted"],
+        )
+        self._shutdown_status_label.pack(side="right")
+
+        self._shutdown_enabled_var = ctk.BooleanVar()
+        self._create_checkbox_with_help(
+            shutdown_card,
+            "매일 지정 시간에 이 PC 강제종료 예약",
+            self._shutdown_enabled_var,
+            help_text="Windows 작업 스케줄러에 WinCroDailyShutdown 작업을 등록합니다. 기본값은 ON입니다.",
+        )
+
+        shutdown_time_row = ctk.CTkFrame(shutdown_card, fg_color="transparent")
+        shutdown_time_row.pack(fill="x", padx=12, pady=(2, 10))
+
+        ctk.CTkLabel(
+            shutdown_time_row,
+            text="종료 시간",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 8))
+
+        self._shutdown_time_var = ctk.StringVar(value="00:00")
+        ctk.CTkEntry(
+            shutdown_time_row,
+            textvariable=self._shutdown_time_var,
+            width=72,
+            height=30,
+            fg_color=COLORS["bg_card"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(0, 12))
+
+        self._shutdown_force_var = ctk.BooleanVar()
+        ctk.CTkCheckBox(
+            shutdown_time_row,
+            text="실행 중 프로그램 강제 종료",
+            variable=self._shutdown_force_var,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
+
         admin_label = ctk.CTkLabel(
             scroll_frame,
             text="관리자 권한",
@@ -1152,7 +1214,8 @@ class SettingsView(BaseView):
 
         try:
             # 기존 _save_settings 호출 (일반/녹화/재생/외관 설정)
-            self._save_settings()
+            if not self._save_settings():
+                return
 
             # GitHub 저장소 저장
             repo = self._github_repo_var.get().strip()
@@ -2105,6 +2168,10 @@ del "%~f0"
         self._confirm_var.set(config.ui.confirm_before_run)
         self._minimize_var.set(config.ui.minimize_on_run)
         self._tooltips_var.set(config.ui.show_tooltips)
+        self._shutdown_enabled_var.set(bool(getattr(config.system, "shutdown_enabled", True)))
+        self._shutdown_time_var.set(str(getattr(config.system, "shutdown_time", "00:00") or "00:00"))
+        self._shutdown_force_var.set(bool(getattr(config.system, "shutdown_force", True)))
+        self._refresh_shutdown_status_label()
 
         # 창 모드 (이전 값 호환: small→play, medium/large→editor)
         old_to_new = {"small": "play", "medium": "editor", "large": "editor"}
@@ -2182,7 +2249,7 @@ del "%~f0"
 
         logger.debug("설정 로드 완료")
 
-    def _save_settings(self) -> None:
+    def _save_settings(self) -> bool:
         """설정 저장"""
         config = get_config()
         validation_errors = []
@@ -2192,6 +2259,15 @@ del "%~f0"
         config.ui.minimize_on_run = self._minimize_var.get()
         config.ui.show_tooltips = self._tooltips_var.get()
         config.ui.run_as_admin = self._run_as_admin_var.get()
+        from ..utils.shutdown_scheduler import normalize_shutdown_time
+        try:
+            shutdown_time = normalize_shutdown_time(self._shutdown_time_var.get())
+        except ValueError as e:
+            shutdown_time = getattr(config.system, "shutdown_time", "00:00")
+            validation_errors.append(f"PC 자동종료 시간 오류: {e}")
+        config.system.shutdown_enabled = bool(self._shutdown_enabled_var.get())
+        config.system.shutdown_time = shutdown_time
+        config.system.shutdown_force = bool(self._shutdown_force_var.get())
 
         # 창 모드
         mode_map = {"플레이 모드": "play", "에디터 모드": "editor"}
@@ -2266,11 +2342,12 @@ del "%~f0"
         if validation_errors:
             error_msg = "\n".join(validation_errors)
             self._show_message(MESSAGES["error"], f"설정값 오류:\n{error_msg}")
-            return
+            return False
 
         # 저장
         if save_config():
             logger.info("설정 저장 완료")
+            self._sync_shutdown_schedule_from_settings()
             if new_auto_start != old_auto_start or new_random_name_mode != old_random_name_mode:
                 self._update_auto_start_registry(new_auto_start)
             top = self.winfo_toplevel()
@@ -2278,9 +2355,46 @@ del "%~f0"
                 top.update_title()
             self._update_random_name_preview()
             self._show_message(MESSAGES["success"], SETTINGS["changes_saved"])
+            return True
         else:
             logger.error("설정 저장 실패")
             self._show_message(MESSAGES["error"], "설정 저장에 실패했습니다.")
+            return False
+    def _refresh_shutdown_status_label(self) -> None:
+        """PC 자동종료 작업 등록 상태를 설정 화면에 표시한다."""
+        if not hasattr(self, "_shutdown_status_label"):
+            return
+        try:
+            from ..utils.shutdown_scheduler import get_shutdown_task_status
+
+            result = get_shutdown_task_status()
+            color = COLORS["success"] if result.ok else COLORS["warning"]
+            if result.status in ("미등록", "미지원"):
+                color = COLORS["text_muted"]
+            self._shutdown_status_label.configure(text=result.status, text_color=color)
+        except Exception as e:
+            self._shutdown_status_label.configure(text="상태 오류", text_color=COLORS["error"])
+            logger.warning(f"[PC자동종료] 상태 확인 실패: {e}")
+
+    def _sync_shutdown_schedule_from_settings(self) -> None:
+        """저장된 환경설정을 Windows 작업 스케줄러에 즉시 반영한다."""
+        try:
+            from ..utils.shutdown_scheduler import sync_shutdown_task_from_config
+
+            result = sync_shutdown_task_from_config(get_config().system)
+            color = COLORS["success"] if result.ok else COLORS["error"]
+            if result.status in ("미등록", "미지원"):
+                color = COLORS["text_muted"] if result.ok else COLORS["warning"]
+            if hasattr(self, "_shutdown_status_label"):
+                self._shutdown_status_label.configure(text=result.status, text_color=color)
+            if result.ok:
+                logger.info(f"[PC자동종료] 설정 반영 완료: {result.status} {result.detail}")
+            else:
+                logger.warning(f"[PC자동종료] 설정 반영 실패: {result.status} {result.detail}")
+        except Exception as e:
+            if hasattr(self, "_shutdown_status_label"):
+                self._shutdown_status_label.configure(text="등록 오류", text_color=COLORS["error"])
+            logger.error(f"[PC자동종료] 설정 반영 예외: {e}", exc_info=True)
 
     def _parse_int(self, value: str, min_val: int, max_val: int, field_name: str) -> Optional[int]:
         """정수값 파싱 및 범위 검증"""

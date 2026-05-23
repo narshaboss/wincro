@@ -115,6 +115,7 @@ class WinCroApp:
                 )
 
             # 업데이트 후 플랜 파일 병합 (plans_user_backup이 있으면)
+            self._sync_shutdown_schedule_async()
             self._merge_user_plans()
 
             # 메인 윈도우 생성
@@ -130,6 +131,26 @@ class WinCroApp:
         except Exception as e:
             logger.error(f"애플리케이션 초기화 실패: {e}")
             return False
+
+    def _sync_shutdown_schedule_async(self) -> None:
+        """환경설정의 PC 자동종료 예약을 Windows 작업 스케줄러와 동기화한다."""
+        if get_config_load_status() == "error":
+            logger.warning(f"[PC자동종료] 설정 로드 오류로 예약 동기화 건너뜀: {get_config_load_error()}")
+            return
+
+        def _worker():
+            try:
+                from .utils.shutdown_scheduler import sync_shutdown_task_from_config
+
+                result = sync_shutdown_task_from_config(self._config.system)
+                if result.ok:
+                    logger.info(f"[PC자동종료] 시작 동기화 완료: {result.status} {result.detail}")
+                else:
+                    logger.warning(f"[PC자동종료] 시작 동기화 실패: {result.status} {result.detail}")
+            except Exception as e:
+                logger.error(f"[PC자동종료] 시작 동기화 예외: {e}", exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _create_views(self) -> None:
         """뷰 팩토리 등록 (실제 생성은 탭 클릭 시 지연 생성)"""
