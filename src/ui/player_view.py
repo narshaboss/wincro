@@ -4669,6 +4669,7 @@ class GameModeDialog(ctk.CTkToplevel):
         BOSS_PATROL_CHOKE_SKIP_THRESHOLD = 6  # 보스 순찰 중 유일통로 반복실패 시 현재 순찰목표 스킵
         ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD = 6  # 일반 특화모드 유일통로 첫칸 반복실패 시 재시도 중단
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
+        ROUTE_ONLY_NONCHOKE_RELAX_LIMIT = EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
         runtime_blocked_edge_guard_until = {}  # 방금 막은 엣지를 stale-edge 복구가 즉시 해제하지 못하게 보호
         FRESH_BLOCKED_EDGE_GUARD_TTL = 36
@@ -6600,6 +6601,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 if not _is_dir_blocked(cx, cy, _d, iteration):
                     return False
                 _ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)
+                if _route_only_mode:
+                    return _ef >= AVOID_EDGE_FAIL_THRESHOLD
                 return _ef >= EDGE_FAIL_MARK_THRESHOLD
 
             def _stop_route_only_chokepoint_retry(_blocked_dir):
@@ -6632,11 +6635,39 @@ class GameModeDialog(ctk.CTkToplevel):
                             cx, cy, _relaxed_first_dir, target_pos
                         )
                         _relaxed_edge_fail = edge_fail_counts.get(_dir_key(cx, cy, _relaxed_first_dir), 0)
+                        _stop_nonchoke_relax = (
+                            _route_only_mode and
+                            not _route_chokepoint_override and
+                            _is_dir_blocked(cx, cy, _relaxed_first_dir, iteration) and
+                            _relaxed_edge_fail >= ROUTE_ONLY_NONCHOKE_RELAX_LIMIT
+                        )
                         _stop_chokepoint_retry = (
                             _route_chokepoint_override and
                             _relaxed_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD
                         )
-                        if _stop_chokepoint_retry:
+                        if _stop_nonchoke_relax:
+                            _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _relaxed_first_dir)
+                            _nudge_dir = _local_dir or _pick_chokepoint_nudge_dir(cx, cy, target_pos, _relaxed_first_dir)
+                            if _nudge_dir:
+                                _activate_route_chokepoint_detour(
+                                    cx,
+                                    cy,
+                                    _relaxed_first_dir,
+                                    _nudge_dir,
+                                    target_pos,
+                                    keep_blocked_avoid=True,
+                                )
+                                _route_direct_dir_override = _nudge_dir
+                                if _ui_update_ok and iteration % 10 == 0:
+                                    self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir, a2=_nudge_dir, ef=_relaxed_edge_fail:
+                                        self._append_log(f"🧭 경로막힘 장기정체 우회: ({cx2},{cy2}) {d2}→{a2} 실패:{ef}"))
+                            else:
+                                _register_dir_block(cx, cy, _relaxed_first_dir, iteration, ttl=DIR_BLOCK_TTL_MAX)
+                                explored_from.setdefault(current_pos, set()).add(_relaxed_first_dir)
+                                if _ui_update_ok and iteration % 10 == 0:
+                                    self.after(0, lambda cx2=cx, cy2=cy, d2=_relaxed_first_dir, ef=_relaxed_edge_fail:
+                                        self._append_log(f"🧭 경로회피 완화중단: ({cx2},{cy2}) {d2} 실패:{ef}"))
+                        elif _stop_chokepoint_retry:
                             _local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _relaxed_first_dir)
                             _nudge_dir = _local_dir or _pick_chokepoint_nudge_dir(cx, cy, target_pos, _relaxed_first_dir)
                             if _nudge_dir:

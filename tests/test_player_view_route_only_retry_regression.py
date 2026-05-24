@@ -58,7 +58,7 @@ def test_route_only_relax_and_retry_are_guarded_for_failed_chokepoints():
     assert "if _allow_route_dir_relax or _route_chokepoint_override:" in text
 
 
-def test_route_only_dir_avoid_uses_only_hard_fail_edges():
+def test_route_only_dir_avoid_uses_sustained_direction_blocks():
     text = _player_view_text()
 
     assert "def _should_use_route_dir_avoid(_d):" in text
@@ -67,6 +67,8 @@ def test_route_only_dir_avoid_uses_only_hard_fail_edges():
         text.index("# ── 전체테스트/부분실행 맵기반 직행 모드")
     ]
     assert "_ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)" in helper_slice
+    assert "if _route_only_mode:" in helper_slice
+    assert "return _ef >= AVOID_EDGE_FAIL_THRESHOLD" in helper_slice
     assert "return _ef >= EDGE_FAIL_MARK_THRESHOLD" in helper_slice
     assert "if _should_use_route_dir_avoid(_da_d):" in text
 
@@ -386,6 +388,22 @@ def test_route_only_relaxed_path_chokepoint_override_stops_after_threshold():
     assert "_stop_chokepoint_retry = (" in helper_slice
     assert "_relaxed_edge_fail >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD" in helper_slice
     assert "_stop_route_only_chokepoint_retry(_relaxed_first_dir)" in helper_slice
+
+
+def test_route_only_relaxed_path_nonchokepoint_stops_after_sustained_failures():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _apply_route_only_relaxed_result(_route_result, _route_avoid):"):
+        text.index("# ── 전체테스트/부분실행 맵기반 직행 모드")
+    ]
+    assert "ROUTE_ONLY_NONCHOKE_RELAX_LIMIT = EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD" in text
+    assert "_stop_nonchoke_relax = (" in helper_slice
+    assert "not _route_chokepoint_override" in helper_slice
+    assert "_relaxed_edge_fail >= ROUTE_ONLY_NONCHOKE_RELAX_LIMIT" in helper_slice
+    assert "경로회피 완화중단" in helper_slice
+    assert "경로막힘 장기정체 우회" in helper_slice
+    assert helper_slice.index("if _stop_nonchoke_relax:") < helper_slice.index("elif _stop_chokepoint_retry:")
 
 
 def test_route_only_can_use_local_avoid_even_when_segment_has_starts():
