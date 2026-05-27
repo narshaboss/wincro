@@ -747,6 +747,35 @@ class MainWindow(ctk.CTk):
         )
         self._update_mini_auto_update_label()
 
+        self._mini_auto_shutdown_var = ctk.BooleanVar(
+            value=bool(getattr(self._config.system, "shutdown_enabled", True))
+        )
+        self._mini_auto_shutdown_indicator = ctk.CTkButton(
+            info_frame,
+            text="",
+            width=18,
+            height=18,
+            corner_radius=9,
+            fg_color=COLORS["error"],
+            hover_color=COLORS["danger_hover"],
+            border_width=0,
+            command=self._toggle_mini_auto_shutdown_from_indicator,
+        )
+        self._mini_auto_shutdown_indicator.pack(side="right", padx=(0, 4), pady=6)
+
+        self._mini_auto_shutdown_label = ctk.CTkLabel(
+            info_frame,
+            text="자동종료 확인 중",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        self._mini_auto_shutdown_label.pack(side="right", padx=(8, 10), pady=6)
+        self._mini_auto_shutdown_label.bind(
+            "<Button-1>",
+            lambda _event: self._toggle_mini_auto_shutdown_from_indicator(),
+        )
+        self._update_mini_auto_shutdown_label()
+
         # 컨트롤 프레임 (실행/중지 버튼)
         ctrl_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
         ctrl_frame.pack(fill="x", padx=10, pady=5)
@@ -878,10 +907,31 @@ class MainWindow(ctk.CTk):
                 hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
             )
 
+    def _update_mini_auto_shutdown_label(self):
+        """플레이 모드 자동종료 상태 라벨 갱신."""
+        if not hasattr(self, "_mini_auto_shutdown_label"):
+            return
+        enabled = bool(self._mini_auto_shutdown_var.get())
+        status_color = COLORS["success"] if enabled else COLORS["error"]
+        self._mini_auto_shutdown_label.configure(
+            text=f"자동종료 {'ON' if enabled else 'OFF'}",
+            text_color=status_color,
+        )
+        if hasattr(self, "_mini_auto_shutdown_indicator"):
+            self._mini_auto_shutdown_indicator.configure(
+                fg_color=status_color,
+                hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
+            )
+
     def _toggle_mini_auto_update_from_indicator(self):
         """원형 상태 표시 클릭 시 자동업데이트 ON/OFF를 전환한다."""
         self._mini_auto_update_var.set(not bool(self._mini_auto_update_var.get()))
         self._toggle_mini_auto_update()
+
+    def _toggle_mini_auto_shutdown_from_indicator(self):
+        """원형 상태 표시 클릭 시 자동종료 ON/OFF를 전환한다."""
+        self._mini_auto_shutdown_var.set(not bool(self._mini_auto_shutdown_var.get()))
+        self._toggle_mini_auto_shutdown()
 
     def _toggle_mini_auto_update(self):
         """플레이 모드에서 자동업데이트 설정을 즉시 저장한다."""
@@ -899,6 +949,35 @@ class MainWindow(ctk.CTk):
             self._update_mini_auto_update_label()
             self._mini_status.configure(text="⚠ 자동업데이트 저장 실패")
             logger.error(f"[미니플레이어] 자동업데이트 설정 저장 실패: {e}")
+
+    def _toggle_mini_auto_shutdown(self):
+        """플레이 모드에서 PC 자동종료 설정을 즉시 저장하고 예약 작업을 동기화한다."""
+        enabled = bool(self._mini_auto_shutdown_var.get())
+        previous = bool(getattr(self._config.system, "shutdown_enabled", True))
+        try:
+            self._config.system.shutdown_enabled = enabled
+            if not save_config():
+                raise RuntimeError("config save returned False")
+
+            from ..utils.shutdown_scheduler import sync_shutdown_task_from_config
+
+            result = sync_shutdown_task_from_config(self._config.system)
+            if not result.ok:
+                raise RuntimeError(f"{result.status} {result.detail}".strip())
+
+            self._update_mini_auto_shutdown_label()
+            self._mini_status.configure(text=f"자동종료 {'ON' if enabled else 'OFF'} 적용됨")
+            logger.info(
+                f"[미니플레이어] 자동종료 설정 변경: enabled={enabled} "
+                f"status={result.status} detail={result.detail}"
+            )
+        except Exception as e:
+            self._config.system.shutdown_enabled = previous
+            save_config()
+            self._mini_auto_shutdown_var.set(previous)
+            self._update_mini_auto_shutdown_label()
+            self._mini_status.configure(text="⚠ 자동종료 예약 실패")
+            logger.error(f"[미니플레이어] 자동종료 설정 저장/예약 실패: {e}")
 
     def _copy_mini_log_to_clipboard(self):
         """미니 플레이어 로그 전체를 클립보드에 복사한다."""

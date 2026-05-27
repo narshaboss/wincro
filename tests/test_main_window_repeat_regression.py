@@ -3,10 +3,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_WINDOW = ROOT / "src" / "ui" / "main_window.py"
+SETTINGS_VIEW = ROOT / "src" / "ui" / "settings_view.py"
 
 
 def _read_text() -> str:
     return MAIN_WINDOW.read_text(encoding="utf-8")
+
+
+def _read_settings_text() -> str:
+    return SETTINGS_VIEW.read_text(encoding="utf-8")
 
 
 def test_main_window_reloads_single_plan_before_repeat():
@@ -47,6 +52,27 @@ def test_play_mode_shows_version_and_auto_update_toggle():
     assert 'hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"]' in text
     assert "self._config.update.auto_check = enabled" in text
     assert "save_config()" in text
+
+
+def test_play_mode_shows_auto_shutdown_toggle_linked_to_editor_setting():
+    text = _read_text()
+    settings_text = _read_settings_text()
+    mini_slice = text[
+        text.index("def _create_mini_player_ui(self):"):
+        text.index("def _refresh_mini_plans_sync(self):")
+    ]
+
+    assert 'self._mini_auto_shutdown_var = ctk.BooleanVar(' in mini_slice
+    assert 'getattr(self._config.system, "shutdown_enabled", True)' in mini_slice
+    assert "self._mini_auto_shutdown_indicator = ctk.CTkButton" in mini_slice
+    assert "command=self._toggle_mini_auto_shutdown_from_indicator" in mini_slice
+    assert 'self._mini_auto_shutdown_label.bind(' in mini_slice
+    assert "def _update_mini_auto_shutdown_label(self):" in text
+    assert "def _toggle_mini_auto_shutdown_from_indicator(self):" in text
+    assert "def _toggle_mini_auto_shutdown(self):" in text
+    assert "self._config.system.shutdown_enabled = enabled" in text
+    assert "sync_shutdown_task_from_config(self._config.system)" in text
+    assert 'config.system.shutdown_enabled = bool(self._shutdown_enabled_var.get())' in settings_text
 
 
 def test_play_mode_log_copy_button_is_visible_and_copies_full_log():

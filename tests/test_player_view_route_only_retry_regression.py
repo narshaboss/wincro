@@ -71,6 +71,57 @@ def test_route_only_dir_avoid_uses_sustained_direction_blocks():
     assert "return _ef >= AVOID_EDGE_FAIL_THRESHOLD" in helper_slice
     assert "return _ef >= EDGE_FAIL_MARK_THRESHOLD" in helper_slice
     assert "if _should_use_route_dir_avoid(_da_d):" in text
+    assert "_is_route_only_retry_suppressed(cx, cy, _d, iteration)" in helper_slice
+
+
+def test_route_only_chokepoint_retry_suppression_survives_direction_none_recovery():
+    text = _player_view_text()
+
+    assert "route_only_retry_suppressed_until = {}" in text
+    assert "def _suppress_route_only_retry(" in text
+    assert "def _is_route_only_retry_suppressed(" in text
+
+    stop_slice = text[
+        text.index("def _stop_route_only_chokepoint_retry(_blocked_dir):"):
+        text.index("def _apply_route_only_relaxed_result(_route_result, _route_avoid):")
+    ]
+    build_slice = text[
+        text.index("def _build_avoid_set(_goal=None, include_dir_avoid=True):"):
+        text.index("def _should_preserve_route_dir_avoid():")
+    ]
+    normal_none_slice = text[
+        text.index("if none_dir_streak >= 3 and use_map and (mapping_on or _stable_shortest_route_mode_active()):"):
+        text.index("_t_iter_total = int((time.time() - _t_iter_start) * 1000)", text.index("if none_dir_streak >= 3 and use_map and (mapping_on or _stable_shortest_route_mode_active()):"))
+    ]
+
+    assert "_suppress_route_only_retry(cx, cy, _blocked_dir, iteration)" in stop_slice
+    assert "_is_route_only_retry_suppressed(cx, cy, _sd, iteration)" in build_slice
+    assert "route_only_retry_suppressed_until.clear()" not in normal_none_slice
+
+
+def test_route_only_stop_diagnostic_captures_suppressed_retry_state():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _remember_route_diagnostic(kind, x, y, tx=None, ty=None, **extra):"):
+        text.index("def _rebuild_path_index():")
+    ]
+    stop_slice = text[
+        text.index("def _stop_route_only_chokepoint_retry(_blocked_dir):"):
+        text.index("def _apply_route_only_relaxed_result(_route_result, _route_avoid):")
+    ]
+    fail_start = text.index("# A* 경로 실패")
+    fail_slice = text[
+        fail_start:
+        text.index("_fail_msg =", fail_start)
+    ]
+
+    assert '"suppressed_dirs"' in helper_slice
+    assert '"edge_fail"' in helper_slice
+    assert '"route_only_retry_suppressed"' in stop_slice
+    assert "failed_dir=_blocked_dir" in stop_slice
+    assert '"path_fail"' in fail_slice
+    assert "neighbors=[_d for _nx, _ny, _d in _nb] if _nb else []" in fail_slice
 
 
 def test_route_only_local_avoid_requires_goal_rejoin_path():

@@ -43,6 +43,29 @@ def test_stop_coordinate_log_keeps_primary_latest_and_ocr_snapshots():
     assert '_latest.get("source") != "ocr"' in coord_slice
 
 
+def test_stop_route_diagnostic_log_keeps_last_route_snapshot():
+    text = _read_text()
+    route_slice = text[
+        text.index("def _remember_route_diagnostic_snapshot(self, snapshot):"):
+        text.index("def _remember_runtime_issue(self, issue, detail=\"\", overwrite=False):")
+    ]
+    gm_start = text.index("class GameModeDialog")
+    stop_start = text.index("def _stop_execution(self):", gm_start)
+    stop_slice = text[
+        stop_start:
+        text.index("def _run_loop(self):", stop_start)
+    ]
+
+    assert "def _get_stop_route_diagnostic_log_lines(self, max_age_s=45.0):" in route_slice
+    assert "self._last_route_diagnostic_snapshot = _snapshot" in route_slice
+    assert "blocked_dirs" in route_slice
+    assert "suppressed_dirs" in route_slice
+    assert "edge_fail" in route_slice
+    assert "_route_diag_log_lines = self._get_stop_route_diagnostic_log_lines()" in stop_slice
+    assert "route_diag={_route_diag_text}" in stop_slice
+    assert "for _route_diag_line in _route_diag_log_lines:" in text
+
+
 def test_runtime_coordinates_are_captured_before_stop_event_is_set():
     text = _read_text()
     gm_start = text.index("class GameModeDialog")

@@ -3404,6 +3404,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._last_runtime_coord_snapshot = None
         self._last_ocr_coord_snapshot = None
         self._last_valid_runtime_coord_snapshot = None
+        self._last_route_diagnostic_snapshot = None
         self._synthetic_escape_guard_until = 0.0
         self._ui_call_queue = deque()
         self._ui_call_queue_lock = threading.Lock()
@@ -3607,6 +3608,103 @@ class GameModeDialog(ctk.CTkToplevel):
         if _ocr and _ocr_key not in _seen:
             _lines.append(f"📍 마지막 OCR좌표: {self._format_runtime_coordinate_snapshot(_ocr)}")
         return _lines
+
+    def _remember_route_diagnostic_snapshot(self, snapshot):
+        """중단 시 회피/경로 상태를 해석할 수 있도록 마지막 경로 스냅샷을 보관한다."""
+        try:
+            if not isinstance(snapshot, dict):
+                return
+            _snapshot = dict(snapshot)
+            _snapshot["time"] = time.time()
+            self._last_route_diagnostic_snapshot = _snapshot
+        except Exception as e:
+            logger.debug(f"[경로진단] 스냅샷 기록 실패: {e}")
+
+    def _format_route_diagnostic_value(self, value, max_items=8):
+        try:
+            if value is None:
+                return "-"
+            if isinstance(value, bool):
+                return "Y" if value else "N"
+            if isinstance(value, tuple) and len(value) == 2:
+                return f"({value[0]},{value[1]})"
+            if isinstance(value, (set, list, tuple)):
+                _items = list(value)
+                if isinstance(value, set):
+                    _items = sorted(_items, key=lambda item: str(item))
+                _suffix = ""
+                if len(_items) > max_items:
+                    _suffix = f",+{len(_items) - max_items}"
+                    _items = _items[:max_items]
+                return "[" + ",".join(self._format_route_diagnostic_value(_item, max_items=max_items) for _item in _items) + _suffix + "]"
+            return str(value)
+        except Exception:
+            return str(value)
+
+    def _format_route_diagnostic_snapshot(self, snapshot, include_age=True):
+        if not snapshot:
+            return "없음"
+        try:
+            _parts = []
+            _ordered_keys = [
+                "kind",
+                "pos",
+                "target_idx",
+                "target",
+                "iteration",
+                "route_only",
+                "mapping_guard",
+                "local_phase",
+                "last_dir",
+                "none_streak",
+                "stuck",
+                "total_stuck",
+                "blocked_dirs",
+                "suppressed_dirs",
+                "edge_fail",
+                "avoid",
+                "neighbors",
+                "path",
+                "start",
+                "passable",
+                "blocked",
+                "soft",
+                "map_blocked",
+                "detail",
+            ]
+            for _key in _ordered_keys:
+                if _key in snapshot and snapshot.get(_key) not in (None, "", [], (), set()):
+                    _parts.append(f"{_key}={self._format_route_diagnostic_value(snapshot.get(_key))}")
+            _extra_keys = sorted(
+                _key for _key in snapshot.keys()
+                if _key not in set(_ordered_keys + ["time"])
+            )
+            for _key in _extra_keys:
+                _val = snapshot.get(_key)
+                if _val not in (None, "", [], (), set()):
+                    _parts.append(f"{_key}={self._format_route_diagnostic_value(_val)}")
+            if include_age and snapshot.get("time"):
+                try:
+                    _age = max(0.0, time.time() - float(snapshot.get("time")))
+                    _parts.append(f"{_age:.1f}s전")
+                except Exception:
+                    pass
+            return " ".join(_parts) if _parts else str(snapshot)
+        except Exception:
+            return str(snapshot)
+
+    def _get_stop_route_diagnostic_log_lines(self, max_age_s=45.0):
+        """중단 직전 경로/회피 상태를 한 줄로 요약한다."""
+        _snapshot = getattr(self, "_last_route_diagnostic_snapshot", None)
+        if not _snapshot:
+            return []
+        try:
+            _age = time.time() - float(_snapshot.get("time", 0.0) or 0.0)
+            if _age > max(1.0, float(max_age_s or 0.0)):
+                return []
+        except Exception:
+            pass
+        return [f"🧭 경로진단: {self._format_route_diagnostic_snapshot(_snapshot)}"]
 
     def _remember_runtime_issue(self, issue, detail="", overwrite=False):
         """실행 중 발견한 최근 이상 징후를 기록한다."""
@@ -4133,6 +4231,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._recent_runtime_issue_detail = ""
         self._recent_runtime_issue_at = 0.0
         self._recent_runtime_issue_hits = 0
+        self._last_route_diagnostic_snapshot = None
         self._stop_event.clear()
         self._key_press_count = 0
         # 일반 전체 테스트에서는 맵 저장/기록 안 함
@@ -4182,11 +4281,17 @@ class GameModeDialog(ctk.CTkToplevel):
                 )
             else:
                 self._mark_stop_reason("manual_or_external_stop", "_stop_execution entered without prior reason", overwrite=True)
+        _route_diag_log_lines = self._get_stop_route_diagnostic_log_lines()
+        _route_diag_text = (
+            self._format_route_diagnostic_snapshot(getattr(self, "_last_route_diagnostic_snapshot", None))
+            if _route_diag_log_lines else "-"
+        )
         logger.info(
             f"[중단추적] stop_execution enter reason={self._stop_reason or 'unknown'} "
             f"reason_desc={self._describe_stop_reason(self._stop_reason or 'unknown')} "
             f"detail={self._stop_detail or '-'} key_count={self._key_press_count} "
-            f"coord={self._format_runtime_coordinate_snapshot(getattr(self, '_last_valid_runtime_coord_snapshot', None) or getattr(self, '_last_runtime_coord_snapshot', None))}"
+            f"coord={self._format_runtime_coordinate_snapshot(getattr(self, '_last_valid_runtime_coord_snapshot', None) or getattr(self, '_last_runtime_coord_snapshot', None))} "
+            f"route_diag={_route_diag_text}"
         )
         _stop_coord_log_lines = self._get_stop_coordinate_log_lines()
         self._stop_event.set()
@@ -4203,6 +4308,8 @@ class GameModeDialog(ctk.CTkToplevel):
             self._append_log(f"🧭 중단사유: {self._format_stop_reason_for_log()}", force=True)
             if getattr(self, "_stop_detail", ""):
                 self._append_log(f"🧭 중단상세: {self._stop_detail}", force=True)
+            for _route_diag_line in _route_diag_log_lines:
+                self._append_log(_route_diag_line, force=True)
             for _coord_line in _stop_coord_log_lines:
                 self._append_log(_coord_line, force=True)
             # 맵핑 카드 버튼 복원
@@ -4670,8 +4777,10 @@ class GameModeDialog(ctk.CTkToplevel):
         ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD = 6  # 일반 특화모드 유일통로 첫칸 반복실패 시 재시도 중단
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
         ROUTE_ONLY_NONCHOKE_RELAX_LIMIT = EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD
+        ROUTE_ONLY_RETRY_SUPPRESS_TTL = 600
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
         runtime_blocked_edge_guard_until = {}  # 방금 막은 엣지를 stale-edge 복구가 즉시 해제하지 못하게 보호
+        route_only_retry_suppressed_until = {}  # route-only 첫칸 재시도 중단 간선은 방향없음 복구로 지우지 않는다
         FRESH_BLOCKED_EDGE_GUARD_TTL = 36
         _portal_protected = set()      # 포탈 좌표 (절대 unblock 금지)
         _is_backtrack_dir = False      # find_path_direction이 백트래킹으로 반환했는지
@@ -4852,6 +4961,9 @@ class GameModeDialog(ctk.CTkToplevel):
             for _k, _exp in list(runtime_blocked_edge_guard_until.items()):
                 if now_iter >= _exp:
                     runtime_blocked_edge_guard_until.pop(_k, None)
+            for _k, _exp in list(route_only_retry_suppressed_until.items()):
+                if now_iter >= _exp:
+                    route_only_retry_suppressed_until.pop(_k, None)
 
         def _mark_fresh_blocked_edge(x, y, d, now_iter):
             runtime_blocked_edge_guard_until[_dir_key(x, y, d)] = int(now_iter) + FRESH_BLOCKED_EDGE_GUARD_TTL
@@ -4881,11 +4993,119 @@ class GameModeDialog(ctk.CTkToplevel):
                 return False
             return True
 
+        def _is_route_only_retry_suppressed(x, y, d, now_iter):
+            _exp = route_only_retry_suppressed_until.get(_dir_key(x, y, d))
+            if _exp is None:
+                return False
+            if now_iter >= _exp:
+                route_only_retry_suppressed_until.pop(_dir_key(x, y, d), None)
+                return False
+            return True
+
+        def _suppress_route_only_retry(x, y, d, now_iter, ttl=None):
+            if ttl is None:
+                ttl = ROUTE_ONLY_RETRY_SUPPRESS_TTL
+            route_only_retry_suppressed_until[_dir_key(x, y, d)] = int(now_iter) + max(1, int(ttl))
+
+        def _clear_route_only_retry_suppressed_edge(x, y, d):
+            route_only_retry_suppressed_until.pop(_dir_key(x, y, d), None)
+
         def _register_dir_block(x, y, d, now_iter, ttl=None):
             if ttl is None:
                 ttl = DIR_BLOCK_TTL_MIN
             ttl = max(DIR_BLOCK_TTL_MIN, min(DIR_BLOCK_TTL_MAX, int(ttl)))
             blocked_dirs[_dir_key(x, y, d)] = int(now_iter) + ttl
+
+        def _collect_route_direction_state(x, y, now_iter):
+            """현재 칸 기준으로 경로 차단/억제 상태를 중단 로그용으로 압축한다."""
+            _blocked = []
+            _suppressed = []
+            _edge_fail = []
+            for _d in DIRECTIONS_4.keys():
+                _key = _dir_key(x, y, _d)
+                _exp = blocked_dirs.get(_key)
+                if _exp is not None:
+                    try:
+                        _left = int(_exp) - int(now_iter)
+                        if _left > 0:
+                            _blocked.append(f"{_d}:{_left}")
+                    except Exception:
+                        _blocked.append(str(_d))
+                _suppress_exp = route_only_retry_suppressed_until.get(_key)
+                if _suppress_exp is not None:
+                    try:
+                        _left = int(_suppress_exp) - int(now_iter)
+                        if _left > 0:
+                            _suppressed.append(f"{_d}:{_left}")
+                    except Exception:
+                        _suppressed.append(str(_d))
+                _fail_count = edge_fail_counts.get(_key, 0)
+                if _fail_count:
+                    _edge_fail.append(f"{_d}:{_fail_count}")
+            return _blocked, _suppressed, _edge_fail
+
+        def _remember_route_diagnostic(kind, x, y, tx=None, ty=None, **extra):
+            """마지막 경로 판단 상태를 저장해 max_stagnation 중단 원인을 재구성한다."""
+            try:
+                _now_iter = int(iteration)
+            except Exception:
+                _now_iter = 0
+            try:
+                _x, _y = int(x), int(y)
+            except Exception:
+                _x, _y = x, y
+            _blocked, _suppressed, _edge_fail = _collect_route_direction_state(_x, _y, _now_iter)
+            _path_len = 0
+            try:
+                _path_len = len(current_path or [])
+            except Exception:
+                pass
+            try:
+                _route_only_active = bool(_stable_shortest_route_mode_active())
+            except Exception:
+                _route_only_active = False
+            try:
+                _mapping_guard = bool(_mapping_guard_active())
+            except Exception:
+                _mapping_guard = False
+            try:
+                _local_phase_active = bool(_local_explore_phase)
+            except Exception:
+                _local_phase_active = False
+            _snapshot = {
+                "kind": str(kind or "unknown"),
+                "pos": (_x, _y),
+                "iteration": _now_iter,
+                "target_idx": target_idx,
+                "route_only": _route_only_active,
+                "mapping_guard": _mapping_guard,
+                "local_phase": _local_phase_active,
+                "last_dir": last_dir,
+                "none_streak": none_dir_streak,
+                "stuck": stuck_count,
+                "total_stuck": total_stuck_count,
+                "blocked_dirs": _blocked,
+                "suppressed_dirs": _suppressed,
+                "edge_fail": _edge_fail,
+                "path": f"{path_index}/{_path_len}",
+            }
+            if tx is not None and ty is not None:
+                try:
+                    _snapshot["target"] = (int(tx), int(ty))
+                except Exception:
+                    _snapshot["target"] = (tx, ty)
+            if use_map and getattr(self, "_game_map", None) is not None:
+                try:
+                    _snapshot["passable"] = len(getattr(self._game_map, "passable", []) or [])
+                    _snapshot["blocked"] = len(getattr(self._game_map, "blocked", []) or [])
+                    _snapshot["soft"] = len(getattr(self._game_map, "soft_blocked", {}) or {})
+                    _snapshot["map_blocked"] = bool(self._game_map.is_blocked(_x, _y))
+                except Exception:
+                    pass
+            for _key, _value in extra.items():
+                if _value is not None:
+                    _snapshot[_key] = _value
+            self._remember_route_diagnostic_snapshot(_snapshot)
 
         def _rebuild_path_index():
             """경로 변경 시 역매핑 재구축 (중복 좌표는 첫 등장만 유지)"""
@@ -5433,6 +5653,7 @@ class GameModeDialog(ctk.CTkToplevel):
             frontier_cooldown.clear()
             explored_from = {}
             edge_fail_counts.clear()
+            route_only_retry_suppressed_until.clear()
             unknown_path_fails = 0
             boss_no_frontier_count = 0
             _clear_boss_noise_cooldown()
@@ -5614,6 +5835,7 @@ class GameModeDialog(ctk.CTkToplevel):
             explored_from = {}
             edge_fail_counts.clear()
             blocked_dirs.clear()
+            route_only_retry_suppressed_until.clear()
             _clear_runtime_blocked_edge_guards()
             frontier_blocked_until.clear()
             _temporary_goal_detour = None
@@ -6139,7 +6361,10 @@ class GameModeDialog(ctk.CTkToplevel):
                 return bool(_res.found and _res.directions)
 
             for _cand_dir in _side_dirs:
-                if _is_dir_blocked(_cx, _cy, _cand_dir, iteration):
+                if (
+                    _is_dir_blocked(_cx, _cy, _cand_dir, iteration) or
+                    _is_route_only_retry_suppressed(_cx, _cy, _cand_dir, iteration)
+                ):
                     continue
                 _sdx, _sdy = DIRECTIONS_4.get(_cand_dir, (0, 0))
                 _nx, _ny = _cx + _sdx, _cy + _sdy
@@ -6183,7 +6408,10 @@ class GameModeDialog(ctk.CTkToplevel):
             _bdx, _bdy = DIRECTIONS_4.get(_blocked_dir, (0, 0))
             _best = None
             for _cand_dir in _side_dirs:
-                if _is_dir_blocked(_cx, _cy, _cand_dir, iteration):
+                if (
+                    _is_dir_blocked(_cx, _cy, _cand_dir, iteration) or
+                    _is_route_only_retry_suppressed(_cx, _cy, _cand_dir, iteration)
+                ):
                     continue
                 _sdx, _sdy = DIRECTIONS_4.get(_cand_dir, (0, 0))
                 _nx, _ny = _cx + _sdx, _cy + _sdy
@@ -6330,6 +6558,7 @@ class GameModeDialog(ctk.CTkToplevel):
             path_pos_index = {}
             explored_from = {}
             edge_fail_counts.clear()
+            route_only_retry_suppressed_until.clear()
             unknown_path_fails = 0
             last_dir = None
             stuck_count = 0
@@ -6496,6 +6725,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 맵핑 모드에서는 약한 방향차단(실패 누적 임계치 미만)을 경로 우선으로 무시해
                 불필요한 지그재그/백트래킹을 줄인다.
                 """
+                if _route_only_mode and _is_route_only_retry_suppressed(cx, cy, _d, iteration):
+                    return False
                 if not _is_dir_blocked(cx, cy, _d, iteration):
                     return True
                 if _route_only_mode and _route_relaxed_dir_override == _d:
@@ -6573,6 +6804,10 @@ class GameModeDialog(ctk.CTkToplevel):
 
             def _build_avoid_set(_goal=None, include_dir_avoid=True):
                 _avoid = set(_dir_avoid) if include_dir_avoid else set()
+                if _route_only_mode:
+                    for _sd, (_sdx, _sdy) in DIRECTIONS_4.items():
+                        if _is_route_only_retry_suppressed(cx, cy, _sd, iteration):
+                            _avoid.add((cx + _sdx, cy + _sdy))
                 for _ppx, _ppy in _portal_protected:
                     if _is_portal_step_forbidden(_ppx, _ppy, _goal, current_pos):
                         _avoid.add((_ppx, _ppy))
@@ -6591,13 +6826,18 @@ class GameModeDialog(ctk.CTkToplevel):
                 if not _route_only_mode:
                     return False
                 for _cand_dir, (_cand_dx, _cand_dy) in DIRECTIONS_4.items():
-                    if not _is_dir_blocked(cx, cy, _cand_dir, iteration):
+                    if not (
+                        _is_dir_blocked(cx, cy, _cand_dir, iteration) or
+                        _is_route_only_retry_suppressed(cx, cy, _cand_dir, iteration)
+                    ):
                         continue
                     if _is_route_only_failed_chokepoint(cx, cy, _cand_dir, target_pos):
                         return True
                 return False
 
             def _should_use_route_dir_avoid(_d):
+                if _route_only_mode and _is_route_only_retry_suppressed(cx, cy, _d, iteration):
+                    return True
                 if not _is_dir_blocked(cx, cy, _d, iteration):
                     return False
                 _ef = edge_fail_counts.get(_dir_key(cx, cy, _d), 0)
@@ -6609,12 +6849,22 @@ class GameModeDialog(ctk.CTkToplevel):
                 nonlocal current_path, path_index, path_pos_index, _route_relaxed_dir_override
 
                 _register_dir_block(cx, cy, _blocked_dir, iteration, ttl=12)
+                _suppress_route_only_retry(cx, cy, _blocked_dir, iteration)
                 explored_from.setdefault(current_pos, set()).add(_blocked_dir)
                 current_path = []
                 path_index = 0
                 path_pos_index = {}
                 pathfinder.invalidate_path()
                 _route_relaxed_dir_override = None
+                _remember_route_diagnostic(
+                    "route_only_retry_suppressed",
+                    cx,
+                    cy,
+                    tx,
+                    ty,
+                    failed_dir=_blocked_dir,
+                    detail="chokepoint first-step retry stopped",
+                )
                 if _ui_update_ok and iteration % 10 == 0:
                     self.after(0, lambda x=cx, y=cy, d2=_blocked_dir:
                         self._append_log(f"⚠️ 유일통로 반복실패 → 첫칸 재시도 중단: ({x},{y}) {d2}"))
@@ -6893,6 +7143,17 @@ class GameModeDialog(ctk.CTkToplevel):
                         _nb = self._game_map.get_walkable_neighbors(cx, cy, allow_unknown=True)
                         _nb_str = ",".join(f"{d}" for _nx,_ny,d in _nb) if _nb else "없음"
                         _avoid_str = str(_route_avoid) if _route_avoid else "없음"
+                        _remember_route_diagnostic(
+                            "path_fail",
+                            cx,
+                            cy,
+                            tx,
+                            ty,
+                            start=_sp,
+                            neighbors=[_d for _nx, _ny, _d in _nb] if _nb else [],
+                            avoid=list(_route_avoid) if _route_avoid else [],
+                            detail="route-only A* failed",
+                        )
                         _fail_msg = f"⚠️ 최단경로 실패 ({cx},{cy})→({tx},{ty}) sp={_sp} nb=[{_nb_str}] avoid={_avoid_str} p={len(self._game_map.passable)} blk={self._game_map.is_blocked(cx,cy)}"
                         logger.info(f"[특화모드] {_fail_msg}")
                         if _ui_update_ok:
@@ -7258,7 +7519,12 @@ class GameModeDialog(ctk.CTkToplevel):
             candidates = []
             for d, (ddx, ddy) in DIRECTIONS_4.items():
                 nx, ny = cx + ddx, cy + ddy
-                if d not in tried and not self._game_map.is_blocked(nx, ny) and not _is_dir_blocked(cx, cy, d, iteration):
+                if (
+                    d not in tried and
+                    not self._game_map.is_blocked(nx, ny) and
+                    not _is_dir_blocked(cx, cy, d, iteration) and
+                    not _is_route_only_retry_suppressed(cx, cy, d, iteration)
+                ):
                     if _start_pos is not None and (nx, ny) == _start_pos:
                         continue  # 출발지 회피
                     if _is_portal_step_forbidden(nx, ny, target_pos, current_pos):
@@ -7294,7 +7560,10 @@ class GameModeDialog(ctk.CTkToplevel):
             backtrack_candidates = []
             for d, (ddx, ddy) in DIRECTIONS_4.items():
                 nx, ny = cx + ddx, cy + ddy
-                if _is_dir_blocked(cx, cy, d, iteration):
+                if (
+                    _is_dir_blocked(cx, cy, d, iteration) or
+                    _is_route_only_retry_suppressed(cx, cy, d, iteration)
+                ):
                     continue
                 if _start_pos is not None and (nx, ny) == _start_pos:
                     continue  # 출발지 회피
@@ -7342,10 +7611,17 @@ class GameModeDialog(ctk.CTkToplevel):
             # 직전 실패 방향 회피
             for offset in range(1, 5):
                 d = dirs[(iteration + offset) % 4]
-                if d != last_dir and not _is_dir_blocked(cx, cy, d, iteration):
+                if (
+                    d != last_dir and
+                    not _is_dir_blocked(cx, cy, d, iteration) and
+                    not _is_route_only_retry_suppressed(cx, cy, d, iteration)
+                ):
                     return d
             _fallback = dirs[iteration % 4]
-            if not _is_dir_blocked(cx, cy, _fallback, iteration):
+            if (
+                not _is_dir_blocked(cx, cy, _fallback, iteration) and
+                not _is_route_only_retry_suppressed(cx, cy, _fallback, iteration)
+            ):
                 return _fallback
 
             # 경유지 이동 단계: 모든 방향이 "차단"으로만 막힌 경우
@@ -7356,6 +7632,8 @@ class GameModeDialog(ctk.CTkToplevel):
                 _relief = []
                 for d, (ddx, ddy) in DIRECTIONS_4.items():
                     nx, ny = cx + ddx, cy + ddy
+                    if _is_route_only_retry_suppressed(cx, cy, d, iteration):
+                        continue
                     if _start_pos is not None and (nx, ny) == _start_pos:
                         continue
                     if _is_portal_step_forbidden(nx, ny, target_pos, current_pos):
@@ -7766,6 +8044,7 @@ class GameModeDialog(ctk.CTkToplevel):
             path_pos_index = {}
             explored_from = {}
             edge_fail_counts.clear()
+            route_only_retry_suppressed_until.clear()
             frontier_cooldown.clear()
             explore_unreachable.clear()
             unknown_path_fails = 0
@@ -9063,6 +9342,7 @@ class GameModeDialog(ctk.CTkToplevel):
                             if last_dir and prev_x is not None:
                                 self._game_map.clear_blocked_edge(prev_x, prev_y, last_dir)
                                 _clear_fresh_blocked_edge(prev_x, prev_y, last_dir)
+                                _clear_route_only_retry_suppressed_edge(prev_x, prev_y, last_dir)
                                 blocked_dirs.pop(_dir_key(prev_x, prev_y, last_dir), None)
                                 edge_fail_counts.pop(_dir_key(prev_x, prev_y, last_dir), None)
                             # 왔던 방향의 반대를 explored_from에 기록 (뒤로가기는 마지막에 시도)
@@ -9119,6 +9399,18 @@ class GameModeDialog(ctk.CTkToplevel):
                             _edge_key = _dir_key(prev_x, prev_y, last_dir)
                             _edge_fail = min(EDGE_FAIL_MAX, edge_fail_counts.get(_edge_key, 0) + 1)
                             edge_fail_counts[_edge_key] = _edge_fail
+                            _move_fail_dx, _move_fail_dy = DIRECTIONS_4.get(last_dir, (0, 0))
+                            _remember_route_diagnostic(
+                                "move_fail",
+                                prev_x,
+                                prev_y,
+                                target_x,
+                                target_y,
+                                failed_dir=last_dir,
+                                failed_to=(prev_x + _move_fail_dx, prev_y + _move_fail_dy),
+                                failed_edge_count=_edge_fail,
+                                detail="movement key produced no coordinate change",
+                            )
                             if _ui_update_ok and _edge_fail >= AVOID_EDGE_FAIL_THRESHOLD and explore_target is not None:
                                 _fdx, _fdy = DIRECTIONS_4.get(last_dir, (0, 0))
                                 _fx, _fy = prev_x + _fdx, prev_y + _fdy
@@ -11939,6 +12231,20 @@ class GameModeDialog(ctk.CTkToplevel):
                         none_dir_streak += 1
                         stuck_count += 1
                         if stuck_count >= 10 and use_map and (mapping_on or _stable_shortest_route_mode_active()):
+                            _clear_candidates = [
+                                _d for _d in DIRECTIONS_4.keys()
+                                if blocked_dirs.get(_dir_key(current_x, current_y, _d)) is not None
+                            ]
+                            _remember_route_diagnostic(
+                                "boss_direction_none_recovery",
+                                current_x,
+                                current_y,
+                                _move_target[0] if _move_target else None,
+                                _move_target[1] if _move_target else None,
+                                clear_candidates=_clear_candidates,
+                                boss_mode=boss_mode,
+                                detail="boss direction none recovery before local reset",
+                            )
                             _cleared = 0
                             for _d in DIRECTIONS_4.keys():
                                 if blocked_dirs.pop(_dir_key(current_x, current_y, _d), None) is not None:
@@ -12050,6 +12356,19 @@ class GameModeDialog(ctk.CTkToplevel):
                                 overwrite=False,
                             )
                     if none_dir_streak >= 3 and use_map and (mapping_on or _stable_shortest_route_mode_active()):
+                        _clear_candidates = [
+                            _d for _d in DIRECTIONS_4.keys()
+                            if blocked_dirs.get(_dir_key(current_x, current_y, _d)) is not None
+                        ]
+                        _remember_route_diagnostic(
+                            "direction_none_recovery",
+                            current_x,
+                            current_y,
+                            target_x,
+                            target_y,
+                            clear_candidates=_clear_candidates,
+                            detail="direction none recovery before local reset",
+                        )
                         _cleared = 0
                         for _d in DIRECTIONS_4.keys():
                             if blocked_dirs.pop(_dir_key(current_x, current_y, _d), None) is not None:
