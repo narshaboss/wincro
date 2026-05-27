@@ -28,6 +28,7 @@ from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
 from ..player.rule_executor import RuleExecutor
+from .capture_cleanup import remove_auto_capture_source_after_crop
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
 
 PLANS_DIR = DATA_DIR / "plans"
@@ -2234,6 +2235,7 @@ class MainWindow(ctk.CTk):
 
         def on_crop_complete(path: str):
             crop_saved["value"] = True
+            remove_auto_capture_source_after_crop(filepath, path)
             logger.info(f"크롭 완료: {path}")
             self._show_capture_notification(path)
 

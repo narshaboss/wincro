@@ -1173,7 +1173,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 new_size = os.path.getsize(str(new_path)) if new_path.exists() else 0
                 logger.info(f"[크롭] 새 파일 저장: {new_path}")
                 logger.info(f"[크롭] 마스크 저장: {mask_path}")
-                logger.info(f"[크롭] 원본 유지: {self._image_path}")
+                logger.info(f"[크롭] 원본 후처리 대기: {self._image_path}")
                 logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}, 파일크기: {new_size} bytes")
 
                 if self._on_crop:
