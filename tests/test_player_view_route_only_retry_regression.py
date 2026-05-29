@@ -583,6 +583,38 @@ def test_route_only_relaxed_path_can_use_its_first_blocked_direction():
     assert text.index("_route_relaxed_dir_override = None") < text.index("def _can_take_path_dir(_d):")
 
 
+def test_route_only_stagnation_guard_defers_pending_chokepoint_move_failure():
+    text = _player_view_text()
+
+    guard_slice = text[
+        text.index("if _guard_stagnation_iterations > max_stagnation_iterations:"):
+        text.index("if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):")
+    ]
+
+    assert "_pending_route_fail_count = edge_fail_counts.get(_pending_edge_key, 0) + 1" in guard_slice
+    assert "_pending_route_fail_count <= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD" in guard_slice
+    assert '"stagnation_guard_deferred"' in guard_slice
+    assert "_guard_stagnation_iterations = max(0, max_stagnation_iterations - 1)" in guard_slice
+    assert "if not _defer_stagnation_stop:" in guard_slice
+    assert "break" in guard_slice
+
+
+def test_route_only_stagnation_guard_waits_on_recent_dynamic_gate_failure():
+    text = _player_view_text()
+
+    guard_slice = text[
+        text.index("if _guard_stagnation_iterations > max_stagnation_iterations:"):
+        text.index("if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):")
+    ]
+
+    assert "_recent_dynamic_gate_snapshot = getattr(self, \"_last_route_diagnostic_snapshot\", None)" in guard_slice
+    assert '_diag_kind in {"move_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"}' in guard_slice
+    assert "_diag_edge_count >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD" in guard_slice
+    assert "_guard_stagnation_iterations = max(0, max_stagnation_iterations - 25)" in guard_slice
+    assert '"dynamic_chokepoint_wait"' in guard_slice
+    assert "유일통로 장애물 대기" in guard_slice
+
+
 def test_route_only_can_force_runtime_reload_when_locked_no_start_segment_current_pos_is_unknown():
     text = _player_view_text()
 

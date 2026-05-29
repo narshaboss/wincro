@@ -8295,13 +8295,93 @@ class GameModeDialog(ctk.CTkToplevel):
                     break
 
                 if _guard_stagnation_iterations > max_stagnation_iterations:
-                    _guard_stop_reason = "max_stagnation_reached"
-                    _guard_stop_detail = (
-                        f"target_idx={target_idx} stagnation_iteration={_guard_stagnation_iterations - 1}/"
-                        f"{max_stagnation_iterations} target_total_iteration={_guard_target_total_iterations - 1} "
-                        f"best_distance={_guard_best_distance} current_distance={_current_target_distance}"
-                    )
-                    break
+                    _defer_stagnation_stop = False
+                    if (
+                        _stable_shortest_route_mode_active() and
+                        prev_x is not None and prev_y is not None and
+                        last_dir and
+                        current_x == prev_x and current_y == prev_y
+                    ):
+                        _pending_edge_key = _dir_key(prev_x, prev_y, last_dir)
+                        _pending_route_fail_count = edge_fail_counts.get(_pending_edge_key, 0) + 1
+                        if AVOID_EDGE_FAIL_THRESHOLD <= _pending_route_fail_count <= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD:
+                            # Process the just-issued movement failure first. Otherwise the global
+                            # stagnation guard can stop one tick before route-only chokepoint escape.
+                            _defer_stagnation_stop = True
+                            _guard_stagnation_iterations = max(0, max_stagnation_iterations - 1)
+                            _pdx, _pdy = DIRECTIONS_4.get(last_dir, (0, 0))
+                            _remember_route_diagnostic(
+                                "stagnation_guard_deferred",
+                                prev_x,
+                                prev_y,
+                                target_x,
+                                target_y,
+                                failed_dir=last_dir,
+                                failed_to=(prev_x + _pdx, prev_y + _pdy),
+                                pending_edge_count=_pending_route_fail_count,
+                                detail="deferred max_stagnation until route-only move failure is processed",
+                            )
+                            if _ui_update_ok:
+                                self._schedule_ui_log(
+                                    f"🧭 장기정체 유예: ({prev_x},{prev_y}) {last_dir} 실패처리 우선 ({_pending_route_fail_count}/{ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD})",
+                                    dedupe_key=f"route-stagnation-defer:{target_idx}:{prev_x}:{prev_y}:{last_dir}",
+                                    dedupe_window=0.8,
+                                )
+                    if not _defer_stagnation_stop:
+                        _recent_dynamic_gate_snapshot = getattr(self, "_last_route_diagnostic_snapshot", None)
+                        if _stable_shortest_route_mode_active() and isinstance(_recent_dynamic_gate_snapshot, dict):
+                            try:
+                                _diag_age = time.time() - float(_recent_dynamic_gate_snapshot.get("time", 0.0) or 0.0)
+                                _diag_target_idx = int(_recent_dynamic_gate_snapshot.get("target_idx", -1))
+                                _diag_target = tuple(_recent_dynamic_gate_snapshot.get("target") or ())
+                                _diag_edge_count = int(
+                                    _recent_dynamic_gate_snapshot.get("failed_edge_count")
+                                    or _recent_dynamic_gate_snapshot.get("pending_edge_count")
+                                    or 0
+                                )
+                                _diag_failed_to = _recent_dynamic_gate_snapshot.get("failed_to")
+                                _diag_kind = str(_recent_dynamic_gate_snapshot.get("kind") or "")
+                                _diag_route_only = bool(_recent_dynamic_gate_snapshot.get("route_only"))
+                                if (
+                                    _diag_route_only and
+                                    _diag_kind in {"move_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"} and
+                                    _diag_age <= 3.0 and
+                                    _diag_target_idx == target_idx and
+                                    _diag_target == (int(target_x), int(target_y)) and
+                                    _diag_edge_count >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD and
+                                    _diag_failed_to
+                                ):
+                                    # The same gate tile is already proven dynamically blocked.
+                                    # Do not let the global stagnation guard stop before the
+                                    # route-only wait/retry loop gets another chance to recover.
+                                    _defer_stagnation_stop = True
+                                    _guard_stagnation_iterations = max(0, max_stagnation_iterations - 25)
+                                    _remember_route_diagnostic(
+                                        "dynamic_chokepoint_wait",
+                                        current_x,
+                                        current_y,
+                                        target_x,
+                                        target_y,
+                                        failed_to=_diag_failed_to,
+                                        failed_edge_count=_diag_edge_count,
+                                        detail="deferred max_stagnation while waiting for dynamic chokepoint tile to clear",
+                                    )
+                                    if _ui_update_ok:
+                                        self._schedule_ui_log(
+                                            f"🧭 유일통로 장애물 대기: ({current_x},{current_y}) target=({target_x},{target_y}) blocked={_diag_failed_to} 실패:{_diag_edge_count}",
+                                            dedupe_key=f"dynamic-chokepoint-wait:{target_idx}:{_diag_failed_to}",
+                                            dedupe_window=1.2,
+                                        )
+                            except Exception:
+                                pass
+                    if not _defer_stagnation_stop:
+                        _guard_stop_reason = "max_stagnation_reached"
+                        _guard_stop_detail = (
+                            f"target_idx={target_idx} stagnation_iteration={_guard_stagnation_iterations - 1}/"
+                            f"{max_stagnation_iterations} target_total_iteration={_guard_target_total_iterations - 1} "
+                            f"best_distance={_guard_best_distance} current_distance={_current_target_distance}"
+                        )
+                        break
 
                 if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):
                     self._stop_event.wait(0.05)
