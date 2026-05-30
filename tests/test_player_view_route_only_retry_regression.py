@@ -316,6 +316,41 @@ def test_route_only_chokepoint_detour_forces_forward_when_astar_cannot_rejoin():
     assert "return _forced_detour_dir" in route_slice
 
 
+def test_route_only_chokepoint_detour_prefers_side_forward_over_blocked_reentry():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _route_result_reenters_detour_blocked("):
+        text.index("def _get_route_chokepoint_detour_forced_dir(")
+    ]
+    route_start = text.index("_route_result, _route_avoid = _apply_route_only_relaxed_result(")
+    route_end = text.index("if _route_result.found and _route_result.directions:", route_start)
+    route_slice = text[route_start:route_end]
+    route_order_slice = text[route_start:route_end + len("if _route_result.found and _route_result.directions:")]
+
+    assert "def _route_result_reenters_detour_blocked(" in text
+    assert "_next == _blocked" in helper_slice
+    assert "_next == _origin" in helper_slice
+    assert "_route_result_reenters_detour_blocked(" in route_slice
+    assert "_forced_detour_dir = _get_route_chokepoint_detour_forced_dir(cx, cy, target_pos)" in route_slice
+    assert route_order_slice.index("_route_result_reenters_detour_blocked(") < route_order_slice.index("if _route_result.found and _route_result.directions:")
+
+
+def test_route_only_chokepoint_detour_can_probe_stale_blocked_side_forward_tile():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _get_route_chokepoint_detour_forced_dir("):
+        text.index("def _clear_step_watchdog():")
+    ]
+
+    assert "_allow_blocked_probe = False" in helper_slice
+    assert "_next not in {_origin, _blocked}" in helper_slice
+    assert "self._game_map.is_blocked(_next[0], _next[1])" in helper_slice
+    assert "self._game_map.is_soft_blocked(_next[0], _next[1])" in helper_slice
+    assert 'label=_probe_label' in helper_slice
+
+
 def test_jolbon_side_detour_rejoins_when_blocked_gate_is_relaxed():
     map_path = next((ROOT / "data" / "maps").glob("9b87b454_15_*3*_map.json"))
     game_map = GameMap(name="jolbon-route-detour")

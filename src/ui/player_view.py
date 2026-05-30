@@ -6119,6 +6119,20 @@ class GameModeDialog(ctk.CTkToplevel):
                 return False
             return self._game_map.is_plausible_local_coord(_x, _y)
 
+        def _route_result_reenters_detour_blocked(_route_result, _detour, _current_pos):
+            if not _detour or not (_route_result is not None and _route_result.found and _route_result.directions):
+                return False
+            try:
+                _current = tuple(_current_pos)
+                _blocked = tuple(_detour.get("blocked") or ())
+                _origin = tuple(_detour.get("origin") or ())
+                _first_dir = _route_result.directions[0]
+                _dx, _dy = DIRECTIONS_4.get(_first_dir, (0, 0))
+                _next = (_current[0] + _dx, _current[1] + _dy)
+            except Exception:
+                return False
+            return bool(_blocked and _next == _blocked) or bool(_origin and _next == _origin)
+
         def _get_route_chokepoint_detour_forced_dir(_cx, _cy, _goal_pos):
             nonlocal current_path, path_index, path_pos_index
             _detour = _get_active_route_chokepoint_detour((_cx, _cy), _goal_pos)
@@ -6166,14 +6180,25 @@ class GameModeDialog(ctk.CTkToplevel):
                 return None
             if _is_dir_blocked(_current[0], _current[1], _blocked_dir, iteration):
                 return None
+            _allow_blocked_probe = False
             if not _is_route_chokepoint_detour_step_allowed(_next, _goal_key, _current):
-                _register_dir_block(_current[0], _current[1], _blocked_dir, iteration, ttl=12)
-                explored_from.setdefault(_current, set()).add(_blocked_dir)
-                _clear_route_chokepoint_detour()
-                if _ui_update_ok:
-                    self.after(0, lambda pos=_current, d=_blocked_dir, nxt=_next:
-                        self._append_log(f"🧭 유일통로 우회전진 불가: {pos} {d}→{nxt}"))
-                return None
+                _allow_blocked_probe = (
+                    _next not in {_origin, _blocked} and
+                    not _is_portal_step_forbidden(_next[0], _next[1], _goal_key, _current) and
+                    self._game_map.is_plausible_local_coord(_next[0], _next[1]) and
+                    (
+                        self._game_map.is_blocked(_next[0], _next[1]) or
+                        self._game_map.is_soft_blocked(_next[0], _next[1])
+                    )
+                )
+                if not _allow_blocked_probe:
+                    _register_dir_block(_current[0], _current[1], _blocked_dir, iteration, ttl=12)
+                    explored_from.setdefault(_current, set()).add(_blocked_dir)
+                    _clear_route_chokepoint_detour()
+                    if _ui_update_ok:
+                        self.after(0, lambda pos=_current, d=_blocked_dir, nxt=_next:
+                            self._append_log(f"🧭 유일통로 우회전진 불가: {pos} {d}→{nxt}"))
+                    return None
 
             _detour["forced_steps"] = _forced_steps + 1
             _detour["expire"] = max(int(_detour.get("expire", 0) or 0), int(iteration) + 8)
@@ -6182,8 +6207,9 @@ class GameModeDialog(ctk.CTkToplevel):
             path_pos_index = {}
             pathfinder.invalidate_path()
             if _ui_update_ok:
-                self.after(0, lambda pos=_current, d=_blocked_dir, nxt=_next, s=_detour["forced_steps"], m=_max_forced_steps:
-                    self._append_log(f"🧭 유일통로 우회전진: {pos} {d}→{nxt} ({s}/{m})"))
+                _probe_label = "프로브" if _allow_blocked_probe else "전진"
+                self.after(0, lambda pos=_current, d=_blocked_dir, nxt=_next, s=_detour["forced_steps"], m=_max_forced_steps, label=_probe_label:
+                    self._append_log(f"🧭 유일통로 우회{label}: {pos} {d}→{nxt} ({s}/{m})"))
             return _blocked_dir
 
         def _clear_step_watchdog():
@@ -7131,6 +7157,18 @@ class GameModeDialog(ctk.CTkToplevel):
                             if _route_result.found and _route_result.directions and _ui_update_ok:
                                 self.after(0, lambda x=cx, y=cy, n=_cleared_edge_count:
                                     self._append_log(f"🧭 경로복구: ({x},{y}) stale-edge {n}개 해제"))
+
+                if _active_route_chokepoint_detour is not None and (
+                    not (_route_result.found and _route_result.directions) or
+                    _route_result_reenters_detour_blocked(
+                        _route_result,
+                        _active_route_chokepoint_detour,
+                        current_pos,
+                    )
+                ):
+                    _forced_detour_dir = _get_route_chokepoint_detour_forced_dir(cx, cy, target_pos)
+                    if _forced_detour_dir:
+                        return _forced_detour_dir
 
                 if not (_route_result.found and _route_result.directions):
                     _forced_detour_dir = _get_route_chokepoint_detour_forced_dir(cx, cy, target_pos)
