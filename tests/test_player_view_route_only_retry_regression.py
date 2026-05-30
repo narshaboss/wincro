@@ -608,11 +608,69 @@ def test_route_only_stagnation_guard_waits_on_recent_dynamic_gate_failure():
     ]
 
     assert "_recent_dynamic_gate_snapshot = getattr(self, \"_last_route_diagnostic_snapshot\", None)" in guard_slice
-    assert '_diag_kind in {"move_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"}' in guard_slice
+    assert '_diag_kind in {"move_fail", "path_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"}' in guard_slice
     assert "_diag_edge_count >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD" in guard_slice
     assert "_guard_stagnation_iterations = max(0, max_stagnation_iterations - 25)" in guard_slice
     assert '"dynamic_chokepoint_wait"' in guard_slice
     assert "유일통로 장애물 대기" in guard_slice
+
+
+def test_route_only_path_fail_preserves_dynamic_gate_context_for_stagnation_guard():
+    text = _player_view_text()
+
+    path_fail_slice = text[
+        text.index("if not (_route_result.found and _route_result.directions):"):
+        text.index("_fail_msg = f\"⚠️ 최단경로 실패", text.index("if not (_route_result.found and _route_result.directions):"))
+    ]
+    guard_slice = text[
+        text.index("if _guard_stagnation_iterations > max_stagnation_iterations:"):
+        text.index("if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):")
+    ]
+
+    assert "_path_fail_failed_to = None" in path_fail_slice
+    assert "_path_fail_failed_dir = None" in path_fail_slice
+    assert "_path_fail_edge_count = 0" in path_fail_slice
+    assert "_direction_between((cx, cy), (_apx, _apy))" in path_fail_slice
+    assert "_remember_dynamic_chokepoint_gate(" in path_fail_slice
+    assert 'source="path_fail"' in path_fail_slice
+    assert "failed_to=_path_fail_failed_to" in path_fail_slice
+    assert "failed_edge_count=_path_fail_edge_count if _path_fail_failed_to is not None else None" in path_fail_slice
+    assert '_diag_kind in {"move_fail", "path_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"}' in guard_slice
+    assert '_diag_avoid = _recent_dynamic_gate_snapshot.get("avoid") or []' in guard_slice
+    assert "_diag_failed_to = tuple(_diag_avoid_items[0])" in guard_slice
+
+
+def test_route_only_dynamic_chokepoint_gate_centralizes_move_path_and_stop_guard():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("_dynamic_chokepoint_gate = None"):
+        text.index("def _collect_route_direction_state(")
+    ]
+    move_fail_slice = text[
+        text.index("if ((_stable_waypoint_phase or _patrolling_route_phase) and"):
+        text.index("if _route_chokepoint and _ui_update_ok", text.index("if ((_stable_waypoint_phase or _patrolling_route_phase) and"))
+    ]
+    guard_slice = text[
+        text.index("if _guard_stagnation_iterations > max_stagnation_iterations:"):
+        text.index("if _tick_step_watchdog(coord=(current_x, current_y), coord_failed=False):")
+    ]
+    success_slice = text[
+        text.index("if moved:"):
+        text.index("# 왔던 방향의 반대를 explored_from에 기록", text.index("if moved:"))
+    ]
+
+    assert "DYNAMIC_CHOKEPOINT_GATE_TTL = 240" in text
+    assert "def _remember_dynamic_chokepoint_gate(" in helper_slice
+    assert "def _get_dynamic_chokepoint_gate(" in helper_slice
+    assert "blocked" in helper_slice and "goal" in helper_slice
+    assert "_remember_dynamic_chokepoint_gate(" in move_fail_slice
+    assert 'source="move_fail"' in move_fail_slice
+    assert "_active_dynamic_gate = _get_dynamic_chokepoint_gate((target_x, target_y))" in guard_slice
+    assert "dynamic_gate=_active_dynamic_gate" in guard_slice
+    assert guard_slice.index("_active_dynamic_gate = _get_dynamic_chokepoint_gate") < guard_slice.index("_recent_dynamic_gate_snapshot")
+    assert "_active_gate = _get_dynamic_chokepoint_gate((target_x, target_y))" in success_slice
+    assert "_clear_dynamic_chokepoint_gate(" in success_slice
 
 
 def test_route_only_can_force_runtime_reload_when_locked_no_start_segment_current_pos_is_unknown():

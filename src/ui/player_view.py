@@ -4778,6 +4778,7 @@ class GameModeDialog(ctk.CTkToplevel):
         EDGE_FAIL_MARK_THRESHOLD = 3   # 인접 프런티어 벽 확정 최소 실패 횟수
         ROUTE_ONLY_NONCHOKE_RELAX_LIMIT = EDGE_FAIL_MARK_THRESHOLD + AVOID_EDGE_FAIL_THRESHOLD
         ROUTE_ONLY_RETRY_SUPPRESS_TTL = 600
+        DYNAMIC_CHOKEPOINT_GATE_TTL = 240
         EDGE_FAIL_MAX = 12             # 실패 카운트 상한(메모리/과민반응 방지)
         runtime_blocked_edge_guard_until = {}  # 방금 막은 엣지를 stale-edge 복구가 즉시 해제하지 못하게 보호
         route_only_retry_suppressed_until = {}  # route-only 첫칸 재시도 중단 간선은 방향없음 복구로 지우지 않는다
@@ -4942,6 +4943,7 @@ class GameModeDialog(ctk.CTkToplevel):
         _temporary_goal_detour = None  # 목표 타일이 일시적으로 막힐 때 우회할 인접 앵커
         _temporary_goal_detour_origin = None  # detour가 걸린 원래 목표 타일
         _route_chokepoint_detour = None  # route-only 유일통로 동적 장애물 우회 상태
+        _dynamic_chokepoint_gate = None  # blocked tile + goal 단위의 유일통로 동적 장애물 상태
         recent_positions = []  # 최근 방문 위치 (반복 감지용)
         blocked_dirs = {}  # (x, y, dir) -> expire_iteration
         DIR_BLOCK_TTL_MIN = 6
@@ -5015,6 +5017,81 @@ class GameModeDialog(ctk.CTkToplevel):
                 ttl = DIR_BLOCK_TTL_MIN
             ttl = max(DIR_BLOCK_TTL_MIN, min(DIR_BLOCK_TTL_MAX, int(ttl)))
             blocked_dirs[_dir_key(x, y, d)] = int(now_iter) + ttl
+
+        def _gate_pos(_pos):
+            if _pos is None:
+                return None
+            try:
+                return (int(_pos[0]), int(_pos[1]))
+            except Exception:
+                return None
+
+        def _clear_dynamic_chokepoint_gate(_blocked_tile=None, _goal_pos=None):
+            nonlocal _dynamic_chokepoint_gate
+            if not _dynamic_chokepoint_gate:
+                return
+            _blocked = _gate_pos(_blocked_tile)
+            _goal = _gate_pos(_goal_pos)
+            if _blocked is not None and _dynamic_chokepoint_gate.get("blocked") != _blocked:
+                return
+            if _goal is not None and _dynamic_chokepoint_gate.get("goal") != _goal:
+                return
+            _dynamic_chokepoint_gate = None
+
+        def _remember_dynamic_chokepoint_gate(_blocked_tile, _goal_pos, *, from_pos=None, direction=None, edge_count=0, source=""):
+            nonlocal _dynamic_chokepoint_gate
+            _blocked = _gate_pos(_blocked_tile)
+            _goal = _gate_pos(_goal_pos)
+            if _blocked is None or _goal is None:
+                return None
+            _from = _gate_pos(from_pos)
+            _same_gate = (
+                isinstance(_dynamic_chokepoint_gate, dict) and
+                _dynamic_chokepoint_gate.get("blocked") == _blocked and
+                _dynamic_chokepoint_gate.get("goal") == _goal
+            )
+            _prev = _dynamic_chokepoint_gate if _same_gate else {}
+            _origins = list(_prev.get("origins") or [])
+            if _from is not None and _from not in _origins:
+                _origins.append(_from)
+            _sources = list(_prev.get("sources") or [])
+            _source = str(source or "").strip()
+            if _source and _source not in _sources:
+                _sources.append(_source)
+            try:
+                _edge_count = int(edge_count or 0)
+            except Exception:
+                _edge_count = 0
+            _dynamic_chokepoint_gate = {
+                "blocked": _blocked,
+                "goal": _goal,
+                "origins": _origins[-6:],
+                "last_from": _from,
+                "last_dir": direction,
+                "edge_count": max(int(_prev.get("edge_count", 0) or 0), _edge_count),
+                "hits": int(_prev.get("hits", 0) or 0) + 1,
+                "sources": _sources[-6:],
+                "first_iter": int(_prev.get("first_iter", iteration) or iteration),
+                "last_iter": int(iteration),
+                "expire": int(iteration) + DYNAMIC_CHOKEPOINT_GATE_TTL,
+                "last_seen_at": time.time(),
+            }
+            return _dynamic_chokepoint_gate
+
+        def _get_dynamic_chokepoint_gate(_goal_pos=None, _blocked_tile=None):
+            nonlocal _dynamic_chokepoint_gate
+            if not isinstance(_dynamic_chokepoint_gate, dict):
+                return None
+            if int(_dynamic_chokepoint_gate.get("expire", 0) or 0) <= int(iteration):
+                _dynamic_chokepoint_gate = None
+                return None
+            _goal = _gate_pos(_goal_pos)
+            if _goal is not None and _dynamic_chokepoint_gate.get("goal") != _goal:
+                return None
+            _blocked = _gate_pos(_blocked_tile)
+            if _blocked is not None and _dynamic_chokepoint_gate.get("blocked") != _blocked:
+                return None
+            return _dynamic_chokepoint_gate
 
         def _collect_route_direction_state(x, y, now_iter):
             """현재 칸 기준으로 경로 차단/억제 상태를 중단 로그용으로 압축한다."""
@@ -7143,6 +7220,35 @@ class GameModeDialog(ctk.CTkToplevel):
                         _nb = self._game_map.get_walkable_neighbors(cx, cy, allow_unknown=True)
                         _nb_str = ",".join(f"{d}" for _nx,_ny,d in _nb) if _nb else "없음"
                         _avoid_str = str(_route_avoid) if _route_avoid else "없음"
+                        _path_fail_failed_to = None
+                        _path_fail_failed_dir = None
+                        _path_fail_edge_count = 0
+                        if _route_only_mode and _route_avoid:
+                            for _avoid_pos in _route_avoid:
+                                try:
+                                    _apx, _apy = int(_avoid_pos[0]), int(_avoid_pos[1])
+                                except Exception:
+                                    continue
+                                _ad = _direction_between((cx, cy), (_apx, _apy))
+                                if not _ad:
+                                    continue
+                                _af = int(edge_fail_counts.get(_dir_key(cx, cy, _ad), 0) or 0)
+                                if _path_fail_failed_to is None or _af > _path_fail_edge_count:
+                                    _path_fail_failed_to = (_apx, _apy)
+                                    _path_fail_failed_dir = _ad
+                                    _path_fail_edge_count = _af
+                        if (
+                            _path_fail_failed_to is not None and
+                            _path_fail_edge_count >= AVOID_EDGE_FAIL_THRESHOLD
+                        ):
+                            _remember_dynamic_chokepoint_gate(
+                                _path_fail_failed_to,
+                                target_pos,
+                                from_pos=current_pos,
+                                direction=_path_fail_failed_dir,
+                                edge_count=_path_fail_edge_count,
+                                source="path_fail",
+                            )
                         _remember_route_diagnostic(
                             "path_fail",
                             cx,
@@ -7152,6 +7258,8 @@ class GameModeDialog(ctk.CTkToplevel):
                             start=_sp,
                             neighbors=[_d for _nx, _ny, _d in _nb] if _nb else [],
                             avoid=list(_route_avoid) if _route_avoid else [],
+                            failed_to=_path_fail_failed_to,
+                            failed_edge_count=_path_fail_edge_count if _path_fail_failed_to is not None else None,
                             detail="route-only A* failed",
                         )
                         _fail_msg = f"⚠️ 최단경로 실패 ({cx},{cy})→({tx},{ty}) sp={_sp} nb=[{_nb_str}] avoid={_avoid_str} p={len(self._game_map.passable)} blk={self._game_map.is_blocked(cx,cy)}"
@@ -8328,6 +8436,38 @@ class GameModeDialog(ctk.CTkToplevel):
                                     dedupe_window=0.8,
                                 )
                     if not _defer_stagnation_stop:
+                        _active_dynamic_gate = _get_dynamic_chokepoint_gate((target_x, target_y))
+                        if _stable_shortest_route_mode_active() and _active_dynamic_gate:
+                            try:
+                                _gate_edge_count = int(_active_dynamic_gate.get("edge_count", 0) or 0)
+                                _gate_blocked = _active_dynamic_gate.get("blocked")
+                                if _gate_edge_count >= ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD and _gate_blocked:
+                                    # Dynamic chokepoints are tracked by blocked tile + goal, not by the
+                                    # last diagnostic branch. This prevents move_fail/path_fail/none from
+                                    # overwriting each other and tripping the global stagnation guard.
+                                    _active_dynamic_gate["expire"] = int(iteration) + DYNAMIC_CHOKEPOINT_GATE_TTL
+                                    _defer_stagnation_stop = True
+                                    _guard_stagnation_iterations = max(0, max_stagnation_iterations - 25)
+                                    _remember_route_diagnostic(
+                                        "dynamic_chokepoint_wait",
+                                        current_x,
+                                        current_y,
+                                        target_x,
+                                        target_y,
+                                        failed_to=_gate_blocked,
+                                        failed_edge_count=_gate_edge_count,
+                                        dynamic_gate=_active_dynamic_gate,
+                                        detail="deferred max_stagnation by central dynamic chokepoint gate",
+                                    )
+                                    if _ui_update_ok:
+                                        self._schedule_ui_log(
+                                            f"🧭 유일통로 장애물 대기: ({current_x},{current_y}) target=({target_x},{target_y}) blocked={_gate_blocked} 실패:{_gate_edge_count} hits:{_active_dynamic_gate.get('hits', 0)}",
+                                            dedupe_key=f"dynamic-chokepoint-gate:{target_idx}:{_gate_blocked}",
+                                            dedupe_window=1.2,
+                                        )
+                            except Exception:
+                                pass
+                    if not _defer_stagnation_stop:
                         _recent_dynamic_gate_snapshot = getattr(self, "_last_route_diagnostic_snapshot", None)
                         if _stable_shortest_route_mode_active() and isinstance(_recent_dynamic_gate_snapshot, dict):
                             try:
@@ -8340,11 +8480,28 @@ class GameModeDialog(ctk.CTkToplevel):
                                     or 0
                                 )
                                 _diag_failed_to = _recent_dynamic_gate_snapshot.get("failed_to")
+                                if not _diag_edge_count:
+                                    for _edge_item in (_recent_dynamic_gate_snapshot.get("edge_fail") or []):
+                                        try:
+                                            _diag_edge_count = max(
+                                                _diag_edge_count,
+                                                int(str(_edge_item).split(":", 1)[1]),
+                                            )
+                                        except Exception:
+                                            continue
+                                if not _diag_failed_to:
+                                    _diag_avoid = _recent_dynamic_gate_snapshot.get("avoid") or []
+                                    try:
+                                        _diag_avoid_items = list(_diag_avoid)
+                                    except Exception:
+                                        _diag_avoid_items = []
+                                    if len(_diag_avoid_items) == 1:
+                                        _diag_failed_to = tuple(_diag_avoid_items[0])
                                 _diag_kind = str(_recent_dynamic_gate_snapshot.get("kind") or "")
                                 _diag_route_only = bool(_recent_dynamic_gate_snapshot.get("route_only"))
                                 if (
                                     _diag_route_only and
-                                    _diag_kind in {"move_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"} and
+                                    _diag_kind in {"move_fail", "path_fail", "dynamic_chokepoint_wait", "stagnation_guard_deferred"} and
                                     _diag_age <= 3.0 and
                                     _diag_target_idx == target_idx and
                                     _diag_target == (int(target_x), int(target_y)) and
@@ -9425,6 +9582,12 @@ class GameModeDialog(ctk.CTkToplevel):
                                 _clear_route_only_retry_suppressed_edge(prev_x, prev_y, last_dir)
                                 blocked_dirs.pop(_dir_key(prev_x, prev_y, last_dir), None)
                                 edge_fail_counts.pop(_dir_key(prev_x, prev_y, last_dir), None)
+                                _active_gate = _get_dynamic_chokepoint_gate((target_x, target_y))
+                                if _active_gate and (current_x, current_y) == _active_gate.get("blocked"):
+                                    _clear_dynamic_chokepoint_gate(
+                                        _active_gate.get("blocked"),
+                                        _active_gate.get("goal"),
+                                    )
                             # 왔던 방향의 반대를 explored_from에 기록 (뒤로가기는 마지막에 시도)
                             if last_dir:
                                 new_pos = (current_x, current_y)
@@ -9560,6 +9723,15 @@ class GameModeDialog(ctk.CTkToplevel):
                                     (_tx, _ty),
                                     allow_unknown=_allow_unknown_for_chokepoint,
                                 )
+                                if _route_chokepoint and _stable_waypoint_phase:
+                                    _remember_dynamic_chokepoint_gate(
+                                        (_tx, _ty),
+                                        _goal_for_chokepoint,
+                                        from_pos=(prev_x, prev_y),
+                                        direction=last_dir,
+                                        edge_count=_edge_fail,
+                                        source="move_fail",
+                                    )
                                 if _route_chokepoint and _ui_update_ok and iteration % 10 == 0:
                                     self.after(0, lambda px=prev_x, py=prev_y, tx2=_tx, ty2=_ty:
                                         self._append_log(f"🧭 유일통로 보호: ({px},{py})→({tx2},{ty2})"))
