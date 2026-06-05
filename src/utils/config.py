@@ -34,13 +34,15 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.220"
-AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v1"
+APP_VERSION = "1.0.221"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v2"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
+AUTO_RUN_PROFILE_GROUP_REPEAT = 4
 AUTO_RUN_PROFILE_PLANS = (
     ("plan_20260118_174859.json", 1),
     ("plan_20260605_123819.json", 1),
+    ("plan_20260605_140615.json", 1),
 )
 
 
@@ -295,7 +297,7 @@ class ConfigManager:
             AUTO_RUN_PROFILE_GROUP_NAME,
             entries,
             group_id=AUTO_RUN_PROFILE_GROUP_ID,
-            repeat_count=1,
+            repeat_count=AUTO_RUN_PROFILE_GROUP_REPEAT,
         )
 
         has_saved_groups = bool(getattr(player, "plan_sequence_groups", []) or [])

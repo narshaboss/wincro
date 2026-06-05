@@ -80,20 +80,16 @@ def test_play_mode_shows_auto_shutdown_toggle_linked_to_editor_setting():
     assert 'config.system.shutdown_enabled = bool(self._shutdown_enabled_var.get())' in settings_text
 
 
-def test_play_mode_log_copy_button_is_visible_and_copies_full_log():
+def test_play_mode_log_copy_button_is_removed():
     text = _read_text()
     mini_slice = text[
         text.index("def _create_mini_player_ui(self):"):
         text.index("def _refresh_mini_plans_sync(self):")
     ]
 
-    assert 'text="로그 전체복사"' in mini_slice
-    assert "command=self._copy_mini_log_to_clipboard" in mini_slice
-    assert "def _copy_mini_log_to_clipboard(self):" in text
-    assert 'self._mini_log_text.get("1.0", "end-1c").strip()' in text
-    assert "self.clipboard_clear()" in text
-    assert "self.clipboard_append(text)" in text
-    assert "로그 {line_count}줄 복사됨" in text
+    assert 'text="로그 전체복사"' not in mini_slice
+    assert "command=self._copy_mini_log_to_clipboard" not in mini_slice
+    assert "def _copy_mini_log_to_clipboard(self):" not in text
 
 
 def test_play_mode_active_bar_tracks_current_group_and_playlist():
@@ -103,12 +99,22 @@ def test_play_mode_active_bar_tracks_current_group_and_playlist():
         text.index("def _create_mini_player_ui(self):"):
         text.index("def _refresh_mini_plans_sync(self):")
     ]
+    active_method = text[
+        text.index("def _mini_update_active_bar("):
+        text.index("def _toggle_mini_auto_update_from_indicator(", text.index("def _mini_update_active_bar("))
+    ]
 
     assert 'text="현재 실행"' in mini_slice
     assert "self._mini_active_title" in mini_slice
     assert "self._mini_active_detail" in mini_slice
+    assert 'font=ctk.CTkFont(size=13, weight="bold")' in mini_slice
     assert 'self._mini_update_active_bar("대기")' in mini_slice
     assert "def _mini_update_active_bar(" in text
+    assert "display_names = [name for name in (group_name, plan_name) if name]" in active_method
+    assert 'detail = " > ".join(display_names)' in active_method
+    assert 'detail_color = COLORS["warning"]' in active_method
+    assert "액션명/진행 메시지는 로그와 상태줄에만 남긴다." in active_method
+    assert "self._mini_active_detail.configure(text=detail, text_color=detail_color)" in active_method
     assert "def _mini_active_group_name(self) -> str:" in text
     assert "get_active_plan_sequence_group(self._config.player)" in text
     assert 'def auto_run_sequence(self, plan_paths: list, repeats: list = None, group_name: str = "") -> bool:' in text

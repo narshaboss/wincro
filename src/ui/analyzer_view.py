@@ -1855,6 +1855,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         self._collapsed_items = set()  # 접힌 항목 ID
         self._all_collapsed = True  # 기본: 접힌 상태
         self._scrollable = None
+        self._action_widgets = {}
+        self._collapsible_rule_ids = set()
 
         # 자식이 있는 규칙은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
@@ -1876,9 +1878,13 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _init_collapsed_items(self):
         """자식이 있는 규칙을 접힌 상태로 초기화"""
+        self._collapsed_items.clear()
+        self._collapsible_rule_ids.clear()
+
         def add_collapsed(rules):
             for rule in rules:
                 if rule.children:
+                    self._collapsible_rule_ids.add(rule.rule_id)
                     self._collapsed_items.add(rule.rule_id)
                     add_collapsed(rule.children)
         add_collapsed(self._plan.initial_rules)
@@ -1988,41 +1994,109 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             self._init_collapsed_items()
             self._all_collapsed = True
             self._collapse_btn.configure(text="모두 펼치기")
-        self._refresh_action_list()
+        self._apply_collapse_state()
 
     def _toggle_item_collapse(self, rule_id: str):
-        """개별 액션 접기/펼치기"""
+        """개별 액션 접기/펼치기.
+
+        기존 구현은 클릭할 때마다 전체 액션 목록을 destroy/recreate했다.
+        액션 수가 많으면 이 구조가 곧 렉이므로, 해당 부모의 하위 컨테이너만
+        pack/pack_forget으로 전환한다.
+        """
+        widget_data = self._action_widgets.get(rule_id)
+        if not widget_data:
+            logger.debug(f"collapse toggle skipped; widget not rendered: {rule_id}")
+            return
+
         if rule_id in self._collapsed_items:
-            self._collapsed_items.remove(rule_id)
+            self._collapsed_items.discard(rule_id)
         else:
             self._collapsed_items.add(rule_id)
-        self._refresh_action_list()
+        self._apply_rule_collapse_state(rule_id)
+        self._sync_all_collapsed_state()
 
     def _refresh_action_list(self):
         """액션 목록 새로고침"""
         # 썸네일 참조 정리
         self._thumbnail_refs.clear()
+        self._action_widgets = {}
 
         # 기존 위젯 삭제
         for widget in self._scrollable.winfo_children():
             widget.destroy()
 
-        # 규칙 렌더링 (자식 포함)
-        counter = [0]  # 전체 번호 매기기용
-        self._render_rules(self._scrollable, self._plan.initial_rules, counter, depth=0)
-        self._render_rules(self._scrollable, self._plan.monitoring_rules, counter, depth=0)
+        # 규칙 렌더링. 접힌 하위 항목은 필요할 때만 지연 생성한다.
+        self._render_rules(self._scrollable, self._plan.initial_rules, depth=0)
+        self._render_rules(self._scrollable, self._plan.monitoring_rules, depth=0)
+        self._sync_all_collapsed_state()
 
-    def _render_rules(self, parent, rules, counter, depth=0):
+    def _render_rules(self, parent, rules, depth=0, prefix: str = ""):
         """규칙 목록 렌더링 (계층 구조 지원)"""
-        for rule in rules:
-            counter[0] += 1
-            self._create_action_item(parent, counter[0], rule, depth)
+        for index, rule in enumerate(rules, start=1):
+            label = f"{prefix}-{index}" if prefix else str(index)
+            self._create_action_item(parent, label, rule, depth)
 
-            # 자식 규칙 렌더링 (접히지 않은 경우)
-            if rule.children and rule.rule_id not in self._collapsed_items:
-                self._render_rules(parent, rule.children, counter, depth + 1)
+    def _ensure_children_rendered(self, rule_id: str) -> None:
+        widget_data = self._action_widgets.get(rule_id)
+        if not widget_data or widget_data.get("children_rendered"):
+            return
+        rule = widget_data.get("rule")
+        container = widget_data.get("children_container")
+        if not rule or container is None:
+            return
+        self._render_rules(
+            container,
+            rule.children,
+            depth=widget_data.get("depth", 0) + 1,
+            prefix=str(widget_data.get("index_label", "")),
+        )
+        widget_data["children_rendered"] = True
 
-    def _create_action_item(self, parent, index: int, rule: AutomationRule, depth: int = 0):
+    def _apply_rule_collapse_state(self, rule_id: str) -> None:
+        widget_data = self._action_widgets.get(rule_id)
+        if not widget_data:
+            return
+        container = widget_data.get("children_container")
+        if container is None:
+            return
+
+        is_collapsed = rule_id in self._collapsed_items
+        self._update_rule_toggle_button(rule_id)
+        if is_collapsed:
+            container.pack_forget()
+            return
+
+        self._ensure_children_rendered(rule_id)
+        if not container.winfo_ismapped():
+            container.pack(fill="x")
+
+    def _apply_collapse_state(self) -> None:
+        processed = set()
+        while True:
+            pending = [rule_id for rule_id in self._action_widgets.keys() if rule_id not in processed]
+            if not pending:
+                break
+            for rule_id in pending:
+                processed.add(rule_id)
+                self._apply_rule_collapse_state(rule_id)
+
+    def _update_rule_toggle_button(self, rule_id: str) -> None:
+        widget_data = self._action_widgets.get(rule_id)
+        toggle_btn = widget_data.get("toggle_btn") if widget_data else None
+        if toggle_btn:
+            rule = widget_data.get("rule")
+            child_count = self._count_all_rules(rule.children) if rule and rule.children else 0
+            icon = "▶" if rule_id in self._collapsed_items else "▼"
+            toggle_btn.configure(text=f"{icon} {child_count}")
+
+    def _sync_all_collapsed_state(self) -> None:
+        if not self._collapsible_rule_ids:
+            self._all_collapsed = False
+        else:
+            self._all_collapsed = self._collapsible_rule_ids.issubset(self._collapsed_items)
+        self._collapse_btn.configure(text="모두 펼치기" if self._all_collapsed else "모두 접기")
+
+    def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0):
         """동작 항목 생성"""
         # 깊이에 따른 들여쓰기 계산
         indent = depth * 25
@@ -2031,18 +2105,31 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         # 자식이 있으면 다른 배경색
         bg_color = COLORS["bg_dark"] if depth == 0 else "#252535"
 
-        item = ctk.CTkFrame(parent, fg_color=bg_color, corner_radius=8)
+        item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
+        item_wrapper.pack(fill="x")
+
+        item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
         item.pack(fill="x", pady=3, padx=(left_pad, 10))
+
+        self._action_widgets[rule.rule_id] = {
+            "wrapper": item_wrapper,
+            "widget": item,
+            "rule": rule,
+            "depth": depth,
+            "index_label": index,
+            "children_rendered": False,
+        }
 
         content = ctk.CTkFrame(item, fg_color="transparent")
         content.pack(fill="x", padx=12, pady=8)
 
         # 접기/펼치기 버튼 (자식이 있는 경우)
         if rule.children:
+            self._collapsible_rule_ids.add(rule.rule_id)
             is_collapsed = rule.rule_id in self._collapsed_items
             toggle_text = "▶" if is_collapsed else "▼"
             child_count = self._count_all_rules(rule.children)
-            ctk.CTkButton(
+            toggle_btn = ctk.CTkButton(
                 content,
                 text=f"{toggle_text} {child_count}",
                 command=lambda r=rule: self._toggle_item_collapse(r.rule_id),
@@ -2053,7 +2140,9 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 text_color=COLORS["text_muted"],
                 font=ctk.CTkFont(size=11),
                 corner_radius=4,
-            ).pack(side="left", padx=(0, 8))
+            )
+            toggle_btn.pack(side="left", padx=(0, 8))
+            self._action_widgets[rule.rule_id]["toggle_btn"] = toggle_btn
 
         # 썸네일
         thumb = ctk.CTkFrame(content, fg_color=COLORS["bg_card"], width=60, height=60, corner_radius=8)
@@ -2149,6 +2238,14 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=11),
                 text_color=COLORS["warning"],
             ).pack(side="right")
+
+        if rule.children:
+            children_container = ctk.CTkFrame(item_wrapper, fg_color="transparent")
+            self._action_widgets[rule.rule_id]["children_container"] = children_container
+            if rule.rule_id not in self._collapsed_items:
+                children_container.pack(fill="x")
+                self._render_rules(children_container, rule.children, depth=depth + 1, prefix=str(index))
+                self._action_widgets[rule.rule_id]["children_rendered"] = True
 
     def _display_thumbnail(self, parent, rule: AutomationRule):
         """썸네일 표시 (클릭 시 확대/크롭)"""
@@ -3317,4 +3414,3 @@ class AnalyzerView(BaseView):
             dispatcher.close()
         if self._is_analyzing:
             self._video_analyzer.cancel()
-

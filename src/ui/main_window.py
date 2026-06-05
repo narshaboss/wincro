@@ -827,7 +827,7 @@ class MainWindow(ctk.CTk):
         self._mini_active_detail = ctk.CTkLabel(
             active_frame,
             text="실행 중인 재생목록 없음",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["text_secondary"],
             anchor="w",
         )
@@ -911,22 +911,6 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
         ).pack(side="left")
-
-        self._mini_copy_log_btn = ctk.CTkButton(
-            log_header,
-            text="로그 전체복사",
-            width=104,
-            height=24,
-            corner_radius=12,
-            fg_color=COLORS["bg_card_hover"],
-            hover_color=COLORS["accent_blue"],
-            border_width=1,
-            border_color=COLORS["accent_blue"],
-            text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=11, weight="bold"),
-            command=self._copy_mini_log_to_clipboard,
-        )
-        self._mini_copy_log_btn.pack(side="right")
 
         self._mini_log_text = ctk.CTkTextbox(
             log_frame,
@@ -1028,22 +1012,25 @@ class MainWindow(ctk.CTk):
 
         title = state or "대기"
         detail_parts = []
-        if group_name:
-            detail_parts.append(f"그룹: {group_name}")
+        detail_color = COLORS["text_secondary"]
+        display_names = [name for name in (group_name, plan_name) if name]
+
+        if display_names:
+            # 실행 표시 바는 그룹/재생목록명만 강조한다. 액션명/진행 메시지는 로그와 상태줄에만 남긴다.
+            detail = " > ".join(display_names)
+            detail_color = COLORS["warning"]
         elif state == "대기":
             active_group = self._mini_active_group_name()
             if active_group and bool(getattr(self._config.player, "auto_run_enabled", False)):
                 detail_parts.append(f"자동실행 준비: {active_group}")
-        if plan_name:
-            detail_parts.append(f"재생목록: {plan_name}")
-        if total > 0 and index > 0:
-            detail_parts.append(f"순서 {index}/{total}")
-        if repeat_count > 0:
-            detail_parts.append(f"반복 {repeat_count}회")
-        if message:
-            detail_parts.append(message)
-
-        detail = " · ".join(detail_parts) if detail_parts else "실행 중인 재생목록 없음"
+        if not display_names:
+            if total > 0 and index > 0:
+                detail_parts.append(f"순서 {index}/{total}")
+            if repeat_count > 0:
+                detail_parts.append(f"반복 {repeat_count}회")
+            if message:
+                detail_parts.append(message)
+            detail = " · ".join(detail_parts) if detail_parts else "실행 중인 재생목록 없음"
         color = COLORS["accent_blue"]
         if state in ("실행 중", "시퀀스"):
             color = COLORS["success"]
@@ -1052,7 +1039,7 @@ class MainWindow(ctk.CTk):
         elif state == "완료":
             color = COLORS["warning"]
         self._mini_active_title.configure(text=title, text_color=color)
-        self._mini_active_detail.configure(text=detail)
+        self._mini_active_detail.configure(text=detail, text_color=detail_color)
 
     def _toggle_mini_auto_update_from_indicator(self):
         """원형 상태 표시 클릭 시 자동업데이트 ON/OFF를 전환한다."""
@@ -1109,25 +1096,6 @@ class MainWindow(ctk.CTk):
             self._update_mini_auto_shutdown_label()
             self._mini_status.configure(text="⚠ 자동종료 예약 실패")
             logger.error(f"[미니플레이어] 자동종료 설정 저장/예약 실패: {e}")
-
-    def _copy_mini_log_to_clipboard(self):
-        """미니 플레이어 로그 전체를 클립보드에 복사한다."""
-        try:
-            if not hasattr(self, "_mini_log_text"):
-                return
-            text = self._mini_log_text.get("1.0", "end-1c").strip()
-            if not text:
-                self._mini_status.configure(text="복사할 로그 없음")
-                return
-            self.clipboard_clear()
-            self.clipboard_append(text)
-            self.update_idletasks()
-            line_count = len(text.splitlines())
-            self._mini_status.configure(text=f"로그 {line_count}줄 복사됨")
-            logger.info(f"[미니플레이어] 로그 전체복사: {line_count}줄")
-        except Exception as e:
-            self._mini_status.configure(text="⚠ 로그 복사 실패")
-            logger.error(f"[미니플레이어] 로그 복사 실패: {e}")
 
     def _mini_group_label(self, group: dict) -> str:
         return f"{MINI_GROUP_PREFIX}{group.get('name', '그룹')}"

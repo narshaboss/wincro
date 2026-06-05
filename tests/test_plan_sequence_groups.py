@@ -3,6 +3,7 @@ from pathlib import Path
 from src.utils.config import (
     AUTO_RUN_PROFILE_GROUP_ID,
     AUTO_RUN_PROFILE_GROUP_NAME,
+    AUTO_RUN_PROFILE_GROUP_REPEAT,
     AUTO_RUN_PROFILE_PLANS,
     AUTO_RUN_PROFILE_VERSION,
     AppConfig,
@@ -177,7 +178,7 @@ def test_packaged_auto_run_profile_updates_only_player_playback_defaults():
     group = config.player.plan_sequence_groups[0]
     assert group["group_id"] == AUTO_RUN_PROFILE_GROUP_ID
     assert group["name"] == AUTO_RUN_PROFILE_GROUP_NAME
-    assert group["repeat_count"] == 1
+    assert group["repeat_count"] == AUTO_RUN_PROFILE_GROUP_REPEAT
     assert [Path(entry["plan_path"]).name for entry in group["entries"]] == [
         file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
     ]
@@ -185,11 +186,55 @@ def test_packaged_auto_run_profile_updates_only_player_playback_defaults():
         repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
     ]
     assert config.player.plan_sequence == [
-        str(DATA_DIR / "plans" / file_name) for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+        str(DATA_DIR / "plans" / file_name)
+        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
+        for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
     ]
     assert config.player.plan_sequence_repeats == [
-        repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+        repeat
+        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
+        for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
     ]
+
+
+def test_packaged_auto_run_profile_v2_replaces_v1_group_only():
+    old_packaged_group = make_plan_sequence_group(
+        AUTO_RUN_PROFILE_GROUP_NAME,
+        [{"plan_path": r"C:\plans\old_hunt.json", "repeat_count": 9}],
+        group_id=AUTO_RUN_PROFILE_GROUP_ID,
+        repeat_count=1,
+    )
+    custom_group = make_plan_sequence_group(
+        "custom",
+        [{"plan_path": r"C:\plans\custom.json", "repeat_count": 7}],
+        group_id="custom",
+    )
+    config = AppConfig(
+        player=PlayerConfig(
+            auto_run_enabled=False,
+            plan_sequence_groups=[old_packaged_group, custom_group],
+            active_plan_sequence_group_id="custom",
+            auto_run_profile_version="auto_hunt_raid_v1",
+        ),
+        ui=UIConfig(app_name="pc-local-name", window_mode="player"),
+        arduino=ArduinoConfig(com_port="COM7", enabled=True),
+    )
+
+    ConfigManager()._apply_packaged_player_defaults(config)
+
+    assert config.ui.app_name == "pc-local-name"
+    assert config.ui.window_mode == "player"
+    assert config.arduino.com_port == "COM7"
+    assert config.arduino.enabled is True
+    assert config.player.auto_run_enabled is True
+    assert config.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
+    assert config.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
+    assert config.player.plan_sequence_groups[0]["group_id"] == AUTO_RUN_PROFILE_GROUP_ID
+    assert config.player.plan_sequence_groups[0]["repeat_count"] == AUTO_RUN_PROFILE_GROUP_REPEAT
+    assert [Path(entry["plan_path"]).name for entry in config.player.plan_sequence_groups[0]["entries"]] == [
+        file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert config.player.plan_sequence_groups[1] == custom_group
 
 
 def test_packaged_auto_run_profile_does_not_override_after_marker():
