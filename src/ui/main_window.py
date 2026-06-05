@@ -24,14 +24,22 @@ from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
 from ..utils.app_identity import get_effective_app_name
 from ..utils.json_utils import load_json_file
+from ..utils.plan_sequence_groups import (
+    get_active_plan_sequence_group,
+    mirror_active_group_to_legacy,
+    normalize_plan_sequence_groups,
+    normalize_repeat_count,
+    sync_plan_repeat_in_groups,
+)
 from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
-from ..player.rule_executor import RuleExecutor
+from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
 from .capture_cleanup import remove_auto_capture_source_after_crop
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
 
 PLANS_DIR = DATA_DIR / "plans"
+MINI_GROUP_PREFIX = "그룹: "
 
 logger = get_logger(__name__)
 
@@ -452,8 +460,8 @@ class MainWindow(ctk.CTk):
             window_mode = "editor"
         self._window_mode = window_mode
         if window_mode == "play":
-            self.geometry("480x320")
-            self.minsize(450, 280)
+            self.geometry("520x380")
+            self.minsize(500, 360)
         else:  # editor
             self.geometry(f"{self._config.ui.window_width}x{self._config.ui.window_height}")
             self.minsize(1000, 700)
@@ -546,6 +554,7 @@ class MainWindow(ctk.CTk):
         self._sequence_plans = []  # 시퀀스 플랜 경로 리스트
         self._sequence_repeats = []  # 시퀀스 플랜별 반복횟수
         self._sequence_index = 0  # 현재 시퀀스 인덱스
+        self._sequence_group_name = ""
         self._mini_active_plan = None
         self._mini_remaining_rules = []
         self._mini_gm_dialog = None
@@ -605,11 +614,17 @@ class MainWindow(ctk.CTk):
     def _create_mini_player_ui(self):
         """미니 플레이어 UI 요소 생성"""
         # 상단 프레임 (플랜 선택 + 컨트롤)
-        top_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        top_frame = ctk.CTkFrame(
+            self._main_container,
+            fg_color=COLORS["bg_card"],
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         top_frame.pack(fill="x", padx=10, pady=(10, 5))
 
         # 플랜 드롭다운 (왼쪽)
-        plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
+        plan_names = self._mini_dropdown_values()
         self._mini_plan_var = ctk.StringVar(value=plan_names[0] if plan_names else "(플랜 없음)")
         self._mini_plan_dropdown = ctk.CTkComboBox(
             top_frame,
@@ -710,7 +725,13 @@ class MainWindow(ctk.CTk):
         ).pack(side="right", padx=(5, 2))
 
         # 플레이 모드에서 버전/자동업데이트 상태를 설정 화면 없이 바로 확인한다.
-        info_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        info_frame = ctk.CTkFrame(
+            self._main_container,
+            fg_color=COLORS["bg_card"],
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         info_frame.pack(fill="x", padx=10, pady=(0, 5))
 
         self._mini_version_label = ctk.CTkLabel(
@@ -777,8 +798,50 @@ class MainWindow(ctk.CTk):
         )
         self._update_mini_auto_shutdown_label()
 
+        # 현재 실행 중인 자동실행 그룹/재생목록을 한눈에 보여준다.
+        active_frame = ctk.CTkFrame(
+            self._main_container,
+            fg_color=COLORS["bg_sidebar"],
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
+        active_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        ctk.CTkLabel(
+            active_frame,
+            text="현재 실행",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(12, 8), pady=7)
+
+        self._mini_active_title = ctk.CTkLabel(
+            active_frame,
+            text="대기",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["accent_blue"],
+            anchor="w",
+        )
+        self._mini_active_title.pack(side="left", padx=(0, 8), pady=7)
+
+        self._mini_active_detail = ctk.CTkLabel(
+            active_frame,
+            text="실행 중인 재생목록 없음",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+        )
+        self._mini_active_detail.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=7)
+        self._mini_update_active_bar("대기")
+
         # 컨트롤 프레임 (실행/중지 버튼)
-        ctrl_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        ctrl_frame = ctk.CTkFrame(
+            self._main_container,
+            fg_color=COLORS["bg_card"],
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         ctrl_frame.pack(fill="x", padx=10, pady=5)
 
         # 버튼들 (왼쪽)
@@ -830,7 +893,13 @@ class MainWindow(ctk.CTk):
         self._mini_status.pack(side="right", padx=10, pady=8)
 
         # 로그 영역 (남은 공간 전체 사용)
-        log_frame = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_card"])
+        log_frame = ctk.CTkFrame(
+            self._main_container,
+            fg_color=COLORS["bg_card"],
+            corner_radius=14,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         log_header = ctk.CTkFrame(log_frame, fg_color="transparent")
@@ -924,6 +993,67 @@ class MainWindow(ctk.CTk):
                 hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
             )
 
+    def _mini_active_group_name(self) -> str:
+        try:
+            group = get_active_plan_sequence_group(self._config.player)
+            return str((group or {}).get("name", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _mini_plan_name_from_path(self, plan_path: str) -> str:
+        path = Path(plan_path)
+        for plan in getattr(self, "_mini_plans", []) or []:
+            source = getattr(plan, "_source_file", "")
+            if source and Path(source).name == path.name:
+                return getattr(plan, "name", path.stem)
+        try:
+            data = load_json_file(path)
+            return str(data.get("name") or path.stem)
+        except Exception:
+            return path.stem
+
+    def _mini_update_active_bar(
+        self,
+        state: str,
+        plan_name: str = "",
+        group_name: str = "",
+        index: int = 0,
+        total: int = 0,
+        repeat_count: int = 0,
+        message: str = "",
+    ) -> None:
+        """현재 실행 그룹/재생목록 표시 바를 갱신한다."""
+        if not hasattr(self, "_mini_active_title") or not hasattr(self, "_mini_active_detail"):
+            return
+
+        title = state or "대기"
+        detail_parts = []
+        if group_name:
+            detail_parts.append(f"그룹: {group_name}")
+        elif state == "대기":
+            active_group = self._mini_active_group_name()
+            if active_group and bool(getattr(self._config.player, "auto_run_enabled", False)):
+                detail_parts.append(f"자동실행 준비: {active_group}")
+        if plan_name:
+            detail_parts.append(f"재생목록: {plan_name}")
+        if total > 0 and index > 0:
+            detail_parts.append(f"순서 {index}/{total}")
+        if repeat_count > 0:
+            detail_parts.append(f"반복 {repeat_count}회")
+        if message:
+            detail_parts.append(message)
+
+        detail = " · ".join(detail_parts) if detail_parts else "실행 중인 재생목록 없음"
+        color = COLORS["accent_blue"]
+        if state in ("실행 중", "시퀀스"):
+            color = COLORS["success"]
+        elif state in ("실패", "중단"):
+            color = COLORS["error"]
+        elif state == "완료":
+            color = COLORS["warning"]
+        self._mini_active_title.configure(text=title, text_color=color)
+        self._mini_active_detail.configure(text=detail)
+
     def _toggle_mini_auto_update_from_indicator(self):
         """원형 상태 표시 클릭 시 자동업데이트 ON/OFF를 전환한다."""
         self._mini_auto_update_var.set(not bool(self._mini_auto_update_var.get()))
@@ -999,6 +1129,47 @@ class MainWindow(ctk.CTk):
             self._mini_status.configure(text="⚠ 로그 복사 실패")
             logger.error(f"[미니플레이어] 로그 복사 실패: {e}")
 
+    def _mini_group_label(self, group: dict) -> str:
+        return f"{MINI_GROUP_PREFIX}{group.get('name', '그룹')}"
+
+    def _mini_sequence_groups(self) -> list[dict]:
+        try:
+            return [
+                group
+                for group in normalize_plan_sequence_groups(self._config.player, mutate=True)
+                if group.get("entries")
+            ]
+        except Exception:
+            return []
+
+    def _mini_dropdown_values(self) -> list[str]:
+        values = [self._mini_group_label(group) for group in self._mini_sequence_groups()]
+        values.extend([p.name for p in self._mini_plans])
+        return values or ["(플랜 없음)"]
+
+    def _mini_group_by_label(self, value: str) -> dict | None:
+        if not value or not value.startswith(MINI_GROUP_PREFIX):
+            return None
+        for group in self._mini_sequence_groups():
+            if self._mini_group_label(group) == value:
+                return group
+        return None
+
+    def _mini_expand_group_sequence(self, group: dict) -> tuple[list[str], list[int]]:
+        plans_dir = DATA_DIR / "plans"
+        paths: list[str] = []
+        repeats: list[int] = []
+        entries = list(group.get("entries", []) or [])
+        group_repeat = normalize_repeat_count(group.get("repeat_count", 1))
+        for _ in range(group_repeat):
+            for entry in entries:
+                raw_path = str(entry.get("plan_path", "") or "").strip()
+                if not raw_path:
+                    continue
+                paths.append(str(plans_dir / Path(raw_path).name))
+                repeats.append(normalize_repeat_count(entry.get("repeat_count", 1)))
+        return paths, repeats
+
     def _refresh_mini_plans_sync(self):
         """플랜 목록 새로고침 - 디스크에서 최신 버전 로드 (백그라운드 스레드에서 호출)"""
         import json
@@ -1034,11 +1205,12 @@ class MainWindow(ctk.CTk):
     def _update_mini_plan_dropdown(self):
         """플랜 드롭다운 UI 업데이트 (메인 스레드에서 호출)"""
         if hasattr(self, '_mini_plan_dropdown') and self._mini_plan_dropdown:
-            plan_names = [p.name for p in self._mini_plans] if self._mini_plans else ["(플랜 없음)"]
+            plan_names = self._mini_dropdown_values()
             self._mini_plan_dropdown.configure(values=plan_names)
             current = self._mini_plan_var.get()
             if current not in plan_names:
                 self._mini_plan_var.set(plan_names[0] if plan_names else "(플랜 없음)")
+            self._on_mini_plan_changed(self._mini_plan_var.get())
 
     def _setup_mini_log_handler(self):
         """미니 플레이어용 로그 핸들러 설정"""
@@ -1284,11 +1456,25 @@ class MainWindow(ctk.CTk):
         if not plan_name or plan_name == "(플랜 없음)":
             return
 
+        selected_group = self._mini_group_by_label(plan_name)
+        if selected_group:
+            group_repeat = normalize_repeat_count(selected_group.get("repeat_count", 1))
+            self._mini_repeat_var.set(str(group_repeat))
+            if not self._is_running and not self._sequence_mode:
+                self._mini_update_active_bar("대기", group_name=selected_group.get("name", "그룹"))
+            logger.info(
+                f"[미니플레이어] 그룹 변경: {selected_group.get('name', '그룹')}, "
+                f"그룹 반복: {group_repeat}회"
+            )
+            return
+
         for plan in self._mini_plans:
             if plan.name == plan_name:
                 # 저장된 재생횟수 불러오기
                 saved_repeat = getattr(plan, 'total_repeat_count', 1) or 1
                 self._mini_repeat_var.set(str(saved_repeat))
+                if not self._is_running and not self._sequence_mode:
+                    self._mini_update_active_bar("대기", plan_name=plan_name)
                 logger.info(f"[미니플레이어] 플랜 변경: {plan_name}, 재생횟수: {saved_repeat}")
                 break
 
@@ -1298,6 +1484,42 @@ class MainWindow(ctk.CTk):
         plan_name = self._mini_plan_var.get()
         if not plan_name or plan_name == "(플랜 없음)":
             self._mini_status.configure(text="⚠ 플랜을 선택하세요")
+            return
+
+        try:
+            repeat_count = int(self._mini_repeat_var.get())
+            if repeat_count < 1:
+                repeat_count = 1
+            elif repeat_count > 9999:
+                repeat_count = 9999
+        except ValueError:
+            self._mini_status.configure(text="⚠ 올바른 숫자를 입력하세요")
+            return
+
+        selected_group = self._mini_group_by_label(plan_name)
+        if selected_group:
+            try:
+                config = get_config()
+                normalize_plan_sequence_groups(config.player, mutate=True)
+                group_id = selected_group.get("group_id", "")
+                changed = False
+                for group in config.player.plan_sequence_groups:
+                    if group.get("group_id") == group_id:
+                        group["repeat_count"] = repeat_count
+                        changed = True
+                        break
+                if not changed:
+                    self._mini_status.configure(text="⚠ 그룹을 찾을 수 없음")
+                    return
+                if config.player.active_plan_sequence_group_id == group_id:
+                    mirror_active_group_to_legacy(config.player)
+                save_config()
+                self._mini_status.configure(text=f"✓ 그룹 반복 {repeat_count}회 저장됨")
+                self._mini_update_active_bar("대기", group_name=selected_group.get("name", "그룹"))
+                logger.info(f"[미니플레이어] 그룹 반복횟수 저장: {repeat_count}회 - {selected_group.get('name', '그룹')}")
+            except Exception as e:
+                logger.error(f"[미니플레이어] 그룹 반복횟수 저장 실패: {e}")
+                self._mini_status.configure(text="⚠ 그룹 반복 저장 실패")
             return
 
         selected_plan = None
@@ -1311,12 +1533,6 @@ class MainWindow(ctk.CTk):
             return
 
         try:
-            repeat_count = int(self._mini_repeat_var.get())
-            if repeat_count < 1:
-                repeat_count = 1
-            elif repeat_count > 9999:
-                repeat_count = 9999
-
             selected_plan.total_repeat_count = repeat_count
 
             # 플랜 파일에 저장 (원래 파일 경로가 있으면 그 경로에, 없으면 plan_id.json)
@@ -1337,12 +1553,10 @@ class MainWindow(ctk.CTk):
                     while len(config.player.plan_sequence_repeats) <= i:
                         config.player.plan_sequence_repeats.append(1)
                     config.player.plan_sequence_repeats[i] = repeat_count
+            sync_plan_repeat_in_groups(config.player, plan_file_str, repeat_count)
             save_config()
-
             self._mini_status.configure(text=f"✓ 재생횟수 {repeat_count}회 저장됨")
             logger.info(f"[미니플레이어] 재생횟수 저장: {repeat_count}회 - {plan_name}")
-        except ValueError:
-            self._mini_status.configure(text="⚠ 올바른 숫자를 입력하세요")
         except Exception as e:
             logger.error(f"[미니플레이어] 재생횟수 저장 실패: {e}")
             self._mini_status.configure(text=f"⚠ 저장 실패")
@@ -1375,6 +1589,43 @@ class MainWindow(ctk.CTk):
                 repeat_count = 9999
         except ValueError:
             repeat_count = 1
+
+        selected_group = self._mini_group_by_label(plan_name)
+        if selected_group:
+            group_to_run = dict(selected_group)
+            group_to_run["repeat_count"] = repeat_count
+            plan_paths, repeats = self._mini_expand_group_sequence(group_to_run)
+            if not plan_paths:
+                self._mini_status.configure(text="⚠ 그룹에 재생목록이 없음")
+                self._mini_update_active_bar("실패", group_name=selected_group.get("name", "그룹"), message="빈 그룹")
+                return
+            for path in plan_paths:
+                if not Path(path).exists():
+                    self._mini_status.configure(text=f"⚠ 플랜 파일 없음: {Path(path).name}")
+                    self._mini_update_active_bar(
+                        "실패",
+                        group_name=selected_group.get("name", "그룹"),
+                        message=f"파일 없음: {Path(path).name}",
+                    )
+                    return
+
+            self._is_running = True
+            self._mini_total_repeat = 1
+            self._mini_current_repeat = 0
+            self._mini_play_btn.configure(state="disabled")
+            self._mini_pause_btn.configure(state="normal")
+            self._mini_stop_btn.configure(state="normal")
+            self._mini_status.configure(text="⏳ 그룹 시퀀스 로드 중...")
+            self._mini_update_active_bar(
+                "시퀀스",
+                group_name=selected_group.get("name", "그룹"),
+                total=len(plan_paths),
+                repeat_count=repeat_count,
+                message="그룹 실행 준비",
+            )
+            self._start_sequence_mode(plan_paths, repeats, group_name=selected_group.get("name", "그룹"))
+            return
+
         # 반복은 rule_executor에서 처리하므로 여기서는 1회만
         self._mini_total_repeat = 1
         self._mini_current_repeat = 0
@@ -1382,6 +1633,7 @@ class MainWindow(ctk.CTk):
         # UI 즉시 업데이트 (로딩 상태 표시)
         self._mini_play_btn.configure(state="disabled")
         self._mini_status.configure(text="⏳ 플랜 로드 중...")
+        self._mini_update_active_bar("준비", plan_name=plan_name, repeat_count=repeat_count, message="플랜 로드 중")
 
         # 백그라운드에서 플랜 로드 후 실행 (메인 스레드 블로킹 방지)
         import threading
@@ -1450,7 +1702,7 @@ class MainWindow(ctk.CTk):
 
         threading.Thread(target=load_and_start, daemon=True).start()
 
-    def _start_sequence_mode(self, plan_paths: list, repeats: list = None):
+    def _start_sequence_mode(self, plan_paths: list, repeats: list = None, group_name: str = ""):
         """플랜 순서 실행 모드 시작"""
         logger.info(f"[시퀀스] 플랜 순서 실행 시작: {len(plan_paths)}개 플랜")
         self._sequence_mode = True
@@ -1460,10 +1712,18 @@ class MainWindow(ctk.CTk):
         while len(self._sequence_repeats) < len(self._sequence_plans):
             self._sequence_repeats.append(0)
         self._sequence_index = 0
+        self._sequence_group_name = group_name or self._mini_active_group_name()
 
         # UI 업데이트
         self._mini_play_btn.configure(state="disabled")
         self._mini_status.configure(text="⏳ 시퀀스 로드 중...")
+        self._mini_update_active_bar(
+            "시퀀스",
+            plan_name=self._mini_plan_name_from_path(self._sequence_plans[0]) if self._sequence_plans else "",
+            group_name=self._sequence_group_name,
+            total=len(self._sequence_plans),
+            message="첫 재생목록 로드 중",
+        )
 
         # 첫 번째 플랜 실행
         self._run_sequence_plan(0)
@@ -1518,6 +1778,14 @@ class MainWindow(ctk.CTk):
                     self._mini_status.configure(
                         text=f"▶ 시퀀스 {index + 1}/{total} - {plan.name} (반복: {repeat_count}회)"
                     )
+                    self._mini_update_active_bar(
+                        "실행 중",
+                        plan_name=plan.name,
+                        group_name=self._sequence_group_name,
+                        index=index + 1,
+                        total=total,
+                        repeat_count=repeat_count,
+                    )
                     self._mini_start_execution(plan, repeat_count)
 
                 try:
@@ -1538,6 +1806,7 @@ class MainWindow(ctk.CTk):
     def _mini_on_load_failed(self, message: str):
         """플랜 로드 실패 시 UI 복원"""
         self._mini_status.configure(text=message)
+        self._mini_update_active_bar("실패", message=message)
         self._mini_play_btn.configure(state="normal")
 
     def _ensure_arduino_ready_for_mini(self, context_label: str) -> bool:
@@ -1581,10 +1850,17 @@ class MainWindow(ctk.CTk):
             self._mini_pause_btn.configure(state="normal")
             self._mini_stop_btn.configure(state="normal")
             self._mini_status.configure(text=f"running... (1/{self._mini_total_repeat})")
+            if not self._sequence_mode:
+                self._mini_update_active_bar(
+                    "실행 중",
+                    plan_name=getattr(selected_plan, "name", ""),
+                    repeat_count=repeat_count,
+                )
             self._mini_execute_plan(selected_plan)
         except Exception as e:
             logger.error(f"[mini-player] start error: {e}")
             self._mini_status.configure(text=f"error: {e}")
+            self._mini_update_active_bar("실패", message=str(e))
             self._is_running = False
             self._mini_play_btn.configure(state="normal")
             self._mini_pause_btn.configure(state="disabled", text="pause")
@@ -1745,6 +2021,10 @@ class MainWindow(ctk.CTk):
                     self._rule_executor = None
                     self.after(0, lambda: self._mini_on_complete(False, "stopped"))
                     return
+                if isinstance(message, str) and message.startswith(PLAYLIST_SKIP_TRIGGER_MISSING):
+                    self._rule_executor = None
+                    self.after(0, lambda m=message: self._mini_on_playlist_skip(m))
+                    return
                 if success and chain_remaining:
                     self._rule_executor = None
                     self.after(0, lambda: self._mini_play_plan_rules(chain_remaining))
@@ -1758,7 +2038,50 @@ class MainWindow(ctk.CTk):
             on_complete=on_complete,
         )
         self._rule_executor.execute_plan_async(plan_to_run)
-    def auto_run_sequence(self, plan_paths: list, repeats: list = None) -> bool:
+
+    def _mini_on_playlist_skip(self, message: str):
+        """트리거 미감지 옵션으로 현재 재생목록만 종료하고 다음 시퀀스로 진행."""
+        try:
+            if not self.winfo_exists():
+                return
+
+            logger.info(f"[sequence] current playlist skipped: {message}")
+
+            if getattr(self, '_mini_stop_requested', False):
+                self._sequence_mode = False
+                self._mini_on_complete(False, "stopped")
+                return
+
+            if self._sequence_mode:
+                next_index = self._sequence_index + 1
+                if next_index < len(self._sequence_plans):
+                    logger.info(
+                        f"[sequence] plan {self._sequence_index + 1}/{len(self._sequence_plans)} "
+                        f"skipped -> next"
+                    )
+                    self._mini_current_repeat = 0
+                    self._mini_total_repeat = 1
+                    self._mini_status.configure(text=f"⏭ 현재 재생목록 종료 → 다음 재생목록")
+                    self._mini_update_active_bar(
+                        "시퀀스",
+                        group_name=getattr(self, "_sequence_group_name", ""),
+                        index=next_index + 1,
+                        total=len(self._sequence_plans),
+                        message="트리거 미감지로 다음 재생목록 이동",
+                    )
+                    self._run_sequence_plan(next_index)
+                    return
+
+                logger.info(f"[sequence] complete after playlist skip ({len(self._sequence_plans)} plans)")
+                self._sequence_mode = False
+                self._mini_on_complete(True, "")
+                return
+
+            self._mini_on_complete(True, message)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def auto_run_sequence(self, plan_paths: list, repeats: list = None, group_name: str = "") -> bool:
         """시작 시 자동 실행 - 플랜 순서 모드 (플레이 모드 전용)"""
         logger.info(f"[자동실행-시퀀스] 플랜 순서 자동 실행 시작: {len(plan_paths)}개 플랜")
 
@@ -1781,7 +2104,7 @@ class MainWindow(ctk.CTk):
         self._is_running = True
 
         # 시퀀스 모드 시작
-        self._start_sequence_mode(plan_paths, repeats)
+        self._start_sequence_mode(plan_paths, repeats, group_name=group_name)
         return True
 
     def _mini_on_pause(self):
@@ -1833,10 +2156,12 @@ class MainWindow(ctk.CTk):
         self._is_running = False
         self._is_paused = False
         self._sequence_mode = False
+        self._sequence_group_name = ""
         self._mini_play_btn.configure(state="normal")
         self._mini_pause_btn.configure(state="disabled", text="pause")
         self._mini_stop_btn.configure(state="disabled")
         self._mini_status.configure(text="stopping...")
+        self._mini_update_active_bar("중단", message="정지 요청 중")
 
     def _mini_on_progress(self, progress):
         """미니 플레이어 - 진행 콜백 (ExecutionProgress 객체)"""
@@ -1854,6 +2179,16 @@ class MainWindow(ctk.CTk):
                 try:
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
                         self._mini_status.configure(text=f"▶ {seq_info}{current}/{total} {repeat_info} - {message}")
+                        plan_name = getattr(getattr(self, "_mini_active_plan", None), "name", "")
+                        self._mini_update_active_bar(
+                            "실행 중",
+                            plan_name=plan_name,
+                            group_name=getattr(self, "_sequence_group_name", "") if self._sequence_mode else "",
+                            index=self._sequence_index + 1 if self._sequence_mode else 0,
+                            total=len(self._sequence_plans) if self._sequence_mode else 0,
+                            repeat_count=self._mini_total_repeat if not self._sequence_mode else 0,
+                            message=f"{current}/{total} {message}".strip(),
+                        )
                 except (tk.TclError, RuntimeError):
                     pass
 
@@ -1909,6 +2244,15 @@ class MainWindow(ctk.CTk):
                         else:
                             seq_info = ""
                         self._mini_status.configure(text=f"running {seq_info}({self._mini_current_repeat + 1}/{self._mini_total_repeat})")
+                        self._mini_update_active_bar(
+                            "실행 중",
+                            plan_name=getattr(getattr(self, "_mini_active_plan", None), "name", ""),
+                            group_name=getattr(self, "_sequence_group_name", "") if self._sequence_mode else "",
+                            index=self._sequence_index + 1 if self._sequence_mode else 0,
+                            total=len(self._sequence_plans) if self._sequence_mode else 0,
+                            repeat_count=self._mini_total_repeat,
+                            message=f"{self._mini_current_repeat + 1}/{self._mini_total_repeat}회 진행",
+                        )
                 except (tk.TclError, RuntimeError):
                     pass
 
@@ -1992,6 +2336,7 @@ class MainWindow(ctk.CTk):
             self._sequence_plans = []
             self._sequence_repeats = []
             self._sequence_index = 0
+            self._sequence_group_name = ""
             self._mini_active_plan = None
             self._mini_remaining_rules = []
             self._mini_gm_dialog = None
@@ -2005,8 +2350,10 @@ class MainWindow(ctk.CTk):
                     status = f"complete ({seq_count} plans)"
                 else:
                     status = f"complete ({self._mini_total_repeat})"
+                self._mini_update_active_bar("완료", message=status)
             else:
                 status = f"failed: {message}"
+                self._mini_update_active_bar("중단" if message == "stopped" else "실패", message=status)
             self._mini_status.configure(text=status)
 
         self.after(0, update)

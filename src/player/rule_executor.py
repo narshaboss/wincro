@@ -74,6 +74,9 @@ from ..analyzer.enhanced_matcher import get_enhanced_matcher
 logger = get_logger(__name__)
 
 _MULTISCALE_FACTORS = (1.0, 1.1, 0.9, 1.25, 0.8, 1.4, 0.7, 1.5)
+PLAYLIST_SKIP_TRIGGER_MISSING = "playlist_skip:trigger_missing"
+PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS = 30.0
+TRIGGER_COORD_SEARCH_RADIUS = 220
 
 
 def _resize_template_gray(template_gray: np.ndarray, scale: float):
@@ -404,6 +407,7 @@ class RuleExecutionResult:
     message: str = ""
     executed_at: Optional[datetime] = None
     execution_time_ms: int = 0
+    skip_current_playlist: bool = False
 
 
 @dataclass
@@ -803,9 +807,13 @@ class RuleExecutor:
                     is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
                     logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
                     if is_monitoring:
-                        self._state = ExecutionState.MONITORING
-                        result = self._execute_monitoring_mode(rule, all_rules, i, step_num=step_num)
-                        self._state = ExecutionState.RUNNING_INITIAL
+                        trigger_result = self._handle_trigger_gate(rule, datetime.now(), step_num)
+                        if trigger_result is not None:
+                            result = trigger_result
+                        else:
+                            self._state = ExecutionState.MONITORING
+                            result = self._execute_monitoring_mode(rule, all_rules, i, step_num=step_num)
+                            self._state = ExecutionState.RUNNING_INITIAL
                         self._results.append(result)
                     else:
                         # 다음 규칙의 타겟 이미지 (확인용)
@@ -825,6 +833,16 @@ class RuleExecutor:
 
                     if self._on_rule_executed:
                         self._on_rule_executed(result)
+
+                    if getattr(result, "skip_current_playlist", False):
+                        self._progress.initial_completed = i + 1
+                        self._state = ExecutionState.COMPLETED
+                        message = result.message or PLAYLIST_SKIP_TRIGGER_MISSING
+                        logger.warning(f"{_YELLOW}⏭ [{step_num}] 현재 재생목록 종료: {message}{_RESET}")
+                        self._update_progress(f"재생목록 종료: {message}")
+                        if self._on_complete:
+                            self._on_complete(True, message)
+                        return
 
                     if not result.success:
                         logger.error(f"{_RED}✗ [{step_num}] 실패: {result.message}{_RESET}")
@@ -881,6 +899,74 @@ class RuleExecutor:
             if self._on_complete:
                 self._on_complete(False, str(e))
 
+    def _trigger_search_region_for_rule(self, rule: AutomationRule) -> Optional[list]:
+        """트리거 좌표가 있으면 해당 좌표 주변만 검색한다."""
+        trigger_x = getattr(rule, "trigger_x", None)
+        trigger_y = getattr(rule, "trigger_y", None)
+        if trigger_x is None or trigger_y is None:
+            return None
+        try:
+            return self._radius_to_region(int(trigger_x), int(trigger_y), TRIGGER_COORD_SEARCH_RADIUS)
+        except (TypeError, ValueError):
+            return None
+
+    def _handle_trigger_gate(
+        self,
+        rule: AutomationRule,
+        start_time: datetime,
+        step_num: str = "",
+    ) -> Optional[RuleExecutionResult]:
+        """트리거 이미지 대기/재생목록 종료 옵션을 공통 처리한다."""
+        trigger_image = getattr(rule, "trigger_image", None)
+        if not trigger_image:
+            return None
+
+        trigger_path = Path(trigger_image)
+        if not trigger_path.exists():
+            return self._make_result(rule, False, f"트리거 이미지 파일 없음: {trigger_path.name}", start_time)
+
+        trigger_confidence = rule.confidence if rule.confidence > 0 else 0.65
+        step_prefix = f"[{step_num}] " if step_num else ""
+        stop_playlist = bool(getattr(rule, "stop_playlist_on_trigger_missing", False))
+        trigger_timeout = PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS if stop_playlist else 0.0
+        mode_desc = f"{trigger_timeout:.1f}초 후 재생목록 종료" if stop_playlist else "무제한"
+        search_region = self._trigger_search_region_for_rule(rule)
+
+        logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중... ({mode_desc}){_RESET}")
+        if search_region:
+            logger.debug(f"[트리거] 검색범위={search_region}")
+        self._update_progress(f"{step_prefix}트리거 대기 중: {rule.description}")
+
+        trigger_location = self._wait_for_trigger(
+            str(trigger_path),
+            confidence=trigger_confidence,
+            timeout=trigger_timeout,
+            search_region=search_region,
+        )
+
+        if trigger_location is None:
+            if self._stop_event.is_set():
+                return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
+
+            if stop_playlist:
+                message = (
+                    f"{PLAYLIST_SKIP_TRIGGER_MISSING}: "
+                    f"트리거 이미지 없음 ({trigger_path.name}, {trigger_timeout:.1f}초)"
+                )
+                logger.warning(f"{_YELLOW}{step_prefix}⏭ {message}{_RESET}")
+                return self._make_result(
+                    rule,
+                    True,
+                    message,
+                    start_time,
+                    skip_current_playlist=True,
+                )
+
+            return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
+
+        self._prepare_for_click_after_trigger()
+        return None
+
     def _execute_rule_with_retry(
         self,
         rule: AutomationRule,
@@ -901,25 +987,9 @@ class RuleExecutor:
         # 화면 안정화 대기 (이전 액션 효과가 반영될 시간)
         time.sleep(0.2)
 
-        # trigger_image가 설정되어 있으면 해당 이미지가 나타날 때까지 대기
-        if rule.trigger_image:
-            trigger_confidence = rule.confidence if rule.confidence > 0 else 0.65
-            step_prefix = f"[{step_num}] " if step_num else ""
-            logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중... (무제한){_RESET}")
-            self._update_progress(f"{step_prefix}트리거 대기 중: {rule.description}")
-
-            # 트리거 대기 (타임아웃 없음 - stop_event로만 중지)
-            trigger_location = self._wait_for_trigger(
-                rule.trigger_image,
-                confidence=trigger_confidence,
-                timeout=0
-            )
-
-            if trigger_location is None:
-                return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
-
-            # 트리거 발견 후 클릭 준비 (포커스 확보)
-            self._prepare_for_click_after_trigger()
+        trigger_result = self._handle_trigger_gate(rule, start_time, step_num)
+        if trigger_result is not None:
+            return trigger_result
 
         # 클릭 계열 동작인지 확인
         is_click_action = rule.action_type in ["click", "double_click", "right_click"]
@@ -1765,6 +1835,7 @@ class RuleExecutor:
         image_path: str,
         confidence: float = 0.65,
         timeout: float = 30.0,
+        search_region: Optional[list] = None,
     ) -> Optional[tuple]:
         """
         트리거 이미지가 나타날 때까지 대기 (새로운 단순화된 구현)
@@ -1796,7 +1867,8 @@ class RuleExecutor:
             template_gray, h, w = cached
 
             timeout_desc = "무제한" if timeout <= 0 else f"최대 {timeout}초"
-            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name} ({timeout_desc}){_RESET}")
+            region_desc = f", 검색범위={search_region}" if search_region else ""
+            logger.info(f"{_YELLOW}⏳ 트리거 대기: {Path(image_path).name} ({timeout_desc}{region_desc}){_RESET}")
 
             check_interval = 0.2
             trigger_start = time.time()
@@ -1839,8 +1911,22 @@ class RuleExecutor:
                     screenshot_np = np.array(screenshot)
                     screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
 
-                    # 크기 체크: 템플릿이 화면보다 크면 스킵
                     scr_h, scr_w = screenshot_gray.shape[:2]
+                    region_offset_x, region_offset_y = 0, 0
+                    if search_region and len(search_region) == 4:
+                        try:
+                            x1 = max(0, int(search_region[0]))
+                            y1 = max(0, int(search_region[1]))
+                            x2 = min(scr_w, int(search_region[2]))
+                            y2 = min(scr_h, int(search_region[3]))
+                        except (TypeError, ValueError):
+                            x1 = y1 = x2 = y2 = 0
+                        if x2 > x1 and y2 > y1:
+                            screenshot_gray = screenshot_gray[y1:y2, x1:x2]
+                            region_offset_x, region_offset_y = x1, y1
+                            scr_h, scr_w = screenshot_gray.shape[:2]
+
+                    # 크기 체크: 템플릿이 화면보다 크면 스킵
                     if h > scr_h or w > scr_w:
                         logger.warning(f"[트리거] 템플릿({w}x{h})이 화면({scr_w}x{scr_h})보다 큼 - 스킵")
                         return None
@@ -1876,8 +1962,8 @@ class RuleExecutor:
                             break
 
                     if best_match and best_match[0] >= confidence:
-                        center_x = best_match[1][0] + best_w // 2
-                        center_y = best_match[1][1] + best_h // 2
+                        center_x = best_match[1][0] + best_w // 2 + region_offset_x
+                        center_y = best_match[1][1] + best_h // 2 + region_offset_y
                         logger.info(f"{_GREEN}✓ 트리거 발견! ({elapsed:.1f}초 대기){_RESET}")
                         logger.debug(f"[트리거] 위치=({center_x}, {center_y}), 점수={best_match[0]:.2f}, scale={best_scale:.2f}")
                         return (center_x, center_y)
@@ -2815,6 +2901,7 @@ class RuleExecutor:
         success: bool,
         message: str,
         start_time: datetime,
+        skip_current_playlist: bool = False,
     ) -> RuleExecutionResult:
         """실행 결과 생성"""
         execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -2824,6 +2911,7 @@ class RuleExecutor:
             message=message,
             executed_at=datetime.now(),
             execution_time_ms=execution_time,
+            skip_current_playlist=skip_current_playlist,
         )
 
     def _update_progress(self, message: str) -> None:

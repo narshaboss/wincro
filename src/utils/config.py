@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from .app_identity import PRIMARY_APP_NAME
+from .plan_sequence_groups import (
+    make_plan_sequence_group,
+    mirror_active_group_to_legacy,
+    normalize_plan_sequence_groups,
+)
 
 
 if getattr(sys, "frozen", False):
@@ -29,7 +34,14 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.219"
+APP_VERSION = "1.0.220"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v1"
+AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
+AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
+AUTO_RUN_PROFILE_PLANS = (
+    ("plan_20260118_174859.json", 1),
+    ("plan_20260605_123819.json", 1),
+)
 
 
 @dataclass
@@ -65,6 +77,9 @@ class PlayerConfig:
     auto_run_enabled: bool = False
     plan_sequence: List[str] = field(default_factory=list)
     plan_sequence_repeats: List[int] = field(default_factory=list)
+    plan_sequence_groups: List[dict] = field(default_factory=list)
+    active_plan_sequence_group_id: str = ""
+    auto_run_profile_version: str = ""
 
 
 @dataclass
@@ -166,14 +181,17 @@ class ConfigManager:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     self._config = self._dict_to_config(data)
+                    self._apply_packaged_player_defaults(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
+                    self._apply_packaged_player_defaults(self._config)
                     self._load_status = "error"
                     self._load_error = f"{type(e).__name__}: {e}"
             else:
                 self._config = AppConfig()
+                self._apply_packaged_player_defaults(self._config)
                 self._load_status = "missing"
                 self._load_error = ""
             return self._config
@@ -254,6 +272,50 @@ class ConfigManager:
             first_run=data.get("first_run", True),
             last_opened=data.get("last_opened", ""),
         )
+
+    def _apply_packaged_player_defaults(self, config: AppConfig) -> None:
+        """Apply release-seeded playback defaults without touching PC-local settings.
+
+        This intentionally updates only the playback auto-run fields.  The marker
+        prevents future launches from overwriting the user's later local edits.
+        """
+        player = config.player
+        if getattr(player, "auto_run_profile_version", "") == AUTO_RUN_PROFILE_VERSION:
+            return
+
+        plans_dir = DATA_DIR / "plans"
+        entries = [
+            {
+                "plan_path": str(plans_dir / file_name),
+                "repeat_count": repeat_count,
+            }
+            for file_name, repeat_count in AUTO_RUN_PROFILE_PLANS
+        ]
+        packaged_group = make_plan_sequence_group(
+            AUTO_RUN_PROFILE_GROUP_NAME,
+            entries,
+            group_id=AUTO_RUN_PROFILE_GROUP_ID,
+            repeat_count=1,
+        )
+
+        has_saved_groups = bool(getattr(player, "plan_sequence_groups", []) or [])
+        has_legacy_sequence = bool(getattr(player, "plan_sequence", []) or [])
+        existing_groups = (
+            normalize_plan_sequence_groups(player, mutate=False)
+            if has_saved_groups or has_legacy_sequence
+            else []
+        )
+        kept_groups = [
+            group
+            for group in existing_groups
+            if group.get("group_id") != AUTO_RUN_PROFILE_GROUP_ID
+            and group.get("name") != AUTO_RUN_PROFILE_GROUP_NAME
+        ]
+        player.plan_sequence_groups = [packaged_group, *kept_groups]
+        player.active_plan_sequence_group_id = AUTO_RUN_PROFILE_GROUP_ID
+        player.auto_run_enabled = True
+        player.auto_run_profile_version = AUTO_RUN_PROFILE_VERSION
+        mirror_active_group_to_legacy(player)
 
     def get_load_status(self) -> str:
         with self._lock:

@@ -8,12 +8,22 @@ import json
 import tkinter as tk
 import threading
 import customtkinter as ctk
+from types import SimpleNamespace
 from typing import Optional
 from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, config_manager
-from ..utils.json_utils import dump_json_file, load_json_file
+from ..utils.json_utils import load_json_file
+from ..utils.plan_sequence_groups import (
+    add_or_update_group_entry,
+    make_plan_sequence_group,
+    mirror_active_group_to_legacy,
+    normalize_plan_sequence_groups,
+    normalize_repeat_count,
+    read_plan_repeat_count,
+    write_plan_repeat_count,
+)
 from ..utils.app_identity import (
     PRIMARY_APP_NAME,
     clear_random_app_name,
@@ -40,6 +50,10 @@ class SettingsView(BaseView):
 
         self._stop_flag = threading.Event()
         self._active_threads: list = []
+        config = get_config()
+        # 업데이트 UI는 숨겼지만 기존 내부 핸들러가 참조할 수 있어 기본 변수는 유지한다.
+        self._github_repo_var = ctk.StringVar(value=getattr(config.update, "github_repo", ""))
+        self._auto_update_var = ctk.BooleanVar(value=bool(getattr(config.update, "auto_check", False)))
 
         self._setup_ui()
         self.after(0, self._load_settings)  # UI 렌더 후 설정 로드
@@ -66,42 +80,25 @@ class SettingsView(BaseView):
         main_frame = ctk.CTkFrame(self, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # 그리드 설정 (4행 2열)
+        # 그리드 설정: 일반/재생만 크게 표시
         main_frame.grid_columnconfigure(0, weight=1, uniform="col")
-        main_frame.grid_columnconfigure(1, weight=1, uniform="col")
-        main_frame.grid_rowconfigure(0, weight=3, uniform="row")
-        main_frame.grid_rowconfigure(1, weight=3, uniform="row")
-        main_frame.grid_rowconfigure(2, weight=2)  # 업데이트 설정 행
-        main_frame.grid_rowconfigure(3, weight=0)  # 저장 버튼 행 (고정)
+        main_frame.grid_rowconfigure(0, weight=2)
+        main_frame.grid_rowconfigure(1, weight=5)
+        main_frame.grid_rowconfigure(2, weight=0)  # 저장 버튼 행 (고정)
 
-        # 좌상단: 일반 설정
+        # 상단: 일반 설정
         general_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        general_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        general_frame.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 6))
         self._setup_general_settings(general_frame)
 
-        # 우상단: 녹화 설정
-        recording_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        recording_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
-        self._setup_recording_settings(recording_frame)
-
-        # 좌하단: 재생 설정
+        # 하단: 재생 설정
         player_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        player_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
+        player_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 6))
         self._setup_player_settings(player_frame)
 
-        # 우하단: 외관 설정
-        appearance_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        appearance_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
-        self._setup_appearance_settings(appearance_frame)
-
-        # 3행: 업데이트 설정
-        update_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        update_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=0, pady=(4, 0))
-        self._setup_update_settings(update_frame)
-
-        # 4행: 저장 버튼 (크게)
+        # 저장 버튼
         save_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        save_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=0, pady=(8, 0))
+        save_frame.grid(row=2, column=0, sticky="nsew", padx=0, pady=(4, 0))
         self._setup_save_button(save_frame)
 
     def _setup_general_settings(self, parent) -> None:
@@ -671,10 +668,10 @@ class SettingsView(BaseView):
         # 플랜 목록 로드
         self._auto_run_plan_list = self._load_plan_list()
 
-        # 플랜 순서 실행 설정
+        # 자동실행 그룹 설정
         seq_label = ctk.CTkLabel(
             scroll_frame,
-            text="플랜 순서",
+            text="자동실행 그룹",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
@@ -688,12 +685,120 @@ class SettingsView(BaseView):
             seq_auto_frame,
             "프로그램 시작 시 자동실행",
             self._auto_run_enabled_var,
-            help_text="앱 시작 시 아래 플랜 순서대로 자동 실행"
+            help_text="앱 시작 시 선택된 그룹만 자동 실행"
         )
 
-        # 플랜 추가 드롭다운 + 추가 버튼
-        seq_add_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-        seq_add_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self._seq_groups = []
+        self._seq_active_group_id = ""
+        self._seq_selected_group_index = 0
+        self._seq_selected_entry_index = 0
+
+        seq_shell = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=12)
+        seq_shell.pack(fill="x", padx=10, pady=(0, 10))
+        seq_shell.grid_columnconfigure(0, weight=1)
+        seq_shell.grid_columnconfigure(1, weight=2)
+
+        group_panel = ctk.CTkFrame(seq_shell, fg_color=COLORS["bg_card"], corner_radius=10)
+        group_panel.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
+
+        ctk.CTkLabel(
+            group_panel,
+            text="그룹 목록",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+
+        self._seq_group_listbox = tk.Listbox(
+            group_panel,
+            height=5,
+            font=("Consolas", 10),
+            bg=COLORS["bg_dark"],
+            fg=COLORS["text_primary"],
+            selectbackground=COLORS["accent"],
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="none",
+            exportselection=False,
+        )
+        self._seq_group_listbox.pack(fill="x", padx=10, pady=(0, 6))
+
+        group_repeat_frame = ctk.CTkFrame(group_panel, fg_color="transparent")
+        group_repeat_frame.pack(fill="x", padx=10, pady=(0, 6))
+        ctk.CTkLabel(
+            group_repeat_frame,
+            text="그룹 반복:",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left")
+        self._seq_group_repeat_var = ctk.StringVar(value="1")
+        self._seq_group_repeat_entry = ctk.CTkEntry(
+            group_repeat_frame,
+            textvariable=self._seq_group_repeat_var,
+            width=56,
+            height=26,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11),
+        )
+        self._seq_group_repeat_entry.pack(side="left", padx=(5, 5))
+        ctk.CTkButton(
+            group_repeat_frame,
+            text="적용",
+            command=self._seq_apply_group_repeat,
+            width=48,
+            height=26,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left")
+
+        group_btn_frame = ctk.CTkFrame(group_panel, fg_color="transparent")
+        group_btn_frame.pack(fill="x", padx=10, pady=(0, 4))
+        for btn_text, btn_cmd in [
+            ("+ 그룹", self._seq_add_group),
+            ("이름변경", self._seq_rename_group),
+            ("삭제", self._seq_delete_group),
+        ]:
+            ctk.CTkButton(
+                group_btn_frame,
+                text=btn_text,
+                command=btn_cmd,
+                width=62,
+                height=26,
+                fg_color=COLORS["bg_card_hover"],
+                hover_color=COLORS["accent"],
+                text_color=COLORS["text_primary"],
+                font=ctk.CTkFont(size=10),
+            ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            group_panel,
+            text="이 그룹을 자동실행으로 지정",
+            command=self._seq_set_active_group,
+            height=28,
+            fg_color=COLORS["accent_blue"],
+            hover_color="#2563eb",
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(fill="x", padx=10, pady=(0, 10))
+
+        entry_panel = ctk.CTkFrame(seq_shell, fg_color=COLORS["bg_card"], corner_radius=10)
+        entry_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
+
+        self._seq_group_title_label = ctk.CTkLabel(
+            entry_panel,
+            text="선택 그룹",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        )
+        self._seq_group_title_label.pack(anchor="w", padx=10, pady=(10, 4))
+
+        seq_add_frame = ctk.CTkFrame(entry_panel, fg_color="transparent")
+        seq_add_frame.pack(fill="x", padx=10, pady=(0, 6))
 
         seq_plan_names = [p["name"] for p in self._auto_run_plan_list] if self._auto_run_plan_list else ["(플랜 없음)"]
         self._seq_plan_add_var = ctk.StringVar(value=seq_plan_names[0] if seq_plan_names else "")
@@ -723,13 +828,12 @@ class SettingsView(BaseView):
             font=ctk.CTkFont(size=11),
         ).pack(side="left", padx=(5, 0))
 
-        # 플랜 순서 리스트
-        seq_list_frame = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
-        seq_list_frame.pack(fill="x", padx=10, pady=(0, 5))
+        seq_list_frame = ctk.CTkFrame(entry_panel, fg_color=COLORS["bg_dark"], corner_radius=8)
+        seq_list_frame.pack(fill="x", padx=10, pady=(0, 6))
 
         self._seq_listbox = tk.Listbox(
             seq_list_frame,
-            height=5,
+            height=6,
             font=("Consolas", 11),
             bg=COLORS["bg_dark"],
             fg=COLORS["text_primary"],
@@ -739,11 +843,11 @@ class SettingsView(BaseView):
             borderwidth=0,
             highlightthickness=0,
             activestyle="none",
+            exportselection=False,
         )
         self._seq_listbox.pack(fill="x", padx=5, pady=5)
 
-        # 버튼 프레임 (삭제, 위로, 아래로)
-        seq_btn_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        seq_btn_frame = ctk.CTkFrame(entry_panel, fg_color="transparent")
         seq_btn_frame.pack(fill="x", padx=10, pady=(0, 5))
 
         for btn_text, btn_cmd in [
@@ -764,7 +868,7 @@ class SettingsView(BaseView):
             ).pack(side="left", padx=(0, 5))
 
         # 반복횟수 수정 프레임
-        seq_repeat_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        seq_repeat_frame = ctk.CTkFrame(entry_panel, fg_color="transparent")
         seq_repeat_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         ctk.CTkLabel(
@@ -799,145 +903,288 @@ class SettingsView(BaseView):
             font=ctk.CTkFont(size=11),
         ).pack(side="left")
 
-        # 리스트박스 선택 시 반복횟수 표시
+        self._seq_group_listbox.bind("<<ListboxSelect>>", self._seq_on_group_select)
         self._seq_listbox.bind("<<ListboxSelect>>", self._seq_on_select)
 
-    def _seq_add_plan(self) -> None:
-        """플랜 순서 목록에 플랜 추가"""
-        # json은 top-level에서 import됨
+    def _seq_plan_name(self, plan_path: str) -> str:
+        plan_name = Path(plan_path).stem
+        for plan in getattr(self, "_auto_run_plan_list", []) or []:
+            candidate = plan.get("path", "")
+            if candidate == plan_path or Path(candidate).name == Path(plan_path).name:
+                return plan.get("name", plan_name)
+        return plan_name
 
+    def _seq_write_groups_to_config(self, config) -> None:
+        group_state = SimpleNamespace(
+            plan_sequence_groups=getattr(self, "_seq_groups", []),
+            active_plan_sequence_group_id=getattr(self, "_seq_active_group_id", ""),
+            plan_sequence=[],
+            plan_sequence_repeats=[],
+        )
+        config.player.plan_sequence_groups = normalize_plan_sequence_groups(group_state, mutate=True)
+        config.player.active_plan_sequence_group_id = group_state.active_plan_sequence_group_id
+        normalize_plan_sequence_groups(config.player, mutate=True)
+        mirror_active_group_to_legacy(config.player)
+        self._seq_groups = config.player.plan_sequence_groups
+        self._seq_active_group_id = config.player.active_plan_sequence_group_id
+        self._seq_sync_active_cache()
+
+    def _seq_persist_groups_to_config(self) -> None:
+        config = get_config()
+        self._seq_write_groups_to_config(config)
+        save_config()
+
+    def _seq_selected_group(self) -> Optional[dict]:
+        groups = getattr(self, "_seq_groups", []) or []
+        if not groups:
+            return None
+        sel = self._seq_group_listbox.curselection() if hasattr(self, "_seq_group_listbox") else ()
+        index = sel[0] if sel else getattr(self, "_seq_selected_group_index", 0)
+        index = max(0, min(index, len(groups) - 1))
+        self._seq_selected_group_index = index
+        return groups[index]
+
+    def _seq_current_entry_index(self, group: Optional[dict]) -> Optional[int]:
+        entries = (group or {}).get("entries", []) or []
+        if not entries:
+            self._seq_selected_entry_index = 0
+            return None
+        sel = self._seq_listbox.curselection() if hasattr(self, "_seq_listbox") else ()
+        index = sel[0] if sel else getattr(self, "_seq_selected_entry_index", 0)
+        index = max(0, min(index, len(entries) - 1))
+        self._seq_selected_entry_index = index
+        return index
+
+    def _seq_sync_active_cache(self) -> None:
+        groups = getattr(self, "_seq_groups", []) or []
+        active_id = getattr(self, "_seq_active_group_id", "") or (groups[0]["group_id"] if groups else "")
+        active_group = next((g for g in groups if g.get("group_id") == active_id), groups[0] if groups else None)
+        entries = list((active_group or {}).get("entries", []) or [])
+        group_repeat = normalize_repeat_count((active_group or {}).get("repeat_count", 1))
+        self._seq_plan_paths = []
+        self._seq_plan_repeats = []
+        for _ in range(group_repeat):
+            for entry in entries:
+                path = entry.get("plan_path", "")
+                if not path:
+                    continue
+                self._seq_plan_paths.append(path)
+                self._seq_plan_repeats.append(normalize_repeat_count(entry.get("repeat_count", 1)))
+
+    def _seq_render_groups(self, select_index: Optional[int] = None) -> None:
+        if not getattr(self, "_seq_groups", None):
+            self._seq_groups = [make_plan_sequence_group()]
+        if not getattr(self, "_seq_active_group_id", ""):
+            self._seq_active_group_id = self._seq_groups[0]["group_id"]
+
+        if select_index is None:
+            select_index = getattr(self, "_seq_selected_group_index", 0)
+        select_index = max(0, min(select_index, len(self._seq_groups) - 1))
+        self._seq_selected_group_index = select_index
+
+        self._seq_group_listbox.delete(0, tk.END)
+        for group in self._seq_groups:
+            marker = "●" if group.get("group_id") == self._seq_active_group_id else "○"
+            entry_count = len(group.get("entries", []) or [])
+            group_repeat = normalize_repeat_count(group.get("repeat_count", 1))
+            self._seq_group_listbox.insert(
+                tk.END,
+                f"{marker} {group.get('name', '그룹')}  ({entry_count}개 × {group_repeat}회)",
+            )
+        self._seq_group_listbox.selection_clear(0, tk.END)
+        self._seq_group_listbox.selection_set(select_index)
+        self._seq_group_listbox.activate(select_index)
+        self._seq_render_entries()
+        self._seq_sync_active_cache()
+
+    def _seq_render_entries(self, select_index: Optional[int] = None) -> None:
+        group = self._seq_selected_group()
+        self._seq_listbox.delete(0, tk.END)
+        if not group:
+            self._seq_group_title_label.configure(text="선택 그룹 없음")
+            return
+
+        group_repeat = normalize_repeat_count(group.get("repeat_count", 1))
+        active_badge = " · 자동실행" if group.get("group_id") == self._seq_active_group_id else ""
+        self._seq_group_title_label.configure(text=f"{group.get('name', '그룹')}{active_badge} · 그룹 {group_repeat}회")
+        if hasattr(self, "_seq_group_repeat_var"):
+            self._seq_group_repeat_var.set(str(group_repeat))
+        entries = group.get("entries", []) or []
+        for index, entry in enumerate(entries, start=1):
+            plan_path = entry.get("plan_path", "")
+            repeat = normalize_repeat_count(entry.get("repeat_count", 1))
+            self._seq_listbox.insert(tk.END, f"{index:02d}. {self._seq_plan_name(plan_path)}  ({repeat}회)")
+
+        if entries:
+            if select_index is None:
+                select_index = getattr(self, "_seq_selected_entry_index", 0)
+            select_index = max(0, min(select_index, len(entries) - 1))
+            self._seq_selected_entry_index = select_index
+            self._seq_listbox.selection_clear(0, tk.END)
+            self._seq_listbox.selection_set(select_index)
+            self._seq_listbox.activate(select_index)
+            self._seq_repeat_var.set(str(normalize_repeat_count(entries[select_index].get("repeat_count", 1))))
+        else:
+            self._seq_selected_entry_index = 0
+            self._seq_repeat_var.set("1")
+
+    def _seq_on_group_select(self, event=None) -> None:
+        sel = self._seq_group_listbox.curselection()
+        if sel:
+            self._seq_selected_group_index = sel[0]
+        self._seq_selected_entry_index = 0
+        self._seq_render_entries()
+
+    def _seq_apply_group_repeat(self) -> None:
+        """선택 그룹 전체 반복횟수 변경"""
+        group = self._seq_selected_group()
+        if not group:
+            return
+        group_repeat = normalize_repeat_count(self._seq_group_repeat_var.get())
+        group["repeat_count"] = group_repeat
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(self._seq_selected_group_index)
+        logger.info(f"자동실행 그룹 반복횟수 저장: {group.get('name', '그룹')} → {group_repeat}회")
+
+    def _seq_add_group(self) -> None:
+        dialog = ctk.CTkInputDialog(text="새 그룹 이름을 입력하세요", title="자동실행 그룹 추가")
+        name = (dialog.get_input() or "").strip()
+        if not name:
+            name = f"그룹 {len(getattr(self, '_seq_groups', []) or []) + 1}"
+        self._seq_groups.append(make_plan_sequence_group(name))
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(len(self._seq_groups) - 1)
+
+    def _seq_rename_group(self) -> None:
+        group = self._seq_selected_group()
+        if not group:
+            return
+        dialog = ctk.CTkInputDialog(
+            text=f"그룹 이름을 입력하세요\n현재: {group.get('name', '그룹')}",
+            title="그룹 이름 변경",
+        )
+        name = (dialog.get_input() or "").strip()
+        if not name:
+            return
+        group["name"] = name
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(self._seq_selected_group_index)
+
+    def _seq_delete_group(self) -> None:
+        group = self._seq_selected_group()
+        if not group:
+            return
+        if len(self._seq_groups) <= 1:
+            group["entries"] = []
+            self._seq_persist_groups_to_config()
+            self._seq_render_groups(0)
+            return
+        self._seq_groups.pop(self._seq_selected_group_index)
+        if group.get("group_id") == self._seq_active_group_id:
+            self._seq_active_group_id = self._seq_groups[0]["group_id"]
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(max(0, self._seq_selected_group_index - 1))
+
+    def _seq_set_active_group(self) -> None:
+        group = self._seq_selected_group()
+        if not group:
+            return
+        self._seq_active_group_id = group.get("group_id", "")
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(self._seq_selected_group_index)
+
+    def _seq_add_plan(self) -> None:
+        """선택 그룹에 플랜 추가"""
+        group = self._seq_selected_group()
+        if not group:
+            return
         plan_name = self._seq_plan_add_var.get()
         if not plan_name or plan_name == "(플랜 없음)":
             return
-        # 경로 찾기
         plan_path = ""
-        for p in self._auto_run_plan_list:
-            if p["name"] == plan_name:
-                plan_path = p["path"]
+        for plan in self._auto_run_plan_list:
+            if plan["name"] == plan_name:
+                plan_path = plan["path"]
                 break
         if not plan_path:
             return
 
-        # 플랜 파일에서 반복횟수 읽기
-        repeat_count = 1
-        try:
-            data = load_json_file(plan_path)
-            repeat_count = data.get("total_repeat_count", 1) or 1
-        except Exception:
-            pass
-
-        self._seq_listbox.insert(tk.END, f"{plan_name}  ({repeat_count}회)")
-        # 내부 리스트에도 추가
-        if not hasattr(self, '_seq_plan_paths'):
-            self._seq_plan_paths = []
-        if not hasattr(self, '_seq_plan_repeats'):
-            self._seq_plan_repeats = []
-        self._seq_plan_paths.append(plan_path)
-        self._seq_plan_repeats.append(repeat_count)
+        repeat_count = read_plan_repeat_count(plan_path, default=1)
+        add_or_update_group_entry(group, plan_path, repeat_count)
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(self._seq_selected_group_index)
 
     def _seq_remove_plan(self) -> None:
-        """플랜 순서 목록에서 선택 항목 삭제"""
-        sel = self._seq_listbox.curselection()
-        if not sel:
+        """선택 그룹에서 플랜 삭제"""
+        group = self._seq_selected_group()
+        idx = self._seq_current_entry_index(group)
+        if not group or idx is None:
             return
-        idx = sel[0]
-        self._seq_listbox.delete(idx)
-        if hasattr(self, '_seq_plan_paths') and idx < len(self._seq_plan_paths):
-            self._seq_plan_paths.pop(idx)
-        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
-            self._seq_plan_repeats.pop(idx)
+        entries = group.get("entries", []) or []
+        if idx < len(entries):
+            entries.pop(idx)
+            group["entries"] = entries
+        self._seq_persist_groups_to_config()
+        self._seq_render_groups(self._seq_selected_group_index)
 
     def _seq_move_up(self) -> None:
-        """플랜 순서 목록에서 선택 항목을 위로 이동"""
-        sel = self._seq_listbox.curselection()
-        if not sel or sel[0] == 0:
+        """선택 그룹 내 플랜을 위로 이동"""
+        group = self._seq_selected_group()
+        idx = self._seq_current_entry_index(group)
+        if not group or idx is None or idx == 0:
             return
-        idx = sel[0]
-        # 리스트박스 항목 교환
-        text = self._seq_listbox.get(idx)
-        self._seq_listbox.delete(idx)
-        self._seq_listbox.insert(idx - 1, text)
-        self._seq_listbox.selection_set(idx - 1)
-        # 경로 리스트 교환
-        if hasattr(self, '_seq_plan_paths') and idx < len(self._seq_plan_paths):
-            self._seq_plan_paths[idx], self._seq_plan_paths[idx - 1] = \
-                self._seq_plan_paths[idx - 1], self._seq_plan_paths[idx]
-        # 반복횟수 리스트 교환
-        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
-            self._seq_plan_repeats[idx], self._seq_plan_repeats[idx - 1] = \
-                self._seq_plan_repeats[idx - 1], self._seq_plan_repeats[idx]
+        entries = group.get("entries", []) or []
+        entries[idx - 1], entries[idx] = entries[idx], entries[idx - 1]
+        group["entries"] = entries
+        self._seq_persist_groups_to_config()
+        self._seq_render_entries(idx - 1)
 
     def _seq_move_down(self) -> None:
-        """플랜 순서 목록에서 선택 항목을 아래로 이동"""
-        sel = self._seq_listbox.curselection()
-        if not sel:
+        """선택 그룹 내 플랜을 아래로 이동"""
+        group = self._seq_selected_group()
+        idx = self._seq_current_entry_index(group)
+        if not group or idx is None:
             return
-        idx = sel[0]
-        if idx >= self._seq_listbox.size() - 1:
+        entries = group.get("entries", []) or []
+        if idx >= len(entries) - 1:
             return
-        # 리스트박스 항목 교환
-        text = self._seq_listbox.get(idx)
-        self._seq_listbox.delete(idx)
-        self._seq_listbox.insert(idx + 1, text)
-        self._seq_listbox.selection_set(idx + 1)
-        # 경로 리스트 교환
-        if hasattr(self, '_seq_plan_paths') and idx < len(self._seq_plan_paths):
-            self._seq_plan_paths[idx], self._seq_plan_paths[idx + 1] = \
-                self._seq_plan_paths[idx + 1], self._seq_plan_paths[idx]
-        # 반복횟수 리스트 교환
-        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
-            self._seq_plan_repeats[idx], self._seq_plan_repeats[idx + 1] = \
-                self._seq_plan_repeats[idx + 1], self._seq_plan_repeats[idx]
+        entries[idx + 1], entries[idx] = entries[idx], entries[idx + 1]
+        group["entries"] = entries
+        self._seq_persist_groups_to_config()
+        self._seq_render_entries(idx + 1)
 
     def _seq_on_select(self, event=None) -> None:
-        """플랜 순서 리스트 선택 시 반복횟수 표시"""
-        sel = self._seq_listbox.curselection()
-        if not sel:
+        """그룹 플랜 선택 시 반복횟수 표시"""
+        group = self._seq_selected_group()
+        idx = self._seq_current_entry_index(group)
+        if not group or idx is None:
             return
-        idx = sel[0]
-        if hasattr(self, '_seq_plan_repeats') and idx < len(self._seq_plan_repeats):
-            self._seq_repeat_var.set(str(self._seq_plan_repeats[idx]))
+        entries = group.get("entries", []) or []
+        if idx < len(entries):
+            self._seq_repeat_var.set(str(normalize_repeat_count(entries[idx].get("repeat_count", 1))))
 
     def _seq_apply_repeat(self) -> None:
-        """선택된 플랜의 반복횟수 변경"""
-        sel = self._seq_listbox.curselection()
-        if not sel:
+        """선택 그룹 항목의 반복횟수 변경"""
+        group = self._seq_selected_group()
+        idx = self._seq_current_entry_index(group)
+        if not group or idx is None:
             return
-        idx = sel[0]
+        entries = group.get("entries", []) or []
+        if idx >= len(entries):
+            return
+
+        new_count = normalize_repeat_count(self._seq_repeat_var.get())
+        entries[idx]["repeat_count"] = new_count
+        plan_path = entries[idx].get("plan_path", "")
+
         try:
-            new_count = int(self._seq_repeat_var.get())
-            if new_count < 1:
-                new_count = 1
-            elif new_count > 9999:
-                new_count = 9999
-        except ValueError:
-            return
-
-        if not hasattr(self, '_seq_plan_repeats') or idx >= len(self._seq_plan_repeats):
-            return
-
-        self._seq_plan_repeats[idx] = new_count
-
-        # 플랜 파일에도 반복횟수 저장 (플레이 모드와 동기화)
-        plan_path = self._seq_plan_paths[idx]
-        try:
-            if Path(plan_path).exists():
-                data = load_json_file(plan_path)
-                data["total_repeat_count"] = new_count
-                dump_json_file(plan_path, data, ensure_ascii=False, indent=2)
-                logger.info(f"플랜 반복횟수 저장: {Path(plan_path).stem} → {new_count}회")
+            if write_plan_repeat_count(plan_path, new_count):
+                logger.info(f"그룹/플랜 반복횟수 저장: {Path(plan_path).stem} → {new_count}회")
         except Exception as e:
             logger.error(f"플랜 반복횟수 저장 실패: {e}")
 
-        # 리스트박스 텍스트 갱신
-        plan_name = Path(plan_path).stem
-        for p in self._auto_run_plan_list:
-            if p["path"] == plan_path:
-                plan_name = p["name"]
-                break
-        self._seq_listbox.delete(idx)
-        self._seq_listbox.insert(idx, f"{plan_name}  ({new_count}회)")
-        self._seq_listbox.selection_set(idx)
+        self._seq_persist_groups_to_config()
+        self._seq_render_entries(idx)
 
     def _load_plan_list(self) -> list:
         """플랜 목록 로드"""
@@ -1197,7 +1444,7 @@ class SettingsView(BaseView):
         # 오른쪽: 저장 버튼
         self._save_all_btn = ctk.CTkButton(
             btn_container,
-            text="💾 모든 설정 저장",
+            text="💾 설정 저장",
             command=self._save_all_settings,
             width=150,
             height=45,
@@ -1209,34 +1456,14 @@ class SettingsView(BaseView):
         self._save_all_btn.pack(side="left")
 
     def _save_all_settings(self) -> None:
-        """모든 설정 저장"""
+        """현재 노출된 설정 저장"""
         from tkinter import messagebox
 
         try:
-            # 기존 _save_settings 호출 (일반/녹화/재생/외관 설정)
             if not self._save_settings():
                 return
 
-            # GitHub 저장소 저장
-            repo = self._github_repo_var.get().strip()
-            if repo:
-                config = get_config()
-                config.update.github_repo = repo
-                save_config()
-
-            # 자동 업데이트 설정 저장
-            config = get_config()
-            config.update.auto_check = self._auto_update_var.get()
-            save_config()
-
-            # 상태 업데이트
-            self._update_status_icon.configure(text="✅")
-            self._update_status_label.configure(
-                text="모든 설정이 저장되었습니다",
-                text_color=COLORS["success"]
-            )
-
-            messagebox.showinfo("저장 완료", "모든 설정이 저장되었습니다!")
+            messagebox.showinfo("저장 완료", "설정이 저장되었습니다!")
             logger.info("모든 설정 저장 완료")
 
         except Exception as e:
@@ -2190,12 +2417,6 @@ del "%~f0"
         self._arduino_port_var.set(config.arduino.com_port)
         self._arduino_baud_var.set(str(config.arduino.baud_rate))
 
-        # 녹화 설정
-        self._fps_var.set(str(config.recording.fps))
-        self._quality_var.set(config.recording.quality)
-        self._cursor_var.set(config.recording.include_cursor)
-        self._input_log_var.set(config.recording.save_input_log)
-
         # 재생 설정
         self._speed_var.set(str(config.player.speed_multiplier))
         self._wait_var.set(str(config.player.default_wait_ms))
@@ -2204,48 +2425,22 @@ del "%~f0"
         self._auto_start_var.set(config.ui.auto_start)
         self._auto_run_enabled_var.set(config.player.auto_run_enabled)
 
-        # 플랜 순서 설정 - 플랜 파일에서 최신 반복횟수 읽기
-        self._seq_plan_paths = list(config.player.plan_sequence)
-        self._seq_plan_repeats = []
-        self._seq_listbox.delete(0, tk.END)
-        for i, seq_path in enumerate(self._seq_plan_paths):
-            seq_name = Path(seq_path).stem
-            for p in self._auto_run_plan_list:
-                if p["path"] == seq_path:
-                    seq_name = p["name"]
-                    break
-            # 플랜 파일에서 최신 반복횟수 읽기
-            repeat = 1
-            try:
-                if Path(seq_path).exists():
-                    data = load_json_file(seq_path)
-                    repeat = data.get("total_repeat_count", 1) or 1
-            except Exception:
-                pass
-            self._seq_plan_repeats.append(repeat)
-            self._seq_listbox.insert(tk.END, f"{seq_name}  ({repeat}회)")
+        # 자동실행 그룹 설정
+        self._seq_groups = normalize_plan_sequence_groups(config.player, mutate=True)
+        self._seq_active_group_id = getattr(config.player, "active_plan_sequence_group_id", "") or (
+            self._seq_groups[0]["group_id"] if self._seq_groups else ""
+        )
+        active_index = 0
+        for index, group in enumerate(self._seq_groups):
+            if group.get("group_id") == self._seq_active_group_id:
+                active_index = index
+                break
+        self._seq_render_groups(active_index)
 
-        # 외관 설정
+        # 일반 설정 - 프로그램 이름
         self._app_name_var.set(config.ui.app_name)
         self._random_name_var.set(config.ui.random_name_mode)
-        self._theme_var.set(
-            SETTINGS["theme_dark"]
-            if config.ui.theme == "dark"
-            else SETTINGS["theme_light"]
-        )
-        self._language_var.set("한국어")
         self._update_random_name_preview()
-
-        # 업데이트 설정 (GitHub)
-        self._github_repo_var.set(config.update.github_repo)
-        if config.update.last_update:
-            self._last_update_label.configure(text=f"마지막 업데이트: {config.update.last_update}")
-        if config.update.github_repo:
-            self._update_status_icon.configure(text="✅")
-            self._update_status_label.configure(
-                text=f"저장소: {config.update.github_repo}",
-                text_color=COLORS["text_secondary"]
-            )
 
         logger.debug("설정 로드 완료")
 
@@ -2283,17 +2478,6 @@ del "%~f0"
         if baud_rate is not None:
             config.arduino.baud_rate = baud_rate
 
-        # 녹화 설정 (검증 포함)
-        fps = self._parse_int(self._fps_var.get(), 1, 60, "FPS")
-        if fps is not None:
-            config.recording.fps = fps
-        else:
-            validation_errors.append("FPS는 1-60 사이의 숫자여야 합니다")
-
-        config.recording.quality = self._quality_var.get()
-        config.recording.include_cursor = self._cursor_var.get()
-        config.recording.save_input_log = self._input_log_var.get()
-
         # 재생 설정 (검증 포함)
         speed = self._parse_float(self._speed_var.get(), 0.1, 10.0, "재생 속도")
         if speed is not None:
@@ -2315,8 +2499,7 @@ del "%~f0"
 
         config.player.emergency_stop_key = self._stop_key_var.get()
         config.player.auto_run_enabled = self._auto_run_enabled_var.get()
-        config.player.plan_sequence = list(getattr(self, '_seq_plan_paths', []))
-        config.player.plan_sequence_repeats = list(getattr(self, '_seq_plan_repeats', []))
+        self._seq_write_groups_to_config(config)
 
         # 자동 시작 설정
         new_auto_start = self._auto_start_var.get()
@@ -2334,9 +2517,6 @@ del "%~f0"
             clear_random_app_name(config.ui)
         else:
             ensure_random_app_name(config.ui, save_callback=None)
-        config.ui.theme = (
-            "dark" if self._theme_var.get() == SETTINGS["theme_dark"] else "light"
-        )
 
         # 검증 오류가 있으면 표시
         if validation_errors:

@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_WINDOW = ROOT / "src" / "ui" / "main_window.py"
 SETTINGS_VIEW = ROOT / "src" / "ui" / "settings_view.py"
+APP = ROOT / "src" / "app.py"
 
 
 def _read_text() -> str:
@@ -12,6 +13,10 @@ def _read_text() -> str:
 
 def _read_settings_text() -> str:
     return SETTINGS_VIEW.read_text(encoding="utf-8")
+
+
+def _read_app_text() -> str:
+    return APP.read_text(encoding="utf-8")
 
 
 def test_main_window_reloads_single_plan_before_repeat():
@@ -89,3 +94,53 @@ def test_play_mode_log_copy_button_is_visible_and_copies_full_log():
     assert "self.clipboard_clear()" in text
     assert "self.clipboard_append(text)" in text
     assert "로그 {line_count}줄 복사됨" in text
+
+
+def test_play_mode_active_bar_tracks_current_group_and_playlist():
+    text = _read_text()
+    app_text = _read_app_text()
+    mini_slice = text[
+        text.index("def _create_mini_player_ui(self):"):
+        text.index("def _refresh_mini_plans_sync(self):")
+    ]
+
+    assert 'text="현재 실행"' in mini_slice
+    assert "self._mini_active_title" in mini_slice
+    assert "self._mini_active_detail" in mini_slice
+    assert 'self._mini_update_active_bar("대기")' in mini_slice
+    assert "def _mini_update_active_bar(" in text
+    assert "def _mini_active_group_name(self) -> str:" in text
+    assert "get_active_plan_sequence_group(self._config.player)" in text
+    assert 'def auto_run_sequence(self, plan_paths: list, repeats: list = None, group_name: str = "") -> bool:' in text
+    assert "self._start_sequence_mode(plan_paths, repeats, group_name=group_name)" in text
+    assert "self._sequence_group_name = group_name or self._mini_active_group_name()" in text
+    assert "auto_run_sequence(converted_paths, repeats, group_name=group_name)" in app_text
+
+
+def test_play_mode_dropdown_can_run_grouped_playlists():
+    text = _read_text()
+
+    assert 'MINI_GROUP_PREFIX = "그룹: "' in text
+    assert "def _mini_dropdown_values(self) -> list[str]:" in text
+    assert "values = [self._mini_group_label(group) for group in self._mini_sequence_groups()]" in text
+    assert "self._mini_plan_dropdown.configure(values=plan_names)" in text
+    assert "selected_group = self._mini_group_by_label(plan_name)" in text
+    assert "self._mini_repeat_var.set(str(group_repeat))" in text
+    assert 'self._mini_status.configure(text=f"✓ 그룹 반복 {repeat_count}회 저장됨")' in text
+    assert "group_to_run = dict(selected_group)" in text
+    assert "plan_paths, repeats = self._mini_expand_group_sequence(group_to_run)" in text
+    assert 'self._start_sequence_mode(plan_paths, repeats, group_name=selected_group.get("name", "그룹"))' in text
+
+
+def test_settings_group_repeat_apply_keeps_list_selection_when_entry_has_focus():
+    text = _read_settings_text()
+    settings_slice = text[
+        text.index("def _setup_player_settings(self, parent) -> None:"):
+        text.index("def _load_plan_list(self) -> list:")
+    ]
+
+    assert "self._seq_selected_entry_index = 0" in settings_slice
+    assert "exportselection=False" in settings_slice
+    assert "def _seq_current_entry_index(self, group: Optional[dict]) -> Optional[int]:" in settings_slice
+    assert "idx = self._seq_current_entry_index(group)" in settings_slice
+    assert "if not group or idx is None:" in settings_slice

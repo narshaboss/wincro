@@ -1,0 +1,214 @@
+from pathlib import Path
+
+from src.utils.config import (
+    AUTO_RUN_PROFILE_GROUP_ID,
+    AUTO_RUN_PROFILE_GROUP_NAME,
+    AUTO_RUN_PROFILE_PLANS,
+    AUTO_RUN_PROFILE_VERSION,
+    AppConfig,
+    ArduinoConfig,
+    ConfigManager,
+    DATA_DIR,
+    PlayerConfig,
+    UIConfig,
+)
+from src.utils.plan_sequence_groups import (
+    get_active_plan_sequence,
+    make_plan_sequence_group,
+    mirror_active_group_to_legacy,
+    normalize_plan_sequence_groups,
+    sync_plan_repeat_in_groups,
+)
+
+
+def test_legacy_plan_sequence_migrates_to_default_group():
+    player = PlayerConfig(
+        plan_sequence=[r"C:\Projects\wincro\data\plans\a.json", r"C:\Projects\wincro\data\plans\b.json"],
+        plan_sequence_repeats=[2, 3],
+    )
+
+    groups = normalize_plan_sequence_groups(player)
+
+    assert len(groups) == 1
+    assert groups[0]["name"] == "기본 그룹"
+    assert player.active_plan_sequence_group_id == groups[0]["group_id"]
+    assert groups[0]["entries"] == [
+        {"plan_path": r"C:\Projects\wincro\data\plans\a.json", "repeat_count": 2},
+        {"plan_path": r"C:\Projects\wincro\data\plans\b.json", "repeat_count": 3},
+    ]
+
+
+def test_active_group_only_resolves_for_startup_autorun():
+    group_a = make_plan_sequence_group(
+        "자동사냥",
+        [{"plan_path": r"C:\plans\hunt.json", "repeat_count": 1}],
+        group_id="a",
+    )
+    group_b = make_plan_sequence_group(
+        "원각공장",
+        [{"plan_path": r"C:\plans\factory.json", "repeat_count": 7}],
+        group_id="b",
+    )
+    player = PlayerConfig(plan_sequence_groups=[group_a, group_b], active_plan_sequence_group_id="b")
+
+    paths, repeats, group = get_active_plan_sequence(player)
+
+    assert group["name"] == "원각공장"
+    assert paths == [r"C:\plans\factory.json"]
+    assert repeats == [7]
+
+
+def test_group_repeat_expands_active_sequence_in_group_order():
+    group = make_plan_sequence_group(
+        "원각공장",
+        [
+            {"plan_path": r"C:\plans\factory.json", "repeat_count": 7},
+            {"plan_path": r"C:\plans\hunt.json", "repeat_count": 2},
+        ],
+        group_id="factory",
+        repeat_count=3,
+    )
+    player = PlayerConfig(plan_sequence_groups=[group], active_plan_sequence_group_id="factory")
+
+    paths, repeats, resolved_group = get_active_plan_sequence(player)
+
+    assert resolved_group["repeat_count"] == 3
+    assert paths == [
+        r"C:\plans\factory.json",
+        r"C:\plans\hunt.json",
+        r"C:\plans\factory.json",
+        r"C:\plans\hunt.json",
+        r"C:\plans\factory.json",
+        r"C:\plans\hunt.json",
+    ]
+    assert repeats == [7, 2, 7, 2, 7, 2]
+
+
+def test_active_group_is_mirrored_to_legacy_flat_sequence():
+    player = PlayerConfig(
+        plan_sequence_groups=[
+            make_plan_sequence_group("A", [{"plan_path": r"C:\plans\a.json", "repeat_count": 2}], group_id="a"),
+            make_plan_sequence_group("B", [{"plan_path": r"C:\plans\b.json", "repeat_count": 5}], group_id="b"),
+        ],
+        active_plan_sequence_group_id="b",
+    )
+
+    mirror_active_group_to_legacy(player)
+
+    assert player.plan_sequence == [r"C:\plans\b.json"]
+    assert player.plan_sequence_repeats == [5]
+
+
+def test_group_repeat_is_mirrored_to_legacy_flat_sequence():
+    player = PlayerConfig(
+        plan_sequence_groups=[
+            make_plan_sequence_group(
+                "B",
+                [{"plan_path": r"C:\plans\b.json", "repeat_count": 5}],
+                group_id="b",
+                repeat_count=2,
+            ),
+        ],
+        active_plan_sequence_group_id="b",
+    )
+
+    mirror_active_group_to_legacy(player)
+
+    assert player.plan_sequence == [r"C:\plans\b.json", r"C:\plans\b.json"]
+    assert player.plan_sequence_repeats == [5, 5]
+
+
+def test_repeat_sync_updates_matching_group_entries_by_filename():
+    player = PlayerConfig(
+        plan_sequence_groups=[
+            make_plan_sequence_group(
+                "A",
+                [
+                    {"plan_path": r"C:\old\factory.json", "repeat_count": 1},
+                    {"plan_path": r"C:\old\other.json", "repeat_count": 2},
+                ],
+                group_id="a",
+            )
+        ],
+        active_plan_sequence_group_id="a",
+    )
+
+    changed = sync_plan_repeat_in_groups(player, r"D:\new\factory.json", 9)
+
+    assert changed is True
+    assert player.plan_sequence_groups[0]["entries"][0]["repeat_count"] == 9
+    assert player.plan_sequence_repeats == [9, 2]
+
+
+def test_repeat_sync_updates_active_group_only_by_default():
+    player = PlayerConfig(
+        plan_sequence_groups=[
+            make_plan_sequence_group("A", [{"plan_path": r"C:\plans\factory.json", "repeat_count": 1}], group_id="a"),
+            make_plan_sequence_group("B", [{"plan_path": r"C:\plans\factory.json", "repeat_count": 5}], group_id="b"),
+        ],
+        active_plan_sequence_group_id="a",
+    )
+
+    changed = sync_plan_repeat_in_groups(player, r"C:\plans\factory.json", 3)
+
+    assert changed is True
+    assert player.plan_sequence_groups[0]["entries"][0]["repeat_count"] == 3
+    assert player.plan_sequence_groups[1]["entries"][0]["repeat_count"] == 5
+    assert player.plan_sequence_repeats == [3]
+
+
+def test_packaged_auto_run_profile_updates_only_player_playback_defaults():
+    config = AppConfig(
+        player=PlayerConfig(auto_run_enabled=False),
+        ui=UIConfig(app_name="pc-local-name", window_mode="editor"),
+        arduino=ArduinoConfig(com_port="COM9", enabled=True),
+    )
+
+    ConfigManager()._apply_packaged_player_defaults(config)
+
+    assert config.ui.app_name == "pc-local-name"
+    assert config.ui.window_mode == "editor"
+    assert config.arduino.com_port == "COM9"
+    assert config.arduino.enabled is True
+    assert config.player.auto_run_enabled is True
+    assert config.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
+    assert config.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
+
+    group = config.player.plan_sequence_groups[0]
+    assert group["group_id"] == AUTO_RUN_PROFILE_GROUP_ID
+    assert group["name"] == AUTO_RUN_PROFILE_GROUP_NAME
+    assert group["repeat_count"] == 1
+    assert [Path(entry["plan_path"]).name for entry in group["entries"]] == [
+        file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert [entry["repeat_count"] for entry in group["entries"]] == [
+        repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert config.player.plan_sequence == [
+        str(DATA_DIR / "plans" / file_name) for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert config.player.plan_sequence_repeats == [
+        repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+
+
+def test_packaged_auto_run_profile_does_not_override_after_marker():
+    existing_group = make_plan_sequence_group(
+        "사용자그룹",
+        [{"plan_path": r"C:\plans\custom.json", "repeat_count": 7}],
+        group_id="custom",
+    )
+    config = AppConfig(
+        player=PlayerConfig(
+            auto_run_enabled=False,
+            plan_sequence_groups=[existing_group],
+            active_plan_sequence_group_id="custom",
+            auto_run_profile_version=AUTO_RUN_PROFILE_VERSION,
+        )
+    )
+
+    ConfigManager()._apply_packaged_player_defaults(config)
+
+    assert config.player.auto_run_enabled is False
+    assert config.player.active_plan_sequence_group_id == "custom"
+    assert config.player.plan_sequence_groups == [existing_group]

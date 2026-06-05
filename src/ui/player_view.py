@@ -17,6 +17,7 @@ import time
 from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
 from ..utils.json_utils import load_json_file
+from ..utils.plan_sequence_groups import sync_plan_repeat_in_groups
 from ..utils.input_controller import get_input_controller
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
@@ -2333,20 +2334,21 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("트리거 이미지 설정")
-        dialog.geometry("500x780")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.transient(self)
         dialog.grab_set()
 
-        # 중앙 배치
+        # 화면 높이에 맞춰 다이얼로그를 제한하고, 본문은 스크롤로 처리한다.
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() - 500) // 2
-        y = (dialog.winfo_screenheight() - 780) // 2
-        dialog.geometry(f"+{x}+{y}")
+        dialog_width = 500
+        dialog_height = min(820, max(640, dialog.winfo_screenheight() - 120))
+        x = max(0, (dialog.winfo_screenwidth() - dialog_width) // 2)
+        y = max(20, (dialog.winfo_screenheight() - dialog_height) // 2)
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
 
-        main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+        main_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=(15, 8))
 
         # 설명
         ctk.CTkLabel(
@@ -2376,7 +2378,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         )
         filename_label.pack(pady=(10, 5))
 
-        preview_label = ctk.CTkLabel(preview_frame, text="", width=200, height=150)
+        preview_label = ctk.CTkLabel(preview_frame, text="", width=200, height=120)
         preview_label.pack(pady=5)
 
         # 전체 경로 (작게 표시)
@@ -2400,7 +2402,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
-                        scale = min(180 / w, 130 / h)
+                        scale = min(180 / w, 110 / h)
                         new_w, new_h = int(w * scale), int(h * scale)
                         resized = cv2.resize(img_rgb, (new_w, new_h))
                         pil_img = Image.fromarray(resized)
@@ -2594,9 +2596,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
             conf_label.configure(text=f"{int(conf_var.get())}%")
 
         conf_var.trace_add("write", update_conf_label)
+        stop_playlist_var = ctk.BooleanVar(
+            value=bool(getattr(rule, "stop_playlist_on_trigger_missing", False))
+        )
 
         def save_confidence_only():
             rule.confidence = conf_var.get() / 100.0
+            rule.stop_playlist_on_trigger_missing = bool(stop_playlist_var.get()) and bool(selected_path["value"])
             logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
             self._modified = True
             self._save_plan()  # JSON 파일에 즉시 저장
@@ -2614,12 +2620,37 @@ class PlanDetailDialog(ctk.CTkToplevel):
             command=save_confidence_only,
         ).pack(side="left", padx=(10, 0))
 
+        # === 트리거 미감지 처리 ===
+        missing_frame = ctk.CTkFrame(main_frame, fg_color=COLORS["bg_card"], corner_radius=8)
+        missing_frame.pack(fill="x", pady=10)
+
+        ctk.CTkCheckBox(
+            missing_frame,
+            text="트리거 미감지 시 현재 재생목록 종료",
+            variable=stop_playlist_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["text_muted"],
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+
+        ctk.CTkLabel(
+            missing_frame,
+            text="실행 시 트리거 이미지를 최대 30초 찾고, 없으면 이 액션만 넘기지 않고 현재 재생목록을 끝내고 다음 재생목록으로 이동합니다.",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            wraplength=450,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
         # 저장/취소 버튼
         bottom_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        bottom_frame.pack(pady=15)
+        bottom_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 12))
 
         def save():
             rule.trigger_image = selected_path["value"]
+            rule.stop_playlist_on_trigger_missing = bool(stop_playlist_var.get()) and bool(rule.trigger_image)
             # 트리거 좌표 저장
             try:
                 x_val = trigger_x_entry.get().strip()
@@ -25013,6 +25044,9 @@ class PlayerView(BaseView):
             plan_file = PLANS_DIR / f"{self._selected_plan.plan_id}.json"
             with open(plan_file, 'w', encoding='utf-8') as f:
                 json.dump(self._selected_plan.to_dict(), f, ensure_ascii=False, indent=2)
+            config = get_config()
+            if sync_plan_repeat_in_groups(config.player, str(plan_file), repeat_count):
+                self._save_config()
 
             logger.info(f"재생횟수 저장: {repeat_count}회 - {self._selected_plan.name}")
 

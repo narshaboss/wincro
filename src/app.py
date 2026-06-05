@@ -19,6 +19,7 @@ from .utils.config import (
     get_config_load_error,
     is_startup_config_save_safe,
 )
+from .utils.plan_sequence_groups import get_active_plan_sequence
 from pathlib import Path
 from .database import get_db
 
@@ -222,8 +223,10 @@ class WinCroApp:
             else:
                 logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
                 # 업데이트 확인 비활성화 시 바로 자동 실행 시작
-                if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.plan_sequence:
-                    logger.info(f"[자동실행] 5초 후 플랜 순서 자동 실행 예약: {len(self._config.player.plan_sequence)}개 플랜")
+                plan_paths, _repeats, group = get_active_plan_sequence(self._config.player)
+                if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and plan_paths:
+                    group_name = group.get("name", "그룹") if group else "그룹"
+                    logger.info(f"[자동실행] 5초 후 자동실행 그룹 예약: {group_name} ({len(plan_paths)}개 플랜)")
                     self._main_window.after(AUTO_RUN_DELAY_MS, self._auto_run_sequence)
 
             logger.info("애플리케이션 실행")
@@ -279,9 +282,9 @@ class WinCroApp:
     def _auto_run_sequence(self) -> None:
         """시작 시 자동 실행 - 플랜 순서"""
         try:
-            plan_paths = self._config.player.plan_sequence
+            plan_paths, repeats, group = get_active_plan_sequence(self._config.player)
             if not plan_paths:
-                logger.warning("[자동실행-시퀀스] 플랜 순서 리스트가 비어있음")
+                logger.warning("[자동실행-시퀀스] 활성 그룹의 플랜 목록이 비어있음")
                 return
 
             # 저장된 절대 경로를 현재 DATA_DIR 기준으로 변환
@@ -291,11 +294,11 @@ class WinCroApp:
                 filename = Path(path).name  # 파일명만 추출
                 converted_path = str(plans_dir / filename)
                 converted_paths.append(converted_path)
-            logger.info(f"[자동실행-시퀀스] 경로 변환: {len(converted_paths)}개 플랜")
+            group_name = group.get("name", "그룹") if group else "그룹"
+            logger.info(f"[자동실행-시퀀스] 그룹 실행: {group_name}, 경로 변환: {len(converted_paths)}개 플랜")
 
             if self._main_window and hasattr(self._main_window, 'auto_run_sequence'):
-                repeats = self._config.player.plan_sequence_repeats
-                self._main_window.auto_run_sequence(converted_paths, repeats)
+                self._main_window.auto_run_sequence(converted_paths, repeats, group_name=group_name)
             else:
                 logger.error("[자동실행-시퀀스] main_window에 auto_run_sequence 메서드 없음")
         except Exception as e:
@@ -359,8 +362,10 @@ class WinCroApp:
         """조건 충족 시 자동 실행 시작"""
         if not self._main_window:
             return
-        if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and self._config.player.plan_sequence:
-            logger.info(f"[자동실행] 3초 후 플랜 순서 자동 실행 예약: {len(self._config.player.plan_sequence)}개 플랜")
+        plan_paths, _repeats, group = get_active_plan_sequence(self._config.player)
+        if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and plan_paths:
+            group_name = group.get("name", "그룹") if group else "그룹"
+            logger.info(f"[자동실행] 3초 후 자동실행 그룹 예약: {group_name} ({len(plan_paths)}개 플랜)")
             self._main_window.after(3000, self._auto_run_sequence)
         else:
             logger.info("[자동실행] 자동 실행 조건 미충족")

@@ -93,6 +93,7 @@ class AutomationRule:
     timeout: float = 30.0  # ??????(??
     enabled: bool = True  # False? ???? ??
     skip_on_not_found: bool = False  # ???? ?????? wait_after ????? ?????? ???
+    stop_playlist_on_trigger_missing: bool = False  # 트리거 미감지 시 현재 재생목록 종료
     repeat_count: int = 1  # ??? ??? (1 = 1?????)
     repeat_delay: float = 0.5  # ??? ??? ??????(??
     repeat_delay_random: bool = False  # ??? ????????? ???
@@ -176,6 +177,7 @@ class AutomationRule:
             "typing_delay_range": self.typing_delay_range,
             "timeout": self.timeout,
             "skip_on_not_found": self.skip_on_not_found,
+            "stop_playlist_on_trigger_missing": self.stop_playlist_on_trigger_missing,
             "repeat_count": self.repeat_count,
             "repeat_delay": self.repeat_delay,
             "repeat_delay_random": self.repeat_delay_random,
@@ -258,6 +260,7 @@ class AutomationRule:
             typing_delay_range=data.get("typing_delay_range", 0.05),
             timeout=data.get("timeout", 30.0),
             skip_on_not_found=data.get("skip_on_not_found", False),
+            stop_playlist_on_trigger_missing=data.get("stop_playlist_on_trigger_missing", False),
             repeat_count=data.get("repeat_count", 1),
             repeat_delay=data.get("repeat_delay", 0.5),
             repeat_delay_random=data.get("repeat_delay_random", False),
