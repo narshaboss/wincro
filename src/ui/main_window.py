@@ -19,10 +19,11 @@ import cv2
 import numpy as np
 import mss
 from pynput import keyboard
+from PIL import Image
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
-from ..utils.app_identity import get_effective_app_name
+from ..utils.app_identity import get_effective_app_name, refresh_random_app_name
 from ..utils.json_utils import load_json_file
 from ..utils.plan_sequence_groups import (
     get_active_plan_sequence_group,
@@ -40,6 +41,9 @@ from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widge
 
 PLANS_DIR = DATA_DIR / "plans"
 MINI_GROUP_PREFIX = "그룹: "
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+APP_ICON_FILE = PROJECT_ROOT / "icon.ico"
+APP_ICON_PREVIEW_FILE = PROJECT_ROOT / "icon_preview.png"
 
 logger = get_logger(__name__)
 
@@ -447,9 +451,15 @@ class MainWindow(ctk.CTk):
         self._config = get_config()
 
         # 윈도우 설정 - 세션 일관 랜덤 이름/사용자 지정 이름 적용
-        app_name = get_effective_app_name(self._config.ui, save_callback=save_config)
+        if getattr(self._config.ui, "random_name_mode", False):
+            app_name = refresh_random_app_name(self._config.ui, save_callback=save_config)
+        else:
+            app_name = get_effective_app_name(self._config.ui, save_callback=save_config)
         self._app_name = app_name  # 로고에서도 사용
         self.title(f"{app_name}")
+        self._brand_image_cache: Dict[tuple[int, int], ctk.CTkImage] = {}
+        self._brand_name_labels = []
+        self._apply_window_icon()
 
         # 창 모드별 크기 설정 (이전 값 호환)
         window_mode = self._config.ui.window_mode or "editor"
@@ -460,8 +470,8 @@ class MainWindow(ctk.CTk):
             window_mode = "editor"
         self._window_mode = window_mode
         if window_mode == "play":
-            self.geometry("520x380")
-            self.minsize(500, 360)
+            self.geometry("560x360")
+            self.minsize(540, 350)
         else:  # editor
             self.geometry(f"{self._config.ui.window_width}x{self._config.ui.window_height}")
             self.minsize(1000, 700)
@@ -505,6 +515,17 @@ class MainWindow(ctk.CTk):
 
         logger.info("메인 윈도우 초기화 완료")
 
+    def update_title(self) -> None:
+        """현재 설정값을 기준으로 창 제목/브랜드명을 즉시 갱신한다."""
+        app_name = get_effective_app_name(self._config.ui, save_callback=save_config)
+        self._app_name = app_name
+        self.title(f"{app_name}")
+        for label in getattr(self, "_brand_name_labels", []):
+            try:
+                label.configure(text=app_name)
+            except (tk.TclError, RuntimeError):
+                pass
+
     def after(self, ms, func=None, *args):
         """백그라운드 스레드의 after() 호출을 메인스레드 dispatcher로 우회한다."""
         return dispatch_widget_after(
@@ -515,6 +536,53 @@ class MainWindow(ctk.CTk):
             func,
             *args,
         )
+
+    def _apply_window_icon(self) -> None:
+        """데스크톱 바로가기와 같은 아이콘을 윈도우/상단 UI 기준 심볼로 사용한다."""
+        try:
+            if APP_ICON_FILE.exists():
+                self.iconbitmap(str(APP_ICON_FILE))
+        except Exception as e:
+            logger.debug(f"윈도우 아이콘 적용 생략: {e}")
+
+    def _get_brand_image(self, size: tuple[int, int]) -> Optional[ctk.CTkImage]:
+        cached = self._brand_image_cache.get(size)
+        if cached is not None:
+            return cached
+        if not APP_ICON_PREVIEW_FILE.exists():
+            return None
+        try:
+            with Image.open(APP_ICON_PREVIEW_FILE) as image:
+                icon = image.convert("RGBA").copy()
+            ctk_image = ctk.CTkImage(light_image=icon, dark_image=icon, size=size)
+            self._brand_image_cache[size] = ctk_image
+            return ctk_image
+        except Exception as e:
+            logger.debug(f"브랜드 심볼 로드 실패: {e}")
+            return None
+
+    def _create_brand_lockup(self, parent, *, icon_size: int, text_size: int, compact: bool = False):
+        brand = ctk.CTkFrame(parent, fg_color="transparent")
+        image = self._get_brand_image((icon_size, icon_size))
+        if image is not None:
+            ctk.CTkLabel(brand, image=image, text="").pack(side="left", padx=(0, 8 if not compact else 6))
+        else:
+            ctk.CTkLabel(
+                brand,
+                text="⚔",
+                font=ctk.CTkFont(size=icon_size - 2, weight="bold"),
+                text_color=COLORS["warning"],
+            ).pack(side="left", padx=(0, 8 if not compact else 6))
+        name_label = ctk.CTkLabel(
+            brand,
+            text=self._app_name,
+            font=ctk.CTkFont(size=text_size, weight="bold"),
+            text_color=COLORS["warning"],
+        )
+        name_label.pack(side="left")
+        if hasattr(self, "_brand_name_labels"):
+            self._brand_name_labels.append(name_label)
+        return brand
 
     def _setup_ui(self):
         # 메인 컨테이너
@@ -643,44 +711,29 @@ class MainWindow(ctk.CTk):
             command=self._on_mini_plan_changed,
         )
         self._mini_plan_dropdown.pack(side="left", padx=(10, 5), pady=8)
+        self._style_mini_plan_dropdown()
 
-        # 부분실행 버튼
-        ctk.CTkButton(
+        self._mini_version_label = ctk.CTkLabel(
             top_frame,
-            text="📋",
-            width=28,
-            height=28,
-            fg_color=COLORS["bg_dark"],
-            hover_color=COLORS["border"],
-            font=ctk.CTkFont(size=12),
-            command=self._open_partial_execution,
-        ).pack(side="left", padx=2, pady=8)
-
-        # 새로고침 버튼
-        ctk.CTkButton(
-            top_frame,
-            text="🔄",
-            width=28,
-            height=28,
-            fg_color=COLORS["bg_dark"],
-            hover_color=COLORS["border"],
-            font=ctk.CTkFont(size=12),
-            command=self._refresh_mini_plans,
-        ).pack(side="left", padx=2, pady=8)
+            text=f"v{APP_VERSION}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["accent_blue"],
+        )
+        self._mini_version_label.pack(side="left", padx=(8, 4), pady=8)
 
         # 에디터 모드 전환 버튼 (오른쪽 끝)
         ctk.CTkButton(
             top_frame,
-            text="✏",
-            width=28,
-            height=28,
-            font=ctk.CTkFont(size=12),
-            fg_color=COLORS["bg_card_hover"],
-            hover_color=COLORS["border"],
+            text="에디터",
+            width=78,
+            height=30,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#ff79c6",
+            hover_color="#db61aa",
             text_color=COLORS["text_primary"],
-            corner_radius=6,
+            corner_radius=10,
             command=lambda: self._change_window_mode("editor"),
-        ).pack(side="right", padx=(0, 10), pady=8)
+        ).pack(side="right", padx=(4, 10), pady=8)
 
         # 횟수 설정 (오른쪽)
         self._mini_repeat_var = ctk.StringVar(value="1")
@@ -724,80 +777,6 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["text_secondary"],
         ).pack(side="right", padx=(5, 2))
 
-        # 플레이 모드에서 버전/자동업데이트 상태를 설정 화면 없이 바로 확인한다.
-        info_frame = ctk.CTkFrame(
-            self._main_container,
-            fg_color=COLORS["bg_card"],
-            corner_radius=14,
-            border_width=1,
-            border_color=COLORS["border"],
-        )
-        info_frame.pack(fill="x", padx=10, pady=(0, 5))
-
-        self._mini_version_label = ctk.CTkLabel(
-            info_frame,
-            text=f"버전 v{APP_VERSION}",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["accent_blue"],
-        )
-        self._mini_version_label.pack(side="left", padx=(10, 8), pady=6)
-
-        self._mini_auto_update_var = ctk.BooleanVar(value=bool(self._config.update.auto_check))
-        self._mini_auto_update_indicator = ctk.CTkButton(
-            info_frame,
-            text="",
-            width=18,
-            height=18,
-            corner_radius=9,
-            fg_color=COLORS["error"],
-            hover_color=COLORS["danger_hover"],
-            border_width=0,
-            command=self._toggle_mini_auto_update_from_indicator,
-        )
-        self._mini_auto_update_indicator.pack(side="right", padx=(0, 4), pady=6)
-
-        self._mini_auto_update_label = ctk.CTkLabel(
-            info_frame,
-            text="자동업데이트 확인 중",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["text_secondary"],
-        )
-        self._mini_auto_update_label.pack(side="right", padx=(8, 4), pady=6)
-        self._mini_auto_update_label.bind(
-            "<Button-1>",
-            lambda _event: self._toggle_mini_auto_update_from_indicator(),
-        )
-        self._update_mini_auto_update_label()
-
-        self._mini_auto_shutdown_var = ctk.BooleanVar(
-            value=bool(getattr(self._config.system, "shutdown_enabled", True))
-        )
-        self._mini_auto_shutdown_indicator = ctk.CTkButton(
-            info_frame,
-            text="",
-            width=18,
-            height=18,
-            corner_radius=9,
-            fg_color=COLORS["error"],
-            hover_color=COLORS["danger_hover"],
-            border_width=0,
-            command=self._toggle_mini_auto_shutdown_from_indicator,
-        )
-        self._mini_auto_shutdown_indicator.pack(side="right", padx=(0, 4), pady=6)
-
-        self._mini_auto_shutdown_label = ctk.CTkLabel(
-            info_frame,
-            text="자동종료 확인 중",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["text_secondary"],
-        )
-        self._mini_auto_shutdown_label.pack(side="right", padx=(8, 10), pady=6)
-        self._mini_auto_shutdown_label.bind(
-            "<Button-1>",
-            lambda _event: self._toggle_mini_auto_shutdown_from_indicator(),
-        )
-        self._update_mini_auto_shutdown_label()
-
         # 현재 실행 중인 자동실행 그룹/재생목록을 한눈에 보여준다.
         active_frame = ctk.CTkFrame(
             self._main_container,
@@ -807,6 +786,63 @@ class MainWindow(ctk.CTk):
             border_color=COLORS["border"],
         )
         active_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        auto_state_frame = ctk.CTkFrame(active_frame, fg_color="transparent")
+        auto_state_frame.pack(side="right", padx=(4, 10), pady=5)
+
+        self._mini_auto_shutdown_var = ctk.BooleanVar(
+            value=bool(getattr(self._config.system, "shutdown_enabled", True))
+        )
+        self._mini_auto_shutdown_label = ctk.CTkLabel(
+            auto_state_frame,
+            text="자동종료 확인 중",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        self._mini_auto_shutdown_label.pack(side="left", padx=(0, 4), pady=2)
+        self._mini_auto_shutdown_label.bind(
+            "<Button-1>",
+            lambda _event: self._toggle_mini_auto_shutdown_from_indicator(),
+        )
+        self._mini_auto_shutdown_indicator = ctk.CTkButton(
+            auto_state_frame,
+            text="",
+            width=18,
+            height=18,
+            corner_radius=9,
+            fg_color=COLORS["error"],
+            hover_color=COLORS["danger_hover"],
+            border_width=0,
+            command=self._toggle_mini_auto_shutdown_from_indicator,
+        )
+        self._mini_auto_shutdown_indicator.pack(side="left", padx=(0, 10), pady=2)
+
+        self._mini_auto_update_var = ctk.BooleanVar(value=bool(self._config.update.auto_check))
+        self._mini_auto_update_label = ctk.CTkLabel(
+            auto_state_frame,
+            text="자동업데이트 확인 중",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        self._mini_auto_update_label.pack(side="left", padx=(0, 4), pady=2)
+        self._mini_auto_update_label.bind(
+            "<Button-1>",
+            lambda _event: self._toggle_mini_auto_update_from_indicator(),
+        )
+        self._mini_auto_update_indicator = ctk.CTkButton(
+            auto_state_frame,
+            text="",
+            width=18,
+            height=18,
+            corner_radius=9,
+            fg_color=COLORS["error"],
+            hover_color=COLORS["danger_hover"],
+            border_width=0,
+            command=self._toggle_mini_auto_update_from_indicator,
+        )
+        self._mini_auto_update_indicator.pack(side="left", pady=2)
+        self._update_mini_auto_shutdown_label()
+        self._update_mini_auto_update_label()
 
         ctk.CTkLabel(
             active_frame,
@@ -848,49 +884,57 @@ class MainWindow(ctk.CTk):
         self._mini_play_btn = ctk.CTkButton(
             ctrl_frame,
             text="▶ 실행",
-            width=80,
-            height=32,
+            width=116,
+            height=38,
             fg_color=COLORS["success"],
-            hover_color="#45a049",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            hover_color=COLORS["green_hover"],
+            border_width=1,
+            border_color="#6ee787",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=12,
             command=self._mini_on_play,
         )
-        self._mini_play_btn.pack(side="left", padx=(10, 5), pady=8)
+        self._mini_play_btn.pack(side="left", padx=(10, 6), pady=8)
 
         self._mini_pause_btn = ctk.CTkButton(
             ctrl_frame,
-            text="⏸",
-            width=40,
-            height=32,
+            text="⏸ 일시정지",
+            width=116,
+            height=38,
             fg_color=COLORS["warning"],
-            hover_color="#e6a800",
-            font=ctk.CTkFont(size=14),
+            hover_color="#b8871d",
+            border_width=1,
+            border_color="#f2cc60",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=12,
             command=self._mini_on_pause,
             state="disabled",
         )
-        self._mini_pause_btn.pack(side="left", padx=2, pady=8)
+        self._mini_pause_btn.pack(side="left", padx=6, pady=8)
 
         self._mini_stop_btn = ctk.CTkButton(
             ctrl_frame,
-            text="■",
-            width=40,
-            height=32,
+            text="⏹ 정지",
+            width=116,
+            height=38,
             fg_color=COLORS["error"],
-            hover_color="#d32f2f",
-            font=ctk.CTkFont(size=14),
+            hover_color=COLORS["danger_hover"],
+            border_width=1,
+            border_color="#ff7b72",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=12,
             command=self._mini_on_stop,
             state="disabled",
         )
-        self._mini_stop_btn.pack(side="left", padx=2, pady=8)
+        self._mini_stop_btn.pack(side="left", padx=6, pady=8)
 
-        # 상태 표시 (오른쪽)
+        # 상태 텍스트는 로그/현재 실행 바로 충분하므로 화면에는 표시하지 않는다.
         self._mini_status = ctk.CTkLabel(
             ctrl_frame,
-            text="대기 중",
+            text="",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
         )
-        self._mini_status.pack(side="right", padx=10, pady=8)
 
         # 로그 영역 (남은 공간 전체 사용)
         log_frame = ctk.CTkFrame(
@@ -1123,6 +1167,38 @@ class MainWindow(ctk.CTk):
                 return group
         return None
 
+    def _is_mini_group_label(self, value: str) -> bool:
+        return bool(value and value.startswith(MINI_GROUP_PREFIX))
+
+    def _style_mini_plan_dropdown(self) -> None:
+        """그룹 재생목록을 노란색으로 표시해 일반 플랜과 구분한다."""
+        dropdown = getattr(self, "_mini_plan_dropdown", None)
+        plan_var = getattr(self, "_mini_plan_var", None)
+        if not dropdown or not plan_var:
+            return
+
+        selected = plan_var.get()
+        selected_color = COLORS["warning"] if self._is_mini_group_label(selected) else COLORS["text_primary"]
+        try:
+            dropdown.configure(text_color=selected_color)
+        except Exception:
+            pass
+
+        menu = getattr(dropdown, "_dropdown_menu", None)
+        values = list(getattr(menu, "_values", []) or self._mini_dropdown_values())
+        if not menu or not values:
+            return
+
+        for index, value in enumerate(values):
+            color = COLORS["warning"] if self._is_mini_group_label(value) else COLORS["text_primary"]
+            try:
+                menu.entryconfigure(index, foreground=color, activeforeground=color)
+            except Exception:
+                try:
+                    menu.entryconfigure(index, foreground=color)
+                except Exception:
+                    pass
+
     def _mini_expand_group_sequence(self, group: dict) -> tuple[list[str], list[int]]:
         plans_dir = DATA_DIR / "plans"
         paths: list[str] = []
@@ -1175,9 +1251,11 @@ class MainWindow(ctk.CTk):
         if hasattr(self, '_mini_plan_dropdown') and self._mini_plan_dropdown:
             plan_names = self._mini_dropdown_values()
             self._mini_plan_dropdown.configure(values=plan_names)
+            self._style_mini_plan_dropdown()
             current = self._mini_plan_var.get()
             if current not in plan_names:
                 self._mini_plan_var.set(plan_names[0] if plan_names else "(플랜 없음)")
+                self._style_mini_plan_dropdown()
             self._on_mini_plan_changed(self._mini_plan_var.get())
 
     def _setup_mini_log_handler(self):
@@ -1421,6 +1499,7 @@ class MainWindow(ctk.CTk):
 
     def _on_mini_plan_changed(self, plan_name: str):
         """미니 플레이어 - 플랜 변경 시 재생횟수 불러오기"""
+        self._style_mini_plan_dropdown()
         if not plan_name or plan_name == "(플랜 없음)":
             return
 
@@ -1538,7 +1617,7 @@ class MainWindow(ctk.CTk):
             self._rule_executor.resume()
             self._is_paused = False
             self._mini_status.configure(text="▶ 실행 중...")
-            self._mini_pause_btn.configure(text="⏸ 일시중지")
+            self._mini_pause_btn.configure(text="⏸ 일시정지")
             return
 
         plan_name = self._mini_plan_var.get()
@@ -1804,7 +1883,7 @@ class MainWindow(ctk.CTk):
         try:
             if not self._ensure_arduino_ready_for_mini("미니 플레이어 재생"):
                 self._mini_play_btn.configure(state="normal")
-                self._mini_pause_btn.configure(state="disabled", text="pause")
+                self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
                 self._mini_stop_btn.configure(state="disabled")
                 self._is_running = False
                 return
@@ -1817,7 +1896,7 @@ class MainWindow(ctk.CTk):
             self._is_running = True
             self._mini_pause_btn.configure(state="normal")
             self._mini_stop_btn.configure(state="normal")
-            self._mini_status.configure(text=f"running... (1/{self._mini_total_repeat})")
+            self._mini_status.configure(text=f"▶ 실행 중... (1/{self._mini_total_repeat}회)")
             if not self._sequence_mode:
                 self._mini_update_active_bar(
                     "실행 중",
@@ -1827,11 +1906,11 @@ class MainWindow(ctk.CTk):
             self._mini_execute_plan(selected_plan)
         except Exception as e:
             logger.error(f"[mini-player] start error: {e}")
-            self._mini_status.configure(text=f"error: {e}")
+            self._mini_status.configure(text=f"오류: {e}")
             self._mini_update_active_bar("실패", message=str(e))
             self._is_running = False
             self._mini_play_btn.configure(state="normal")
-            self._mini_pause_btn.configure(state="disabled", text="pause")
+            self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
             self._mini_stop_btn.configure(state="disabled")
 
     def _mini_execute_plan(self, plan):
@@ -2078,7 +2157,7 @@ class MainWindow(ctk.CTk):
     def _mini_on_pause(self):
         """Mini player pause/resume."""
         if getattr(self, '_mini_gm_dialog', None):
-            self._mini_status.configure(text="pause not available during game_mode")
+            self._mini_status.configure(text="특화모드 중에는 일시정지 불가")
             return
         if not self._rule_executor:
             return
@@ -2086,13 +2165,13 @@ class MainWindow(ctk.CTk):
         if self._is_paused:
             self._rule_executor.resume()
             self._is_paused = False
-            self._mini_status.configure(text="running...")
-            self._mini_pause_btn.configure(text="pause")
+            self._mini_status.configure(text="▶ 실행 중...")
+            self._mini_pause_btn.configure(text="⏸ 일시정지")
         else:
             self._rule_executor.pause()
             self._is_paused = True
-            self._mini_status.configure(text="paused")
-            self._mini_pause_btn.configure(text="resume")
+            self._mini_status.configure(text="⏸ 일시정지됨")
+            self._mini_pause_btn.configure(text="▶ 계속")
 
     def _mini_on_stop(self):
         """Mini player stop."""
@@ -2126,9 +2205,9 @@ class MainWindow(ctk.CTk):
         self._sequence_mode = False
         self._sequence_group_name = ""
         self._mini_play_btn.configure(state="normal")
-        self._mini_pause_btn.configure(state="disabled", text="pause")
+        self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
         self._mini_stop_btn.configure(state="disabled")
-        self._mini_status.configure(text="stopping...")
+        self._mini_status.configure(text="⏹ 정지 요청 중...")
         self._mini_update_active_bar("중단", message="정지 요청 중")
 
     def _mini_on_progress(self, progress):
@@ -2208,10 +2287,12 @@ class MainWindow(ctk.CTk):
                 try:
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
                         if self._sequence_mode:
-                            seq_info = f"sequence {self._sequence_index + 1}/{len(self._sequence_plans)} - "
+                            seq_info = f"시퀀스 {self._sequence_index + 1}/{len(self._sequence_plans)} - "
                         else:
                             seq_info = ""
-                        self._mini_status.configure(text=f"running {seq_info}({self._mini_current_repeat + 1}/{self._mini_total_repeat})")
+                        self._mini_status.configure(
+                            text=f"진행 중 {seq_info}({self._mini_current_repeat + 1}/{self._mini_total_repeat})"
+                        )
                         self._mini_update_active_bar(
                             "실행 중",
                             plan_name=getattr(getattr(self, "_mini_active_plan", None), "name", ""),
@@ -2311,16 +2392,16 @@ class MainWindow(ctk.CTk):
             self._mini_gm_after_id = None
             self._mini_stop_requested = False
             self._mini_play_btn.configure(state="normal")
-            self._mini_pause_btn.configure(state="disabled", text="pause")
+            self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
             self._mini_stop_btn.configure(state="disabled")
             if success:
                 if was_sequence:
-                    status = f"complete ({seq_count} plans)"
+                    status = f"완료 ({seq_count}개 재생목록)"
                 else:
-                    status = f"complete ({self._mini_total_repeat})"
+                    status = f"완료 ({self._mini_total_repeat}회)"
                 self._mini_update_active_bar("완료", message=status)
             else:
-                status = f"failed: {message}"
+                status = "정지됨" if message == "stopped" else f"실패: {message}"
                 self._mini_update_active_bar("중단" if message == "stopped" else "실패", message=status)
             self._mini_status.configure(text=status)
 
@@ -2340,13 +2421,7 @@ class MainWindow(ctk.CTk):
         # 왼쪽: 로고
         logo_frame = ctk.CTkFrame(self._topbar, fg_color="transparent")
         logo_frame.pack(side="left", padx=20)
-
-        ctk.CTkLabel(
-            logo_frame,
-            text=f"🤖 {self._app_name}",
-            font=ctk.CTkFont(size=22, weight="bold"),
-            text_color=COLORS["accent"],
-        ).pack(side="left")
+        self._create_brand_lockup(logo_frame, icon_size=34, text_size=22).pack(side="left")
 
         # 네비게이션 버튼들 (순서: 녹화, 분석, 실행, 설정, 가이드)
         nav_items = [

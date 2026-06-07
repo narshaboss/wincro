@@ -99,12 +99,10 @@ jobs:
             throw "No application directory found under dist"
           }
 
-          $mainExe = Get-ChildItem $appDir.FullName -Filter *.exe | Where-Object { $_.Name -ne "dwm.exe" } | Select-Object -First 1
+          $mainExe = Get-ChildItem $appDir.FullName -Filter *.exe | Select-Object -First 1
           if (-not $mainExe) {
             throw "No main executable found in $($appDir.FullName)"
           }
-
-          Copy-Item $mainExe.FullName (Join-Path $appDir.FullName "dwm.exe") -Force
 
           $packagedCache = Join-Path $appDir.FullName "_internal\data\update_cache.json"
           if (Test-Path $packagedCache) {
@@ -129,10 +127,10 @@ jobs:
           $tag = "${{ steps.meta.outputs.tag }}"
           $zipPath = "${{ steps.package.outputs.zip_path }}"
           $notesPath = Join-Path $env:RUNNER_TEMP "release_notes.txt"
-          $title = "v$version 작업도우미"
+          $title = "v$version 업무지원도구"
 
           @"
-          v$version 작업도우미
+          v$version 업무지원도구
 
           Automated release package.
           "@ | Set-Content -Path $notesPath -Encoding utf8

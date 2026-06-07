@@ -34,7 +34,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.221"
+APP_VERSION = "1.0.222"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v2"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
@@ -44,6 +44,8 @@ AUTO_RUN_PROFILE_PLANS = (
     ("plan_20260605_123819.json", 1),
     ("plan_20260605_140615.json", 1),
 )
+BRANDING_PROFILE_VERSION = "business_support_tool_v1"
+LEGACY_BRAND_NAMES = {"", "작업도우미"}
 
 
 @dataclass
@@ -99,6 +101,7 @@ class UIConfig:
     app_name: str = PRIMARY_APP_NAME
     random_name_mode: bool = False
     random_name_alias: str = ""
+    branding_profile_version: str = ""
     auto_start: bool = False
 
 
@@ -184,16 +187,19 @@ class ConfigManager:
                         data = json.load(f)
                     self._config = self._dict_to_config(data)
                     self._apply_packaged_player_defaults(self._config)
+                    self._apply_packaged_ui_branding(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
                     self._apply_packaged_player_defaults(self._config)
+                    self._apply_packaged_ui_branding(self._config)
                     self._load_status = "error"
                     self._load_error = f"{type(e).__name__}: {e}"
             else:
                 self._config = AppConfig()
                 self._apply_packaged_player_defaults(self._config)
+                self._apply_packaged_ui_branding(self._config)
                 self._load_status = "missing"
                 self._load_error = ""
             return self._config
@@ -318,6 +324,21 @@ class ConfigManager:
         player.auto_run_enabled = True
         player.auto_run_profile_version = AUTO_RUN_PROFILE_VERSION
         mirror_active_group_to_legacy(player)
+
+    def _apply_packaged_ui_branding(self, config: AppConfig) -> None:
+        """Migrate legacy/random display names to the fixed Korean product brand."""
+        ui = config.ui
+        if getattr(ui, "branding_profile_version", "") == BRANDING_PROFILE_VERSION:
+            return
+
+        current_name = (getattr(ui, "app_name", "") or "").strip()
+        should_apply = bool(getattr(ui, "random_name_mode", False)) or current_name in LEGACY_BRAND_NAMES
+        if should_apply:
+            ui.app_name = PRIMARY_APP_NAME
+            ui.random_name_mode = False
+            ui.random_name_alias = ""
+
+        ui.branding_profile_version = BRANDING_PROFILE_VERSION
 
     def get_load_status(self) -> str:
         with self._lock:

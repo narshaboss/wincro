@@ -7,12 +7,14 @@ from __future__ import annotations
 import random
 from typing import Callable, Optional
 
-PRIMARY_APP_NAME = "작업도우미"
-PRIMARY_APP_DESCRIPTION = "작업 자동화 도우미"
+PRIMARY_APP_NAME = "업무지원도구"
+PRIMARY_APP_DESCRIPTION = "업무 지원 자동화 도구"
 PRIMARY_COMPANY_NAME = "윈크로"
 PRIMARY_EXECUTABLE_NAME = PRIMARY_APP_NAME
 PRIMARY_EXECUTABLE_FILE = f"{PRIMARY_EXECUTABLE_NAME}.exe"
 LEGACY_EXECUTABLE_ALIASES = [
+    "작업도우미.exe",
+    "WinCro.exe",
     "dwm.exe",
 ]
 PRIMARY_PACKAGE_DIR_NAME = PRIMARY_APP_NAME
@@ -93,6 +95,23 @@ def ensure_random_app_name(ui_config, save_callback: Optional[Callable[[], bool]
     return alias
 
 
+def refresh_random_app_name(ui_config, save_callback: Optional[Callable[[], bool]] = None) -> str:
+    previous = (getattr(ui_config, "random_name_alias", "") or "").strip()
+    alias = generate_random_app_name()
+    for _ in range(5):
+        if alias != previous:
+            break
+        alias = generate_random_app_name()
+
+    setattr(ui_config, "random_name_alias", alias)
+    if save_callback is not None:
+        try:
+            save_callback()
+        except Exception:
+            pass
+    return alias
+
+
 def clear_random_app_name(ui_config) -> None:
     if hasattr(ui_config, "random_name_alias"):
         ui_config.random_name_alias = ""
@@ -105,4 +124,4 @@ def get_effective_app_name(ui_config, save_callback: Optional[Callable[[], bool]
 
 
 def get_startup_entry_name(ui_config, save_callback: Optional[Callable[[], bool]] = None) -> str:
-    return get_effective_app_name(ui_config, save_callback=save_callback)
+    return normalize_app_name(getattr(ui_config, "app_name", PRIMARY_APP_NAME))

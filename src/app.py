@@ -89,7 +89,7 @@ class WinCroApp:
         self._settings_view: Optional['SettingsView'] = None
         self._guide_view: Optional['GuideView'] = None
 
-        logger.info("작업도우미 애플리케이션 초기화")
+        logger.info("업무지원도구 애플리케이션 초기화")
         logger.debug(f"[설정 로드] window_mode={self._config.ui.window_mode}, auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}")
 
     def initialize(self) -> bool:
@@ -463,7 +463,7 @@ class WinCroApp:
 chcp 65001 >nul
 echo.
 echo ========================================
-echo   작업도우미 자동 업데이트 v{version}
+echo   업무지원도구 자동 업데이트 v{version}
 echo ========================================
 echo.
 
@@ -553,6 +553,9 @@ if not exist "{app_dir}\\_internal" (
 )
 
 echo [6/8] 설정 파일 복원 중...
+if exist "{data_backup}\\업무지원도구.db" (
+    copy /y "{data_backup}\\업무지원도구.db" "{app_dir}\\_internal\\data\\업무지원도구.db" >nul 2>&1
+)
 if exist "{data_backup}\\작업도우미.db" (
     copy /y "{data_backup}\\작업도우미.db" "{app_dir}\\_internal\\data\\작업도우미.db" >nul 2>&1
 )
@@ -617,7 +620,7 @@ del "%~f0"
 chcp 65001 >nul
 echo.
 echo ========================================
-echo   작업도우미 복구 도구
+echo   업무지원도구 복구 도구
 echo ========================================
 echo.
 

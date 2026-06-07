@@ -41,3 +41,16 @@ def test_playlist_dialog_uses_lazy_child_containers_for_fast_expand():
         "def _ensure_children_rendered(self, rule_id: str) -> None:",
         "def _apply_rule_collapse_state(self, rule_id: str) -> None:",
     )
+
+
+def test_playlist_dialog_refresh_rebuilds_collapsible_rule_index():
+    text = _read_text()
+    refresh_method = _method_slice(
+        text,
+        "def _refresh_action_list(self):",
+        "def _render_rules(self, parent, rules, depth=0, prefix: str = \"\"):",
+    )
+
+    assert "self._action_widgets = {}" in refresh_method
+    assert "self._collapsible_rule_ids.clear()" in refresh_method
+    assert refresh_method.index("self._collapsible_rule_ids.clear()") < refresh_method.index("self._render_rules(")

@@ -30,6 +30,7 @@ from ..utils.app_identity import (
     ensure_random_app_name,
     get_effective_app_name,
     get_startup_entry_name,
+    refresh_random_app_name,
 )
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
@@ -2018,7 +2019,7 @@ class SettingsView(BaseView):
 chcp 65001 >nul
 echo.
 echo ========================================
-echo   작업도우미 업데이트 v{version}
+echo   업무지원도구 업데이트 v{version}
 echo ========================================
 echo.
 
@@ -2057,6 +2058,9 @@ if not defined NEW_EXE_NAME (
 )
 
 echo [5/6] 설정 파일 복원 중...
+if exist "{data_backup}\\업무지원도구.db" (
+    copy /y "{data_backup}\\업무지원도구.db" "{app_dir}\\_internal\\data\\업무지원도구.db" >nul 2>&1
+)
 if exist "{data_backup}\\작업도우미.db" (
     copy /y "{data_backup}\\작업도우미.db" "{app_dir}\\_internal\\data\\작업도우미.db" >nul 2>&1
 )
@@ -2515,6 +2519,8 @@ del "%~f0"
         config.ui.random_name_mode = new_random_name_mode
         if not new_random_name_mode:
             clear_random_app_name(config.ui)
+        elif not old_random_name_mode:
+            refresh_random_app_name(config.ui, save_callback=None)
         else:
             ensure_random_app_name(config.ui, save_callback=None)
 
@@ -2613,14 +2619,19 @@ del "%~f0"
     def _on_random_name_mode_changed(self) -> None:
         config = get_config()
         if self._random_name_var.get():
-            ensure_random_app_name(config.ui, save_callback=save_config)
+            refresh_random_app_name(config.ui, save_callback=save_config)
         self._update_random_name_preview()
+        top = self.winfo_toplevel()
+        if hasattr(top, "update_title"):
+            top.update_title()
 
     def _regenerate_random_name(self) -> None:
         config = get_config()
-        clear_random_app_name(config.ui)
-        ensure_random_app_name(config.ui, save_callback=save_config)
+        refresh_random_app_name(config.ui, save_callback=save_config)
         self._update_random_name_preview()
+        top = self.winfo_toplevel()
+        if hasattr(top, "update_title"):
+            top.update_title()
 
     def _get_auto_start_entry_candidates(self) -> list[str]:
         config = get_config()

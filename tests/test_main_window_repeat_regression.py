@@ -42,7 +42,11 @@ def test_play_mode_shows_version_and_auto_update_toggle():
         text.index("def _refresh_mini_plans_sync(self):")
     ]
 
-    assert 'text=f"버전 v{APP_VERSION}"' in mini_slice
+    assert 'text=f"v{APP_VERSION}"' in mini_slice
+    assert 'self.title(f"{app_name}")' in text
+    assert 'self.title(f"{app_name} v{APP_VERSION}")' not in text
+    assert "info_frame = ctk.CTkFrame(" not in mini_slice
+    assert "auto_state_frame = ctk.CTkFrame(active_frame" in mini_slice
     assert "self._mini_auto_update_var = ctk.BooleanVar(value=bool(self._config.update.auto_check))" in mini_slice
     assert "CTkSwitch" not in mini_slice
     assert "self._mini_auto_update_indicator = ctk.CTkButton" in mini_slice
@@ -92,6 +96,61 @@ def test_play_mode_log_copy_button_is_removed():
     assert "def _copy_mini_log_to_clipboard(self):" not in text
 
 
+def test_play_mode_top_controls_are_simplified_and_korean_labeled():
+    text = _read_text()
+    mini_slice = text[
+        text.index("def _create_mini_player_ui(self):"):
+        text.index("def _refresh_mini_plans_sync(self):")
+    ]
+    control_slice = mini_slice[
+        mini_slice.index("self._mini_play_btn = ctk.CTkButton("):
+        mini_slice.index("# 상태 텍스트", mini_slice.index("self._mini_play_btn = ctk.CTkButton("))
+    ]
+
+    assert 'text="📋"' not in mini_slice
+    assert "command=self._open_partial_execution" not in mini_slice
+    assert 'text="↻ 새로고침"' not in mini_slice
+    assert "command=self._refresh_mini_plans" not in mini_slice
+    assert 'text="에디터"' in mini_slice
+    assert 'text="✎ 에디터"' not in mini_slice
+    assert 'text="플레이 모드"' not in mini_slice
+    assert "fg_color=\"#ff79c6\"" in mini_slice
+    assert 'text="▶ 실행"' in control_slice
+    assert 'text="⏸ 일시정지"' in control_slice
+    assert 'text="⏹ 정지"' in control_slice
+    assert control_slice.count("width=116") == 3
+    assert control_slice.count("height=38") == 3
+    assert 'text="pause"' not in text
+    assert 'text="resume"' not in text
+    assert "pause not available" not in text
+    assert "self._mini_status.pack(" not in mini_slice
+
+
+def test_main_window_uses_desktop_icon_symbol_in_both_modes():
+    text = _read_text()
+    mini_slice = text[
+        text.index("def _create_mini_player_ui(self):"):
+        text.index("def _refresh_mini_plans_sync(self):")
+    ]
+    topbar_slice = text[
+        text.index("def _setup_topbar(self):"):
+        text.index("def _setup_content_area(self):")
+    ]
+
+    assert 'APP_ICON_FILE = PROJECT_ROOT / "icon.ico"' in text
+    assert 'APP_ICON_PREVIEW_FILE = PROJECT_ROOT / "icon_preview.png"' in text
+    assert "self.iconbitmap(str(APP_ICON_FILE))" in text
+    assert "def _create_brand_lockup(" in text
+    assert "brand_bar = ctk.CTkFrame(" not in mini_slice
+    assert "self._create_brand_lockup(brand_bar" not in mini_slice
+    assert 'self._mini_version_label.pack(side="left", padx=(8, 4), pady=8)' in mini_slice
+    assert "self._create_brand_lockup(logo_frame" in topbar_slice
+    assert "self._brand_name_labels = []" in text
+    assert "for label in getattr(self, \"_brand_name_labels\", []):" in text
+    assert "self._brand_name_labels.append(name_label)" in text
+    assert 'text=f"🤖 {self._app_name}"' not in text
+
+
 def test_play_mode_active_bar_tracks_current_group_and_playlist():
     text = _read_text()
     app_text = _read_app_text()
@@ -130,6 +189,11 @@ def test_play_mode_dropdown_can_run_grouped_playlists():
     assert "def _mini_dropdown_values(self) -> list[str]:" in text
     assert "values = [self._mini_group_label(group) for group in self._mini_sequence_groups()]" in text
     assert "self._mini_plan_dropdown.configure(values=plan_names)" in text
+    assert "self._style_mini_plan_dropdown()" in text
+    assert "def _is_mini_group_label(self, value: str) -> bool:" in text
+    assert "def _style_mini_plan_dropdown(self) -> None:" in text
+    assert 'selected_color = COLORS["warning"] if self._is_mini_group_label(selected) else COLORS["text_primary"]' in text
+    assert "menu.entryconfigure(index, foreground=color, activeforeground=color)" in text
     assert "selected_group = self._mini_group_by_label(plan_name)" in text
     assert "self._mini_repeat_var.set(str(group_repeat))" in text
     assert 'self._mini_status.configure(text=f"✓ 그룹 반복 {repeat_count}회 저장됨")' in text

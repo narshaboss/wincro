@@ -2020,6 +2020,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         # 썸네일 참조 정리
         self._thumbnail_refs.clear()
         self._action_widgets = {}
+        self._collapsible_rule_ids.clear()
 
         # 기존 위젯 삭제
         for widget in self._scrollable.winfo_children():

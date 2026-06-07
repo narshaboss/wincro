@@ -8,8 +8,8 @@ from typing import Dict
 
 # 애플리케이션 정보
 APP_INFO: Dict[str, str] = {
-    "app_name": "작업도우미",
-    "app_name_full": "작업 자동화 도우미",
+    "app_name": "업무지원도구",
+    "app_name_full": "업무 지원 자동화 도구",
     "version": "버전",
     "copyright": "Copyright 2026. 윈크로.",
 }

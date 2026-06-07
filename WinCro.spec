@@ -32,7 +32,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='작업도우미',
+    name='업무지원도구',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -53,5 +53,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='작업도우미',
+    name='업무지원도구',
 )

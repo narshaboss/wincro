@@ -37,7 +37,7 @@ class GuideView(ctk.CTkFrame):
         # 제목
         ctk.CTkLabel(
             scroll_frame,
-            text="📖 작업도우미 설치 가이드",
+            text="📖 업무지원도구 설치 가이드",
             font=ctk.CTkFont(size=24, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w", pady=(0, 20))

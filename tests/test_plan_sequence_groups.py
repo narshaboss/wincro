@@ -6,6 +6,7 @@ from src.utils.config import (
     AUTO_RUN_PROFILE_GROUP_REPEAT,
     AUTO_RUN_PROFILE_PLANS,
     AUTO_RUN_PROFILE_VERSION,
+    BRANDING_PROFILE_VERSION,
     AppConfig,
     ArduinoConfig,
     ConfigManager,
@@ -257,3 +258,36 @@ def test_packaged_auto_run_profile_does_not_override_after_marker():
     assert config.player.auto_run_enabled is False
     assert config.player.active_plan_sequence_group_id == "custom"
     assert config.player.plan_sequence_groups == [existing_group]
+
+
+def test_packaged_ui_branding_migrates_legacy_random_name_to_fixed_korean_brand():
+    config = AppConfig(
+        ui=UIConfig(
+            app_name="작업도우미",
+            random_name_mode=True,
+            random_name_alias="총무 관리",
+        )
+    )
+
+    ConfigManager()._apply_packaged_ui_branding(config)
+
+    assert config.ui.app_name == "업무지원도구"
+    assert config.ui.random_name_mode is False
+    assert config.ui.random_name_alias == ""
+    assert config.ui.branding_profile_version == BRANDING_PROFILE_VERSION
+
+
+def test_packaged_ui_branding_preserves_user_custom_fixed_name():
+    config = AppConfig(
+        ui=UIConfig(
+            app_name="회사전용도구",
+            random_name_mode=False,
+            random_name_alias="",
+        )
+    )
+
+    ConfigManager()._apply_packaged_ui_branding(config)
+
+    assert config.ui.app_name == "회사전용도구"
+    assert config.ui.random_name_mode is False
+    assert config.ui.branding_profile_version == BRANDING_PROFILE_VERSION

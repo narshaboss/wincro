@@ -21,7 +21,11 @@ logger = get_logger(__name__)
 
 # 데이터베이스 파일 경로
 PRIMARY_DB_PATH = DATA_DIR / f"{PRIMARY_PACKAGE_DIR_NAME}.db"
-LEGACY_DB_PATH = DATA_DIR / "wincro.db"
+LEGACY_DB_PATHS = [
+    DATA_DIR / "작업도우미.db",
+    DATA_DIR / "wincro.db",
+]
+LEGACY_DB_PATH = next((path for path in LEGACY_DB_PATHS if path.exists()), LEGACY_DB_PATHS[-1])
 DB_PATH = PRIMARY_DB_PATH if PRIMARY_DB_PATH.exists() or not LEGACY_DB_PATH.exists() else LEGACY_DB_PATH
 
 
