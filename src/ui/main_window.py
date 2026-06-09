@@ -627,6 +627,8 @@ class MainWindow(ctk.CTk):
         self._mini_remaining_rules = []
         self._mini_gm_dialog = None
         self._mini_gm_after_id = None
+        self._mini_gm_wait_after_id = None
+        self._mini_gm_current_rule = None
         self._mini_stop_requested = False
 
         # UI 먼저 생성 (빠르게)
@@ -1968,9 +1970,9 @@ class MainWindow(ctk.CTk):
 
         if first_gm_idx == 0:
             gm_rule = rules_to_run[0]
-            self._mini_remaining_rules = list(rules_to_run[1:])
+            self._mini_remaining_rules = list(getattr(gm_rule, "children", []) or []) + list(rules_to_run[1:])
             logger.info(f"[mini-player] run game_mode first ({len(self._mini_remaining_rules)} remaining)")
-            self._mini_run_game_mode(gm_rule.rule_id)
+            self._mini_run_game_mode(gm_rule.rule_id, source_rule=gm_rule)
             return
 
         before_gm = list(rules_to_run[:first_gm_idx])
@@ -1978,7 +1980,47 @@ class MainWindow(ctk.CTk):
         logger.info(f"[mini-player] run {len(before_gm)} rules before game_mode")
         self._mini_run_rules_via_executor(before_gm, chain_remaining=gm_and_after)
 
-    def _mini_run_game_mode(self, config_rule_id):
+    def _mini_game_mode_wait_seconds(self, rule) -> float:
+        if rule is None:
+            return 0.0
+        try:
+            wait_time = float(getattr(rule, "wait_after", 0.0) or 0.0)
+            if getattr(rule, "wait_random", False):
+                import random
+                wait_range = float(getattr(rule, "wait_random_range", 0.3) or 0.0)
+                wait_time += random.uniform(-wait_range, wait_range)
+            return max(0.0, wait_time)
+        except Exception:
+            return 0.0
+
+    def _mini_cancel_game_mode_wait(self) -> None:
+        wait_after_id = getattr(self, "_mini_gm_wait_after_id", None)
+        if wait_after_id is None:
+            return
+        try:
+            self.after_cancel(wait_after_id)
+        except (ValueError, tk.TclError, RuntimeError):
+            pass
+        self._mini_gm_wait_after_id = None
+
+    def _mini_continue_after_game_mode_wait(self, rule, callback) -> None:
+        wait_time = self._mini_game_mode_wait_seconds(rule)
+        if wait_time <= 0:
+            callback()
+            return
+
+        logger.info(f"[mini-player] game_mode wait_after {wait_time:.2f}s")
+        self._mini_update_active_bar("대기", message=f"특화모드 완료 후 {wait_time:.1f}초 대기")
+
+        def _finish_wait():
+            self._mini_gm_wait_after_id = None
+            if getattr(self, "_mini_stop_requested", False) or not getattr(self, "_is_running", False):
+                return
+            callback()
+
+        self._mini_gm_wait_after_id = self.after(int(wait_time * 1000), _finish_wait)
+
+    def _mini_run_game_mode(self, config_rule_id, source_rule=None):
         active_plan = self._mini_active_plan
         if active_plan is None:
             self._mini_on_complete(False, "no active plan")
@@ -2000,6 +2042,8 @@ class MainWindow(ctk.CTk):
             config_rule_id=config_rule_id,
             auto_run=True,
         )
+        self._mini_gm_current_rule = source_rule
+        self._mini_cancel_game_mode_wait()
         self._mini_gm_dialog._suppress_completion_notification = True
         self._mini_gm_dialog.withdraw()
         self._rule_executor = None
@@ -2032,11 +2076,19 @@ class MainWindow(ctk.CTk):
             return
         remaining = list(getattr(self, '_mini_remaining_rules', []) or [])
         self._mini_remaining_rules = []
-        if success and remaining:
-            logger.info(f"[mini-player] game_mode complete -> continue {len(remaining)} rules")
-            self._mini_play_plan_rules(remaining)
+        gm_rule = getattr(self, "_mini_gm_current_rule", None)
+        self._mini_gm_current_rule = None
+        if success:
+            def _continue_success():
+                if remaining:
+                    logger.info(f"[mini-player] game_mode complete -> continue {len(remaining)} rules")
+                    self._mini_play_plan_rules(remaining)
+                    return
+                self._mini_on_repeat_complete(True, error_msg or "")
+
+            self._mini_continue_after_game_mode_wait(gm_rule, _continue_success)
             return
-        self._mini_on_repeat_complete(success, error_msg or "")
+        self._mini_on_repeat_complete(False, error_msg or "")
 
     def _mini_run_rules_via_executor(self, rules_to_run, chain_remaining=None):
         active_plan = self._mini_active_plan
@@ -2178,6 +2230,8 @@ class MainWindow(ctk.CTk):
         if getattr(self, '_mini_stop_requested', False):
             return
         self._mini_stop_requested = True
+        self._mini_cancel_game_mode_wait()
+        self._mini_gm_current_rule = None
 
         if self._rule_executor:
             self._rule_executor.stop()
@@ -2376,6 +2430,7 @@ class MainWindow(ctk.CTk):
                 after_id = getattr(self, '_mini_gm_after_id', None)
                 if after_id:
                     self.after_cancel(after_id)
+                self._mini_cancel_game_mode_wait()
             except (tk.TclError, RuntimeError, ValueError):
                 pass
 
@@ -2390,6 +2445,8 @@ class MainWindow(ctk.CTk):
             self._mini_remaining_rules = []
             self._mini_gm_dialog = None
             self._mini_gm_after_id = None
+            self._mini_gm_wait_after_id = None
+            self._mini_gm_current_rule = None
             self._mini_stop_requested = False
             self._mini_play_btn.configure(state="normal")
             self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")

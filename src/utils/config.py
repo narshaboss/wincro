@@ -34,7 +34,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.222"
+APP_VERSION = "1.0.223"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v2"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"

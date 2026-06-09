@@ -82,6 +82,8 @@ class AutomationRule:
     search_radius: int = 0  # ????????? (0=??????, >0=action_x/y ??? ??? ???)
     search_region: Optional[List[int]] = None  # ?????? ?????? [x1, y1, x2, y2] (search_radius??? ???)
     move_mouse_before_search: bool = False  # ??????????? ??? ???????? (hover ??? ???)
+    alternate_mouse_route: bool = False  # 이미지 클릭 시 기본 직선 이동 대신 반대 우회 경로로 접근
+    click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
 
     # ????
     wait_after: float = 0.5  # ??? ???????? (??
@@ -168,6 +170,8 @@ class AutomationRule:
             "search_radius": self.search_radius,
             "search_region": self.search_region,
             "move_mouse_before_search": self.move_mouse_before_search,
+            "alternate_mouse_route": self.alternate_mouse_route,
+            "click_until_image_disappears": self.click_until_image_disappears,
             "wait_after": self.wait_after,
             "wait_random": self.wait_random,
             "enabled": self.enabled,
@@ -251,6 +255,8 @@ class AutomationRule:
             search_radius=data.get("search_radius", 0),
             search_region=data.get("search_region"),
             move_mouse_before_search=data.get("move_mouse_before_search", False),
+            alternate_mouse_route=data.get("alternate_mouse_route", False),
+            click_until_image_disappears=data.get("click_until_image_disappears", False),
             wait_after=data.get("wait_after", 0.5),
             wait_random=data.get("wait_random", False),
             wait_random_range=data.get("wait_random_range", 0.3),

@@ -199,6 +199,8 @@ def _convert_action_to_monitor_dict(action):
         monitor_action["wait_after"] = getattr(action, 'wait_after', 0.5)
         monitor_action["wait_random"] = getattr(action, 'wait_random', False)
         monitor_action["wait_random_range"] = getattr(action, 'wait_random_range', 0.3)
+        monitor_action["alternate_mouse_route"] = getattr(action, 'alternate_mouse_route', False)
+        monitor_action["click_until_image_disappears"] = getattr(action, 'click_until_image_disappears', False)
         monitor_action["repeat_count"] = getattr(action, 'repeat_count', 1)
         monitor_action["repeat_delay"] = getattr(action, 'repeat_delay', 0.5)
         monitor_action["repeat_delay_random"] = getattr(action, 'repeat_delay_random', False)
@@ -207,6 +209,7 @@ def _convert_action_to_monitor_dict(action):
         monitor_action["typing_delay"] = getattr(action, 'typing_delay', 0.1)
         monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
         monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
+        monitor_action["search_region"] = getattr(action, 'search_region', None)
 
     return monitor_action
 
@@ -236,6 +239,115 @@ def _manual_partial_start_index(flat_rules: List[AutomationRule], rule: Automati
     return rule_index
 
 
+def _rule_repeats_child_actions_for_partial(rule: AutomationRule) -> bool:
+    """사라질 때까지 반복 클릭은 하위 액션 구조를 보존해야 한다."""
+    return bool(
+        _rule_is_enabled(rule)
+        and getattr(rule, "children", None)
+        and getattr(rule, "action_type", "") in {"click", "double_click", "right_click"}
+        and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+        and getattr(rule, "click_until_image_disappears", False)
+    )
+
+
+def _flatten_rule_objects(rules: List[AutomationRule]) -> List[AutomationRule]:
+    result: List[AutomationRule] = []
+    for rule in rules or []:
+        result.append(rule)
+        result.extend(_flatten_rule_objects(getattr(rule, "children", []) or []))
+    return result
+
+
+def _build_manual_partial_rules(flat_rules: List[AutomationRule], start_index: int) -> List[AutomationRule]:
+    """부분실행 목록을 만들되 반복 클릭 부모의 children은 보존한다."""
+    import copy
+
+    rules_to_run: List[AutomationRule] = []
+    skip_object_ids = set()
+
+    for rule in flat_rules[start_index:]:
+        if id(rule) in skip_object_ids:
+            continue
+
+        rule_copy = copy.copy(rule)
+        if _rule_repeats_child_actions_for_partial(rule):
+            rule_copy.children = copy.deepcopy(getattr(rule, "children", []) or [])
+            skip_object_ids.update(id(child) for child in _flatten_rule_objects(getattr(rule, "children", []) or []))
+        else:
+            rule_copy.children = []
+        rules_to_run.append(rule_copy)
+
+    return rules_to_run
+
+
+def _index_by_identity(items: list, target) -> int:
+    for idx, item in enumerate(items):
+        if item is target:
+            return idx
+    return -1
+
+
+def _find_item_container(root_items: list, target):
+    """Return (container_list, parent_item) for target using identity checks."""
+    def visit(items: list, parent):
+        if _index_by_identity(items, target) >= 0:
+            return items, parent
+        for item in items:
+            found = visit(getattr(item, "children", []) or [], item)
+            if found[0] is not None:
+                return found
+        return None, None
+
+    return visit(root_items, None)
+
+
+def _item_parent_id(parent, id_attr: str):
+    return getattr(parent, id_attr, None) if parent is not None else None
+
+
+def _detach_child_after_parent(root_items: list, parent, child, id_attr: str) -> bool:
+    """Detach one child and place it immediately after its parent at the parent's level."""
+    parent_children = getattr(parent, "children", None)
+    child_idx = _index_by_identity(parent_children or [], child)
+    if not parent_children or child_idx < 0:
+        return False
+
+    parent_container, grandparent = _find_item_container(root_items, parent)
+    if parent_container is None:
+        return False
+
+    parent_children.pop(child_idx)
+    child.parent_id = _item_parent_id(grandparent, id_attr)
+
+    parent_idx = _index_by_identity(parent_container, parent)
+    if parent_idx < 0:
+        return False
+    parent_container.insert(parent_idx + 1, child)
+    return True
+
+
+def _flatten_children_after_parent(root_items: list, parent, id_attr: str) -> int:
+    """Move all direct children immediately after parent at the parent's level."""
+    children = list(getattr(parent, "children", []) or [])
+    if not children:
+        return 0
+
+    parent_container, grandparent = _find_item_container(root_items, parent)
+    if parent_container is None:
+        return 0
+
+    parent.children = []
+    parent_parent_id = _item_parent_id(grandparent, id_attr)
+    parent_idx = _index_by_identity(parent_container, parent)
+    if parent_idx < 0:
+        return 0
+
+    for offset, child in enumerate(children, 1):
+        child.parent_id = parent_parent_id
+        parent_container.insert(parent_idx + offset, child)
+    return len(children)
+
+
 class PlanDetailDialog(ctk.CTkToplevel):
     """자동화 계획 상세보기/수정 다이얼로그"""
 
@@ -263,6 +375,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._is_running = False
         self._running_executor = None
         self._running_rule_id = None
+        self._gm_current_rule = None
+        self._gm_wait_after_id = None
 
         self.title(f"계획 수정 - {plan.name}")
         self.geometry("950x700")
@@ -717,11 +831,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 반복 횟수 버튼 업데이트
         if "repeat_btn" in widgets:
             repeat_count = getattr(rule, 'repeat_count', 1)
+            until_disappears = bool(
+                (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+                and getattr(rule, "click_until_image_disappears", False)
+            )
             btn = widgets["repeat_btn"]
             btn.configure(
                 text=f"x{repeat_count}",
-                fg_color=COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"],
-                text_color="white" if repeat_count > 1 else COLORS["text_secondary"],
+                fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+                text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
+                width=40,
             )
 
         # 대기시간 버튼 업데이트
@@ -791,6 +910,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     command=lambda: self._change_rule_click_type(r, "right_click")
                 )
                 popup.add_cascade(label="클릭 유형", menu=click_menu)
+                if getattr(r, "target_image", None):
+                    popup.add_command(
+                        label=("✓ " if getattr(r, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
+                        command=lambda: self._toggle_rule_alternate_mouse_route(r),
+                    )
             popup.add_separator()
             popup.add_command(label="복사", command=lambda: self._copy_rule(r))
             popup.add_command(
@@ -962,6 +1086,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
             details.append(f'"{text_preview}"')
         if rule.action_keys:
             details.append(f"[{' + '.join(rule.action_keys).upper()}]")
+        if getattr(rule, "target_image", None) and getattr(rule, "alternate_mouse_route", False):
+            details.append("이동경로 변경")
+        if (
+            (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        ):
+            details.append("사라질때까지 반복")
 
         if details:
             detail_lbl = ctk.CTkLabel(
@@ -1077,13 +1208,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 반복 횟수 버튼
         repeat_count = getattr(rule, 'repeat_count', 1)
+        until_disappears = bool(
+            (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        )
         repeat_btn = ctk.CTkButton(
             btn_frame,
             text=f"x{repeat_count}",
             font=ctk.CTkFont(size=11),
-            fg_color=COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"],
-            hover_color="#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"],
-            text_color="white" if repeat_count > 1 else COLORS["text_secondary"],
+            fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+            hover_color="#ea580c" if until_disappears else ("#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"]),
+            text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
             width=40,
             height=26,
             corner_radius=4,
@@ -1680,9 +1815,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _edit_repeat_count(self, rule: AutomationRule):
         """반복 설정 (횟수 + 반복 대기시간 + 랜덤)"""
+        is_image_click = bool(
+            rule.action_type in ["click", "double_click", "right_click"]
+            and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+        )
         dialog = ctk.CTkToplevel(self)
         dialog.title("반복 설정")
-        dialog.geometry("350x420")
+        dialog_height = 490 if is_image_click else 420
+        dialog.geometry(f"350x{dialog_height}")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.transient(self)
@@ -1691,7 +1831,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 중앙 배치
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() - 350) // 2
-        y = (dialog.winfo_screenheight() - 420) // 2
+        y = (dialog.winfo_screenheight() - dialog_height) // 2
         dialog.geometry(f"+{x}+{y}")
 
         main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -1707,6 +1847,23 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(main_frame, text="1 = 1회 실행, 2 = 2회 반복...",
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
+
+        click_until_var = ctk.BooleanVar(value=bool(getattr(rule, "click_until_image_disappears", False)))
+        if is_image_click:
+            ctk.CTkCheckBox(
+                main_frame,
+                text="이미지가 사라질 때까지 반복 클릭",
+                variable=click_until_var,
+                font=ctk.CTkFont(size=13, weight="bold"),
+            ).pack(anchor="w", pady=(12, 4))
+            ctk.CTkLabel(
+                main_frame,
+                text="켜면 매번 이미지를 다시 찾아 클릭합니다. 반복 횟수는 안전 최대 클릭 수입니다.",
+                font=ctk.CTkFont(size=10),
+                text_color=COLORS["text_muted"],
+                wraplength=300,
+                justify="left",
+            ).pack(anchor="w", pady=(0, 4))
 
         # 반복 대기시간
         ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
@@ -1757,6 +1914,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 rule.repeat_delay = delay
                 rule.repeat_delay_random = delay_random_var.get()
                 rule.repeat_delay_random_range = delay_range
+                rule.click_until_image_disappears = bool(is_image_click and click_until_var.get())
                 result["saved"] = True
                 dialog.destroy()
             except ValueError:
@@ -1776,7 +1934,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if result["saved"]:
             self._modified = True
             self._update_rule_buttons(rule)
-            logger.info(f"반복 설정: {rule.repeat_count}회, 대기 {rule.repeat_delay}초 (랜덤: {rule.repeat_delay_random})")
+            logger.info(
+                f"반복 설정: {rule.repeat_count}회, 대기 {rule.repeat_delay}초 "
+                f"(랜덤: {rule.repeat_delay_random}, 사라질때까지: {getattr(rule, 'click_until_image_disappears', False)})"
+            )
 
     def _edit_rule_name(self, rule: AutomationRule):
         """규칙 이름 수정"""
@@ -1822,6 +1983,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._refresh_action_list()
         logger.info(f"클릭 유형 변경: {old_type} → {new_type}")
 
+    def _toggle_rule_alternate_mouse_route(self, rule: AutomationRule):
+        """이미지 클릭 이동 경로 변경 토글."""
+        if not getattr(rule, "target_image", None):
+            return
+        rule.alternate_mouse_route = not getattr(rule, "alternate_mouse_route", False)
+        self._modified = True
+        self._refresh_action_list()
+        logger.info(f"마우스 이동경로 변경: {'활성화' if rule.alternate_mouse_route else '비활성화'}")
+
     def _stop_execution(self):
         """실행 중지"""
         # 숨겨진 GameModeDialog 중지
@@ -1832,12 +2002,26 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 _gm._stop_event.set()
             except Exception:
                 pass
+            self._cancel_game_mode_wait()
+            self._gm_current_rule = None
             self._is_running = False
             self.title(f"계획 수정 - {self._plan.name}")
             self.configure(fg_color=COLORS["bg_dark"])
             self._stop_partial_run_visual()
             self._notify_player_partial_run_stopped()
             # 곧 _check_gm_done에서 destroy + _on_game_mode_complete 호출됨
+            return
+
+        if getattr(self, "_gm_wait_after_id", None) is not None:
+            logger.info("[부분실행] 특화모드 후 대기 중지")
+            self._cancel_game_mode_wait()
+            self._gm_current_rule = None
+            self._gm_remaining_rules = []
+            self._is_running = False
+            self.title(f"계획 수정 - {self._plan.name}")
+            self.configure(fg_color=COLORS["bg_dark"])
+            self._stop_partial_run_visual()
+            self._notify_player_partial_run_stopped()
             return
 
         if self._running_executor:
@@ -1849,13 +2033,53 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._running_executor = None
 
         self._gm_remaining_rules = []
+        self._gm_current_rule = None
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
         self.configure(fg_color=COLORS["bg_dark"])
         self._stop_partial_run_visual()
         self._notify_player_partial_run_stopped()
 
-    def _run_game_mode(self, config_rule_id=None):
+    def _game_mode_wait_seconds(self, rule) -> float:
+        if rule is None:
+            return 0.0
+        try:
+            wait_time = float(getattr(rule, "wait_after", 0.0) or 0.0)
+            if getattr(rule, "wait_random", False):
+                import random
+                wait_range = float(getattr(rule, "wait_random_range", 0.3) or 0.0)
+                wait_time += random.uniform(-wait_range, wait_range)
+            return max(0.0, wait_time)
+        except Exception:
+            return 0.0
+
+    def _continue_after_game_mode_wait(self, rule, callback, *, label: str) -> None:
+        wait_time = self._game_mode_wait_seconds(rule)
+        if wait_time <= 0:
+            callback()
+            return
+
+        logger.info(f"[{label}] 특화모드 완료 후 대기: {wait_time:.2f}초")
+
+        def _finish_wait():
+            self._gm_wait_after_id = None
+            if not self.winfo_exists() or not getattr(self, "_is_running", False):
+                return
+            callback()
+
+        self._gm_wait_after_id = self.after(int(wait_time * 1000), _finish_wait)
+
+    def _cancel_game_mode_wait(self) -> None:
+        wait_after_id = getattr(self, "_gm_wait_after_id", None)
+        if wait_after_id is None:
+            return
+        try:
+            self.after_cancel(wait_after_id)
+        except Exception:
+            pass
+        self._gm_wait_after_id = None
+
+    def _run_game_mode(self, config_rule_id=None, source_rule=None):
         """특화모드 실행 — 숨긴 GameModeDialog로 _run_coordinate_loop 사용"""
         config = self._plan.game_modes.get(config_rule_id) if config_rule_id else self._plan.game_mode
         if not config:
@@ -1869,6 +2093,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 실행 중 상태 표시 (PlanDetailDialog에서 관리)
         self._is_running = True
+        self._gm_current_rule = source_rule
+        self._cancel_game_mode_wait()
         self._start_partial_run_visual(config_rule_id)
         self._notify_player_partial_run_started("부분실행")
         self.title("▶ 특화모드 실행 중... (ESC로 중지)")
@@ -1915,14 +2141,30 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
         remaining = getattr(self, '_gm_remaining_rules', [])
         self._gm_remaining_rules = []
+        gm_rule = getattr(self, "_gm_current_rule", None)
+        self._gm_current_rule = None
 
         # 성공 + 나머지 규칙 있으면 → executor로 이어서 실행
-        if success and remaining:
-            logger.info(f"[부분실행] 특화모드 완료, 이후 {len(remaining)}개 액션 이어서 실행")
-            self._run_remaining_rules(remaining)
+        if success:
+            def _continue_success():
+                if remaining:
+                    logger.info(f"[부분실행] 특화모드 완료, 이후 {len(remaining)}개 액션 이어서 실행")
+                    self._run_remaining_rules(remaining)
+                    return
+
+                self._is_running = False
+                self.title(f"계획 수정 - {self._plan.name}")
+                self.configure(fg_color=COLORS["bg_dark"])
+                self._stop_partial_run_visual()
+                self._notify_player_partial_run_stopped()
+                self.update()
+                from tkinter import messagebox
+                messagebox.showinfo("완료", "목표에 도달했습니다!")
+
+            self._continue_after_game_mode_wait(gm_rule, _continue_success, label="부분실행")
             return
 
-        # 나머지 없거나 실패 → UI 복원 + 메시지
+        # 실패 → UI 복원 + 메시지
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
         self.configure(fg_color=COLORS["bg_dark"])
@@ -1930,11 +2172,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._notify_player_partial_run_stopped()
         self.update()
         from tkinter import messagebox
-        if success:
-            messagebox.showinfo("완료", "목표에 도달했습니다!")
-        else:
-            msg = error_msg if error_msg else "특화모드가 종료되었습니다."
-            messagebox.showinfo("종료", msg)
+        msg = error_msg if error_msg else "특화모드가 종료되었습니다."
+        messagebox.showinfo("종료", msg)
 
     def _run_remaining_rules(self, rules_to_run):
         """특화모드 완료 후 나머지 규칙 실행 — game_mode는 GameModeDialog로 라우팅"""
@@ -1961,9 +2200,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if first_gm_idx == 0:
             # 첫 규칙이 game_mode → GameModeDialog로 바로 실행
             gm_rule = rules_to_run[0]
-            self._gm_remaining_rules = rules_to_run[1:]
+            self._gm_remaining_rules = list(getattr(gm_rule, "children", []) or []) + list(rules_to_run[1:])
             logger.info(f"[이어서실행] game_mode → GameModeDialog ({len(self._gm_remaining_rules)}개 대기)")
-            self._run_game_mode(config_rule_id=gm_rule.rule_id)
+            self._run_game_mode(config_rule_id=gm_rule.rule_id, source_rule=gm_rule)
             return
 
         # game_mode가 중간 → 앞부분만 RuleExecutor, 완료 후 나머지 체이닝
@@ -2093,15 +2332,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 _gm_idx = next((i for i, r in enumerate(all_rules_flat) if r.rule_id == rule.rule_id), -1)
             remaining_after = []
             if _gm_idx >= 0 and _gm_idx + 1 < len(all_rules_flat):
-                import copy
-                for r in all_rules_flat[_gm_idx + 1:]:
-                    r_copy = copy.copy(r)
-                    r_copy.children = []
-                    remaining_after.append(r_copy)
+                remaining_after = _build_manual_partial_rules(all_rules_flat, _gm_idx + 1)
             count_msg = f"\n(이후 {len(remaining_after)}개 액션도 이어서 실행)" if remaining_after else ""
             if messagebox.askyesno("특화모드 실행", f"특화모드를 실행합니다.\nESC로 중지 가능{count_msg}\n\n시작할까요?"):
                 self._gm_remaining_rules = remaining_after
-                self._run_game_mode(config_rule_id=rule.rule_id)
+                self._run_game_mode(config_rule_id=rule.rule_id, source_rule=rule)
             return
 
         all_rules_flat = flatten_rules(self._plan.initial_rules)
@@ -2145,14 +2380,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     start_index,
                     first_child.description or first_child.action_type,
                 )
-            # 해당 인덱스부터 끝까지 모든 규칙 포함
-            # executor가 다시 평탄화하므로 children을 비운 복사본 사용
-            import copy
-            rules_to_run = []
-            for r in all_rules_flat[start_index:]:
-                r_copy = copy.copy(r)
-                r_copy.children = []  # children 비움 (이미 평탄화됨)
-                rules_to_run.append(r_copy)
+            # 해당 인덱스부터 끝까지 포함하되, 반복 클릭 부모의 children은 보존한다.
+            # 일반 부모는 기존처럼 children을 비워 executor 재평탄화 중복 실행을 막는다.
+            rules_to_run = _build_manual_partial_rules(all_rules_flat, start_index)
             # 첫 번째 액션 확인 로그
             if rules_to_run:
                 first_r = rules_to_run[0]
@@ -2697,13 +2927,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._refresh_action_list()
 
     def _detach_rule(self, rule: AutomationRule):
-        """규칙을 부모에서 분리하여 최상위로 이동"""
+        """규칙을 부모에서 분리하여 부모 바로 아래로 이동"""
         parent = self._find_parent_rule(rule)
-        if parent and rule in parent.children:
-            parent.children.remove(rule)
-            rule.parent_id = None
-            # 최상위에 추가
-            self._plan.initial_rules.append(rule)
+        if parent and _detach_child_after_parent(self._plan.initial_rules, parent, rule, "rule_id"):
             self._modified = True
             self._refresh_action_list()
             logger.info(f"규칙 종속 해제: {rule.rule_id}")
@@ -2948,19 +3174,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """키 입력 액션 추가"""
         import uuid
         dialog = KeyInputDialog(self)
-        key = dialog.get_key()
+        keys = dialog.get_keys()
 
-        if key:
+        if keys:
+            key_text = " + ".join(keys)
             new_rule = AutomationRule(
                 rule_id=f"rule_{uuid.uuid4().hex[:8]}",
                 action_type="hotkey",
-                action_keys=[key.lower().strip()],
+                action_keys=[key.lower().strip() for key in keys],
                 wait_after=0.5,
             )
             self._plan.initial_rules.append(new_rule)
             self._modified = True
             self._refresh_action_list()
-            logger.info(f"키 액션 추가: {key}")
+            logger.info(f"키 액션 추가: {key_text}")
 
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
@@ -3121,24 +3348,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
 
         try:
-            # 부모 인덱스 찾기
-            idx = self._plan.initial_rules.index(rule)
-
-            # 자식들을 부모 다음에 삽입
-            children = list(rule.children)  # 복사
-            rule.children = []  # 부모에서 자식 제거
-
-            for i, child in enumerate(children):
-                child.parent_id = None  # 부모 참조 제거
-                self._plan.initial_rules.insert(idx + 1 + i, child)
+            moved_count = _flatten_children_after_parent(self._plan.initial_rules, rule, "rule_id")
+            if moved_count <= 0:
+                messagebox.showerror("오류", "액션을 찾을 수 없습니다.")
+                return
 
             self._modified = True
             self._refresh_action_list()
             logger.info(f"하위 해체 완료: {child_count}개 액션")
             messagebox.showinfo("완료", f"{child_count}개의 하위 액션이 해체되었습니다.")
 
-        except ValueError:
-            messagebox.showerror("오류", "액션을 찾을 수 없습니다.")
         except Exception as e:
             logger.error(f"하위 해체 실패: {e}")
             messagebox.showerror("오류", f"하위 해체 실패: {e}")
@@ -3213,13 +3432,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if not messagebox.askyesno("하위 종속 해제", f"{len(first_rule.children)}개 액션의 하위 종속을 해제하시겠습니까?"):
                 return
 
-            # 해제: 1번 액션의 자식들을 같은 레벨로 이동
+            # 해제: 1번 액션의 자식들을 부모 바로 아래 같은 레벨로 이동
             children = list(first_rule.children)
-            first_rule.children = []
-
-            for child in children:
-                child.parent_id = None
-                self._plan.initial_rules.append(child)
+            _flatten_children_after_parent(self._plan.initial_rules, first_rule, "rule_id")
 
             logger.info(f"하위 종속 해제: {len(children)}개 액션")
         else:
@@ -3303,23 +3518,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
         logger.info(f"규칙 '{rule.rule_id}'을 '{prev_rule.rule_id}'의 하위로 이동")
 
     def _move_to_parent(self, rule: AutomationRule):
-        """자식 규칙을 최상위로 이동"""
+        """자식 규칙을 부모 바로 아래 같은 레벨로 이동"""
         # 부모 규칙 찾기
         parent_rule = self._find_parent_rule(rule)
         if not parent_rule:
             return
 
-        # 부모에서 제거
-        parent_rule.children.remove(rule)
-        rule.parent_id = None
-
-        # 부모 규칙 바로 뒤에 삽입
-        try:
-            parent_idx = self._plan.initial_rules.index(parent_rule)
-            self._plan.initial_rules.insert(parent_idx + 1, rule)
-        except ValueError:
-            # 부모가 다른 규칙의 자식인 경우, 최상위로
-            self._plan.initial_rules.append(rule)
+        if not _detach_child_after_parent(self._plan.initial_rules, parent_rule, rule, "rule_id"):
+            return
 
         self._modified = True
         self._refresh_action_list()
@@ -3367,6 +3573,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except Exception:
                 pass
             self._gm_check_after_id = None
+        self._cancel_game_mode_wait()
+        self._gm_current_rule = None
         # GameModeDialog 정리 (실행 완료 후에도 참조 남아 있을 수 있음)
         _gm = getattr(self, '_gm_dialog', None)
         if _gm:
@@ -18443,9 +18651,22 @@ class GameModeDialog(ctk.CTkToplevel):
                     break
                 try:
                     # keyDown + hold + keyUp (게임이 즉시 press를 씹는 경우 방지)
-                    get_input_controller().key_down(key_name)
-                    time.sleep(0.05)
-                    get_input_controller().key_up(key_name)
+                    input_ctrl = get_input_controller()
+                    key_parts = [part.strip().lower() for part in str(key_name).split("+") if part.strip()]
+                    if len(key_parts) > 1:
+                        for modifier in key_parts[:-1]:
+                            input_ctrl.key_down(modifier)
+                            time.sleep(0.02)
+                        input_ctrl.key_down(key_parts[-1])
+                        time.sleep(0.05)
+                        input_ctrl.key_up(key_parts[-1])
+                        for modifier in reversed(key_parts[:-1]):
+                            input_ctrl.key_up(modifier)
+                            time.sleep(0.02)
+                    else:
+                        input_ctrl.key_down(key_name)
+                        time.sleep(0.05)
+                        input_ctrl.key_up(key_name)
                     self._key_press_count += 1
                     logger.info(f"[전환추적] 도착키 입력 완료: key={key_name} rep={rep+1}/{repeat_count}")
                 except Exception as _ke:
@@ -22512,11 +22733,13 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         # 반복 횟수 버튼 업데이트
         if "repeat_btn" in widgets:
             repeat_count = getattr(action, 'repeat_count', 1)
+            until_disappears = bool(getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False))
             btn = widgets["repeat_btn"]
             btn.configure(
                 text=f"x{repeat_count}",
-                fg_color=COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"],
-                text_color="white" if repeat_count > 1 else COLORS["text_secondary"],
+                fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+                text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
+                width=40,
             )
 
         # 대기시간 버튼 업데이트
@@ -22586,6 +22809,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     command=lambda: self._change_action_click_type(a, "right_click")
                 )
                 popup.add_cascade(label="클릭 유형", menu=click_menu)
+                if getattr(a, "target_image", None):
+                    popup.add_command(
+                        label=("✓ " if getattr(a, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
+                        command=lambda: self._toggle_action_alternate_mouse_route(a),
+                    )
             popup.add_separator()
             popup.add_command(
                 label="비활성화" if getattr(a, "enabled", True) else "활성화",
@@ -22734,6 +22962,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             details.append(f'"{text_preview}"')
         if action.keys:
             details.append(f"[{' + '.join(action.keys).upper()}]")
+        if getattr(action, "target_image", None) and getattr(action, "alternate_mouse_route", False):
+            details.append("이동경로 변경")
+        if getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False):
+            details.append("사라질때까지 반복")
 
         if details:
             detail_lbl = ctk.CTkLabel(
@@ -22817,13 +23049,14 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 반복 횟수 버튼
         repeat_count = getattr(action, 'repeat_count', 1)
+        until_disappears = bool(getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False))
         repeat_btn = ctk.CTkButton(
             btn_frame,
             text=f"x{repeat_count}",
             font=ctk.CTkFont(size=11),
-            fg_color=COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"],
-            hover_color="#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"],
-            text_color="white" if repeat_count > 1 else COLORS["text_secondary"],
+            fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+            hover_color="#ea580c" if until_disappears else ("#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"]),
+            text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
             width=40,
             height=26,
             corner_radius=4,
@@ -22996,11 +23229,17 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             invalidate_thumbnail_cache(new_path)
             logger.info(f"이미지 변경 완료: {new_path}")
 
+        def on_search_radius_change():
+            self._modified = True
+            needs_refresh[0] = True
+
         dialog = ImageCropDialog(
             self, image_path,
             on_crop=on_crop_complete,
             on_delete=on_delete,
             on_change=on_change,
+            rule=action,
+            on_search_radius_change=on_search_radius_change,
             image_list=all_image_actions,
             current_index=current_index,
         )
@@ -23246,9 +23485,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
     def _edit_repeat_count_action(self, action: Action):
         """반복 설정 (횟수 + 반복 대기시간 + 랜덤)"""
+        is_image_click = bool(action.action_type in ["click", "double_click", "right_click"] and getattr(action, "target_image", None))
         dialog = ctk.CTkToplevel(self)
         dialog.title("반복 설정")
-        dialog.geometry("350x420")
+        dialog_height = 490 if is_image_click else 420
+        dialog.geometry(f"350x{dialog_height}")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.transient(self)
@@ -23257,7 +23498,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         # 중앙 배치
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() - 350) // 2
-        y = (dialog.winfo_screenheight() - 420) // 2
+        y = (dialog.winfo_screenheight() - dialog_height) // 2
         dialog.geometry(f"+{x}+{y}")
 
         main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -23273,6 +23514,23 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(main_frame, text="1 = 1회 실행, 2 = 2회 반복...",
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
+
+        click_until_var = ctk.BooleanVar(value=bool(getattr(action, "click_until_image_disappears", False)))
+        if is_image_click:
+            ctk.CTkCheckBox(
+                main_frame,
+                text="이미지가 사라질 때까지 반복 클릭",
+                variable=click_until_var,
+                font=ctk.CTkFont(size=13, weight="bold"),
+            ).pack(anchor="w", pady=(12, 4))
+            ctk.CTkLabel(
+                main_frame,
+                text="켜면 매번 이미지를 다시 찾아 클릭합니다. 반복 횟수는 안전 최대 클릭 수입니다.",
+                font=ctk.CTkFont(size=10),
+                text_color=COLORS["text_muted"],
+                wraplength=300,
+                justify="left",
+            ).pack(anchor="w", pady=(0, 4))
 
         # 반복 대기시간
         ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
@@ -23323,6 +23581,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 action.repeat_delay = delay
                 action.repeat_delay_random = delay_random_var.get()
                 action.repeat_delay_random_range = delay_range
+                action.click_until_image_disappears = bool(is_image_click and click_until_var.get())
                 result["saved"] = True
                 dialog.destroy()
             except ValueError:
@@ -23342,7 +23601,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if result["saved"]:
             self._modified = True
             self._update_action_buttons(action)
-            logger.info(f"반복 설정: {action.repeat_count}회, 대기 {action.repeat_delay}초 (랜덤: {action.repeat_delay_random})")
+            logger.info(
+                f"반복 설정: {action.repeat_count}회, 대기 {action.repeat_delay}초 "
+                f"(랜덤: {action.repeat_delay_random}, 사라질때까지: {getattr(action, 'click_until_image_disappears', False)})"
+            )
 
     def _edit_action_name(self, action: Action):
         """액션 이름 수정"""
@@ -23383,14 +23645,19 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         self._refresh_action_list()
         logger.info(f"클릭 유형 변경: {old_type} → {new_type}")
 
+    def _toggle_action_alternate_mouse_route(self, action: Action):
+        """이미지 클릭 이동 경로 변경 토글."""
+        if not getattr(action, "target_image", None):
+            return
+        action.alternate_mouse_route = not getattr(action, "alternate_mouse_route", False)
+        self._modified = True
+        self._refresh_action_list()
+        logger.info(f"마우스 이동경로 변경: {'활성화' if action.alternate_mouse_route else '비활성화'}")
+
     def _detach_action(self, action: Action):
-        """액션을 부모에서 분리하여 최상위로 이동"""
+        """액션을 부모에서 분리하여 부모 바로 아래로 이동"""
         parent = self._find_parent_action(action)
-        if parent and action in parent.children:
-            parent.children.remove(action)
-            action.parent_id = None
-            # 최상위에 추가
-            self._sequence.actions.append(action)
+        if parent and _detach_child_after_parent(self._sequence.actions, parent, action, "action_id"):
             self._modified = True
             self._refresh_action_list()
             logger.info(f"액션 종속 해제: {action.action_id}")
@@ -23592,7 +23859,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             monitor_action["typing_random"] = getattr(clipboard, 'typing_random', False)
             monitor_action["typing_delay"] = getattr(clipboard, 'typing_delay', 0.1)
             monitor_action["typing_delay_range"] = getattr(clipboard, 'typing_delay_range', 0.05)
+            monitor_action["click_until_image_disappears"] = getattr(clipboard, 'click_until_image_disappears', False)
             monitor_action["search_radius"] = getattr(clipboard, 'search_radius', 0)
+            monitor_action["search_region"] = getattr(clipboard, 'search_region', None)
 
             # monitor_actions 리스트에 추가 (없으면 생성)
             if "monitor_actions" not in watches[watch_index]:
@@ -23625,20 +23894,21 @@ class SequenceDetailDialog(ctk.CTkToplevel):
     def _add_key_action(self):
         """키 입력 액션 추가"""
         dialog = KeyInputDialog(self)
-        key = dialog.get_key()
+        keys = dialog.get_keys()
 
-        if key:
+        if keys:
+            key_text = " + ".join(keys)
             from ..database.models import Action
             new_action = Action(
                 action_type="hotkey",
-                keys=[key.lower().strip()],
+                keys=[key.lower().strip() for key in keys],
                 timestamp=0,
                 wait_after=0.5,
             )
             self._sequence.actions.append(new_action)
             self._modified = True
             self._refresh_action_list()
-            logger.info(f"키 액션 추가: {key}")
+            logger.info(f"키 액션 추가: {key_text}")
 
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
@@ -23800,24 +24070,16 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
 
         try:
-            # 부모 인덱스 찾기
-            idx = self._sequence.actions.index(action)
-
-            # 자식들을 부모 다음에 삽입
-            children = list(action.children)  # 복사
-            action.children = []  # 부모에서 자식 제거
-
-            for i, child in enumerate(children):
-                child.parent_id = None  # 부모 참조 제거
-                self._sequence.actions.insert(idx + 1 + i, child)
+            moved_count = _flatten_children_after_parent(self._sequence.actions, action, "action_id")
+            if moved_count <= 0:
+                messagebox.showerror("오류", "액션을 찾을 수 없습니다.")
+                return
 
             self._modified = True
             self._refresh_action_list()
             logger.info(f"하위 해체 완료: {child_count}개 액션")
             messagebox.showinfo("완료", f"{child_count}개의 하위 액션이 해체되었습니다.")
 
-        except ValueError:
-            messagebox.showerror("오류", "액션을 찾을 수 없습니다.")
         except Exception as e:
             logger.error(f"하위 해체 실패: {e}")
             messagebox.showerror("오류", f"하위 해체 실패: {e}")
@@ -23892,13 +24154,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             if not messagebox.askyesno("하위 종속 해제", f"{len(first_action.children)}개 액션의 하위 종속을 해제하시겠습니까?"):
                 return
 
-            # 해제: 1번 액션의 자식들을 같은 레벨로 이동
+            # 해제: 1번 액션의 자식들을 부모 바로 아래 같은 레벨로 이동
             children = list(first_action.children)
-            first_action.children = []
-
-            for child in children:
-                child.parent_id = None
-                self._sequence.actions.append(child)
+            _flatten_children_after_parent(self._sequence.actions, first_action, "action_id")
 
             logger.info(f"하위 종속 해제: {len(children)}개 액션")
         else:
@@ -24140,6 +24398,8 @@ class PlayerView(BaseView):
         self._rule_executor: Optional[RuleExecutor] = None
         self._playback_gm_dialog = None
         self._playback_gm_after_id = None
+        self._playback_gm_wait_after_id = None
+        self._playback_gm_current_rule = None
         self._playback_remaining_rules = []
         self._playback_active_plan: Optional[AutomationPlan] = None
         self._external_execution_owner = None
@@ -25124,6 +25384,10 @@ class PlayerView(BaseView):
             scroll_amount=getattr(action, "scroll_amount", 0),
             target_image=getattr(action, "target_image", None),
             confidence=getattr(action, "confidence", 0.8),
+            search_radius=getattr(action, "search_radius", 0),
+            search_region=getattr(action, "search_region", None),
+            alternate_mouse_route=getattr(action, "alternate_mouse_route", False),
+            click_until_image_disappears=getattr(action, "click_until_image_disappears", False),
             wait_after=getattr(action, "wait_after", 0.0),
             wait_random=getattr(action, "wait_random", False),
             wait_random_range=getattr(action, "wait_random_range", 0.3),
@@ -25375,9 +25639,9 @@ class PlayerView(BaseView):
 
         if first_gm_idx == 0:
             gm_rule = rules_to_run[0]
-            self._playback_remaining_rules = rules_to_run[1:]
+            self._playback_remaining_rules = list(getattr(gm_rule, "children", []) or []) + list(rules_to_run[1:])
             logger.info(f"[재생] game_mode → GameModeDialog ({len(self._playback_remaining_rules)}개 대기)")
-            self._play_run_game_mode(gm_rule.rule_id)
+            self._play_run_game_mode(gm_rule.rule_id, source_rule=gm_rule)
             return
 
         before_gm = rules_to_run[:first_gm_idx]
@@ -25385,7 +25649,46 @@ class PlayerView(BaseView):
         logger.info(f"[재생] {len(before_gm)}개 먼저 실행, 이후 game_mode 체이닝")
         self._play_run_rules_via_executor(before_gm, chain_remaining=gm_and_after)
 
-    def _play_run_game_mode(self, config_rule_id):
+    def _playback_game_mode_wait_seconds(self, rule) -> float:
+        if rule is None:
+            return 0.0
+        try:
+            wait_time = float(getattr(rule, "wait_after", 0.0) or 0.0)
+            if getattr(rule, "wait_random", False):
+                import random
+                wait_range = float(getattr(rule, "wait_random_range", 0.3) or 0.0)
+                wait_time += random.uniform(-wait_range, wait_range)
+            return max(0.0, wait_time)
+        except Exception:
+            return 0.0
+
+    def _cancel_playback_game_mode_wait(self) -> None:
+        wait_after_id = getattr(self, "_playback_gm_wait_after_id", None)
+        if wait_after_id is None:
+            return
+        try:
+            self.after_cancel(wait_after_id)
+        except (ValueError, tk.TclError):
+            pass
+        self._playback_gm_wait_after_id = None
+
+    def _continue_after_playback_game_mode_wait(self, rule, callback) -> None:
+        wait_time = self._playback_game_mode_wait_seconds(rule)
+        if wait_time <= 0:
+            callback()
+            return
+
+        logger.info(f"[재생] 특화모드 완료 후 대기: {wait_time:.2f}초")
+
+        def _finish_wait():
+            self._playback_gm_wait_after_id = None
+            if not self.winfo_exists() or self._playback_active_plan is None:
+                return
+            callback()
+
+        self._playback_gm_wait_after_id = self.after(int(wait_time * 1000), _finish_wait)
+
+    def _play_run_game_mode(self, config_rule_id, source_rule=None):
         active_plan = self._playback_active_plan
         if active_plan is None:
             self._show_plan_complete(False, "재생 계획이 없습니다.")
@@ -25402,6 +25705,8 @@ class PlayerView(BaseView):
             config_rule_id=config_rule_id,
             auto_run=True,
         )
+        self._playback_gm_current_rule = source_rule
+        self._cancel_playback_game_mode_wait()
         self._playback_gm_dialog._suppress_completion_notification = True
         self._playback_gm_dialog.withdraw()
         self._rule_executor = None
@@ -25431,14 +25736,19 @@ class PlayerView(BaseView):
     def _on_playback_game_mode_complete(self, success: bool, error_msg: str = None):
         remaining = list(getattr(self, "_playback_remaining_rules", []) or [])
         self._playback_remaining_rules = []
-        if success and remaining:
-            logger.info(f"[재생] 특화모드 완료, 이후 {len(remaining)}개 액션 이어서 실행")
-            self._play_plan_rules(remaining)
-            return
+        gm_rule = getattr(self, "_playback_gm_current_rule", None)
+        self._playback_gm_current_rule = None
         if success:
-            self._show_plan_complete(True, "자동화 완료")
-        else:
-            self._show_plan_complete(False, error_msg or "특화모드 종료")
+            def _continue_success():
+                if remaining:
+                    logger.info(f"[재생] 특화모드 완료, 이후 {len(remaining)}개 액션 이어서 실행")
+                    self._play_plan_rules(remaining)
+                    return
+                self._show_plan_complete(True, "자동화 완료")
+
+            self._continue_after_playback_game_mode_wait(gm_rule, _continue_success)
+            return
+        self._show_plan_complete(False, error_msg or "특화모드 종료")
 
     def _play_run_rules_via_executor(self, rules_to_run, chain_remaining=None):
         active_plan = self._playback_active_plan
@@ -25533,6 +25843,8 @@ class PlayerView(BaseView):
         self._rule_executor = None
         self._playback_active_plan = None
         self._playback_remaining_rules = []
+        self._playback_gm_current_rule = None
+        self._cancel_playback_game_mode_wait()
         if self._playback_gm_after_id:
             try:
                 self.after_cancel(self._playback_gm_after_id)
@@ -25598,6 +25910,13 @@ class PlayerView(BaseView):
                 logger.error(f"[중지] 외부 부분실행 중지 오류: {e}")
             self._end_external_execution(external_owner)
             return
+
+        if self._playback_gm_wait_after_id:
+            logger.info("[중지] playback game_mode 후 대기 취소")
+            self._cancel_playback_game_mode_wait()
+            self._playback_gm_current_rule = None
+            self._playback_remaining_rules = []
+            self._playback_active_plan = None
 
         _gm = getattr(self, "_playback_gm_dialog", None)
         if _gm is not None:

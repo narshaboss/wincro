@@ -184,7 +184,8 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
 
     # 공통 속성 복사
     for attr in ['wait_after', 'wait_random_range', 'repeat_count',
-                 'skip', 'name', 'search_region', 'confidence']:
+                 'skip', 'name', 'search_region', 'confidence', 'alternate_mouse_route',
+                 'click_until_image_disappears']:
         val = getattr(action, attr, None)
         if val is not None:
             ma[attr] = val

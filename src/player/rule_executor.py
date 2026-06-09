@@ -105,6 +105,9 @@ MIN_MOUSE_DURATION = 0.4          # 최소 마우스 이동 시간 (초)
 INTERVENTION_DISTANCE_PX = 50     # 사용자 개입 감지 거리 (픽셀)
 NEXT_SCREEN_CONFIDENCE = 0.45     # 다음 화면 대기 신뢰도
 MAX_MOVE_ATTEMPTS = 10            # 마우스 이동 최대 재시도
+IMAGE_CLICK_UNTIL_DISAPPEAR_MIN_CLICKS = 5
+IMAGE_CLICK_UNTIL_DISAPPEAR_MAX_SECONDS = 30.0
+IMAGE_CLICK_UNTIL_DISAPPEAR_MISS_CONFIRM = 2
 
 # 성능 최적화용 캐시
 _screen_size_cache = None
@@ -464,6 +467,7 @@ class RuleExecutor:
 
         # 결과 저장
         self._results: List[RuleExecutionResult] = []
+        self._child_rules_executed_with_parent: set[str] = set()
 
         # 콜백
         self._on_progress: Optional[Callable[[ExecutionProgress], None]] = None
@@ -771,11 +775,17 @@ class RuleExecutor:
                 if current_repeat > 1:
                     self._results.clear()
                     self._progress.initial_completed = 0
+                self._child_rules_executed_with_parent = set()
 
                 # 모든 규칙 순차 실행 (룰과 스텝 번호를 함께 순회)
                 for i, (rule, step_num) in enumerate(all_rules_with_step):
                     if self._stop_event.is_set():
                         break
+
+                    if rule.rule_id in self._child_rules_executed_with_parent:
+                        logger.debug(f"[반복묶음] 부모 반복에서 실행된 하위 액션 스킵: {step_num} {rule.description or rule.action_type}")
+                        self._progress.initial_completed = i + 1
+                        continue
 
                     # 일시정지 대기 (중지 이벤트 주기적 체크)
                     if self._wait_for_resume():
@@ -819,7 +829,7 @@ class RuleExecutor:
                         # 다음 규칙의 타겟 이미지 (확인용)
                         next_target_image = None
                         next_rule = None
-                        if i + 1 < len(all_rules):
+                        if not self._rule_repeats_child_actions(rule) and i + 1 < len(all_rules):
                             next_rule = all_rules[i + 1]
                             # 다음 액션이 모니터링이면 target_image는 종료 조건이므로 기다리지 않음
                             next_has_watches = len(getattr(next_rule, 'monitoring_watches', []) or []) > 0
@@ -910,6 +920,58 @@ class RuleExecutor:
         except (TypeError, ValueError):
             return None
 
+    def _image_search_region_for_rule(self, rule: AutomationRule) -> Optional[list]:
+        """이미지 액션의 검색 범위를 search_region 우선으로 계산한다."""
+        if rule is None:
+            return None
+
+        search_region = getattr(rule, "search_region", None)
+        if search_region is not None:
+            return list(search_region) if isinstance(search_region, (list, tuple)) else search_region
+
+        search_radius = getattr(rule, "search_radius", 0) or 0
+        action_x = getattr(rule, "action_x", None)
+        action_y = getattr(rule, "action_y", None)
+        if search_radius > 0 and action_x is not None and action_y is not None:
+            return self._radius_to_region(action_x, action_y, search_radius)
+
+        return None
+
+    @staticmethod
+    def _normalize_search_region(search_region, screen_w: int, screen_h: int) -> Tuple[Optional[list], bool]:
+        """검색영역을 화면 안으로 정규화한다. 두 번째 값은 명시 영역 여부."""
+        if search_region is None:
+            return None, False
+        if not isinstance(search_region, (list, tuple)) or len(search_region) != 4:
+            logger.warning(f"검색영역 형식 오류: {search_region}")
+            return None, True
+        try:
+            x1, y1, x2, y2 = [int(round(float(v))) for v in search_region]
+        except (TypeError, ValueError):
+            logger.warning(f"검색영역 좌표 오류: {search_region}")
+            return None, True
+
+        x1, x2 = sorted((x1, x2))
+        y1, y2 = sorted((y1, y2))
+        x1 = max(0, min(int(screen_w), x1))
+        y1 = max(0, min(int(screen_h), y1))
+        x2 = max(0, min(int(screen_w), x2))
+        y2 = max(0, min(int(screen_h), y2))
+
+        if x2 <= x1 or y2 <= y1:
+            logger.warning(f"검색영역이 유효하지 않음: {search_region}")
+            return None, True
+
+        return [x1, y1, x2, y2], True
+
+    @staticmethod
+    def _point_in_search_region(x: int, y: int, search_region) -> bool:
+        region, explicit = RuleExecutor._normalize_search_region(search_region, 10**9, 10**9)
+        if not explicit or region is None:
+            return True
+        x1, y1, x2, y2 = region
+        return x1 <= int(x) <= x2 and y1 <= int(y) <= y2
+
     def _handle_trigger_gate(
         self,
         rule: AutomationRule,
@@ -995,7 +1057,14 @@ class RuleExecutor:
         is_click_action = rule.action_type in ["click", "double_click", "right_click"]
 
         # 반복 횟수
+        click_until_disappears = bool(
+            is_click_action
+            and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        )
         repeat_count = getattr(rule, 'repeat_count', 1)
+        if click_until_disappears:
+            repeat_count = 1
         if repeat_count < 1:
             repeat_count = 1
 
@@ -1073,17 +1142,7 @@ class RuleExecutor:
                     next_confidence = NEXT_SCREEN_CONFIDENCE
 
                     # 다음 액션의 검색 범위 계산 (search_region 우선, 없으면 search_radius)
-                    next_search_region = None
-                    if next_rule:
-                        next_sr = getattr(next_rule, 'search_region', None)
-                        if next_sr and len(next_sr) == 4:
-                            next_search_region = list(next_sr)
-                        else:
-                            next_search_radius = getattr(next_rule, 'search_radius', 0) or 0
-                            next_action_x = getattr(next_rule, 'action_x', None)
-                            next_action_y = getattr(next_rule, 'action_y', None)
-                            if next_search_radius > 0 and next_action_x is not None and next_action_y is not None:
-                                next_search_region = self._radius_to_region(next_action_x, next_action_y, next_search_radius)
+                    next_search_region = self._image_search_region_for_rule(next_rule) if next_rule else None
 
                     if waited == 0:
                         logger.debug(f"[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}")
@@ -1255,6 +1314,8 @@ class RuleExecutor:
                     locations = []
                     found_image = None
                     wait_count = 0
+                    click_until_disappears = bool(getattr(rule, "click_until_image_disappears", False))
+                    disappear_absent_misses = 0
                     skip_on_not_found = getattr(rule, 'skip_on_not_found', False)
                     # 스킵 모드: wait_after 타임아웃 적용 / 일반: 무제한 대기
                     # wait_after <= 0이면 첫 검색 실패 시 즉시 스킵 (무한 대기 방지)
@@ -1303,19 +1364,14 @@ class RuleExecutor:
                                 pass
 
                         # 모든 타겟 이미지 검색 (OR 조건)
-                        rule_search_region = getattr(rule, 'search_region', None)
-                        for img_path in valid_images:
-                            locations = self._find_all_images_on_screen(
-                                img_path,
-                                rule.confidence,
-                                search_radius=rule.search_radius,
-                                center_x=rule.action_x,
-                                center_y=rule.action_y,
-                                search_region=rule_search_region,
-                            )
-                            if locations:
-                                found_image = img_path
-                                break  # 하나라도 찾으면 중단
+                        found_target = self._find_rule_image_click_target(rule, valid_images)
+                        if found_target:
+                            click_x = found_target["x"]
+                            click_y = found_target["y"]
+                            found_conf = found_target["confidence"]
+                            found_image = found_target["image"]
+                            click_method = found_target["method"]
+                            locations = found_target["locations"]
 
                         # 검색 후 마우스 원위치 복원
                         if mouse_moved_for_search and original_mouse_pos:
@@ -1326,6 +1382,18 @@ class RuleExecutor:
 
                         if not locations:
                             elapsed = time.time() - search_start
+                            if click_until_disappears:
+                                disappear_absent_misses += 1
+                                if disappear_absent_misses >= IMAGE_CLICK_UNTIL_DISAPPEAR_MISS_CONFIRM:
+                                    logger.info(
+                                        f"{_GREEN}{self._step_prefix}✓ 이미지 없음 확인 → 반복 클릭 종료 "
+                                        f"({disappear_absent_misses}회 확인){_RESET}"
+                                    )
+                                    self._mark_child_rules_handled_by_parent(rule)
+                                    return self._make_result(rule, True, "이미지 없음 (사라짐 확인)", start_time)
+                                time.sleep(0.2)
+                                continue
+
                             # skip_on_not_found일 때만 타임아웃 체크 (일반 모드는 무제한 대기)
                             # skip_timeout <= 0이면 첫 검색 실패 시 즉시 스킵
                             if skip_on_not_found and (skip_timeout <= 0 or elapsed >= skip_timeout):
@@ -1346,33 +1414,20 @@ class RuleExecutor:
                     found_name = Path(found_image).name if found_image else "이미지"
 
                     if len(locations) == 1:
-                        click_x, click_y, found_conf = locations[0]
-                        click_method = "이미지"
                         logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
                     elif len(locations) > 1:
-                        # 여러 개 발견됨 - action_x/y 힌트로 가장 가까운 것 선택
-                        if rule.action_x is not None and rule.action_y is not None:
-                            closest = self._find_closest_image(locations, rule.action_x, rule.action_y)
-                            if closest:
-                                click_x, click_y, found_conf = closest
-                                click_method = f"{len(locations)}개 중 선택"
-                                logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
-                            else:
-                                click_x, click_y, found_conf = locations[0]
-                                click_method = f"{len(locations)}개 중 첫번째"
-                        else:
-                            click_x, click_y, found_conf = locations[0]
-                            click_method = f"{len(locations)}개 중 첫번째"
-                            logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
+                        logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 발견: {found_name} ({int(found_conf * 100)}%){_RESET}")
 
                 # 클릭 실행
                 if click_x is not None and click_y is not None:
-                    # 검색 범위가 설정된 경우, 클릭 좌표가 범위 안에 있는지 확인 (경고만, 차단 안 함)
-                    if rule.search_radius > 0 and rule.action_x is not None and rule.action_y is not None:
-                        dist_from_center = ((click_x - rule.action_x) ** 2 + (click_y - rule.action_y) ** 2) ** 0.5
-                        if dist_from_center > rule.search_radius:
-                            # 범위 밖이어도 경고만 하고 클릭은 진행 (해상도/스케일링 차이 허용)
-                            logger.debug(f"클릭 좌표가 검색 범위를 벗어남 (거리: {dist_from_center:.0f}px, 범위: {rule.search_radius}px)")
+                    # 검색 범위가 설정된 이미지 액션은 범위 밖 클릭을 절대 진행하지 않는다.
+                    rule_search_region = self._image_search_region_for_rule(rule)
+                    if all_target_images and rule_search_region is not None and not self._point_in_search_region(click_x, click_y, rule_search_region):
+                        logger.warning(
+                            f"{_YELLOW}{self._step_prefix}⚠ 검색영역 밖 클릭 차단: "
+                            f"click=({click_x},{click_y}) region={rule_search_region}{_RESET}"
+                        )
+                        return self._make_result(rule, False, "검색영역 밖 이미지 후보 차단", start_time)
 
                     # 클릭 전 사용자 개입 확인
                     if self._check_user_intervention():
@@ -1380,97 +1435,30 @@ class RuleExecutor:
                         if self._stop_event.is_set():
                             return self._make_result(rule, False, "실행 중지됨", start_time)
 
-                    action_name = {"double_click": "더블클릭", "right_click": "우클릭"}.get(action_type, "클릭")
-
-                    # Arduino strict/enabled 모드에서는 입력 경로를 통일한다.
-                    if is_arduino_enabled() or is_arduino_strict_enabled():
-                        input_ctrl = get_input_controller()
-                        click_ok = False
-                        if action_type == "double_click":
-                            click_ok = input_ctrl.double_click(click_x, click_y, duration=self._mouse_duration)
-                        elif action_type == "right_click":
-                            click_ok = input_ctrl.right_click(click_x, click_y, duration=self._mouse_duration)
-                        else:
-                            click_ok = input_ctrl.click(click_x, click_y, duration=self._mouse_duration)
-                        if click_ok:
-                            logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
-                            self._last_mouse_pos = (click_x, click_y)
-                            return self._make_result(rule, True, f"{action_type} 완료", start_time)
-                        if is_arduino_strict_enabled():
-                            logger.error(f"{_RED}{self._step_prefix}[click] {action_name} failed (strict mode blocks software fallback){_RESET}")
-                            return self._make_result(rule, False, f"{action_type} 실패", start_time)
-
-                    # 마우스 이동 시도 (로딩 등으로 마우스가 잠겨있을 수 있으므로 반복 시도)
-                    max_move_attempts = MAX_MOVE_ATTEMPTS
-                    move_success = False
-
-                    for move_attempt in range(max_move_attempts):
-                        if self._stop_event.is_set():
-                            return self._make_result(rule, False, "실행 중지됨", start_time)
-
-                        # 마우스 캡처/클리핑 해제 - 게임 충돌 방지를 위해 비활성화
-                        # try:
-                        #     ctypes.windll.user32.ReleaseCapture()
-                        #     ctypes.windll.user32.ClipCursor(None)
-                        # except (OSError, AttributeError):
-                        #     pass
-
-                        # PyAutoGUI로 시도
-                        self._is_moving_mouse = True
-                        try:
-                            pyautogui.moveTo(click_x, click_y, duration=self._mouse_duration)
-                        finally:
-                            self._is_moving_mouse = False
-
-                        pos_after_move = pyautogui.position()
-                        if abs(pos_after_move[0] - click_x) < PIXEL_TOLERANCE_SMALL and abs(pos_after_move[1] - click_y) < PIXEL_TOLERANCE_SMALL:
-                            move_success = True
-                            break
-
-                        # Win32 API 시도
-                        if _win32_move_click(click_x, click_y, action_type):
-                            move_success = True
-                            logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
-                            self._last_mouse_pos = pyautogui.position()
-                            return self._make_result(rule, True, f"{action_type} 완료", start_time)
-
-                        # 실패 시 대기 후 재시도
-                        if move_attempt < max_move_attempts - 1:
-                            time.sleep(0.5)
-
-                    if move_success:
-                        # Wait briefly before clicking after the move stabilizes.
-                        time.sleep(0.1)
-                        if _win32_force_click_at(click_x, click_y, action_type):
-                            logger.info(f"{_GREEN}{self._step_prefix}[click] {action_name} complete{_RESET}")
-                            self._last_mouse_pos = (click_x, click_y)
-                            return self._make_result(rule, True, f"{action_type} complete", start_time)
-
-                        # If force-click failed, only retry a low-level click when the cursor is still near target.
-                        current_pos = pyautogui.position()
-                        if (
-                            abs(current_pos[0] - click_x) < PIXEL_TOLERANCE_SMALL
-                            and abs(current_pos[1] - click_y) < PIXEL_TOLERANCE_SMALL
-                            and _perform_mouse_click(action_type)
-                        ):
-                            logger.info(f"{_GREEN}{self._step_prefix}[click] {action_name} complete{_RESET}")
-                            self._last_mouse_pos = current_pos
-                            return self._make_result(rule, True, f"{action_type} complete", start_time)
-
-                        logger.error(
-                            f"{_RED}  [click] {action_name} failed{_RESET} "
-                            f"(move-success/click-fail target=({click_x}, {click_y}), current={current_pos})"
+                    if getattr(rule, "click_until_image_disappears", False):
+                        return self._execute_click_until_image_disappears(
+                            rule,
+                            valid_images,
+                            action_type,
+                            start_time,
+                            first_target={
+                                "x": click_x,
+                                "y": click_y,
+                                "confidence": found_conf,
+                                "image": found_image,
+                                "method": click_method,
+                                "locations": locations,
+                            },
                         )
-                        return self._make_result(rule, False, "click failed", start_time)
-                    else:
-                        # 마우스 이동 실패 - 강제 클릭 시도
-                        if _win32_force_click_at(click_x, click_y, action_type):
-                            logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
-                            self._last_mouse_pos = (click_x, click_y)
-                            return self._make_result(rule, True, f"{action_type} 완료", start_time)
-                        else:
-                            logger.error(f"{_RED}  ✗ {action_name} 실패{_RESET}")
-                            return self._make_result(rule, False, "클릭 실패", start_time)
+
+                    return self._execute_click_at(
+                        rule,
+                        action_type,
+                        int(click_x),
+                        int(click_y),
+                        start_time,
+                        image_click=bool(all_target_images),
+                    )
 
                 logger.warning(f"{_YELLOW}  ⚠ 클릭 대상 없음 (이미지 필요){_RESET}")
                 return self._make_result(rule, False, "클릭 대상 없음 (target_image 필요)", start_time)
@@ -1767,15 +1755,14 @@ class RuleExecutor:
 
             # 검색 영역 제한
             region_offset_x, region_offset_y = 0, 0
-            if search_region and len(search_region) == 4:
-                h, w = screenshot_bgr.shape[:2]
-                x1 = max(0, search_region[0])
-                y1 = max(0, search_region[1])
-                x2 = min(w, search_region[2])
-                y2 = min(h, search_region[3])
-                if x2 > x1 and y2 > y1:
-                    screenshot_bgr = screenshot_bgr[y1:y2, x1:x2]
-                    region_offset_x, region_offset_y = x1, y1
+            h, w = screenshot_bgr.shape[:2]
+            normalized_region, explicit_region = self._normalize_search_region(search_region, w, h)
+            if explicit_region:
+                if normalized_region is None:
+                    return None
+                x1, y1, x2, y2 = normalized_region
+                screenshot_bgr = screenshot_bgr[y1:y2, x1:x2]
+                region_offset_x, region_offset_y = x1, y1
 
             # 중지 체크
             if self._stop_event.is_set():
@@ -1913,18 +1900,14 @@ class RuleExecutor:
 
                     scr_h, scr_w = screenshot_gray.shape[:2]
                     region_offset_x, region_offset_y = 0, 0
-                    if search_region and len(search_region) == 4:
-                        try:
-                            x1 = max(0, int(search_region[0]))
-                            y1 = max(0, int(search_region[1]))
-                            x2 = min(scr_w, int(search_region[2]))
-                            y2 = min(scr_h, int(search_region[3]))
-                        except (TypeError, ValueError):
-                            x1 = y1 = x2 = y2 = 0
-                        if x2 > x1 and y2 > y1:
-                            screenshot_gray = screenshot_gray[y1:y2, x1:x2]
-                            region_offset_x, region_offset_y = x1, y1
-                            scr_h, scr_w = screenshot_gray.shape[:2]
+                    normalized_region, explicit_region = self._normalize_search_region(search_region, scr_w, scr_h)
+                    if explicit_region:
+                        if normalized_region is None:
+                            return None
+                        x1, y1, x2, y2 = normalized_region
+                        screenshot_gray = screenshot_gray[y1:y2, x1:x2]
+                        region_offset_x, region_offset_y = x1, y1
+                        scr_h, scr_w = screenshot_gray.shape[:2]
 
                     # 크기 체크: 템플릿이 화면보다 크면 스킵
                     if h > scr_h or w > scr_w:
@@ -2094,20 +2077,29 @@ class RuleExecutor:
             roi_offset_x, roi_offset_y = 0, 0
             roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, 0, 0
             has_roi = False
-            if search_region and len(search_region) == 4:
-                roi_x1, roi_y1, roi_x2, roi_y2 = search_region
-                roi_x1, roi_y1 = max(0, roi_x1), max(0, roi_y1)
-                roi_x2, roi_y2 = min(screen_w, roi_x2), min(screen_h, roi_y2)
+            normalized_region, explicit_region = self._normalize_search_region(search_region, screen_w, screen_h)
+            if explicit_region:
+                if normalized_region is None:
+                    return []
+                roi_x1, roi_y1, roi_x2, roi_y2 = normalized_region
                 has_roi = True
             elif search_radius > 0 and center_x is not None and center_y is not None:
-                roi_x1 = max(0, center_x - search_radius)
-                roi_y1 = max(0, center_y - search_radius)
-                roi_x2 = min(screen_w, center_x + search_radius)
-                roi_y2 = min(screen_h, center_y + search_radius)
+                try:
+                    radius = int(search_radius)
+                    cx = int(center_x)
+                    cy = int(center_y)
+                except (TypeError, ValueError):
+                    return []
+                roi_x1 = max(0, cx - radius)
+                roi_y1 = max(0, cy - radius)
+                roi_x2 = min(screen_w, cx + radius)
+                roi_y2 = min(screen_h, cy + radius)
+                if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
+                    return []
                 has_roi = True
 
-            # ROI가 유효하고 템플릿보다 큰 경우만 적용
-            if has_roi and roi_x2 > roi_x1 and roi_y2 > roi_y1 and (roi_x2 - roi_x1) > w and (roi_y2 - roi_y1) > h:
+            # ROI가 설정된 경우 반드시 해당 영역 안에서만 검색한다.
+            if has_roi:
                 screenshot_gray = screenshot_gray[roi_y1:roi_y2, roi_x1:roi_x2]
                 roi_offset_x, roi_offset_y = roi_x1, roi_y1
 
@@ -2188,6 +2180,337 @@ class RuleExecutor:
             # 메모리 해제 (저사양 PC 지원)
             del screenshot, screenshot_np, screenshot_gray, result
 
+    def _find_rule_image_click_target(self, rule: AutomationRule, valid_images: List[str]) -> Optional[Dict[str, Any]]:
+        """규칙의 이미지 검색 설정을 적용해 클릭 대상 1개를 찾는다."""
+        rule_search_region = self._image_search_region_for_rule(rule)
+        has_rule_search_region = rule_search_region is not None
+
+        for img_path in valid_images:
+            locations = self._find_all_images_on_screen(
+                img_path,
+                rule.confidence,
+                search_radius=0 if has_rule_search_region else getattr(rule, "search_radius", 0),
+                center_x=rule.action_x,
+                center_y=rule.action_y,
+                search_region=rule_search_region,
+            )
+            if has_rule_search_region:
+                before_filter = len(locations)
+                locations = [
+                    loc for loc in locations
+                    if self._point_in_search_region(loc[0], loc[1], rule_search_region)
+                ]
+                if before_filter and not locations:
+                    logger.warning(
+                        f"{_YELLOW}{self._step_prefix}⚠ 검색영역 밖 이미지 후보 차단: "
+                        f"{Path(img_path).name} region={rule_search_region}{_RESET}"
+                    )
+            if not locations:
+                continue
+
+            if len(locations) == 1:
+                chosen = locations[0]
+                method = "이미지"
+            elif rule.action_x is not None and rule.action_y is not None:
+                chosen = self._find_closest_image(locations, rule.action_x, rule.action_y) or locations[0]
+                method = f"{len(locations)}개 중 선택"
+            else:
+                chosen = locations[0]
+                method = f"{len(locations)}개 중 첫번째"
+
+            return {
+                "x": chosen[0],
+                "y": chosen[1],
+                "confidence": chosen[2],
+                "image": img_path,
+                "method": method,
+                "locations": locations,
+            }
+
+        return None
+
+    def _execute_click_at(
+        self,
+        rule: AutomationRule,
+        action_type: str,
+        click_x: int,
+        click_y: int,
+        start_time: datetime,
+        *,
+        image_click: bool = False,
+    ) -> RuleExecutionResult:
+        """좌표 클릭 실행 경로를 일반 클릭과 반복 이미지 클릭에서 공통 사용한다."""
+        action_name = {"double_click": "더블클릭", "right_click": "우클릭"}.get(action_type, "클릭")
+        alternate_route = bool(getattr(rule, "alternate_mouse_route", False) and image_click)
+
+        # Arduino strict/enabled 모드에서는 입력 경로를 통일한다.
+        if is_arduino_enabled() or is_arduino_strict_enabled():
+            input_ctrl = get_input_controller()
+            click_ok = False
+            if alternate_route:
+                click_ok = self._move_mouse_to(click_x, click_y, alternate_route=True)
+                if click_ok:
+                    time.sleep(0.05)
+                    if action_type == "double_click":
+                        click_ok = input_ctrl.double_click()
+                    elif action_type == "right_click":
+                        click_ok = input_ctrl.right_click()
+                    else:
+                        click_ok = input_ctrl.click()
+            else:
+                if action_type == "double_click":
+                    click_ok = input_ctrl.double_click(click_x, click_y, duration=self._mouse_duration)
+                elif action_type == "right_click":
+                    click_ok = input_ctrl.right_click(click_x, click_y, duration=self._mouse_duration)
+                else:
+                    click_ok = input_ctrl.click(click_x, click_y, duration=self._mouse_duration)
+            if click_ok:
+                logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
+                self._last_mouse_pos = (click_x, click_y)
+                return self._make_result(rule, True, f"{action_type} 완료", start_time)
+            if is_arduino_strict_enabled():
+                logger.error(f"{_RED}{self._step_prefix}[click] {action_name} failed (strict mode blocks software fallback){_RESET}")
+                return self._make_result(rule, False, f"{action_type} 실패", start_time)
+
+        max_move_attempts = MAX_MOVE_ATTEMPTS
+        move_success = False
+
+        for move_attempt in range(max_move_attempts):
+            if self._stop_event.is_set():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            self._is_moving_mouse = True
+            try:
+                if not self._move_mouse_to(click_x, click_y, alternate_route=alternate_route):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+            finally:
+                self._is_moving_mouse = False
+
+            pos_after_move = pyautogui.position()
+            if abs(pos_after_move[0] - click_x) < PIXEL_TOLERANCE_SMALL and abs(pos_after_move[1] - click_y) < PIXEL_TOLERANCE_SMALL:
+                move_success = True
+                break
+
+            if _win32_move_click(click_x, click_y, action_type):
+                move_success = True
+                logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
+                self._last_mouse_pos = pyautogui.position()
+                return self._make_result(rule, True, f"{action_type} 완료", start_time)
+
+            if move_attempt < max_move_attempts - 1:
+                time.sleep(0.5)
+
+        if move_success:
+            time.sleep(0.1)
+            if _win32_force_click_at(click_x, click_y, action_type):
+                logger.info(f"{_GREEN}{self._step_prefix}[click] {action_name} complete{_RESET}")
+                self._last_mouse_pos = (click_x, click_y)
+                return self._make_result(rule, True, f"{action_type} complete", start_time)
+
+            current_pos = pyautogui.position()
+            if (
+                abs(current_pos[0] - click_x) < PIXEL_TOLERANCE_SMALL
+                and abs(current_pos[1] - click_y) < PIXEL_TOLERANCE_SMALL
+                and _perform_mouse_click(action_type)
+            ):
+                logger.info(f"{_GREEN}{self._step_prefix}[click] {action_name} complete{_RESET}")
+                self._last_mouse_pos = current_pos
+                return self._make_result(rule, True, f"{action_type} complete", start_time)
+
+            logger.error(
+                f"{_RED}  [click] {action_name} failed{_RESET} "
+                f"(move-success/click-fail target=({click_x}, {click_y}), current={current_pos})"
+            )
+            return self._make_result(rule, False, "click failed", start_time)
+
+        if _win32_force_click_at(click_x, click_y, action_type):
+            logger.info(f"{_GREEN}{self._step_prefix}✓ {action_name} 완료{_RESET}")
+            self._last_mouse_pos = (click_x, click_y)
+            return self._make_result(rule, True, f"{action_type} 완료", start_time)
+
+        logger.error(f"{_RED}  ✗ {action_name} 실패{_RESET}")
+        return self._make_result(rule, False, "클릭 실패", start_time)
+
+    def _repeat_delay_for_rule(self, rule: AutomationRule) -> float:
+        delay = float(getattr(rule, "repeat_delay", 0.5) or 0.0)
+        if getattr(rule, "repeat_delay_random", False):
+            delay_range = float(getattr(rule, "repeat_delay_random_range", 0.3) or 0.0)
+            delay += random.uniform(-delay_range, delay_range)
+        return max(0.05, delay)
+
+    def _rule_repeats_child_actions(self, rule: AutomationRule) -> bool:
+        return bool(
+            getattr(rule, "children", None)
+            and rule.action_type in ["click", "double_click", "right_click"]
+            and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        )
+
+    def _mark_child_rules_handled_by_parent(self, rule: AutomationRule) -> None:
+        handled_children = self._flatten_rules(getattr(rule, "children", []) or [])
+        if not handled_children:
+            return
+        self._child_rules_executed_with_parent.update(child.rule_id for child in handled_children)
+
+    def _wait_after_rule_result(self, rule: AutomationRule, result: RuleExecutionResult) -> Optional[RuleExecutionResult]:
+        if self._stop_event.is_set():
+            return self._make_result(rule, False, "실행 중지됨", datetime.now())
+        is_skipped = "스킵됨" in result.message if result.message else False
+        if is_skipped:
+            return None
+        wait_time = getattr(rule, "wait_after", self._default_wait)
+        if getattr(rule, "wait_random", False):
+            wait_range = getattr(rule, "wait_random_range", 0.3)
+            wait_time = max(0, wait_time + random.uniform(-wait_range, wait_range))
+        if wait_time > 0 and self._stop_event.wait(timeout=wait_time):
+            return self._make_result(rule, False, "실행 중지됨", datetime.now())
+        return None
+
+    def _execute_child_rules_for_repeat_click(
+        self,
+        parent_rule: AutomationRule,
+        start_time: datetime,
+    ) -> Optional[RuleExecutionResult]:
+        child_rules = [child for child in (getattr(parent_rule, "children", []) or []) if getattr(child, "enabled", True)]
+        if not child_rules:
+            return None
+
+        previous_step = self._current_step_num
+        parent_step = previous_step or "반복"
+
+        try:
+            logger.info(f"{_CYAN}{self._step_prefix}↳ 클릭 후 하위액션 {len(child_rules)}개 실행{_RESET}")
+            for visible_index, child in enumerate(child_rules, 1):
+                step_num = f"{parent_step}-{visible_index}"
+                result = self._execute_rule_tree_once(child, step_num)
+                if result is not None:
+                    return result
+        finally:
+            self._current_step_num = previous_step
+
+        return None
+
+    def _execute_rule_tree_once(
+        self,
+        rule: AutomationRule,
+        step_num: str,
+    ) -> Optional[RuleExecutionResult]:
+        previous_step = self._current_step_num
+        self._current_step_num = step_num
+        action_name = rule.description if rule.description else rule.action_type
+        logger.info(f"{_CYAN}[{step_num}] 반복묶음 하위: {action_name}{_RESET}")
+
+        self._progress.current_rule = rule.rule_id
+        self._update_progress(f"[{step_num}] {action_name}")
+
+        has_monitoring_watches = len(getattr(rule, "monitoring_watches", []) or []) > 0
+        is_monitoring = getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches
+        if is_monitoring:
+            trigger_result = self._handle_trigger_gate(rule, datetime.now(), step_num)
+            if trigger_result is not None:
+                result = trigger_result
+            else:
+                self._state = ExecutionState.MONITORING
+                result = self._execute_monitoring_mode(rule, self._flatten_rules([rule]), 0, step_num=step_num)
+                self._state = ExecutionState.RUNNING_INITIAL
+        else:
+            result = self._execute_rule_with_retry(rule, step_num=step_num)
+
+        self._results.append(result)
+        if self._on_rule_executed:
+            self._on_rule_executed(result)
+
+        if not result.success or getattr(result, "skip_current_playlist", False):
+            self._current_step_num = previous_step
+            return result
+
+        wait_result = self._wait_after_rule_result(rule, result)
+        if wait_result is not None:
+            self._current_step_num = previous_step
+            return wait_result
+
+        if not self._rule_repeats_child_actions(rule):
+            for visible_index, child in enumerate([c for c in (getattr(rule, "children", []) or []) if getattr(c, "enabled", True)], 1):
+                child_result = self._execute_rule_tree_once(child, f"{step_num}-{visible_index}")
+                if child_result is not None:
+                    self._current_step_num = previous_step
+                    return child_result
+
+        self._current_step_num = previous_step
+        return None
+
+    def _execute_click_until_image_disappears(
+        self,
+        rule: AutomationRule,
+        valid_images: List[str],
+        action_type: str,
+        start_time: datetime,
+        first_target: Optional[Dict[str, Any]] = None,
+    ) -> RuleExecutionResult:
+        """이미지가 사라질 때까지 매번 재검색 후 반복 클릭한다."""
+        try:
+            configured_count = int(getattr(rule, "repeat_count", 1) or 1)
+        except (TypeError, ValueError):
+            configured_count = 1
+        max_clicks = max(IMAGE_CLICK_UNTIL_DISAPPEAR_MIN_CLICKS, configured_count)
+        max_seconds = IMAGE_CLICK_UNTIL_DISAPPEAR_MAX_SECONDS
+        miss_confirm = IMAGE_CLICK_UNTIL_DISAPPEAR_MISS_CONFIRM
+        started = time.time()
+        clicks = 0
+        misses = 0
+        target = first_target
+
+        logger.info(
+            f"{_CYAN}{self._step_prefix}↻ 이미지 사라질 때까지 반복 클릭 시작 "
+            f"(최대 {max_clicks}회/{max_seconds:.0f}초){_RESET}"
+        )
+
+        while not self._stop_event.is_set():
+            if time.time() - started >= max_seconds:
+                return self._make_result(rule, False, f"이미지 반복 클릭 시간초과 ({clicks}회)", start_time)
+            if clicks >= max_clicks:
+                return self._make_result(rule, False, f"이미지 반복 클릭 한도 도달 ({clicks}회)", start_time)
+
+            if target is None:
+                target = self._find_rule_image_click_target(rule, valid_images)
+
+            if target is None:
+                misses += 1
+                if misses >= miss_confirm:
+                    logger.info(f"{_GREEN}{self._step_prefix}✓ 이미지 사라짐 확인 ({clicks}회 클릭){_RESET}")
+                    self._mark_child_rules_handled_by_parent(rule)
+                    return self._make_result(rule, True, f"이미지 사라짐 ({clicks}회 클릭)", start_time)
+                time.sleep(0.2)
+                continue
+
+            misses = 0
+            found_name = Path(target["image"]).name
+            logger.info(
+                f"{_GREEN}{self._step_prefix}✓ 반복 클릭 대상: {found_name} "
+                f"({int(target['confidence'] * 100)}%) #{clicks + 1}{_RESET}"
+            )
+            click_result = self._execute_click_at(
+                rule,
+                action_type,
+                int(target["x"]),
+                int(target["y"]),
+                start_time,
+                image_click=True,
+            )
+            if not click_result.success:
+                return click_result
+
+            child_result = self._execute_child_rules_for_repeat_click(rule, start_time)
+            if child_result is not None:
+                return child_result
+
+            clicks += 1
+            if self._stop_event.wait(timeout=self._repeat_delay_for_rule(rule)):
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+            target = None
+
+        return self._make_result(rule, False, "실행 중지됨", start_time)
+
     def _find_closest_image(
         self,
         locations: List[tuple],
@@ -2208,6 +2531,89 @@ class RuleExecutor:
             (loc[0] - hint_x) ** 2 + (loc[1] - hint_y) ** 2
         )
         return closest
+
+    @staticmethod
+    def _clamp_mouse_point(value: int, lower: int, upper: int) -> int:
+        return max(lower, min(upper, int(value)))
+
+    def _build_alternate_mouse_route(self, target_x: int, target_y: int) -> List[Tuple[int, int]]:
+        """기본 직선 이동 대신 목표 반대편에서 직각 우회로 접근한다."""
+        try:
+            start_x, start_y = pyautogui.position()
+            screen_w, screen_h = pyautogui.size()
+        except Exception:
+            return [(int(target_x), int(target_y))]
+
+        margin = 8
+        approach_gap = 140
+        detour_gap = 120
+        max_x = max(margin, int(screen_w) - margin)
+        max_y = max(margin, int(screen_h) - margin)
+        target_x = self._clamp_mouse_point(target_x, margin, max_x)
+        target_y = self._clamp_mouse_point(target_y, margin, max_y)
+        start_x = self._clamp_mouse_point(start_x, margin, max_x)
+        start_y = self._clamp_mouse_point(start_y, margin, max_y)
+
+        dx = target_x - start_x
+        dy = target_y - start_y
+        if abs(dx) >= abs(dy):
+            approach_dir = 1 if dx >= 0 else -1
+            approach_x = self._clamp_mouse_point(target_x + approach_dir * approach_gap, margin, max_x)
+            if abs(approach_x - target_x) < 30:
+                approach_x = self._clamp_mouse_point(target_x - approach_dir * approach_gap, margin, max_x)
+            detour_y = (
+                self._clamp_mouse_point(target_y + detour_gap, margin, max_y)
+                if target_y < screen_h / 2
+                else self._clamp_mouse_point(target_y - detour_gap, margin, max_y)
+            )
+            raw_points = [
+                (start_x, detour_y),
+                (approach_x, detour_y),
+                (approach_x, target_y),
+                (target_x, target_y),
+            ]
+        else:
+            approach_dir = 1 if dy >= 0 else -1
+            approach_y = self._clamp_mouse_point(target_y + approach_dir * approach_gap, margin, max_y)
+            if abs(approach_y - target_y) < 30:
+                approach_y = self._clamp_mouse_point(target_y - approach_dir * approach_gap, margin, max_y)
+            detour_x = (
+                self._clamp_mouse_point(target_x + detour_gap, margin, max_x)
+                if target_x < screen_w / 2
+                else self._clamp_mouse_point(target_x - detour_gap, margin, max_x)
+            )
+            raw_points = [
+                (detour_x, start_y),
+                (detour_x, approach_y),
+                (target_x, approach_y),
+                (target_x, target_y),
+            ]
+
+        points: List[Tuple[int, int]] = []
+        for px, py in raw_points:
+            point = (int(px), int(py))
+            if not points or points[-1] != point:
+                points.append(point)
+        return points or [(target_x, target_y)]
+
+    def _move_mouse_to(self, x: int, y: int, *, duration: Optional[float] = None, alternate_route: bool = False) -> bool:
+        duration = self._mouse_duration if duration is None else max(0.0, float(duration))
+        if not alternate_route:
+            pyautogui.moveTo(x, y, duration=duration)
+            return True
+
+        points = self._build_alternate_mouse_route(x, y)
+        segment_duration = duration / max(len(points), 1)
+        input_ctrl = get_input_controller() if (is_arduino_enabled() or is_arduino_strict_enabled()) else None
+        for px, py in points:
+            if self._stop_event.is_set():
+                return False
+            if input_ctrl is not None:
+                if not input_ctrl.move_to(px, py, duration=segment_duration):
+                    return False
+            else:
+                pyautogui.moveTo(px, py, duration=segment_duration)
+        return True
 
     def _click_at(self, x: int, y: int) -> None:
         """지정된 위치 클릭 (멀티모니터 지원)"""
@@ -2652,7 +3058,11 @@ class RuleExecutor:
                 click_type = monitor_action.get('click_type', 'click')  # click, double_click, right_click
                 if x is not None and y is not None:
                     input_ctrl = get_input_controller()
-                    input_ctrl.move_to(x, y, duration=self._mouse_duration)
+                    if monitor_action.get('alternate_mouse_route', False):
+                        if not self._move_mouse_to(x, y, alternate_route=True):
+                            return None
+                    else:
+                        input_ctrl.move_to(x, y, duration=self._mouse_duration)
                     time.sleep(0.05)
                     if click_type == 'double_click':
                         input_ctrl.double_click()  # 이미 이동했으므로 좌표 없이 클릭
@@ -2667,6 +3077,7 @@ class RuleExecutor:
             elif action_type == '이미지 클릭':
                 image_path = monitor_action.get('image')
                 click_type = monitor_action.get('click_type', 'click')
+                alternate_route = bool(monitor_action.get('alternate_mouse_route', False))
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
 
                 # INFO 레벨로 실제 사용 값 출력 (디버깅용)
@@ -2697,7 +3108,11 @@ class RuleExecutor:
                     conf = location[2] if len(location) > 2 else 0
                     logger.debug(f"[이미지 클릭] 찾음: 위치=({x}, {y}), 인식률={conf:.0%}")
                     input_ctrl = get_input_controller()
-                    input_ctrl.move_to(x, y, duration=self._mouse_duration)
+                    if alternate_route:
+                        if not self._move_mouse_to(x, y, alternate_route=True):
+                            return None
+                    else:
+                        input_ctrl.move_to(x, y, duration=self._mouse_duration)
                     time.sleep(0.05)
                     if click_type == 'double_click':
                         input_ctrl.double_click()  # 이미 이동했으므로 좌표 없이 클릭

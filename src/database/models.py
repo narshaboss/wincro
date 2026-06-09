@@ -63,6 +63,10 @@ class Action:
     typing_delay_range: float = 0.05  # 타이핑 딜레이 ±범위 (초)
     target_image: Optional[str] = None  # 대상 이미지 경로
     confidence: float = 0.8  # 이미지 매칭 신뢰도
+    search_radius: int = 0  # 이미지 검색 반경
+    search_region: Optional[List[int]] = None  # 이미지 검색 영역 [x1, y1, x2, y2]
+    alternate_mouse_route: bool = False  # 이미지 클릭 시 반대 우회 이동 경로 사용
+    click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
     scroll_amount: int = 0  # 스크롤 양 (양수: 위, 음수: 아래)
     drag_to_x: Optional[int] = None  # 드래그 종료 X
     drag_to_y: Optional[int] = None  # 드래그 종료 Y
@@ -109,7 +113,8 @@ class Action:
             'action_type', 'x', 'y', 'button', 'text', 'keys', 'duration',
             'wait_before', 'wait_after', 'wait_random', 'wait_random_range',
             'typing_random', 'typing_delay', 'typing_delay_range',
-            'target_image', 'confidence',
+            'target_image', 'confidence', 'search_radius', 'search_region',
+            'alternate_mouse_route', 'click_until_image_disappears',
             'scroll_amount', 'drag_to_x', 'drag_to_y', 'drag_duration', 'timestamp',
             'description', 'wait_for_image', 'wait_for_image_timeout',
             'wait_for_image_disappear', 'repeat_count', 'repeat_delay',
