@@ -867,17 +867,23 @@
       ],
       "navigation_mode": "coordinate",
       "coord_x_region": [
-        910,
-        763,
-        946,
-        780
+        896,
+        759,
+        953,
+        785
       ],
       "coord_y_region": [
-        972,
-        764,
-        1005,
-        780
+        958,
+        760,
+        1015,
+        784
       ],
+      "coord_anchor_enabled": true,
+      "coord_x_anchor_image": "coord_x_anchor_1781088175989.png",
+      "coord_y_anchor_image": "coord_y_anchor_1781088182723.png",
+      "coord_anchor_search_region": null,
+      "coord_x_anchor_offset": null,
+      "coord_y_anchor_offset": null,
       "target_x": 0,
       "target_y": 0,
       "waypoints": [
@@ -951,17 +957,23 @@
       ],
       "navigation_mode": "coordinate",
       "coord_x_region": [
-        910,
-        763,
-        946,
-        780
+        896,
+        759,
+        953,
+        785
       ],
       "coord_y_region": [
-        972,
-        764,
-        1005,
-        780
+        958,
+        760,
+        1015,
+        784
       ],
+      "coord_anchor_enabled": true,
+      "coord_x_anchor_image": "coord_x_anchor_1781088175989.png",
+      "coord_y_anchor_image": "coord_y_anchor_1781088182723.png",
+      "coord_anchor_search_region": null,
+      "coord_x_anchor_offset": null,
+      "coord_y_anchor_offset": null,
       "target_x": 0,
       "target_y": 0,
       "waypoints": [

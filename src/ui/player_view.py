@@ -13946,15 +13946,19 @@ class GameModeDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(ocr_inner, text="📍 좌표 읽기 영역",
                      font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(ocr_inner, text="화면에서 X, Y 좌표가 표시되는 영역을 각각 선택하세요",
+        ctk.CTkLabel(ocr_inner, text="X 글자+숫자 영역, Y 글자+숫자 영역을 각각 선택하세요",
                      font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(2, 8))
 
-        # X 좌표 영역
+        # X 좌표바 영역: X 글자와 X 숫자가 같이 들어있는 작은 영역.
         x_row = ctk.CTkFrame(ocr_inner, fg_color="transparent")
         x_row.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(x_row, text="X 좌표 영역:", width=85).pack(side="left")
-        self._coord_x_label = ctk.CTkLabel(x_row, text=self._format_coord_region(getattr(self._config, 'coord_x_region', None)),
-                                           width=180, anchor="w")
+        ctk.CTkLabel(x_row, text="X 좌표바:", width=85).pack(side="left")
+        self._coord_x_label = ctk.CTkLabel(
+            x_row,
+            text=self._format_coord_region(getattr(self._config, "coord_x_region", None)),
+            width=180,
+            anchor="w",
+        )
         self._coord_x_label.pack(side="left", padx=5)
         ctk.CTkButton(x_row, text="영역 선택", width=70, height=26, fg_color="#5e81ac",
                       command=lambda: self._select_coord_region("x")).pack(side="left", padx=2)
@@ -13963,12 +13967,16 @@ class GameModeDialog(ctk.CTkToplevel):
         self._coord_x_result = ctk.CTkLabel(x_row, text="", font=ctk.CTkFont(size=10), width=80)
         self._coord_x_result.pack(side="left", padx=5)
 
-        # Y 좌표 영역
+        # Y 좌표바 영역: Y 글자와 Y 숫자가 같이 들어있는 작은 영역.
         y_row = ctk.CTkFrame(ocr_inner, fg_color="transparent")
         y_row.pack(fill="x", pady=(0, 0))
-        ctk.CTkLabel(y_row, text="Y 좌표 영역:", width=85).pack(side="left")
-        self._coord_y_label = ctk.CTkLabel(y_row, text=self._format_coord_region(getattr(self._config, 'coord_y_region', None)),
-                                           width=180, anchor="w")
+        ctk.CTkLabel(y_row, text="Y 좌표바:", width=85).pack(side="left")
+        self._coord_y_label = ctk.CTkLabel(
+            y_row,
+            text=self._format_coord_region(getattr(self._config, "coord_y_region", None)),
+            width=180,
+            anchor="w",
+        )
         self._coord_y_label.pack(side="left", padx=5)
         ctk.CTkButton(y_row, text="영역 선택", width=70, height=26, fg_color="#5e81ac",
                       command=lambda: self._select_coord_region("y")).pack(side="left", padx=2)
@@ -13976,6 +13984,45 @@ class GameModeDialog(ctk.CTkToplevel):
                       command=lambda: self._test_coord_region("y")).pack(side="left", padx=2)
         self._coord_y_result = ctk.CTkLabel(y_row, text="", font=ctk.CTkFont(size=10), width=80)
         self._coord_y_result.pack(side="left", padx=5)
+
+        # X/Y 기준 이미지 앵커. 각 좌표바 영역 안에서 기준 글자를 찾고 오른쪽 숫자를 읽는다.
+        anchor_row = ctk.CTkFrame(ocr_inner, fg_color="transparent")
+        anchor_row.pack(fill="x", pady=(6, 0))
+        self._coord_anchor_enabled_var = ctk.BooleanVar(value=bool(getattr(self._config, "coord_anchor_enabled", False)))
+        ctk.CTkSwitch(
+            anchor_row,
+            text="X/Y 이미지 기준",
+            variable=self._coord_anchor_enabled_var,
+            width=46,
+            command=self._on_coord_anchor_toggle,
+        ).pack(side="left", padx=(0, 8))
+        self._coord_x_anchor_label = ctk.CTkLabel(
+            anchor_row,
+            text=self._format_coord_anchor_image(getattr(self._config, "coord_x_anchor_image", "")),
+            width=125,
+            anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_secondary"],
+        )
+        self._coord_x_anchor_label.pack(side="left", padx=(0, 2))
+        ctk.CTkButton(anchor_row, text="X이미지", width=58, height=24, fg_color="#5e81ac",
+                      font=ctk.CTkFont(size=10),
+                      command=lambda: self._select_coord_anchor_image("x")).pack(side="left", padx=2)
+        self._coord_y_anchor_label = ctk.CTkLabel(
+            anchor_row,
+            text=self._format_coord_anchor_image(getattr(self._config, "coord_y_anchor_image", "")),
+            width=125,
+            anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_secondary"],
+        )
+        self._coord_y_anchor_label.pack(side="left", padx=(8, 2))
+        ctk.CTkButton(anchor_row, text="Y이미지", width=58, height=24, fg_color="#5e81ac",
+                      font=ctk.CTkFont(size=10),
+                      command=lambda: self._select_coord_anchor_image("y")).pack(side="left", padx=2)
+        ctk.CTkButton(anchor_row, text="해제", width=42, height=24, fg_color="#bf616a",
+                      font=ctk.CTkFont(size=10),
+                      command=self._clear_coord_anchor_images).pack(side="left", padx=(8, 0))
 
         # === 실시간 좌표 모니터링 ===
         realtime_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
@@ -14290,11 +14337,8 @@ class GameModeDialog(ctk.CTkToplevel):
         from tkinter import messagebox
 
         # 좌표 모드 설정 확인
-        if not hasattr(self._config, 'coord_x_region') or not self._config.coord_x_region:
-            messagebox.showerror("오류", "X 좌표 영역을 먼저 설정하세요")
-            return
-        if not hasattr(self._config, 'coord_y_region') or not self._config.coord_y_region:
-            messagebox.showerror("오류", "Y 좌표 영역을 먼저 설정하세요")
+        if not self._has_coordinate_reader_config():
+            messagebox.showerror("오류", "X/Y 좌표바 영역과 X/Y 기준 이미지를 먼저 설정하세요")
             return
 
         # 경유지 확인 (최소 1개 필요)
@@ -19499,6 +19543,16 @@ class GameModeDialog(ctk.CTkToplevel):
             return f"({region[0]},{region[1]}) ~ ({region[2]},{region[3]})"
         return "미설정"
 
+    def _format_coord_anchor_image(self, path: str) -> str:
+        try:
+            if path and Path(path).exists():
+                return f"기준: {Path(path).name}"
+            if path:
+                return "기준: 파일없음"
+        except Exception:
+            pass
+        return "기준: 없음"
+
     @staticmethod
     def _valid_coord_region(region) -> bool:
         try:
@@ -19512,49 +19566,193 @@ class GameModeDialog(ctk.CTkToplevel):
             return False
 
     def _has_coordinate_reader_config(self) -> bool:
+        split_anchor_ready = (
+            bool(getattr(self._config, "coord_anchor_enabled", False)) and
+            self._valid_coord_region(getattr(self._config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(self._config, "coord_y_region", None)) and
+            bool(getattr(self._config, "coord_x_anchor_image", "")) and
+            bool(getattr(self._config, "coord_y_anchor_image", ""))
+        )
+        if split_anchor_ready:
+            return True
+        if (
+            bool(getattr(self._config, "coord_anchor_enabled", False)) and
+            self._valid_coord_region(getattr(self._config, "coord_anchor_search_region", None)) and
+            bool(getattr(self._config, "coord_x_anchor_image", "")) and
+            bool(getattr(self._config, "coord_y_anchor_image", ""))
+        ):
+            return True
+        if bool(getattr(self._config, "coord_anchor_enabled", False)):
+            return False
         return (
             self._valid_coord_region(getattr(self._config, "coord_x_region", None)) and
             self._valid_coord_region(getattr(self._config, "coord_y_region", None))
         )
 
     def _read_game_coordinates(self, matcher, *, stop_event=None):
-        """Read coordinates from the existing X/Y boxes using the upgraded matcher."""
+        """Read coordinates from X/Y boxes, optionally anchored by X/Y label images."""
+        anchor_enabled = bool(getattr(self._config, "coord_anchor_enabled", False))
+        split_anchor_regions = (
+            anchor_enabled and
+            self._valid_coord_region(getattr(self._config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(self._config, "coord_y_region", None)) and
+            bool(getattr(self._config, "coord_x_anchor_image", "")) and
+            bool(getattr(self._config, "coord_y_anchor_image", ""))
+        )
+        legacy_pair_region = (
+            anchor_enabled and
+            not split_anchor_regions and
+            self._valid_coord_region(getattr(self._config, "coord_anchor_search_region", None))
+        )
         return matcher.read_both_coordinates(
             getattr(self._config, "coord_x_region", None),
             getattr(self._config, "coord_y_region", None),
             "X", "Y",
             stop_event=stop_event,
+            x_anchor_image=getattr(self._config, "coord_x_anchor_image", "") if anchor_enabled else None,
+            y_anchor_image=getattr(self._config, "coord_y_anchor_image", "") if anchor_enabled else None,
+            x_anchor_offset=getattr(self._config, "coord_x_anchor_offset", None) if anchor_enabled and not split_anchor_regions else None,
+            y_anchor_offset=getattr(self._config, "coord_y_anchor_offset", None) if anchor_enabled and not split_anchor_regions else None,
+            anchor_search_region=getattr(self._config, "coord_anchor_search_region", None) if legacy_pair_region else None,
         )
 
+    def _on_coord_anchor_toggle(self):
+        self._config.coord_anchor_enabled = bool(self._coord_anchor_enabled_var.get())
+        logger.info(f"[좌표모드] X/Y 이미지 기준 사용: {self._config.coord_anchor_enabled}")
+        self._save_config()
+
+    def _refresh_coord_anchor_labels(self):
+        if hasattr(self, "_coord_x_label"):
+            self._coord_x_label.configure(
+                text=self._format_coord_region(getattr(self._config, "coord_x_region", None))
+            )
+        if hasattr(self, "_coord_y_label"):
+            self._coord_y_label.configure(
+                text=self._format_coord_region(getattr(self._config, "coord_y_region", None))
+            )
+        if hasattr(self, "_coord_anchor_search_label"):
+            self._coord_anchor_search_label.configure(
+                text=self._format_coord_region(getattr(self._config, "coord_anchor_search_region", None))
+            )
+        if hasattr(self, "_coord_x_anchor_label"):
+            self._coord_x_anchor_label.configure(
+                text=self._format_coord_anchor_image(getattr(self._config, "coord_x_anchor_image", ""))
+            )
+        if hasattr(self, "_coord_y_anchor_label"):
+            self._coord_y_anchor_label.configure(
+                text=self._format_coord_anchor_image(getattr(self._config, "coord_y_anchor_image", ""))
+            )
+        if hasattr(self, "_coord_anchor_enabled_var"):
+            self._coord_anchor_enabled_var.set(bool(getattr(self._config, "coord_anchor_enabled", False)))
+
+    def _copy_coord_anchor_image(self, path: str, coord_type: str) -> str:
+        import shutil
+        src = Path(path)
+        suffix = src.suffix.lower() or ".png"
+        dest = DATA_DIR / "templates" / f"coord_{coord_type}_anchor_{int(time.time() * 1000)}{suffix}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        return str(dest)
+
+    def _update_coord_anchor_offset(self, coord_type: str, *, silent: bool = False) -> bool:
+        region = getattr(self._config, f"coord_{coord_type}_region", None)
+        anchor_path = getattr(self._config, f"coord_{coord_type}_anchor_image", "")
+        if not self._valid_coord_region(region) or not anchor_path:
+            return False
+        try:
+            from ..utils.digit_templates import get_digit_matcher
+            screenshot = _safe_grab(timeout=2.0)
+            if screenshot is None:
+                return False
+            matcher = get_digit_matcher()
+            search_region = [
+                int(region[0]) - 90,
+                int(region[1]) - 45,
+                int(region[2]) + 30,
+                int(region[3]) + 45,
+            ]
+            bbox = matcher.find_anchor_bbox(screenshot, anchor_path, search_region=search_region)
+            if bbox is None:
+                if not silent:
+                    self._append_log(f"⚠️ {coord_type.upper()} 기준 이미지 탐색 실패: 오프셋 미갱신")
+                return False
+            ax1, ay1, _ax2, _ay2, score = bbox
+            offset = [
+                int(region[0]) - ax1,
+                int(region[1]) - ay1,
+                int(region[2]) - ax1,
+                int(region[3]) - ay1,
+            ]
+            setattr(self._config, f"coord_{coord_type}_anchor_offset", offset)
+            logger.info(f"[좌표모드] {coord_type.upper()} 앵커 오프셋 설정: {offset} score={score:.3f}")
+            return True
+        except Exception as e:
+            logger.warning(f"[좌표모드] {coord_type.upper()} 앵커 오프셋 갱신 실패: {e}")
+            return False
+
+    def _select_coord_anchor_image(self, coord_type: str):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title=f"{coord_type.upper()} 기준 이미지 선택",
+            filetypes=[("이미지", "*.png *.jpg *.jpeg *.bmp"), ("모든 파일", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            copied = self._copy_coord_anchor_image(path, coord_type)
+            setattr(self._config, f"coord_{coord_type}_anchor_image", copied)
+            setattr(self._config, f"coord_{coord_type}_anchor_offset", None)
+            self._config.coord_anchor_enabled = True
+            self._refresh_coord_anchor_labels()
+            self._save_config()
+            logger.info(f"[좌표모드] {coord_type.upper()} 기준 이미지 설정: {copied}")
+        except Exception as e:
+            logger.error(f"[좌표모드] {coord_type.upper()} 기준 이미지 설정 실패: {e}")
+
+    def _clear_coord_anchor_images(self):
+        self._config.coord_anchor_enabled = False
+        self._config.coord_x_anchor_image = ""
+        self._config.coord_y_anchor_image = ""
+        self._config.coord_x_anchor_offset = None
+        self._config.coord_y_anchor_offset = None
+        self._refresh_coord_anchor_labels()
+        self._save_config()
+        logger.info("[좌표모드] X/Y 기준 이미지 해제")
+
     def _select_coord_region(self, coord_type: str):
-        """좌표 OCR 영역 선택"""
+        """Select the X/Y coordinate-bar region containing the label and digits."""
         from .analyzer_view import ScreenRegionSelector
 
-        existing_region = getattr(self._config, f'coord_{coord_type}_region', None)
+        existing_region = getattr(self._config, f"coord_{coord_type}_region", None)
 
         def on_region_select(x1, y1, x2, y2):
             region = [x1, y1, x2, y2]
-            if coord_type == "x":
-                self._config.coord_x_region = region
-                self._coord_x_label.configure(text=self._format_coord_region(region))
-            else:
-                self._config.coord_y_region = region
-                self._coord_y_label.configure(text=self._format_coord_region(region))
-            logger.info(f"[좌표모드] {coord_type.upper()} 영역 설정: {region}")
+            setattr(self._config, f"coord_{coord_type}_region", region)
+            setattr(self._config, f"coord_{coord_type}_anchor_offset", None)
+            self._config.coord_anchor_enabled = True
+            self._refresh_coord_anchor_labels()
+            result_label = getattr(self, f"_coord_{coord_type}_result", None)
+            if result_label is not None:
+                result_label.configure(text="")
+            logger.info(f"[좌표모드] {coord_type.upper()} 좌표바 영역 설정: {region}")
             self._save_config()
 
-        def on_cancel():
-            pass
-
-        ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region)
+        ScreenRegionSelector(self, on_region_select, lambda: None, existing_region=existing_region)
 
     def _test_coord_region(self, coord_type: str):
-        """좌표 영역 테스트 (템플릿 매칭)"""
-        region = getattr(self._config, f'coord_{coord_type}_region', None)
-        result_label = self._coord_x_result if coord_type == "x" else self._coord_y_result
+        """Test coordinate reading from split X/Y coordinate-bar regions."""
+        result_label = getattr(self, f"_coord_{coord_type}_result", None)
+        if result_label is None:
+            return
 
-        if not region or len(region) != 4:
+        if not self._valid_coord_region(getattr(self._config, f"coord_{coord_type}_region", None)):
             result_label.configure(text="영역 미설정", text_color="#bf616a")
+            return
+        if not self._valid_coord_region(getattr(self._config, "coord_x_region", None)) or not self._valid_coord_region(getattr(self._config, "coord_y_region", None)):
+            result_label.configure(text="X/Y 모두 필요", text_color="#ebcb8b")
+            return
+        if not getattr(self._config, "coord_x_anchor_image", "") or not getattr(self._config, "coord_y_anchor_image", ""):
+            result_label.configure(text="X/Y 이미지 필요", text_color="#ebcb8b")
             return
 
         result_label.configure(text="읽는중...", text_color=COLORS["text_secondary"])
@@ -19564,22 +19762,21 @@ class GameModeDialog(ctk.CTkToplevel):
             try:
                 from ..utils.digit_templates import get_digit_matcher
                 matcher = get_digit_matcher()
-
                 if not matcher.has_all_templates():
-                    missing = matcher.get_missing_digits()
-                    self.after(0, lambda: result_label.configure(text=f"템플릿 미완성", text_color="#ebcb8b"))
+                    self.after(0, lambda: result_label.configure(text="템플릿 미완성", text_color="#ebcb8b"))
                     return
-
-                value = matcher.read_number_from_region(
-                    region,
-                    expected_digits=3,
-                    prefer_components=True,
-                )
+                old_enabled = bool(getattr(self._config, "coord_anchor_enabled", False))
+                self._config.coord_anchor_enabled = True
+                try:
+                    x_value, y_value = self._read_game_coordinates(matcher)
+                finally:
+                    self._config.coord_anchor_enabled = old_enabled
+                value = x_value if coord_type == "x" else y_value
                 if value is not None:
                     self.after(0, lambda: result_label.configure(text=f"✓ {value}", text_color="#a3be8c"))
                 else:
                     self.after(0, lambda: result_label.configure(text="실패", text_color="#bf616a"))
-            except Exception as e:
+            except Exception:
                 self.after(0, lambda: result_label.configure(text="오류", text_color="#bf616a"))
 
         threading.Thread(target=run_test, daemon=True).start()
@@ -22626,6 +22823,8 @@ class GameModeDialog(ctk.CTkToplevel):
             self._config.boss_skill_cooldown = 3.0
         for k, v in self._key_vars.items():
             self._config.move_keys[k] = v.get()
+        if hasattr(self, "_coord_anchor_enabled_var"):
+            self._config.coord_anchor_enabled = bool(self._coord_anchor_enabled_var.get())
 
         # 좌표 모드: 경유지에서 최종 목표 인덱스 저장
         # (target_x/y는 하위호환용으로 유지하되 경유지 기반으로 설정)

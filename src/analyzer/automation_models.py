@@ -421,6 +421,12 @@ class GameModeConfig:
     navigation_mode: str = "coordinate"  # "coordinate" (??? ???)
     coord_x_region: Optional[List[int]] = None  # X ??? OCR ??? [x1, y1, x2, y2]
     coord_y_region: Optional[List[int]] = None  # Y ??? OCR ??? [x1, y1, x2, y2]
+    coord_anchor_enabled: bool = False
+    coord_x_anchor_image: str = ""
+    coord_y_anchor_image: str = ""
+    coord_anchor_search_region: Optional[List[int]] = None
+    coord_x_anchor_offset: Optional[List[int]] = None
+    coord_y_anchor_offset: Optional[List[int]] = None
     target_x: int = 0  # ??? X ???
     target_y: int = 0  # ??? Y ???
     waypoints: List = field(default_factory=list)  # [[x,y,name] ??? [x,y,name,{image_config}]]
@@ -521,6 +527,12 @@ class GameModeConfig:
             "navigation_mode": self.navigation_mode,
             "coord_x_region": self.coord_x_region,
             "coord_y_region": self.coord_y_region,
+            "coord_anchor_enabled": self.coord_anchor_enabled,
+            "coord_x_anchor_image": _to_relative_path(self.coord_x_anchor_image),
+            "coord_y_anchor_image": _to_relative_path(self.coord_y_anchor_image),
+            "coord_anchor_search_region": self.coord_anchor_search_region,
+            "coord_x_anchor_offset": self.coord_x_anchor_offset,
+            "coord_y_anchor_offset": self.coord_y_anchor_offset,
             "target_x": self.target_x,
             "target_y": self.target_y,
             "waypoints": self._serialize_waypoints(),
@@ -594,6 +606,12 @@ class GameModeConfig:
             navigation_mode=data.get("navigation_mode", "coordinate"),
             coord_x_region=data.get("coord_x_region"),
             coord_y_region=data.get("coord_y_region"),
+            coord_anchor_enabled=bool(data.get("coord_anchor_enabled", False)),
+            coord_x_anchor_image=_to_absolute_path(data.get("coord_x_anchor_image"), templates_dir) or "",
+            coord_y_anchor_image=_to_absolute_path(data.get("coord_y_anchor_image"), templates_dir) or "",
+            coord_anchor_search_region=data.get("coord_anchor_search_region"),
+            coord_x_anchor_offset=data.get("coord_x_anchor_offset"),
+            coord_y_anchor_offset=data.get("coord_y_anchor_offset"),
             target_x=data.get("target_x", 0),
             target_y=data.get("target_y", 0),
             waypoints=cls._deserialize_waypoints(data.get("waypoints") or [], templates_dir),

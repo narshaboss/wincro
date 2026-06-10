@@ -575,6 +575,242 @@ class DigitTemplateMatcher:
         except Exception:
             return False
 
+    @staticmethod
+    def _normalize_anchor_offset(offset: Optional[List[int]]) -> Optional[List[int]]:
+        try:
+            if not isinstance(offset, (list, tuple)) or len(offset) != 4:
+                return None
+            normalized = [int(v) for v in offset]
+            if normalized[2] <= normalized[0] or normalized[3] <= normalized[1]:
+                return None
+            return normalized
+        except Exception:
+            return None
+
+    @staticmethod
+    def _clamp_region(region: List[int], image_size: Tuple[int, int]) -> Optional[List[int]]:
+        try:
+            width, height = image_size
+            x1 = max(0, min(int(region[0]), width))
+            y1 = max(0, min(int(region[1]), height))
+            x2 = max(0, min(int(region[2]), width))
+            y2 = max(0, min(int(region[3]), height))
+            if x2 <= x1 or y2 <= y1:
+                return None
+            return [x1, y1, x2, y2]
+        except Exception:
+            return None
+
+    def find_anchor_bbox(
+        self,
+        screenshot: Image.Image,
+        anchor_image_path: Optional[str],
+        *,
+        threshold: float = 0.72,
+        search_region: Optional[List[int]] = None,
+    ) -> Optional[Tuple[int, int, int, int, float]]:
+        """Find a coordinate label anchor image and return (x1, y1, x2, y2, score)."""
+        if cv2 is None or not anchor_image_path:
+            return None
+        try:
+            path = Path(str(anchor_image_path))
+            if not path.exists():
+                return None
+            with Image.open(path) as template_img:
+                template_rgb = template_img.convert("RGB")
+            screen_rgb = screenshot.convert("RGB")
+            origin_x = 0
+            origin_y = 0
+            if self._is_valid_region(search_region):
+                clamped_search = self._clamp_region(list(search_region), screen_rgb.size)
+                if clamped_search is not None:
+                    origin_x, origin_y = clamped_search[0], clamped_search[1]
+                    screen_rgb = screen_rgb.crop(tuple(clamped_search))
+            screen_arr = np.array(screen_rgb)
+            template_arr = np.array(template_rgb)
+            th, tw = template_arr.shape[:2]
+            sh, sw = screen_arr.shape[:2]
+            if th <= 0 or tw <= 0 or th > sh or tw > sw:
+                return None
+            result = cv2.matchTemplate(screen_arr, template_arr, cv2.TM_CCOEFF_NORMED)
+            _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(result)
+            if float(max_val) < float(threshold):
+                return None
+            x1, y1 = int(max_loc[0]) + origin_x, int(max_loc[1]) + origin_y
+            return (x1, y1, x1 + int(tw), y1 + int(th), float(max_val))
+        except Exception as e:
+            logger.debug(f"[템플릿] 좌표 앵커 탐색 실패: {e}")
+            return None
+
+    def _resolve_anchor_region(
+        self,
+        screenshot: Image.Image,
+        manual_region: Optional[List[int]],
+        anchor_image_path: Optional[str],
+        anchor_offset: Optional[List[int]],
+        *,
+        threshold: float = 0.72,
+    ) -> Tuple[Optional[List[int]], dict]:
+        meta = {
+            "anchor_image": str(anchor_image_path or ""),
+            "anchor_found": False,
+            "manual_region": list(manual_region) if self._is_valid_region(manual_region) else None,
+        }
+        if not self._is_valid_region(manual_region):
+            meta["error"] = "invalid_manual_region"
+            return None, meta
+        if not anchor_image_path:
+            meta["region"] = list(manual_region)
+            return list(manual_region), meta
+
+        # Preferred mode: the selected region contains the label anchor and its digits.
+        # Read only the area to the right of the anchor inside that same region.
+        bbox = self.find_anchor_bbox(
+            screenshot,
+            anchor_image_path,
+            threshold=threshold,
+            search_region=manual_region,
+        )
+        meta["anchor_search_region"] = self._clamp_region(list(manual_region), screenshot.size)
+        if bbox is not None:
+            ax1, ay1, ax2, ay2, score = bbox
+            meta["anchor_found"] = True
+            meta["anchor_bbox"] = [ax1, ay1, ax2, ay2]
+            meta["anchor_score"] = score
+
+            offset = self._normalize_anchor_offset(anchor_offset)
+            if offset:
+                region = [ax1 + offset[0], ay1 + offset[1], ax1 + offset[2], ay1 + offset[3]]
+                meta["offset"] = list(offset)
+            else:
+                region = [ax2 + 1, int(manual_region[1]), int(manual_region[2]), int(manual_region[3])]
+                meta["offset"] = None
+                meta["mode"] = "anchor_inside_region"
+
+            clamped = self._clamp_region(region, screenshot.size)
+            if clamped is not None and (int(clamped[2]) - int(clamped[0])) >= 4:
+                meta["region"] = clamped
+                return clamped, meta
+
+        # Legacy compatibility: older configs selected only the digit box and used
+        # nearby X/Y label images as external anchors.
+        anchor_search_region = [
+            int(manual_region[0]) - 90,
+            int(manual_region[1]) - 45,
+            int(manual_region[2]) + 30,
+            int(manual_region[3]) + 45,
+        ]
+        bbox = self.find_anchor_bbox(
+            screenshot,
+            anchor_image_path,
+            threshold=threshold,
+            search_region=anchor_search_region,
+        )
+        meta["anchor_search_region"] = self._clamp_region(anchor_search_region, screenshot.size)
+        if bbox is None:
+            meta["region"] = list(manual_region)
+            meta["fallback"] = "manual_region"
+            return list(manual_region), meta
+
+        ax1, ay1, ax2, ay2, score = bbox
+        meta["anchor_found"] = True
+        meta["anchor_bbox"] = [ax1, ay1, ax2, ay2]
+        meta["anchor_score"] = score
+
+        offset = self._normalize_anchor_offset(anchor_offset)
+        if offset:
+            region = [ax1 + offset[0], ay1 + offset[1], ax1 + offset[2], ay1 + offset[3]]
+            meta["offset"] = list(offset)
+        else:
+            width = int(manual_region[2]) - int(manual_region[0])
+            height = int(manual_region[3]) - int(manual_region[1])
+            region = [ax2 + 2, ay1, ax2 + 2 + width, ay1 + height]
+            meta["offset"] = None
+            meta["fallback"] = "anchor_right_region_size"
+
+        clamped = self._clamp_region(region, screenshot.size)
+        if clamped is None:
+            meta["region"] = list(manual_region)
+            meta["fallback"] = "manual_region_after_clamp_fail"
+            return list(manual_region), meta
+        meta["region"] = clamped
+        return clamped, meta
+
+    def _resolve_anchor_pair_regions(
+        self,
+        screenshot: Image.Image,
+        search_region: Optional[List[int]],
+        x_anchor_image: Optional[str],
+        y_anchor_image: Optional[str],
+        *,
+        threshold: float = 0.72,
+    ) -> Tuple[Optional[List[int]], Optional[List[int]], dict]:
+        meta = {
+            "search_region": None,
+            "x_anchor_found": False,
+            "y_anchor_found": False,
+        }
+        if not self._is_valid_region(search_region):
+            meta["error"] = "invalid_anchor_search_region"
+            return None, None, meta
+
+        clamped_search = self._clamp_region(list(search_region), screenshot.size)
+        if clamped_search is None:
+            meta["error"] = "invalid_anchor_search_region"
+            return None, None, meta
+        meta["search_region"] = clamped_search
+
+        x_bbox = self.find_anchor_bbox(
+            screenshot,
+            x_anchor_image,
+            threshold=threshold,
+            search_region=clamped_search,
+        )
+        y_bbox = self.find_anchor_bbox(
+            screenshot,
+            y_anchor_image,
+            threshold=threshold,
+            search_region=clamped_search,
+        )
+        if x_bbox is None or y_bbox is None:
+            meta["x_anchor_found"] = x_bbox is not None
+            meta["y_anchor_found"] = y_bbox is not None
+            meta["fallback"] = "manual_regions"
+            return None, None, meta
+
+        xx1, xy1, xx2, xy2, x_score = x_bbox
+        yx1, yy1, yx2, yy2, y_score = y_bbox
+        meta.update(
+            {
+                "x_anchor_found": True,
+                "y_anchor_found": True,
+                "x_anchor_bbox": [xx1, xy1, xx2, xy2],
+                "y_anchor_bbox": [yx1, yy1, yx2, yy2],
+                "x_anchor_score": x_score,
+                "y_anchor_score": y_score,
+            }
+        )
+
+        if yx1 <= xx2:
+            meta["error"] = "anchor_order_invalid"
+            meta["fallback"] = "manual_regions"
+            return None, None, meta
+
+        sx1, sy1, sx2, sy2 = clamped_search
+        pad = 1
+        x_region = [xx2 + pad, sy1, yx1 - pad, sy2]
+        y_region = [yx2 + pad, sy1, sx2, sy2]
+        x_region = self._clamp_region(x_region, screenshot.size)
+        y_region = self._clamp_region(y_region, screenshot.size)
+        if x_region is None or y_region is None:
+            meta["error"] = "anchor_digit_region_invalid"
+            meta["fallback"] = "manual_regions"
+            return None, None, meta
+
+        meta["x_region"] = x_region
+        meta["y_region"] = y_region
+        return x_region, y_region, meta
+
     def read_both_coordinates(
         self,
         x_region: Optional[List[int]],
@@ -582,6 +818,12 @@ class DigitTemplateMatcher:
         x_prefix: str = "X",
         y_prefix: str = "Y",
         stop_event=None,
+        x_anchor_image: Optional[str] = None,
+        y_anchor_image: Optional[str] = None,
+        x_anchor_offset: Optional[List[int]] = None,
+        y_anchor_offset: Optional[List[int]] = None,
+        anchor_search_region: Optional[List[int]] = None,
+        anchor_threshold: float = 0.72,
     ) -> Tuple[Optional[int], Optional[int]]:
         """
         X, Y 좌표 동시 읽기 (OCR 대체)
@@ -611,31 +853,70 @@ class DigitTemplateMatcher:
         # 스크린샷 캐시 (보스 이미지 검색 등에서 재사용)
         self._last_screenshot = screenshot
 
-        if not self._is_valid_region(x_region) or not self._is_valid_region(y_region):
+        pair_meta = None
+        x_read_region = None
+        y_read_region = None
+        if x_anchor_image and y_anchor_image and self._is_valid_region(anchor_search_region):
+            x_read_region, y_read_region, pair_meta = self._resolve_anchor_pair_regions(
+                screenshot,
+                anchor_search_region,
+                x_anchor_image,
+                y_anchor_image,
+                threshold=anchor_threshold,
+            )
+
+        if not self._is_valid_region(x_read_region) or not self._is_valid_region(y_read_region):
+            x_read_region, x_anchor_meta = self._resolve_anchor_region(
+                screenshot,
+                x_region,
+                x_anchor_image,
+                x_anchor_offset,
+                threshold=anchor_threshold,
+            )
+            y_read_region, y_anchor_meta = self._resolve_anchor_region(
+                screenshot,
+                y_region,
+                y_anchor_image,
+                y_anchor_offset,
+                threshold=anchor_threshold,
+            )
+            method = "anchor" if (x_anchor_image or y_anchor_image) else "individual"
+        else:
+            x_anchor_meta = pair_meta
+            y_anchor_meta = pair_meta
+            method = "anchor_pair"
+
+        if not self._is_valid_region(x_read_region) or not self._is_valid_region(y_read_region):
             self.last_coordinate_read_meta = {
-                "method": "individual",
+                "method": method,
                 "success": False,
                 "error": "invalid_individual_region",
+                "x_anchor": x_anchor_meta,
+                "y_anchor": y_anchor_meta,
+                "anchor_pair": pair_meta,
             }
             return None, None
 
         x_coord = self.read_number_from_region(
-            x_region,
+            x_read_region,
             screenshot,
             expected_digits=3,
             prefer_components=True,
         )
         y_coord = self.read_number_from_region(
-            y_region,
+            y_read_region,
             screenshot,
             expected_digits=3,
             prefer_components=True,
         )
         self.last_coordinate_read_meta = {
-            "method": "individual",
+            "method": method,
             "success": x_coord is not None and y_coord is not None,
-            "x_region": list(x_region),
-            "y_region": list(y_region),
+            "x_region": list(x_read_region),
+            "y_region": list(y_read_region),
+            "x_anchor": x_anchor_meta,
+            "y_anchor": y_anchor_meta,
+            "anchor_pair": pair_meta,
         }
 
         return x_coord, y_coord

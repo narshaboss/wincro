@@ -517,6 +517,76 @@ class RuleExecutor:
         """현재 액션 번호 접두사 (로깅용)"""
         return f"[{self._current_step_num}] " if self._current_step_num else ""
 
+    @staticmethod
+    def _valid_coord_region(region) -> bool:
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            return False
+        try:
+            x1, y1, x2, y2 = [int(v) for v in region]
+        except (TypeError, ValueError):
+            return False
+        return x2 > x1 and y2 > y1
+
+    @staticmethod
+    def _valid_file_path(path_value) -> bool:
+        if not path_value:
+            return False
+        try:
+            return Path(path_value).exists()
+        except (TypeError, OSError):
+            return False
+
+    def _has_coordinate_reader_config(self, config) -> bool:
+        split_anchor_ready = (
+            bool(getattr(config, "coord_anchor_enabled", False)) and
+            self._valid_coord_region(getattr(config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(config, "coord_y_region", None)) and
+            self._valid_file_path(getattr(config, "coord_x_anchor_image", "")) and
+            self._valid_file_path(getattr(config, "coord_y_anchor_image", ""))
+        )
+        if split_anchor_ready:
+            return True
+        legacy_pair_ready = (
+            bool(getattr(config, "coord_anchor_enabled", False)) and
+            self._valid_coord_region(getattr(config, "coord_anchor_search_region", None)) and
+            self._valid_file_path(getattr(config, "coord_x_anchor_image", "")) and
+            self._valid_file_path(getattr(config, "coord_y_anchor_image", ""))
+        )
+        if legacy_pair_ready:
+            return True
+        if bool(getattr(config, "coord_anchor_enabled", False)):
+            return False
+        return (
+            self._valid_coord_region(getattr(config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(config, "coord_y_region", None))
+        )
+
+    def _read_game_coordinates(self, matcher, config):
+        anchor_enabled = bool(getattr(config, "coord_anchor_enabled", False))
+        split_anchor_regions = (
+            anchor_enabled and
+            self._valid_coord_region(getattr(config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(config, "coord_y_region", None)) and
+            self._valid_file_path(getattr(config, "coord_x_anchor_image", "")) and
+            self._valid_file_path(getattr(config, "coord_y_anchor_image", ""))
+        )
+        legacy_pair_region = (
+            anchor_enabled and
+            not split_anchor_regions and
+            self._valid_coord_region(getattr(config, "coord_anchor_search_region", None))
+        )
+        return matcher.read_both_coordinates(
+            getattr(config, "coord_x_region", None),
+            getattr(config, "coord_y_region", None),
+            "X", "Y",
+            stop_event=self._stop_event,
+            x_anchor_image=getattr(config, "coord_x_anchor_image", None) if anchor_enabled else None,
+            y_anchor_image=getattr(config, "coord_y_anchor_image", None) if anchor_enabled else None,
+            x_anchor_offset=getattr(config, "coord_x_anchor_offset", None) if anchor_enabled and not split_anchor_regions else None,
+            y_anchor_offset=getattr(config, "coord_y_anchor_offset", None) if anchor_enabled and not split_anchor_regions else None,
+            anchor_search_region=getattr(config, "coord_anchor_search_region", None) if legacy_pair_region else None,
+        )
+
     def set_callbacks(
         self,
         on_progress: Optional[Callable[[ExecutionProgress], None]] = None,
@@ -3418,7 +3488,7 @@ class RuleExecutor:
         # 이미지 설정이 없거나 좌표 설정이 있으면 좌표 모드로 강제 전환
         has_image_settings = (config.character_image and Path(config.character_image).exists() and
                               config.target_image and Path(config.target_image).exists())
-        has_coord_settings = config.coord_x_region and config.coord_y_region
+        has_coord_settings = self._has_coordinate_reader_config(config)
 
         if nav_mode == 'coordinate' or (not has_image_settings and has_coord_settings):
             return self.execute_game_mode_coordinate(config)
@@ -3874,11 +3944,11 @@ class RuleExecutor:
             return False
 
         # 설정 검증
-        if not config.coord_x_region or len(config.coord_x_region) != 4:
-            logger.error("[좌표모드] X 좌표 영역이 설정되지 않음")
-            return False
-        if not config.coord_y_region or len(config.coord_y_region) != 4:
-            logger.error("[좌표모드] Y 좌표 영역이 설정되지 않음")
+        if not self._has_coordinate_reader_config(config):
+            if bool(getattr(config, "coord_anchor_enabled", False)):
+                logger.error("[좌표모드] X/Y 좌표바 영역 또는 X/Y 기준 이미지가 설정되지 않음")
+            else:
+                logger.error("[좌표모드] X/Y 좌표 영역이 설정되지 않음")
             return False
 
         # 설정값
@@ -4017,8 +4087,19 @@ class RuleExecutor:
         logger.info(f"[좌표모드] 경유지 {len(all_targets)}개: {wp_info}")
         logger.info(f"[좌표모드] 최종 목표: {all_targets[-1][2]} ({all_targets[-1][0]},{all_targets[-1][1]})")
         logger.info(f"[좌표모드] 현재 목표: ({target_x}, {target_y}) [{all_targets[current_target_idx][2]}] [{current_target_idx+1}/{len(all_targets)}]")
-        logger.info(f"[좌표모드] X 영역: {config.coord_x_region}")
-        logger.info(f"[좌표모드] Y 영역: {config.coord_y_region}")
+        if (
+            bool(getattr(config, "coord_anchor_enabled", False)) and
+            self._valid_coord_region(getattr(config, "coord_x_region", None)) and
+            self._valid_coord_region(getattr(config, "coord_y_region", None))
+        ):
+            _x_anchor_name = Path(getattr(config, "coord_x_anchor_image", "") or "").name or "-"
+            _y_anchor_name = Path(getattr(config, "coord_y_anchor_image", "") or "").name or "-"
+            logger.info(f"[좌표모드] X 좌표바 영역: {getattr(config, 'coord_x_region', None)}")
+            logger.info(f"[좌표모드] Y 좌표바 영역: {getattr(config, 'coord_y_region', None)}")
+            logger.info(f"[좌표모드] X/Y 기준 이미지: X={_x_anchor_name} Y={_y_anchor_name}")
+        else:
+            logger.info(f"[좌표모드] X 영역: {config.coord_x_region}")
+            logger.info(f"[좌표모드] Y 영역: {config.coord_y_region}")
         if escape_skill_enabled:
             logger.info(f"[좌표모드] 탈출스킬: 키={escape_skill_key}, 발동조건={escape_skill_stuck_threshold}회")
         logger.info(f"[좌표모드] 이동키: ↑={config.move_keys.get('up')} ↓={config.move_keys.get('down')} ←={config.move_keys.get('left')} →={config.move_keys.get('right')}")
@@ -4265,12 +4346,7 @@ class RuleExecutor:
                     break
 
                 # 1. 템플릿 매칭으로 현재 좌표 읽기
-                current_x, current_y = matcher.read_both_coordinates(
-                    config.coord_x_region,
-                    config.coord_y_region,
-                    "X", "Y",
-                    stop_event=self._stop_event
-                )
+                current_x, current_y = self._read_game_coordinates(matcher, config)
 
                 if current_x is None or current_y is None:
                     coord_fail_count += 1
