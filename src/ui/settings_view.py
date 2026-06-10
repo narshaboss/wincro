@@ -26,11 +26,7 @@ from ..utils.plan_sequence_groups import (
 )
 from ..utils.app_identity import (
     PRIMARY_APP_NAME,
-    clear_random_app_name,
-    ensure_random_app_name,
-    get_effective_app_name,
     get_startup_entry_name,
-    refresh_random_app_name,
 )
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
@@ -148,43 +144,6 @@ class SettingsView(BaseView):
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
         ).pack(side="left")
-
-        # 랜덤 이름 모드 체크박스
-        self._random_name_var = ctk.BooleanVar()
-        random_name_check = ctk.CTkCheckBox(
-            name_frame,
-            text="랜덤 이름 모드",
-            variable=self._random_name_var,
-            command=self._on_random_name_mode_changed,
-            font=ctk.CTkFont(size=11),
-            text_color=COLORS["text_secondary"],
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            border_color=COLORS["border"],
-            checkmark_color="white",
-        )
-        random_name_check.pack(side="left", padx=10)
-
-        self._random_name_refresh_btn = ctk.CTkButton(
-            name_frame,
-            text="새 이름",
-            command=self._regenerate_random_name,
-            width=70,
-            height=28,
-            fg_color=COLORS["bg_card"],
-            hover_color=COLORS["accent"],
-            text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=11),
-        )
-        self._random_name_refresh_btn.pack(side="left", padx=(0, 8))
-
-        self._random_name_preview = ctk.CTkLabel(
-            scroll_frame,
-            text=f"현재 표시 이름: {PRIMARY_APP_NAME}",
-            font=ctk.CTkFont(size=10),
-            text_color=COLORS["text_muted"],
-        )
-        self._random_name_preview.pack(anchor="w", padx=12, pady=(0, 6))
 
         # 창 모드 섹션
         mode_label = ctk.CTkLabel(
@@ -2443,8 +2402,6 @@ del "%~f0"
 
         # 일반 설정 - 프로그램 이름
         self._app_name_var.set(config.ui.app_name)
-        self._random_name_var.set(config.ui.random_name_mode)
-        self._update_random_name_preview()
 
         logger.debug("설정 로드 완료")
 
@@ -2514,15 +2471,8 @@ del "%~f0"
         app_name = self._app_name_var.get().strip()
         if app_name:
             config.ui.app_name = app_name
-        old_random_name_mode = getattr(config.ui, "random_name_mode", False)
-        new_random_name_mode = self._random_name_var.get()
-        config.ui.random_name_mode = new_random_name_mode
-        if not new_random_name_mode:
-            clear_random_app_name(config.ui)
-        elif not old_random_name_mode:
-            refresh_random_app_name(config.ui, save_callback=None)
-        else:
-            ensure_random_app_name(config.ui, save_callback=None)
+        config.ui.random_name_mode = False
+        config.ui.random_name_alias = ""
 
         # 검증 오류가 있으면 표시
         if validation_errors:
@@ -2534,12 +2484,11 @@ del "%~f0"
         if save_config():
             logger.info("설정 저장 완료")
             self._sync_shutdown_schedule_from_settings()
-            if new_auto_start != old_auto_start or new_random_name_mode != old_random_name_mode:
+            if new_auto_start != old_auto_start:
                 self._update_auto_start_registry(new_auto_start)
             top = self.winfo_toplevel()
             if hasattr(top, "update_title"):
                 top.update_title()
-            self._update_random_name_preview()
             self._show_message(MESSAGES["success"], SETTINGS["changes_saved"])
             return True
         else:
@@ -2605,33 +2554,6 @@ del "%~f0"
         except (ValueError, TypeError):
             logger.warning(f"{field_name} 변환 실패: {value}")
             return None
-
-    def _update_random_name_preview(self) -> None:
-        config = get_config()
-        effective_name = get_effective_app_name(config.ui, save_callback=None)
-        if hasattr(self, "_random_name_preview"):
-            self._random_name_preview.configure(text=f"현재 표시 이름: {effective_name}")
-        if hasattr(self, "_random_name_refresh_btn"):
-            self._random_name_refresh_btn.configure(
-                state="normal" if self._random_name_var.get() else "disabled"
-            )
-
-    def _on_random_name_mode_changed(self) -> None:
-        config = get_config()
-        if self._random_name_var.get():
-            refresh_random_app_name(config.ui, save_callback=save_config)
-        self._update_random_name_preview()
-        top = self.winfo_toplevel()
-        if hasattr(top, "update_title"):
-            top.update_title()
-
-    def _regenerate_random_name(self) -> None:
-        config = get_config()
-        refresh_random_app_name(config.ui, save_callback=save_config)
-        self._update_random_name_preview()
-        top = self.winfo_toplevel()
-        if hasattr(top, "update_title"):
-            top.update_title()
 
     def _get_auto_start_entry_candidates(self) -> list[str]:
         config = get_config()

@@ -21,3 +21,10 @@ def test_release_workflow_excludes_update_cache_file():
     workflow_text = Path(r"C:\Projects\wincro\.github\workflows\build-release.yml").read_text(encoding="utf-8")
     assert "update_cache.json" in workflow_text
     assert "Remove-Item $packagedCache -Force" in workflow_text
+
+
+def test_auto_update_does_not_restore_old_plan_playlists():
+    app_text = Path(r"C:\Projects\wincro\src\app.py").read_text(encoding="utf-8")
+
+    assert 'xcopy /E /I /Y /Q "{data_backup}\\\\plans\\\\*"' not in app_text
+    assert "plans_user_backup" in app_text

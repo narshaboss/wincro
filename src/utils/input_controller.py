@@ -28,6 +28,9 @@ _MOVE_MIN_HUMAN_DURATION = 0.10
 _MOVE_MAX_HUMAN_DURATION = 0.45
 _MOVE_MIN_STEP_DELAY = 0.004
 _MOVE_MAX_STEP_DELAY = 0.02
+_HOTKEY_SETTLE_DELAY = 0.06
+_HOTKEY_HOLD_DELAY = 0.08
+_HOTKEY_RELEASE_DELAY = 0.02
 
 
 def _get_arduino():
@@ -404,12 +407,37 @@ class InputController:
         )
 
     def hotkey(self, *keys) -> bool:
-        combo = "+".join(keys)
-        return self._with_arduino_fallback(
-            f"hotkey:{combo}",
-            lambda a: a.hotkey(*keys),
-            lambda: pyautogui.hotkey(*keys),
-        )
+        normalized_keys = [str(key).strip().lower() for key in keys if str(key).strip()]
+        if not normalized_keys:
+            return True
+        if len(normalized_keys) == 1:
+            return self.press(normalized_keys[0])
+
+        combo = "+".join(normalized_keys)
+        pressed_keys = []
+        ok = True
+
+        # pyautogui.hotkey()/Arduino hotkey()의 짧은 탭 타이밍을 쓰지 않고,
+        # modifier가 확실히 눌린 상태에서 본 키가 들어가도록 down/up을 직접 제어한다.
+        for key in normalized_keys:
+            if not self.key_down(key):
+                ok = False
+                logger.warning(f"[InputController] hotkey key_down failed: {combo} key={key}")
+                break
+            pressed_keys.append(key)
+            time.sleep(_HOTKEY_SETTLE_DELAY)
+
+        if ok:
+            time.sleep(_HOTKEY_HOLD_DELAY)
+
+        release_ok = True
+        for key in reversed(pressed_keys):
+            if not self.key_up(key):
+                release_ok = False
+                logger.warning(f"[InputController] hotkey key_up failed: {combo} key={key}")
+            time.sleep(_HOTKEY_RELEASE_DELAY)
+
+        return ok and release_ok
 
     def type_text(self, text: str, interval: float = 0.0) -> bool:
         return self._with_arduino_fallback(

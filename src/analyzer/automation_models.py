@@ -96,6 +96,11 @@ class AutomationRule:
     enabled: bool = True  # False? ???? ??
     skip_on_not_found: bool = False  # ???? ?????? wait_after ????? ?????? ???
     stop_playlist_on_trigger_missing: bool = False  # 트리거 미감지 시 현재 재생목록 종료
+    trigger_missing_keys: List[str] = field(default_factory=list)  # 트리거 미감지 종료 전 입력할 키/조합
+    trigger_missing_key_repeat_count: int = 1  # 트리거 미감지 종료 전 키입력 반복횟수
+    trigger_missing_key_repeat_delay: float = 0.5  # 트리거 미감지 종료 전 키입력 반복 대기시간
+    trigger_missing_key_repeat_delay_random: bool = False  # 트리거 미감지 종료 전 키입력 랜덤 대기
+    trigger_missing_key_repeat_delay_random_range: float = 0.3  # 트리거 미감지 종료 전 키입력 랜덤 대기 범위
     repeat_count: int = 1  # ??? ??? (1 = 1?????)
     repeat_delay: float = 0.5  # ??? ??? ??????(??
     repeat_delay_random: bool = False  # ??? ????????? ???
@@ -121,6 +126,23 @@ class AutomationRule:
             self.action_keys = []
         if self.target_images is None:
             self.target_images = []
+        if self.trigger_missing_keys is None:
+            self.trigger_missing_keys = []
+        try:
+            self.trigger_missing_key_repeat_count = max(1, int(self.trigger_missing_key_repeat_count or 1))
+        except (TypeError, ValueError):
+            self.trigger_missing_key_repeat_count = 1
+        try:
+            self.trigger_missing_key_repeat_delay = max(0.0, float(self.trigger_missing_key_repeat_delay or 0.0))
+        except (TypeError, ValueError):
+            self.trigger_missing_key_repeat_delay = 0.5
+        try:
+            self.trigger_missing_key_repeat_delay_random_range = max(
+                0.0,
+                float(self.trigger_missing_key_repeat_delay_random_range or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.trigger_missing_key_repeat_delay_random_range = 0.3
         if self.children is None:
             self.children = []
         if self.monitoring_watches is None:
@@ -182,6 +204,11 @@ class AutomationRule:
             "timeout": self.timeout,
             "skip_on_not_found": self.skip_on_not_found,
             "stop_playlist_on_trigger_missing": self.stop_playlist_on_trigger_missing,
+            "trigger_missing_keys": self.trigger_missing_keys,
+            "trigger_missing_key_repeat_count": self.trigger_missing_key_repeat_count,
+            "trigger_missing_key_repeat_delay": self.trigger_missing_key_repeat_delay,
+            "trigger_missing_key_repeat_delay_random": self.trigger_missing_key_repeat_delay_random,
+            "trigger_missing_key_repeat_delay_random_range": self.trigger_missing_key_repeat_delay_random_range,
             "repeat_count": self.repeat_count,
             "repeat_delay": self.repeat_delay,
             "repeat_delay_random": self.repeat_delay_random,
@@ -267,6 +294,11 @@ class AutomationRule:
             timeout=data.get("timeout", 30.0),
             skip_on_not_found=data.get("skip_on_not_found", False),
             stop_playlist_on_trigger_missing=data.get("stop_playlist_on_trigger_missing", False),
+            trigger_missing_keys=data.get("trigger_missing_keys", []),
+            trigger_missing_key_repeat_count=data.get("trigger_missing_key_repeat_count", 1),
+            trigger_missing_key_repeat_delay=data.get("trigger_missing_key_repeat_delay", 0.5),
+            trigger_missing_key_repeat_delay_random=data.get("trigger_missing_key_repeat_delay_random", False),
+            trigger_missing_key_repeat_delay_random_range=data.get("trigger_missing_key_repeat_delay_random_range", 0.3),
             repeat_count=data.get("repeat_count", 1),
             repeat_delay=data.get("repeat_delay", 0.5),
             repeat_delay_random=data.get("repeat_delay_random", False),

@@ -3,6 +3,7 @@ from src.database.models import Action
 from src.ui.player_view import (
     _build_manual_partial_rules,
     _detach_child_after_parent,
+    _find_item_path_by_id,
     _flatten_children_after_parent,
     _manual_partial_start_index,
 )
@@ -112,3 +113,13 @@ def test_flatten_action_children_places_them_after_parent():
     assert parent.children == []
     assert child1.parent_id is None
     assert child2.parent_id is None
+
+
+def test_find_item_path_by_id_returns_full_ancestor_path():
+    child = AutomationRule(rule_id="child", action_type="wait", parent_id="parent")
+    parent = AutomationRule(rule_id="parent", action_type="click", parent_id="grand", children=[child])
+    grand = AutomationRule(rule_id="grand", action_type="click", children=[parent])
+
+    path = _find_item_path_by_id([grand], "child", "rule_id")
+
+    assert [rule.rule_id for rule in path] == ["grand", "parent", "child"]

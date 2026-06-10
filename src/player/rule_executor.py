@@ -972,6 +972,66 @@ class RuleExecutor:
         x1, y1, x2, y2 = region
         return x1 <= int(x) <= x2 and y1 <= int(y) <= y2
 
+    def _execute_trigger_missing_keys(self, rule: AutomationRule, step_prefix: str = "") -> None:
+        """트리거 미감지로 재생목록을 종료하기 직전에 지정 키를 반복 입력한다."""
+        keys = [
+            str(key).strip().lower()
+            for key in (getattr(rule, "trigger_missing_keys", None) or [])
+            if str(key).strip()
+        ]
+        if not keys or self._stop_event.is_set():
+            return
+
+        try:
+            repeat_count = max(1, int(getattr(rule, "trigger_missing_key_repeat_count", 1) or 1))
+        except (TypeError, ValueError):
+            repeat_count = 1
+        try:
+            repeat_delay = max(0.0, float(getattr(rule, "trigger_missing_key_repeat_delay", 0.5) or 0.0))
+        except (TypeError, ValueError):
+            repeat_delay = 0.5
+        try:
+            repeat_delay_range = max(
+                0.0,
+                float(getattr(rule, "trigger_missing_key_repeat_delay_random_range", 0.3) or 0.0),
+            )
+        except (TypeError, ValueError):
+            repeat_delay_range = 0.3
+        repeat_delay_random = bool(getattr(rule, "trigger_missing_key_repeat_delay_random", False))
+
+        input_ctrl = get_input_controller()
+        key_label = " + ".join(key.upper() for key in keys)
+        logger.info(
+            f"{_YELLOW}{step_prefix}트리거 미감지 종료 전 키입력: "
+            f"{key_label} x{repeat_count} delay={repeat_delay:.2f}s random={repeat_delay_random}{_RESET}"
+        )
+        for index in range(repeat_count):
+            if self._stop_event.is_set():
+                return
+            try:
+                if len(keys) == 1:
+                    ok = input_ctrl.press(keys[0])
+                else:
+                    ok = input_ctrl.hotkey(*keys)
+                if ok is False:
+                    logger.warning(
+                        f"{_YELLOW}{step_prefix}트리거 미감지 종료 전 키입력 실패: "
+                        f"{key_label} ({index + 1}/{repeat_count}){_RESET}"
+                    )
+                    return
+            except Exception as e:
+                logger.warning(
+                    f"{_YELLOW}{step_prefix}트리거 미감지 종료 전 키입력 예외: "
+                    f"{key_label} ({index + 1}/{repeat_count}, {e}){_RESET}"
+                )
+                return
+            if index < repeat_count - 1:
+                actual_delay = repeat_delay
+                if repeat_delay_random:
+                    actual_delay = max(0.0, repeat_delay + random.uniform(-repeat_delay_range, repeat_delay_range))
+                if actual_delay > 0 and self._stop_event.wait(actual_delay):
+                    return
+
     def _handle_trigger_gate(
         self,
         rule: AutomationRule,
@@ -1011,6 +1071,7 @@ class RuleExecutor:
                 return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
 
             if stop_playlist:
+                self._execute_trigger_missing_keys(rule, step_prefix)
                 message = (
                     f"{PLAYLIST_SKIP_TRIGGER_MISSING}: "
                     f"트리거 이미지 없음 ({trigger_path.name}, {trigger_timeout:.1f}초)"

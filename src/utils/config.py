@@ -34,8 +34,8 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.223"
-AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v2"
+APP_VERSION = "1.0.224"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v3_reset_once"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
 AUTO_RUN_PROFILE_GROUP_REPEAT = 4
@@ -306,20 +306,7 @@ class ConfigManager:
             repeat_count=AUTO_RUN_PROFILE_GROUP_REPEAT,
         )
 
-        has_saved_groups = bool(getattr(player, "plan_sequence_groups", []) or [])
-        has_legacy_sequence = bool(getattr(player, "plan_sequence", []) or [])
-        existing_groups = (
-            normalize_plan_sequence_groups(player, mutate=False)
-            if has_saved_groups or has_legacy_sequence
-            else []
-        )
-        kept_groups = [
-            group
-            for group in existing_groups
-            if group.get("group_id") != AUTO_RUN_PROFILE_GROUP_ID
-            and group.get("name") != AUTO_RUN_PROFILE_GROUP_NAME
-        ]
-        player.plan_sequence_groups = [packaged_group, *kept_groups]
+        player.plan_sequence_groups = [packaged_group]
         player.active_plan_sequence_group_id = AUTO_RUN_PROFILE_GROUP_ID
         player.auto_run_enabled = True
         player.auto_run_profile_version = AUTO_RUN_PROFILE_VERSION

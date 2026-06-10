@@ -16,27 +16,12 @@ def test_primary_branding_uses_korean_business_support_name():
     assert "dwm.exe" in app_identity.LEGACY_EXECUTABLE_ALIASES
 
 
-def test_refresh_random_app_name_replaces_existing_alias(monkeypatch):
-    names = iter(["old-name", "new-name"])
-    monkeypatch.setattr(app_identity, "generate_random_app_name", lambda: next(names))
-
-    save_calls = []
-    ui = DummyUI(random_name_mode=True, random_name_alias="old-name")
-
-    result = app_identity.refresh_random_app_name(ui, save_callback=lambda: save_calls.append(True))
-
-    assert result == "new-name"
-    assert ui.random_name_alias == "new-name"
-    assert save_calls == [True]
-    assert app_identity.get_effective_app_name(ui) == "new-name"
-
-
-def test_startup_entry_name_stays_stable_when_random_mode_is_enabled():
+def test_effective_and_startup_names_ignore_legacy_random_mode():
     ui = DummyUI(
         app_name="stable-entry",
         random_name_mode=True,
         random_name_alias="visible-random",
     )
 
-    assert app_identity.get_effective_app_name(ui) == "visible-random"
+    assert app_identity.get_effective_app_name(ui) == "stable-entry"
     assert app_identity.get_startup_entry_name(ui) == "stable-entry"

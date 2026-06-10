@@ -301,6 +301,24 @@ def _find_item_container(root_items: list, target):
     return visit(root_items, None)
 
 
+def _find_item_path_by_id(root_items: list, target_id: str, id_attr: str) -> list:
+    """Return the item path from root to target id."""
+    if not target_id:
+        return []
+
+    def visit(items: list, path: list):
+        for item in items or []:
+            next_path = path + [item]
+            if getattr(item, id_attr, None) == target_id:
+                return next_path
+            found = visit(getattr(item, "children", []) or [], next_path)
+            if found:
+                return found
+        return []
+
+    return visit(root_items, [])
+
+
 def _item_parent_id(parent, id_attr: str):
     return getattr(parent, id_attr, None) if parent is not None else None
 
@@ -375,6 +393,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._is_running = False
         self._running_executor = None
         self._running_rule_id = None
+        self._active_partial_rule_id = None
+        self._active_partial_rule_index = None
+        self._active_partial_rule_message = ""
+        self._partial_status_label = None
         self._gm_current_rule = None
         self._gm_wait_after_id = None
 
@@ -462,16 +484,149 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except Exception:
                 pass
 
+    def _rule_item_bg_color(self, rule: AutomationRule) -> str:
+        is_enabled = _rule_is_enabled(rule)
+        if getattr(self, "_active_partial_rule_id", None) == rule.rule_id:
+            return "#7a4b00" if is_enabled else "#5c4330"
+        if self._selected_rule is not None and self._selected_rule.rule_id == rule.rule_id:
+            return "#2e7d32"
+        return COLORS["bg_dark"] if is_enabled else COLORS["bg_card"]
+
+    def _rule_display_text(self, rule: AutomationRule) -> str:
+        name = rule.description or ACTION_NAMES.get(rule.action_type, rule.action_type or "동작")
+        return str(name).strip() or "동작"
+
+    def _set_partial_status_text(self, text: str, active: bool = False) -> None:
+        label = getattr(self, "_partial_status_label", None)
+        if label is None:
+            return
+        try:
+            label.configure(
+                text=text,
+                text_color="#facc15" if active else COLORS["text_secondary"],
+            )
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _set_rule_row_runtime_style(self, rule_id: Optional[str]) -> None:
+        if not rule_id or rule_id not in getattr(self, "_rule_widgets", {}):
+            return
+        data = self._rule_widgets.get(rule_id) or {}
+        widget = data.get("widget")
+        rule = data.get("rule")
+        if widget is None or rule is None:
+            return
+        is_active = getattr(self, "_active_partial_rule_id", None) == rule_id
+        try:
+            widget.configure(
+                fg_color=self._rule_item_bg_color(rule),
+                border_width=2 if is_active else 0,
+                border_color="#facc15" if is_active else COLORS["border"],
+            )
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _expand_ancestors_for_rule(self, rule_id: Optional[str]) -> bool:
+        path = _find_item_path_by_id(self._plan.initial_rules, rule_id or "", "rule_id")
+        if not path:
+            path = _find_item_path_by_id(self._plan.monitoring_rules, rule_id or "", "rule_id")
+        if len(path) <= 1:
+            return False
+
+        changed = False
+        for ancestor in path[:-1]:
+            ancestor_id = getattr(ancestor, "rule_id", None)
+            if ancestor_id in self._collapsed_items:
+                self._collapsed_items.remove(ancestor_id)
+                changed = True
+        return changed
+
+    def _visible_rule_index(self, rule_id: Optional[str]) -> tuple:
+        if not rule_id:
+            return -1, None
+        for idx, item in enumerate(self._get_flat_rules_with_depth()):
+            rule = item.get("rule")
+            if rule is not None and getattr(rule, "rule_id", None) == rule_id:
+                return idx, item
+        return -1, None
+
+    def _set_current_partial_rule(self, rule_id: Optional[str], message: str = "") -> None:
+        if not rule_id:
+            return
+        if not self.winfo_exists():
+            return
+
+        previous_rule_id = getattr(self, "_active_partial_rule_id", None)
+        self._active_partial_rule_id = rule_id
+        self._active_partial_rule_message = message or ""
+
+        expanded = self._expand_ancestors_for_rule(rule_id)
+        if expanded:
+            self._refresh_action_list()
+
+        index, item = self._visible_rule_index(rule_id)
+        self._active_partial_rule_index = index if index >= 0 else None
+
+        if item:
+            rule = item["rule"]
+            index_str = item.get("index_str") or str(index + 1)
+            text = f"현재 실행: {index_str} - {self._rule_display_text(rule)}"
+            if message:
+                text = f"{text}  |  {message}"
+        else:
+            text = f"현재 실행: {message or rule_id}"
+        self._set_partial_status_text(text, active=True)
+
+        player_view = getattr(self, "_player_view", None)
+        if player_view is not None:
+            try:
+                player_view._queue_action_text_update(text)
+            except Exception:
+                pass
+
+        self._set_rule_row_runtime_style(previous_rule_id)
+        self._set_rule_row_runtime_style(rule_id)
+
+        if index >= 0 and getattr(self, "_scrollable", None) is not None:
+            try:
+                self._scrollable.scroll_to_item(index)
+                self.after(30, lambda rid=rule_id: self._set_rule_row_runtime_style(rid))
+            except Exception:
+                pass
+
+    def _clear_current_partial_rule(self) -> None:
+        previous_rule_id = getattr(self, "_active_partial_rule_id", None)
+        self._active_partial_rule_id = None
+        self._active_partial_rule_index = None
+        self._active_partial_rule_message = ""
+        self._set_rule_row_runtime_style(previous_rule_id)
+        self._set_partial_status_text("현재 실행: 대기 중", active=False)
+
+    def _make_partial_progress_callback(self):
+        def on_progress(progress):
+            rule_id = getattr(progress, "current_rule", None)
+            message = getattr(progress, "message", "") or ""
+            if not rule_id:
+                return
+            try:
+                self.after(0, lambda rid=rule_id, msg=message: self._set_current_partial_rule(rid, msg))
+            except (tk.TclError, RuntimeError):
+                pass
+
+        return on_progress
+
     def _start_partial_run_visual(self, rule_id: Optional[str]) -> None:
         """부분실행 시작 시 현재 버튼 상태를 재생중으로 표시."""
         self._running_rule_id = rule_id
         self._set_partial_run_button_state(None, False)
         self._set_partial_run_button_state(rule_id, True)
+        self._set_current_partial_rule(rule_id, "부분실행 시작")
 
     def _stop_partial_run_visual(self) -> None:
         """부분실행 종료 시 버튼 상태를 기본값으로 복원."""
         self._set_partial_run_button_state(None, False)
         self._running_rule_id = None
+        self._clear_current_partial_rule()
 
     def _ensure_arduino_ready_for_playback(self, context_label: str) -> bool:
         """부분실행/특화모드 실행 전 Arduino 연결 보장."""
@@ -723,6 +878,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", pady=(5, 15))
 
+        run_status_frame = ctk.CTkFrame(main, fg_color="#1f2937", corner_radius=8)
+        run_status_frame.pack(fill="x", pady=(0, 10))
+        self._partial_status_label = ctk.CTkLabel(
+            run_status_frame,
+            text="현재 실행: 대기 중",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+        )
+        self._partial_status_label.pack(fill="x", padx=12, pady=8)
+
         # 동작 목록 (가상 스크롤)
         self._scrollable = VirtualScrollFrame(
             main,
@@ -870,11 +1036,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if use_pack:
             item_wrapper.pack(fill="x")
 
-        # 선택 상태에 따른 배경색
-        is_selected = self._selected_rule is not None and self._selected_rule.rule_id == rule.rule_id
-        bg_color = "#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"])
+        # 선택/실행 상태에 따른 배경색
+        is_running_current = getattr(self, "_active_partial_rule_id", None) == rule.rule_id
+        bg_color = self._rule_item_bg_color(rule)
 
-        item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
+        item = ctk.CTkFrame(
+            item_wrapper,
+            fg_color=bg_color,
+            corner_radius=8,
+            border_width=2 if is_running_current else 0,
+            border_color="#facc15" if is_running_current else COLORS["border"],
+        )
         item.pack(fill="x", pady=4, padx=(10 + indent, 10))
 
         # 위젯 매핑 저장
@@ -1041,6 +1213,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             )
             disabled_lbl.pack(side="left")
             bind_drag(disabled_lbl)
+
+        if is_running_current:
+            running_lbl = ctk.CTkLabel(
+                row1,
+                text="  ● 실행중",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#facc15",
+            )
+            running_lbl.pack(side="left")
+            bind_drag(running_lbl)
 
         # 자식 수 표시
         if has_children:
@@ -2283,7 +2465,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except (tk.TclError, RuntimeError):
                 pass
 
-        executor.set_callbacks(on_complete=on_complete, on_error=on_error)
+        executor.set_callbacks(
+            on_progress=self._make_partial_progress_callback(),
+            on_complete=on_complete,
+            on_error=on_error,
+        )
 
         def run():
             try:
@@ -2501,7 +2687,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except (tk.TclError, RuntimeError):
                 pass
 
-        executor.set_callbacks(on_complete=on_complete, on_error=on_error)
+        executor.set_callbacks(
+            on_progress=self._make_partial_progress_callback(),
+            on_complete=on_complete,
+            on_error=on_error,
+        )
 
         # 별도 스레드에서 실행 시작
         def run():
@@ -2829,10 +3019,72 @@ class PlanDetailDialog(ctk.CTkToplevel):
         stop_playlist_var = ctk.BooleanVar(
             value=bool(getattr(rule, "stop_playlist_on_trigger_missing", False))
         )
+        trigger_missing_keys_state = {
+            "value": list(getattr(rule, "trigger_missing_keys", None) or [])
+        }
+        trigger_missing_key_text = ctk.StringVar()
+
+        def normalize_trigger_missing_key_repeat_count(value):
+            try:
+                repeat_count = int(str(value).strip() or "1")
+            except (TypeError, ValueError):
+                repeat_count = 1
+            return max(1, min(999, repeat_count))
+
+        def normalize_trigger_missing_key_float(value, default=0.0):
+            try:
+                parsed = float(str(value).strip().replace(",", ".") or str(default))
+            except (TypeError, ValueError):
+                parsed = default
+            return max(0.0, parsed)
+
+        trigger_missing_key_repeat_var = ctk.StringVar(
+            value=str(normalize_trigger_missing_key_repeat_count(
+                getattr(rule, "trigger_missing_key_repeat_count", 1)
+            ))
+        )
+        trigger_missing_key_delay_var = ctk.StringVar(
+            value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_key_repeat_delay', 0.5), 0.5):.2f}"
+        )
+        trigger_missing_key_delay_random_var = ctk.BooleanVar(
+            value=bool(getattr(rule, "trigger_missing_key_repeat_delay_random", False))
+        )
+        trigger_missing_key_delay_range_var = ctk.StringVar(
+            value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_key_repeat_delay_random_range', 0.3), 0.3):.2f}"
+        )
+
+        def format_trigger_missing_keys(keys):
+            clean_keys = [str(key).strip().upper() for key in (keys or []) if str(key).strip()]
+            return " + ".join(clean_keys) if clean_keys else "설정 안 됨"
+
+        def get_trigger_missing_key_repeat_count():
+            repeat_count = normalize_trigger_missing_key_repeat_count(trigger_missing_key_repeat_var.get())
+            trigger_missing_key_repeat_var.set(str(repeat_count))
+            return repeat_count
+
+        def get_trigger_missing_key_delay():
+            delay = normalize_trigger_missing_key_float(trigger_missing_key_delay_var.get(), 0.5)
+            trigger_missing_key_delay_var.set(f"{delay:.2f}")
+            return delay
+
+        def get_trigger_missing_key_delay_range():
+            delay_range = normalize_trigger_missing_key_float(trigger_missing_key_delay_range_var.get(), 0.3)
+            trigger_missing_key_delay_range_var.set(f"{delay_range:.2f}")
+            return delay_range
+
+        def sync_trigger_missing_key_text():
+            trigger_missing_key_text.set(format_trigger_missing_keys(trigger_missing_keys_state["value"]))
+
+        sync_trigger_missing_key_text()
 
         def save_confidence_only():
             rule.confidence = conf_var.get() / 100.0
             rule.stop_playlist_on_trigger_missing = bool(stop_playlist_var.get()) and bool(selected_path["value"])
+            rule.trigger_missing_keys = list(trigger_missing_keys_state["value"])
+            rule.trigger_missing_key_repeat_count = get_trigger_missing_key_repeat_count()
+            rule.trigger_missing_key_repeat_delay = get_trigger_missing_key_delay()
+            rule.trigger_missing_key_repeat_delay_random = bool(trigger_missing_key_delay_random_var.get())
+            rule.trigger_missing_key_repeat_delay_random_range = get_trigger_missing_key_delay_range()
             logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
             self._modified = True
             self._save_plan()  # JSON 파일에 즉시 저장
@@ -2874,6 +3126,193 @@ class PlanDetailDialog(ctk.CTkToplevel):
             justify="left",
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
+        trigger_key_frame = ctk.CTkFrame(missing_frame, fg_color=COLORS["bg_dark"], corner_radius=8)
+        trigger_key_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        key_row = ctk.CTkFrame(trigger_key_frame, fg_color="transparent")
+        key_row.pack(fill="x", padx=10, pady=(10, 6))
+
+        ctk.CTkLabel(
+            key_row,
+            text="종료 전 키입력",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=96,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(
+            key_row,
+            textvariable=trigger_missing_key_text,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["accent"],
+            width=150,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def set_trigger_missing_keys():
+            key_dialog = KeyInputDialog(dialog)
+            keys = key_dialog.get_keys()
+            if keys:
+                trigger_missing_keys_state["value"] = [str(key).lower().strip() for key in keys if str(key).strip()]
+                sync_trigger_missing_key_text()
+
+        def clear_trigger_missing_keys():
+            trigger_missing_keys_state["value"] = []
+            sync_trigger_missing_key_text()
+
+        ctk.CTkButton(
+            key_row,
+            text="키 설정",
+            width=80,
+            height=28,
+            fg_color=COLORS["accent_blue"],
+            hover_color="#2563eb",
+            command=set_trigger_missing_keys,
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            key_row,
+            text="해제",
+            width=60,
+            height=28,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            command=clear_trigger_missing_keys,
+        ).pack(side="left")
+
+        repeat_row = ctk.CTkFrame(trigger_key_frame, fg_color="transparent")
+        repeat_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkLabel(
+            repeat_row,
+            text="반복 횟수",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=96,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        trigger_missing_key_repeat_entry = ctk.CTkEntry(
+            repeat_row,
+            textvariable=trigger_missing_key_repeat_var,
+            width=92,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center",
+        )
+        trigger_missing_key_repeat_entry.pack(side="left", padx=(0, 8))
+        trigger_missing_key_repeat_entry.bind(
+            "<Button-1>",
+            lambda _event: trigger_missing_key_repeat_entry.focus_set(),
+            add="+",
+        )
+
+        ctk.CTkLabel(
+            repeat_row,
+            text="1 = 1회 입력, 2 = 2회 반복",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        delay_row = ctk.CTkFrame(trigger_key_frame, fg_color="transparent")
+        delay_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkLabel(
+            delay_row,
+            text="반복 대기시간",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=96,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        trigger_missing_key_delay_entry = ctk.CTkEntry(
+            delay_row,
+            textvariable=trigger_missing_key_delay_var,
+            width=92,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center",
+        )
+        trigger_missing_key_delay_entry.pack(side="left", padx=(0, 8))
+        trigger_missing_key_delay_entry.bind(
+            "<Button-1>",
+            lambda _event: trigger_missing_key_delay_entry.focus_set(),
+            add="+",
+        )
+
+        ctk.CTkLabel(
+            delay_row,
+            text="초",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left")
+
+        random_row = ctk.CTkFrame(trigger_key_frame, fg_color="transparent")
+        random_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkCheckBox(
+            random_row,
+            text="랜덤시간 활성화",
+            variable=trigger_missing_key_delay_random_var,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+        ).pack(side="left", padx=(0, 12))
+
+        ctk.CTkLabel(
+            random_row,
+            text="±범위",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 6))
+
+        trigger_missing_key_delay_range_entry = ctk.CTkEntry(
+            random_row,
+            textvariable=trigger_missing_key_delay_range_var,
+            width=72,
+            height=30,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            justify="center",
+        )
+        trigger_missing_key_delay_range_entry.pack(side="left", padx=(0, 6))
+        trigger_missing_key_delay_range_entry.bind(
+            "<Button-1>",
+            lambda _event: trigger_missing_key_delay_range_entry.focus_set(),
+            add="+",
+        )
+
+        ctk.CTkLabel(
+            random_row,
+            text="초",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            missing_frame,
+            text="미감지 종료 직전에 기존 반복 설정과 같은 방식으로 입력합니다. 예: ESC, ENTER, SHIFT+UP",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            wraplength=450,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
         # 저장/취소 버튼
         bottom_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         bottom_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 12))
@@ -2881,6 +3320,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
         def save():
             rule.trigger_image = selected_path["value"]
             rule.stop_playlist_on_trigger_missing = bool(stop_playlist_var.get()) and bool(rule.trigger_image)
+            rule.trigger_missing_keys = list(trigger_missing_keys_state["value"])
+            rule.trigger_missing_key_repeat_count = get_trigger_missing_key_repeat_count()
+            rule.trigger_missing_key_repeat_delay = get_trigger_missing_key_delay()
+            rule.trigger_missing_key_repeat_delay_random = bool(trigger_missing_key_delay_random_var.get())
+            rule.trigger_missing_key_repeat_delay_random_range = get_trigger_missing_key_delay_range()
             # 트리거 좌표 저장
             try:
                 x_val = trigger_x_entry.get().strip()

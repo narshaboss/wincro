@@ -115,9 +115,9 @@ class WinCroApp:
                     f"[config] startup save skipped: status={get_config_load_status()} error={get_config_load_error()}"
                 )
 
-            # 업데이트 후 플랜 파일 병합 (plans_user_backup이 있으면)
+            # Packaged playlists are authoritative after update; old plan backups are discarded.
             self._sync_shutdown_schedule_async()
-            self._merge_user_plans()
+            self._discard_legacy_plan_backup()
 
             # 메인 윈도우 생성
             self._main_window = MainWindow()
@@ -585,11 +585,6 @@ if exist "{data_backup}\\templates" (
 if exist "{data_backup}\\triggers" (
     xcopy /E /I /Y /Q "{data_backup}\\triggers\\*" "{app_dir}\\_internal\\data\\triggers\\" >nul 2>&1
 )
-if exist "{data_backup}\\plans" (
-    REM 사용자 플랜을 plans_user_backup으로 복사 (앱 시작 시 병합됨)
-    xcopy /E /I /Y /Q "{data_backup}\\plans\\*" "{app_dir}\\_internal\\data\\plans_user_backup\\" >nul 2>&1
-)
-
 echo [8/8] 정리 중...
 rd /s /q "{data_backup}" 2>nul
 rd /s /q "{internal_backup}" 2>nul
@@ -748,37 +743,21 @@ if /i "%choice%"=="Y" (
         import os
         os._exit(0)
 
-    def _merge_user_plans(self) -> None:
-        """업데이트 후 사용자 플랜 파일 병합 (새 버전 우선, 같은 이름은 덮어쓰기)"""
+    def _discard_legacy_plan_backup(self) -> None:
+        """Remove old update leftovers so packaged playlists stay authoritative."""
         import shutil
         from .utils.config import DATA_DIR
 
-        plans_dir = DATA_DIR / "plans"
         backup_dir = DATA_DIR / "plans_user_backup"
 
         if not backup_dir.exists():
-            return  # 백업 폴더 없으면 병합할 것 없음
+            return
 
-        logger.info("사용자 플랜 파일 병합 시작")
-        plans_dir.mkdir(parents=True, exist_ok=True)
-
-        restored_count = 0
-        for backup_file in backup_dir.glob("*.json"):
-            target_file = plans_dir / backup_file.name
-
-            if not target_file.exists():
-                # 새 버전에 없는 파일만 복원 (사용자가 직접 만든 플랜)
-                shutil.copy2(backup_file, target_file)
-                logger.info(f"플랜 복원: {backup_file.name}")
-                restored_count += 1
-            # 같은 이름 있으면 새 버전 유지 (덮어쓰기 안 함 = 새 버전 우선)
-
-        # 백업 폴더 삭제
         try:
             shutil.rmtree(backup_dir)
-            logger.info(f"사용자 플랜 병합 완료: {restored_count}개 복원")
+            logger.info("Legacy plan backup discarded; packaged playlists remain active")
         except Exception as e:
-            logger.error(f"백업 폴더 삭제 실패: {e}")
+            logger.error(f"Failed to discard legacy plan backup: {e}")
 
 
 # 전역 앱 인스턴스

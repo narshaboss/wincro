@@ -198,7 +198,7 @@ def test_packaged_auto_run_profile_updates_only_player_playback_defaults():
     ]
 
 
-def test_packaged_auto_run_profile_v2_replaces_v1_group_only():
+def test_packaged_auto_run_profile_v3_resets_existing_playback_groups_once():
     old_packaged_group = make_plan_sequence_group(
         AUTO_RUN_PROFILE_GROUP_NAME,
         [{"plan_path": r"C:\plans\old_hunt.json", "repeat_count": 9}],
@@ -235,7 +235,8 @@ def test_packaged_auto_run_profile_v2_replaces_v1_group_only():
     assert [Path(entry["plan_path"]).name for entry in config.player.plan_sequence_groups[0]["entries"]] == [
         file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
     ]
-    assert config.player.plan_sequence_groups[1] == custom_group
+    assert len(config.player.plan_sequence_groups) == 1
+    assert config.player.plan_sequence_groups[0] != custom_group
 
 
 def test_packaged_auto_run_profile_does_not_override_after_marker():

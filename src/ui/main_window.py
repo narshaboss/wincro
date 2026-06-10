@@ -23,7 +23,7 @@ from PIL import Image
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
-from ..utils.app_identity import get_effective_app_name, refresh_random_app_name
+from ..utils.app_identity import get_effective_app_name
 from ..utils.json_utils import load_json_file
 from ..utils.plan_sequence_groups import (
     get_active_plan_sequence_group,
@@ -450,11 +450,8 @@ class MainWindow(ctk.CTk):
 
         self._config = get_config()
 
-        # 윈도우 설정 - 세션 일관 랜덤 이름/사용자 지정 이름 적용
-        if getattr(self._config.ui, "random_name_mode", False):
-            app_name = refresh_random_app_name(self._config.ui, save_callback=save_config)
-        else:
-            app_name = get_effective_app_name(self._config.ui, save_callback=save_config)
+        # 윈도우 설정 - 사용자 지정 고정 이름 적용
+        app_name = get_effective_app_name(self._config.ui, save_callback=save_config)
         self._app_name = app_name  # 로고에서도 사용
         self.title(f"{app_name}")
         self._brand_image_cache: Dict[tuple[int, int], ctk.CTkImage] = {}
