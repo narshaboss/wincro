@@ -14,6 +14,7 @@ from src.utils.config import (
     AUTO_RUN_PROFILE_PLANS,
     AUTO_RUN_PROFILE_GROUPS,
     AUTO_RUN_PROFILE_VERSION,
+    APP_VERSION,
     BRANDING_PROFILE_VERSION,
     AppConfig,
     ArduinoConfig,
@@ -384,7 +385,7 @@ def test_existing_config_load_preserves_pc_local_player_and_ui_settings(monkeypa
     assert loaded.ui.branding_profile_version == "older_brand_marker"
 
 
-def test_release_227_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
+def test_release_228_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -439,6 +440,64 @@ def test_release_227_forces_only_player_auto_run_group_once(monkeypatch, tmp_pat
         file_name
         for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
         for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert loaded.player.plan_sequence_repeats == [
+        repeat
+        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
+        for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+
+
+def test_release_228_reapplies_over_previous_v5_marker_once(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "plans").mkdir()
+    stale_auto_group = make_plan_sequence_group(
+        AUTO_RUN_PROFILE_GROUP_NAME,
+        [
+            {"plan_path": r"C:\old\hunt.json", "repeat_count": 1},
+            {"plan_path": r"C:\old\raid.json", "repeat_count": 4},
+        ],
+        group_id=AUTO_RUN_PROFILE_GROUP_ID,
+        repeat_count=1,
+    )
+    existing = AppConfig(
+        player=PlayerConfig(
+            auto_run_enabled=False,
+            plan_sequence_groups=[stale_auto_group],
+            active_plan_sequence_group_id=AUTO_RUN_PROFILE_GROUP_ID,
+            auto_run_profile_version="auto_hunt_raid_factory_v5",
+        ),
+        ui=UIConfig(app_name="PC Local", window_mode="player"),
+        arduino=ArduinoConfig(com_port="COM3", enabled=True),
+    )
+    manager = ConfigManager()
+    config_path.write_text(
+        json.dumps(manager._config_to_dict(existing), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config_module, "AUTO_RUN_PROFILE_FORCE_APP_VERSION", APP_VERSION)
+    manager._config = None
+
+    loaded = manager.load()
+
+    assert loaded.ui.app_name == "PC Local"
+    assert loaded.ui.window_mode == "player"
+    assert loaded.arduino.com_port == "COM3"
+    assert loaded.arduino.enabled is True
+    assert loaded.player.auto_run_enabled is True
+    assert loaded.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
+    assert loaded.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
+    assert loaded.player.plan_sequence_groups[0]["repeat_count"] == AUTO_RUN_PROFILE_GROUP_REPEAT
+    assert [Path(entry["plan_path"]).name for entry in loaded.player.plan_sequence_groups[0]["entries"]] == [
+        file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert [entry["repeat_count"] for entry in loaded.player.plan_sequence_groups[0]["entries"]] == [
+        repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
     ]
     assert loaded.player.plan_sequence_repeats == [
         repeat

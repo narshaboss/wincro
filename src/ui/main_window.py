@@ -47,8 +47,8 @@ APP_ICON_PREVIEW_FILE = PROJECT_ROOT / "icon_preview.png"
 
 logger = get_logger(__name__)
 
-# 컬러 팔레트 (theme.py에서 통합 관리)
-from .theme import COLORS
+# 컬러/치수 토큰 (theme.py에서 통합 관리)
+from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
 class GUILogHandler(logging.Handler):
@@ -74,7 +74,7 @@ class LogPanel(ctk.CTkFrame):
     """하단 로그 패널 - 축소/확장 가능, 확장시 크게 표시"""
 
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, fg_color=COLORS["bg_log"], **kwargs)
+        super().__init__(parent, fg_color=COLORS["bg_log"], corner_radius=0, **kwargs)
 
         self._log_buffer: deque = deque(maxlen=500)
         self._auto_scroll = True
@@ -98,7 +98,7 @@ class LogPanel(ctk.CTkFrame):
 
     def _setup_ui(self):
         # 헤더 바
-        self._header = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], height=32)
+        self._header = ctk.CTkFrame(self, fg_color=COLORS["bg_glass"], height=32, corner_radius=0)
         self._header.pack(fill="x")
         self._header.pack_propagate(False)
 
@@ -112,7 +112,7 @@ class LogPanel(ctk.CTkFrame):
             fg_color="transparent",
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
         )
         self._toggle_btn.pack(side="left", padx=5, pady=2)
 
@@ -125,7 +125,7 @@ class LogPanel(ctk.CTkFrame):
             command=self._on_filter_change,
             width=80,
             height=24,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
             border_color=COLORS["border"],
             button_color=COLORS["bg_card_hover"],
             dropdown_fg_color=COLORS["bg_card"],
@@ -139,9 +139,10 @@ class LogPanel(ctk.CTkFrame):
             command=self._clear_logs,
             width=55,
             height=24,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._clear_btn.pack(side="right", padx=8, pady=4)
 
@@ -415,13 +416,13 @@ class SidebarButton(ctk.CTkButton):
             text=f"  {icon}  {text}",
             command=command,
             width=180,
-            height=44,
+            height=IOS_METRICS["row_height"],
             anchor="w",
             fg_color="transparent",
             hover_color=COLORS["bg_card"],
             text_color=COLORS["text_secondary"],
-            font=ctk.CTkFont(size=14),
-            corner_radius=8,
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius"],
             **kwargs
         )
         self._is_active = False
@@ -478,7 +479,7 @@ class MainWindow(ctk.CTk):
 
         # 테마 설정
         ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        ctk.set_default_color_theme("dark-blue")
 
         # 윈도우 닫기 이벤트
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -683,8 +684,8 @@ class MainWindow(ctk.CTk):
         # 상단 프레임 (플랜 선택 + 컨트롤)
         top_frame = ctk.CTkFrame(
             self._main_container,
-            fg_color=COLORS["bg_card"],
-            corner_radius=14,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius"],
             border_width=1,
             border_color=COLORS["border"],
         )
@@ -698,14 +699,14 @@ class MainWindow(ctk.CTk):
             variable=self._mini_plan_var,
             values=plan_names,
             width=180,
-            height=28,
-            fg_color=COLORS["bg_dark"],
+            height=IOS_METRICS["button_height_small"],
+            fg_color=COLORS["bg_elevated"],
             border_color=COLORS["border"],
             button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["bg_card"],
             dropdown_hover_color=COLORS["bg_card_hover"],
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
             state="readonly",
             command=self._on_mini_plan_changed,
         )
@@ -715,7 +716,7 @@ class MainWindow(ctk.CTk):
         self._mini_version_label = ctk.CTkLabel(
             top_frame,
             text=f"v{APP_VERSION}",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
             text_color=COLORS["accent_blue"],
         )
         self._mini_version_label.pack(side="left", padx=(8, 4), pady=8)
@@ -725,12 +726,12 @@ class MainWindow(ctk.CTk):
             top_frame,
             text="에디터",
             width=78,
-            height=30,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            height=IOS_METRICS["button_height_small"],
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
             fg_color="#ff79c6",
             hover_color="#db61aa",
             text_color=COLORS["text_primary"],
-            corner_radius=10,
+            corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._change_window_mode("editor"),
         ).pack(side="right", padx=(4, 10), pady=8)
 
@@ -741,10 +742,11 @@ class MainWindow(ctk.CTk):
             top_frame,
             text="저장",
             width=35,
-            height=28,
+            height=IOS_METRICS["button_height_small"],
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._save_mini_repeat_count,
         )
         self._mini_repeat_save_btn.pack(side="right", padx=2, pady=8)
@@ -752,7 +754,7 @@ class MainWindow(ctk.CTk):
         ctk.CTkLabel(
             top_frame,
             text="회",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
             text_color=COLORS["text_secondary"],
         ).pack(side="right")
 
@@ -760,11 +762,11 @@ class MainWindow(ctk.CTk):
             top_frame,
             textvariable=self._mini_repeat_var,
             width=35,
-            height=28,
-            fg_color=COLORS["bg_dark"],
+            height=IOS_METRICS["button_height_small"],
+            fg_color=COLORS["bg_elevated"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
             justify="center",
         )
         self._mini_repeat_entry.pack(side="right", padx=2, pady=8)
@@ -772,15 +774,15 @@ class MainWindow(ctk.CTk):
         ctk.CTkLabel(
             top_frame,
             text="반복:",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
             text_color=COLORS["text_secondary"],
         ).pack(side="right", padx=(5, 2))
 
         # 현재 실행 중인 자동실행 그룹/재생목록을 한눈에 보여준다.
         active_frame = ctk.CTkFrame(
             self._main_container,
-            fg_color=COLORS["bg_sidebar"],
-            corner_radius=14,
+            fg_color=COLORS["bg_card"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
             border_width=1,
             border_color=COLORS["border"],
         )
@@ -795,7 +797,7 @@ class MainWindow(ctk.CTk):
         self._mini_auto_shutdown_label = ctk.CTkLabel(
             auto_state_frame,
             text="자동종료 확인 중",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
         self._mini_auto_shutdown_label.pack(side="left", padx=(0, 4), pady=2)
@@ -820,7 +822,7 @@ class MainWindow(ctk.CTk):
         self._mini_auto_update_label = ctk.CTkLabel(
             auto_state_frame,
             text="자동업데이트 확인 중",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
         self._mini_auto_update_label.pack(side="left", padx=(0, 4), pady=2)
@@ -2483,8 +2485,8 @@ class MainWindow(ctk.CTk):
         """상단 네비게이션 바 설정"""
         self._topbar = ctk.CTkFrame(
             self._main_container,
-            fg_color=COLORS["bg_sidebar"],
-            height=60,
+            fg_color=COLORS["bg_glass"],
+            height=IOS_METRICS["topbar_height"],
             corner_radius=0,
         )
         self._topbar.pack(fill="x")
@@ -2522,23 +2524,29 @@ class MainWindow(ctk.CTk):
                 width=110,
                 height=40,
                 fg_color="transparent",
-                hover_color=COLORS["bg_card"],
+                hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_secondary"],
-                font=ctk.CTkFont(size=14, weight="bold"),
-                corner_radius=8,
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
             )
             btn.pack(side="left", padx=3)
             if view_id != "help":
                 self._nav_buttons[view_id] = btn
 
         # 오른쪽: 버전 정보
-        version_frame = ctk.CTkFrame(self._topbar, fg_color=COLORS["bg_card"], corner_radius=6)
+        version_frame = ctk.CTkFrame(
+            self._topbar,
+            fg_color=COLORS["bg_card"],
+            corner_radius=IOS_METRICS["pill_radius"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         version_frame.pack(side="right", padx=20, pady=12)
 
         self._version_label = ctk.CTkLabel(
             version_frame,
             text=f"  v{APP_VERSION}  ",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
             text_color=COLORS["accent_blue"],
         )
         self._version_label.pack(padx=8, pady=4)
@@ -2556,12 +2564,12 @@ class MainWindow(ctk.CTk):
             self._topbar,
             text=mode_text,
             width=80,
-            height=28,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            height=IOS_METRICS["button_height_small"],
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
             fg_color=COLORS["bg_card"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_primary"],
-            corner_radius=6,
+            corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._change_window_mode(next_mode),
         )
         self._mode_switch_btn.pack(side="right", padx=(0, 10), pady=12)
@@ -2579,26 +2587,31 @@ class MainWindow(ctk.CTk):
             self._content_area,
             fg_color=COLORS["bg_content"],
         )
-        self._view_container.pack(fill="both", expand=True, padx=15, pady=(10, 5))
+        self._view_container.pack(
+            fill="both",
+            expand=True,
+            padx=IOS_METRICS["content_padding"],
+            pady=(IOS_METRICS["content_padding"], 6),
+        )
 
         self._loading_view = ctk.CTkFrame(
             self._view_container,
             fg_color=COLORS["bg_card"],
-            corner_radius=16,
+            corner_radius=IOS_METRICS["card_radius"],
         )
         self._loading_content = ctk.CTkFrame(self._loading_view, fg_color="transparent")
         self._loading_content.place(relx=0.5, rely=0.5, anchor="center")
         self._loading_title = ctk.CTkLabel(
             self._loading_content,
             text="화면 준비 중...",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=22, weight="bold"),
             text_color=COLORS["text_primary"],
         )
         self._loading_title.pack(pady=(0, 10))
         self._loading_desc = ctk.CTkLabel(
             self._loading_content,
             text="UI를 빠르게 전환하고 있습니다",
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13),
             text_color=COLORS["text_secondary"],
         )
         self._loading_desc.pack()
@@ -3014,7 +3027,7 @@ class BaseView(ctk.CTkFrame):
         card = ctk.CTkFrame(
             parent,
             fg_color=COLORS["bg_card"],
-            corner_radius=12,
+            corner_radius=IOS_METRICS["card_radius"],
             border_width=1,
             border_color=COLORS["border"],
             **kwargs
@@ -3024,17 +3037,17 @@ class BaseView(ctk.CTkFrame):
             title_label = ctk.CTkLabel(
                 card,
                 text=title,
-                font=ctk.CTkFont(size=16, weight="bold"),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["title_size"], weight="bold"),
                 text_color=COLORS["text_primary"],
             )
-            title_label.pack(anchor="w", padx=20, pady=(15, 10))
+            title_label.pack(anchor="w", padx=22, pady=(18, 12))
 
             # 구분선
             ctk.CTkFrame(
                 card,
-                fg_color=COLORS["border"],
+                fg_color=COLORS["separator"],
                 height=1,
-            ).pack(fill="x", padx=15)
+            ).pack(fill="x", padx=18)
 
         return card
 
@@ -3051,26 +3064,26 @@ class BaseView(ctk.CTkFrame):
             "primary": {
                 "fg_color": COLORS["accent"],
                 "hover_color": COLORS["accent_hover"],
-                "text_color": COLORS["text_primary"],
+                "text_color": "white",
             },
             "secondary": {
-                "fg_color": COLORS["bg_card"],
+                "fg_color": COLORS["bg_elevated"],
                 "hover_color": COLORS["bg_card_hover"],
                 "text_color": COLORS["text_secondary"],
             },
             "success": {
-                "fg_color": COLORS["accent"],
-                "hover_color": COLORS["accent_hover"],
-                "text_color": COLORS["text_primary"],
+                "fg_color": COLORS["success"],
+                "hover_color": COLORS["green_hover"],
+                "text_color": "white",
             },
             "danger": {
                 "fg_color": COLORS["error"],
-                "hover_color": "#da3633",
-                "text_color": COLORS["text_primary"],
+                "hover_color": COLORS["danger_hover"],
+                "text_color": "white",
             },
             "warning": {
                 "fg_color": COLORS["warning"],
-                "hover_color": "#d29922",
+                "hover_color": COLORS["confidence_amber_hover"],
                 "text_color": COLORS["bg_dark"],
             },
             "ghost": {
@@ -3084,9 +3097,9 @@ class BaseView(ctk.CTkFrame):
 
         # 기본값 설정 (kwargs로 덮어쓰기 가능)
         defaults = {
-            "corner_radius": 8,
-            "height": 36,
-            "font": ctk.CTkFont(size=13),
+            "corner_radius": IOS_METRICS["control_radius"],
+            "height": IOS_METRICS["button_height"],
+            "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["body_size"], weight="bold"),
         }
         defaults.update(btn_style)
         defaults.update(kwargs)
@@ -3108,31 +3121,31 @@ class BaseView(ctk.CTkFrame):
         """스타일 레이블 생성"""
         styles = {
             "heading": {
-                "font": ctk.CTkFont(size=20, weight="bold"),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=20, weight="bold"),
                 "text_color": COLORS["text_primary"],
             },
             "subheading": {
-                "font": ctk.CTkFont(size=16, weight="bold"),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
                 "text_color": COLORS["text_primary"],
             },
             "body": {
-                "font": ctk.CTkFont(size=13),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["body_size"]),
                 "text_color": COLORS["text_secondary"],
             },
             "caption": {
-                "font": ctk.CTkFont(size=11),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["caption_size"]),
                 "text_color": COLORS["text_muted"],
             },
             "success": {
-                "font": ctk.CTkFont(size=13),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["body_size"]),
                 "text_color": COLORS["success"],
             },
             "warning": {
-                "font": ctk.CTkFont(size=13),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["body_size"]),
                 "text_color": COLORS["warning"],
             },
             "error": {
-                "font": ctk.CTkFont(size=13),
+                "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["body_size"]),
                 "text_color": COLORS["error"],
             },
         }

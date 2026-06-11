@@ -34,11 +34,11 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.227"
-AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_v5"
-# 1.0.227에서만 기존 PC의 자동실행 그룹을 패키지 기본값으로 1회 재적용한다.
+APP_VERSION = "1.0.228"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v6"
+# 1.0.228에서만 기존 PC의 자동실행 그룹을 패키지 기본값으로 1회 재적용한다.
 # 다음 버전에서 APP_VERSION만 올라가면 이 강제 적용은 자동으로 비활성화된다.
-AUTO_RUN_PROFILE_FORCE_APP_VERSION = "1.0.227"
+AUTO_RUN_PROFILE_FORCE_APP_VERSION = "1.0.228"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
 AUTO_RUN_PROFILE_GROUP_REPEAT = 4

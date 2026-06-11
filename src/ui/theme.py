@@ -1,58 +1,87 @@
 """
-WinCro UI 테마 모듈
+WinCro UI 테마 모듈.
 
-전체 애플리케이션에서 사용하는 색상 팔레트를 정의합니다.
+색상과 치수는 한 곳에서 관리한다. 2026 iOS 개편은 개별 위젯을
+하나씩 덮어쓰기보다 이 토큰을 중심으로 확산시키는 방식으로 진행한다.
 """
 
-# 프리미엄 다크 테마 컬러 팔레트
+IOS_METRICS = {
+    "window_padding": 18,
+    "content_padding": 14,
+    "card_radius": 22,
+    "card_radius_compact": 18,
+    "control_radius": 16,
+    "control_radius_small": 12,
+    "pill_radius": 999,
+    "hairline": 1,
+    "topbar_height": 64,
+    "button_height": 40,
+    "button_height_small": 32,
+    "row_height": 54,
+}
+
+IOS_FONTS = {
+    "family": "Segoe UI Variable",
+    "fallback": "Segoe UI",
+    "title_size": 18,
+    "body_size": 14,
+    "caption_size": 12,
+    "micro_size": 10,
+}
+
+# iOS 다크 모드 기반 팔레트. 기존 키 이름은 유지해서 기능 코드를 건드리지 않는다.
 COLORS = {
     # 배경색
-    "bg_dark": "#0d1117",
-    "bg_sidebar": "#161b22",
-    "bg_content": "#0d1117",
-    "bg_card": "#21262d",
-    "bg_card_hover": "#30363d",
-    "bg_log": "#010409",
+    "bg_dark": "#000000",
+    "bg_sidebar": "#111113",
+    "bg_content": "#000000",
+    "bg_card": "#1C1C1E",
+    "bg_card_hover": "#2C2C2E",
+    "bg_log": "#050506",
+    "bg_elevated": "#242426",
+    "bg_glass": "#161618",
 
     # 강조색
-    "accent": "#238636",
-    "accent_hover": "#2ea043",
-    "accent_blue": "#58a6ff",
-    "accent_orange": "#d29922",
-    "accent_red": "#f85149",
+    "accent": "#0A84FF",
+    "accent_hover": "#409CFF",
+    "accent_blue": "#64D2FF",
+    "accent_orange": "#FF9F0A",
+    "accent_red": "#FF453A",
+    "accent_pink": "#FF2D55",
 
     # 텍스트
-    "text_primary": "#f0f6fc",
-    "text_secondary": "#8b949e",
-    "text_muted": "#484f58",
+    "text_primary": "#F5F5F7",
+    "text_secondary": "#AEAEB2",
+    "text_muted": "#6E6E73",
 
     # 경계선
-    "border": "#30363d",
+    "border": "#38383A",
+    "separator": "#2C2C2E",
 
     # 상태 색상
-    "success": "#3fb950",
-    "warning": "#d29922",
-    "error": "#f85149",
-    "danger": "#f85149",
-    "danger_hover": "#da3633",
-    "info": "#58a6ff",
+    "success": "#30D158",
+    "warning": "#FFD60A",
+    "error": "#FF453A",
+    "danger": "#FF453A",
+    "danger_hover": "#FF6961",
+    "info": "#64D2FF",
 
     # player_view.py에서 사용되는 추가 색상
-    "scroll_purple": "#b48ead",
-    "child_bg": "#252535",
-    "search_radius_purple": "#8b5cf6",
-    "search_radius_purple_hover": "#7c3aed",
-    "confidence_amber": "#f59e0b",
-    "confidence_amber_hover": "#d97706",
-    "delete_red": "#dc2626",
-    "green_hover": "#45a049",
-    "multi_image_orange": "#ea580c",
-    "lock_red": "#ff6b6b",
-    "flatten_red": "#bf616a",
-    "screenshot_blue": "#5e81ac",
-    "subordinate_cyan": "#88c0d0",
-    "random_orange": "#d08770",
-    "selection_green": "#2e7d32",
-    "hover_green": "#2ea44f",
-    "hover_blue": "#1a7fd4",
+    "scroll_purple": "#BF5AF2",
+    "child_bg": "#1F1F22",
+    "search_radius_purple": "#BF5AF2",
+    "search_radius_purple_hover": "#DA8FFF",
+    "confidence_amber": "#FF9F0A",
+    "confidence_amber_hover": "#FFB340",
+    "delete_red": "#FF453A",
+    "green_hover": "#63E681",
+    "multi_image_orange": "#FF9F0A",
+    "lock_red": "#FF6961",
+    "flatten_red": "#FF453A",
+    "screenshot_blue": "#64D2FF",
+    "subordinate_cyan": "#5AC8FA",
+    "random_orange": "#FFB340",
+    "selection_green": "#1F7A3A",
+    "hover_green": "#63E681",
+    "hover_blue": "#409CFF",
 }

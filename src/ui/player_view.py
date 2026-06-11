@@ -28023,7 +28023,7 @@ class PlayerView(BaseView):
 
         # 상단: 2x2 그리드 영역
         grid_frame = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
-        grid_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        grid_frame.pack(fill="both", expand=True, padx=12, pady=12)
 
         # 그리드 설정 (2행 2열, 균등 비율)
         grid_frame.grid_columnconfigure(0, weight=1, uniform="col")
@@ -28060,8 +28060,8 @@ class PlayerView(BaseView):
         self._sequence_frame = ctk.CTkScrollableFrame(
             self._selection_card,
             height=200,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=18,
         )
         self._sequence_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
 
@@ -28074,12 +28074,12 @@ class PlayerView(BaseView):
             text="▶ 실행",
             command=self._on_play,
             width=90,
-            height=36,
+            height=40,
             fg_color=COLORS["success"],
-            hover_color="#2ea44f",
+            hover_color=COLORS["green_hover"],
             text_color="white",
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=6,
+            corner_radius=999,
             state="disabled",
         )
         self._play_btn.pack(side="left", padx=(0, 6))
@@ -28089,12 +28089,12 @@ class PlayerView(BaseView):
             text="⏸ 일시정지",
             command=self._on_pause,
             width=90,
-            height=36,
+            height=40,
             fg_color=COLORS["warning"],
-            hover_color="#b8860b",
-            text_color="white",
+            hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["bg_dark"],
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=6,
+            corner_radius=999,
             state="disabled",
         )
         self._pause_btn.pack(side="left", padx=(0, 6))
@@ -28104,12 +28104,12 @@ class PlayerView(BaseView):
             text="⏹ 중지",
             command=self._on_stop,
             width=90,
-            height=36,
+            height=40,
             fg_color=COLORS["error"],
-            hover_color="#c62828",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=6,
+            corner_radius=999,
             state="disabled",
         )
         self._stop_btn.pack(side="left")
@@ -28134,8 +28134,8 @@ class PlayerView(BaseView):
         # 선택 정보 프레임
         info_frame = ctk.CTkFrame(
             self._control_card,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=18,
         )
         info_frame.pack(fill="x", padx=15, pady=(0, 15))
 
@@ -28180,7 +28180,7 @@ class PlayerView(BaseView):
             variable=self._speed_var,
             width=180,
             height=16,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
             progress_color=COLORS["accent"],
             button_color=COLORS["text_primary"],
             button_hover_color=COLORS["accent_hover"],
@@ -28212,7 +28212,7 @@ class PlayerView(BaseView):
             textvariable=self._repeat_var,
             width=60,
             height=32,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
         )
@@ -28226,6 +28226,7 @@ class PlayerView(BaseView):
             height=32,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
+            corner_radius=999,
             command=self._save_repeat_count,
         )
         self._repeat_save_btn.pack(side="left", padx=5)
@@ -28269,8 +28270,8 @@ class PlayerView(BaseView):
         # 진행률 프레임
         progress_frame = ctk.CTkFrame(
             self._status_card,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=18,
         )
         progress_frame.pack(fill="x", padx=15, pady=(0, 15))
 
@@ -28287,7 +28288,7 @@ class PlayerView(BaseView):
             progress_frame,
             width=500,
             height=12,
-            fg_color=COLORS["border"],
+            fg_color=COLORS["bg_elevated"],
             progress_color=COLORS["accent"],
             corner_radius=6,
         )
@@ -28334,12 +28335,12 @@ class PlayerView(BaseView):
             text="▶ 실행",
             command=self._on_play,
             width=100,
-            height=40,
+            height=44,
             fg_color=COLORS["success"],
-            hover_color="#2ea44f",
+            hover_color=COLORS["green_hover"],
             text_color="white",
             font=ctk.CTkFont(size=14, weight="bold"),
-            corner_radius=8,
+            corner_radius=999,
             state="disabled",
         )
         self._play_btn2.pack(side="left", padx=(0, 8))
@@ -28349,12 +28350,12 @@ class PlayerView(BaseView):
             text="⏸ 일시정지",
             command=self._on_pause,
             width=100,
-            height=40,
+            height=44,
             fg_color=COLORS["warning"],
-            hover_color="#b8860b",
-            text_color="white",
+            hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["bg_dark"],
             font=ctk.CTkFont(size=14, weight="bold"),
-            corner_radius=8,
+            corner_radius=999,
             state="disabled",
         )
         self._pause_btn2.pack(side="left", padx=(0, 8))
@@ -28364,12 +28365,12 @@ class PlayerView(BaseView):
             text="⏹ 중지",
             command=self._on_stop,
             width=100,
-            height=40,
+            height=44,
             fg_color=COLORS["error"],
-            hover_color="#c62828",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
             font=ctk.CTkFont(size=14, weight="bold"),
-            corner_radius=8,
+            corner_radius=999,
             state="disabled",
         )
         self._stop_btn2.pack(side="left")
@@ -28393,11 +28394,13 @@ class PlayerView(BaseView):
 
         item_frame = ctk.CTkFrame(
             self._sequence_frame,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_card"],
+            corner_radius=16,
+            border_width=1,
+            border_color=COLORS["border"],
             cursor="hand2",
         )
-        item_frame.pack(fill="x", padx=5, pady=3)
+        item_frame.pack(fill="x", padx=6, pady=5)
 
         # 클릭으로 선택 기능
         def on_click(event, p=plan, w=item_frame):
@@ -28426,7 +28429,7 @@ class PlayerView(BaseView):
         name_label = ctk.CTkLabel(
             top_row,
             text=plan.name,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
             cursor="hand2",
@@ -28439,7 +28442,7 @@ class PlayerView(BaseView):
         rule_label = ctk.CTkLabel(
             top_row,
             text=f"{rule_count}개 동작",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=11),
             text_color=COLORS["text_muted"],
             cursor="hand2",
         )
@@ -28474,10 +28477,10 @@ class PlayerView(BaseView):
         """자동화 계획 항목 선택 (클릭으로)"""
         # 이전 선택 해제
         if self._selected_item_widget:
-            self._selected_item_widget.configure(fg_color=COLORS["bg_dark"])
+            self._selected_item_widget.configure(fg_color=COLORS["bg_card"])
 
         # 새 항목 선택 (초록색 배경)
-        widget.configure(fg_color=COLORS["accent"])
+        widget.configure(fg_color=COLORS["selection_green"])
         self._selected_item_widget = widget
 
         # 기존 선택 로직 호출
@@ -28516,11 +28519,13 @@ class PlayerView(BaseView):
         """재생 항목 생성"""
         item_frame = ctk.CTkFrame(
             self._sequence_frame,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_card"],
+            corner_radius=16,
+            border_width=1,
+            border_color=COLORS["border"],
             cursor="hand2",
         )
-        item_frame.pack(fill="x", padx=5, pady=3)
+        item_frame.pack(fill="x", padx=6, pady=5)
 
         # 클릭으로 선택 기능
         def on_click(event, s=sequence, w=item_frame):
@@ -28537,7 +28542,7 @@ class PlayerView(BaseView):
         name_label = ctk.CTkLabel(
             top_row,
             text=sequence.name,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
             cursor="hand2",
@@ -28553,7 +28558,7 @@ class PlayerView(BaseView):
         info_label = ctk.CTkLabel(
             top_row,
             text=info_text,
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=11),
             text_color=COLORS["text_muted"],
             cursor="hand2",
         )
@@ -28573,10 +28578,10 @@ class PlayerView(BaseView):
             width=40,
             height=20,
             fg_color=COLORS["error"],
-            hover_color="#dc2626",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
             font=ctk.CTkFont(size=11),
-            corner_radius=4,
+            corner_radius=999,
         ).pack(side="right")
 
     def _delete_sequence(self, sequence: Sequence) -> None:
@@ -28635,10 +28640,10 @@ class PlayerView(BaseView):
         """재생 항목 선택 (클릭으로)"""
         # 이전 선택 해제
         if self._selected_item_widget:
-            self._selected_item_widget.configure(fg_color=COLORS["bg_dark"])
+            self._selected_item_widget.configure(fg_color=COLORS["bg_card"])
 
         # 새 항목 선택 (초록색 배경)
-        widget.configure(fg_color=COLORS["accent"])
+        widget.configure(fg_color=COLORS["selection_green"])
         self._selected_item_widget = widget
 
         # 기존 선택 로직 호출
