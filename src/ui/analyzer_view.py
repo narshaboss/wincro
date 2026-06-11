@@ -785,9 +785,10 @@ class ImageCropDialog(ctk.CTkToplevel):
                 width=120,
                 height=40,
                 fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
-                hover_color="#ea580c" if alt_count > 0 else COLORS["bg_card_hover"],
+                hover_color=COLORS["confidence_amber_hover"] if alt_count > 0 else COLORS["bg_card_hover"],
                 text_color="white" if alt_count > 0 else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
             )
             self._alt_image_btn.pack(side="left", padx=5)
 
@@ -809,10 +810,11 @@ class ImageCropDialog(ctk.CTkToplevel):
                 command=self._set_search_radius,
                 width=130,
                 height=40,
-                fg_color="#8b5cf6" if has_region else COLORS["bg_card"],
-                hover_color="#7c3aed" if has_region else COLORS["bg_card_hover"],
+                fg_color=COLORS["search_radius_purple"] if has_region else COLORS["bg_card"],
+                hover_color=COLORS["search_radius_purple_hover"] if has_region else COLORS["bg_card_hover"],
                 text_color="white" if has_region else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
             )
             self._search_radius_btn.pack(side="left", padx=5)
 
@@ -825,10 +827,11 @@ class ImageCropDialog(ctk.CTkToplevel):
                 command=self._set_confidence,
                 width=100,
                 height=40,
-                fg_color="#f59e0b" if conf_pct != 65 else COLORS["bg_card"],
-                hover_color="#d97706" if conf_pct != 65 else COLORS["bg_card_hover"],
+                fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
+                hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
                 text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
             )
             self._confidence_btn.pack(side="left", padx=5)
 
@@ -853,9 +856,10 @@ class ImageCropDialog(ctk.CTkToplevel):
             command=self.destroy,
             width=80,
             height=40,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
 
         # 메인 컨텐츠 (이미지 + 미리보기)
@@ -863,7 +867,13 @@ class ImageCropDialog(ctk.CTkToplevel):
         content_frame.pack(padx=20, pady=10, fill="both", expand=True)
 
         # 왼쪽: 원본 이미지
-        left_frame = ctk.CTkFrame(content_frame, fg_color=COLORS["bg_card"], corner_radius=8)
+        left_frame = ctk.CTkFrame(
+            content_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         left_frame.pack(side="left", fill="both", expand=True)
 
         # 이미지 정보
@@ -880,7 +890,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             left_frame,
             width=self._canvas_width,
             height=self._canvas_height,
-            bg="#1a1b26",
+            bg=COLORS["bg_log"],
             highlightthickness=1,
             highlightbackground=COLORS["border"],
             takefocus=1,
@@ -908,7 +918,14 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._canvas.bind("<MouseWheel>", self._on_mouse_wheel)
 
         # 오른쪽: 미리보기 영역
-        right_frame = ctk.CTkFrame(content_frame, fg_color=COLORS["bg_card"], corner_radius=8, width=200)
+        right_frame = ctk.CTkFrame(
+            content_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+            width=200,
+        )
         right_frame.pack(side="right", fill="y", padx=(15, 0))
         right_frame.pack_propagate(False)
 
@@ -924,7 +941,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             right_frame,
             width=180,
             height=180,
-            bg="#1a1b26",
+            bg=COLORS["bg_log"],
             highlightthickness=1,
             highlightbackground=COLORS["border"],
         )
@@ -1512,7 +1529,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                     text=f"멀티이미지 ({alt_count})" if alt_count > 0 else "멀티이미지 추가",
                     state="normal",
                     fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
-                    hover_color="#ea580c" if alt_count > 0 else COLORS["bg_card_hover"],
+                    hover_color=COLORS["confidence_amber_hover"] if alt_count > 0 else COLORS["bg_card_hover"],
                     text_color="white" if alt_count > 0 else COLORS["text_secondary"],
                 )
             else:
@@ -1529,8 +1546,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._search_radius_btn.configure(
                 text=text,
                 state="normal" if self._rule is not None else "disabled",
-                fg_color="#8b5cf6" if has_region else COLORS["bg_card"],
-                hover_color="#7c3aed" if has_region else COLORS["bg_card_hover"],
+                fg_color=COLORS["search_radius_purple"] if has_region else COLORS["bg_card"],
+                hover_color=COLORS["search_radius_purple_hover"] if has_region else COLORS["bg_card_hover"],
                 text_color="white" if has_region else COLORS["text_secondary"],
             )
 
@@ -1539,8 +1556,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._confidence_btn.configure(
                 text=text,
                 state="normal" if self._rule is not None else "disabled",
-                fg_color="#f59e0b" if conf_pct != 65 else COLORS["bg_card"],
-                hover_color="#d97706" if conf_pct != 65 else COLORS["bg_card_hover"],
+                fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
+                hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
                 text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
             )
 
@@ -1667,10 +1684,10 @@ class ImageCropDialog(ctk.CTkToplevel):
             variable=conf_var,
             width=220,
             height=16,
-            fg_color=COLORS["bg_card"],
-            progress_color="#f59e0b",
+            fg_color=COLORS["bg_elevated"],
+            progress_color=COLORS["confidence_amber"],
             button_color=COLORS["text_primary"],
-            button_hover_color="#f59e0b",
+            button_hover_color=COLORS["confidence_amber"],
         )
         conf_slider.pack(side="left", padx=(0, 10))
 
@@ -1678,7 +1695,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             slider_frame,
             text=f"{int(conf_var.get())}%",
             font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#f59e0b",
+            text_color=COLORS["confidence_amber"],
             width=50,
         )
         conf_label.pack(side="left")
@@ -1717,8 +1734,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             if hasattr(self, '_confidence_btn'):
                 self._confidence_btn.configure(
                     text=f"인식률: {conf_pct}%",
-                    fg_color="#f59e0b" if conf_pct != 65 else COLORS["bg_card"],
-                    hover_color="#d97706" if conf_pct != 65 else COLORS["bg_card_hover"],
+                    fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
+                    hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
                     text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
                 )
 
@@ -1734,8 +1751,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             text="저장",
             width=100,
             height=36,
-            fg_color="#f59e0b",
-            hover_color="#d97706",
+            fg_color=COLORS["confidence_amber"],
+            hover_color=COLORS["confidence_amber_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=save_conf,
         ).pack(side="left", padx=(0, 10))
 
@@ -1744,9 +1762,10 @@ class ImageCropDialog(ctk.CTkToplevel):
             text="취소",
             width=100,
             height=36,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=conf_dialog.destroy,
         ).pack(side="left")
 
@@ -1885,7 +1904,7 @@ class AltImageDialog(ctk.CTkToplevel):
 
         self.title("멀티이미지 관리")
         self.geometry("500x400")
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.configure(fg_color=COLORS["bg_content"])
         self.transient(parent)
         self.grab_set()
 
@@ -1917,8 +1936,10 @@ class AltImageDialog(ctk.CTkToplevel):
             self,
             item_height=72,
             buffer_count=4,
-            fg_color=COLORS["bg_card"],
-            corner_radius=8,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
             height=220,
         )
         list_frame.set_render_callback(self._render_image_row)
@@ -1944,8 +1965,9 @@ class AltImageDialog(ctk.CTkToplevel):
             width=120,
             height=36,
             fg_color=COLORS["success"],
-            hover_color="#45a049",
+            hover_color=COLORS["green_hover"],
             font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
 
         ctk.CTkButton(
@@ -1955,8 +1977,9 @@ class AltImageDialog(ctk.CTkToplevel):
             width=120,
             height=36,
             fg_color=COLORS["accent_blue"],
-            hover_color="#2563eb",
+            hover_color=COLORS["hover_blue"],
             font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
 
         ctk.CTkButton(
@@ -1965,9 +1988,10 @@ class AltImageDialog(ctk.CTkToplevel):
             command=self.destroy,
             width=80,
             height=36,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=5)
 
     def _refresh_list(self):
@@ -1988,13 +2012,24 @@ class AltImageDialog(ctk.CTkToplevel):
 
     def _create_image_row(self, index: int, img_path: str, parent=None):
         """이미지 행 생성"""
-        row = ctk.CTkFrame(parent or self._list_frame, fg_color=COLORS["bg_dark"], corner_radius=6, height=66)
+        row = ctk.CTkFrame(
+            parent or self._list_frame,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["control_radius"],
+            height=66,
+        )
         row.pack_propagate(False)
         if parent is None:
             row.pack(fill="x", padx=10, pady=5)
 
         # 썸네일
-        thumb_frame = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=50, height=50, corner_radius=4)
+        thumb_frame = ctk.CTkFrame(
+            row,
+            fg_color=COLORS["bg_elevated"],
+            width=50,
+            height=50,
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         thumb_frame.pack(side="left", padx=10, pady=8)
         thumb_frame.pack_propagate(False)
 
@@ -2043,9 +2078,10 @@ class AltImageDialog(ctk.CTkToplevel):
             width=60,
             height=28,
             fg_color=COLORS["error"],
-            hover_color="#dc2626",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=10, pady=8)
         return row
 
@@ -2260,7 +2296,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             command=self._toggle_all_collapse,
             width=90,
             height=28,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
             font=ctk.CTkFont(size=11),
@@ -2827,7 +2863,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                     height=new_h + 10,
                     fg_color="transparent",
                     hover_color=COLORS["bg_card_hover"],
-                    corner_radius=4,
+                    corner_radius=IOS_METRICS["control_radius_small"],
                     command=lambda p=image_path, r=rule: self._open_image_editor(p, r),
                 )
                 thumb_btn.pack(expand=True)
@@ -3291,8 +3327,8 @@ class AnalyzerView(BaseView):
 
         item = ctk.CTkFrame(
             parent or self._plans_scroll,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
             height=50,
         )
         item.pack_propagate(False)
@@ -3308,7 +3344,7 @@ class AnalyzerView(BaseView):
                 content,
                 text="🔒",
                 font=ctk.CTkFont(size=14, weight="bold"),
-                text_color="#ff6b6b",
+                text_color=COLORS["danger_hover"],
             ).pack(side="left", padx=(0, 5))
 
         # 이름
@@ -3339,10 +3375,10 @@ class AnalyzerView(BaseView):
             width=40,
             height=20,
             fg_color=COLORS["error"],
-            hover_color="#dc2626",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
             font=ctk.CTkFont(size=11),
-            corner_radius=4,
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right")
 
         # 수정 버튼
@@ -3353,10 +3389,10 @@ class AnalyzerView(BaseView):
             width=40,
             height=20,
             fg_color=COLORS["accent_blue"],
-            hover_color="#2563eb",
+            hover_color=COLORS["hover_blue"],
             text_color="white",
             font=ctk.CTkFont(size=11),
-            corner_radius=4,
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 3))
         return item
 
@@ -3494,8 +3530,8 @@ class AnalyzerView(BaseView):
         """녹화 항목 생성"""
         item = ctk.CTkFrame(
             parent or self._recordings_scroll,
-            fg_color=COLORS["accent"] if recording.id == self._selected_recording_id else COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["accent"] if recording.id == self._selected_recording_id else COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
             cursor="hand2",
             height=72,
         )
@@ -3521,7 +3557,7 @@ class AnalyzerView(BaseView):
                 top_row,
                 text="🔒",
                 font=ctk.CTkFont(size=16, weight="bold"),
-                text_color="#ff6b6b",  # 빨간색 계열로 눈에 띄게
+                text_color=COLORS["danger_hover"],
                 cursor="hand2",
             )
             lock_label.pack(side="left", padx=(0, 5))
@@ -3582,12 +3618,12 @@ class AnalyzerView(BaseView):
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
             font=ctk.CTkFont(size=12),
-            corner_radius=4,
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right")
 
         # 잠금/해제 버튼
         lock_text = "🔓 해제" if recording.locked else "🔒 잠금"
-        lock_color = "#dc3545" if recording.locked else COLORS["bg_card"]  # 잠금 시 빨간색
+        lock_color = COLORS["error"] if recording.locked else COLORS["bg_elevated"]
         ctk.CTkButton(
             btn_row,
             text=lock_text,
@@ -3595,10 +3631,10 @@ class AnalyzerView(BaseView):
             width=70,
             height=28,
             fg_color=lock_color,
-            hover_color="#c82333" if recording.locked else COLORS["bg_card_hover"],
+            hover_color=COLORS["danger_hover"] if recording.locked else COLORS["bg_card_hover"],
             text_color="white" if recording.locked else COLORS["text_secondary"],
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=4,
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 5))
 
         # 수정은 '분석된 재생 목록'에서만 가능 (녹화 목록에서는 수정 버튼 제거)
