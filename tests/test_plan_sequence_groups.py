@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from src.utils import config as config_module
@@ -6,6 +7,7 @@ from src.utils.config import (
     AUTO_RUN_FACTORY_GROUP_NAME,
     AUTO_RUN_FACTORY_GROUP_REPEAT,
     AUTO_RUN_FACTORY_PLANS,
+    AUTO_RUN_PROFILE_FORCE_APP_VERSION,
     AUTO_RUN_PROFILE_GROUP_ID,
     AUTO_RUN_PROFILE_GROUP_NAME,
     AUTO_RUN_PROFILE_GROUP_REPEAT,
@@ -326,6 +328,141 @@ def test_packaged_auto_run_profile_repairs_managed_group_paths_after_marker(monk
         for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
         for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
     ]
+
+
+def test_existing_config_load_preserves_pc_local_player_and_ui_settings(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "plans").mkdir()
+    custom_plan = tmp_path / "custom_plan.json"
+    custom_group = make_plan_sequence_group(
+        "custom-pc-group",
+        [{"plan_path": str(custom_plan), "repeat_count": 7}],
+        group_id="custom",
+        repeat_count=2,
+    )
+    existing = AppConfig(
+        player=PlayerConfig(
+            auto_run_enabled=False,
+            plan_sequence_groups=[custom_group],
+            active_plan_sequence_group_id="custom",
+            auto_run_profile_version="older_release_marker",
+        ),
+        ui=UIConfig(
+            app_name="Custom PC Tool",
+            random_name_mode=True,
+            random_name_alias="Local Alias",
+            branding_profile_version="older_brand_marker",
+        ),
+    )
+    manager = ConfigManager()
+    config_path.write_text(
+        json.dumps(manager._config_to_dict(existing), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config_module, "AUTO_RUN_PROFILE_FORCE_APP_VERSION", "0.0.0")
+    manager._config = None
+
+    loaded = manager.load()
+
+    assert loaded.player.auto_run_enabled is False
+    assert loaded.player.auto_run_profile_version == "older_release_marker"
+    assert loaded.player.active_plan_sequence_group_id == "custom"
+    assert len(loaded.player.plan_sequence_groups) == 1
+    assert loaded.player.plan_sequence_groups[0]["name"] == "custom-pc-group"
+    assert loaded.player.plan_sequence_groups[0]["repeat_count"] == 2
+    assert loaded.player.plan_sequence_groups[0]["entries"] == [
+        {"plan_path": str(custom_plan), "repeat_count": 7}
+    ]
+    assert loaded.ui.app_name == "Custom PC Tool"
+    assert loaded.ui.random_name_mode is True
+    assert loaded.ui.random_name_alias == "Local Alias"
+    assert loaded.ui.branding_profile_version == "older_brand_marker"
+
+
+def test_release_227_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "plans").mkdir()
+    custom_group = make_plan_sequence_group(
+        "custom-pc-group",
+        [{"plan_path": r"C:\plans\custom.json", "repeat_count": 7}],
+        group_id="custom",
+        repeat_count=2,
+    )
+    existing = AppConfig(
+        player=PlayerConfig(
+            auto_run_enabled=False,
+            plan_sequence_groups=[custom_group],
+            active_plan_sequence_group_id="custom",
+            auto_run_profile_version="auto_hunt_raid_factory_v4",
+        ),
+        ui=UIConfig(app_name="PC Local", window_mode="editor"),
+        arduino=ArduinoConfig(com_port="COM9", enabled=True),
+    )
+    manager = ConfigManager()
+    config_path.write_text(
+        json.dumps(manager._config_to_dict(existing), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config_module, "AUTO_RUN_PROFILE_FORCE_APP_VERSION", AUTO_RUN_PROFILE_FORCE_APP_VERSION)
+    manager._config = None
+
+    loaded = manager.load()
+
+    assert loaded.ui.app_name == "PC Local"
+    assert loaded.ui.window_mode == "editor"
+    assert loaded.arduino.com_port == "COM9"
+    assert loaded.arduino.enabled is True
+    assert loaded.player.auto_run_enabled is True
+    assert loaded.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
+    assert loaded.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
+    assert len(loaded.player.plan_sequence_groups) == len(AUTO_RUN_PROFILE_GROUPS)
+    auto_group = loaded.player.plan_sequence_groups[0]
+    assert auto_group["group_id"] == AUTO_RUN_PROFILE_GROUP_ID
+    assert auto_group["repeat_count"] == AUTO_RUN_PROFILE_GROUP_REPEAT
+    assert [Path(entry["plan_path"]).name for entry in auto_group["entries"]] == [
+        file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert [entry["repeat_count"] for entry in auto_group["entries"]] == [
+        repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert [Path(path).name for path in loaded.player.plan_sequence] == [
+        file_name
+        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
+        for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert loaded.player.plan_sequence_repeats == [
+        repeat
+        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
+        for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+
+
+def test_missing_config_load_seeds_packaged_defaults(monkeypatch, tmp_path):
+    config_path = tmp_path / "missing_config.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "plans").mkdir()
+    manager = ConfigManager()
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "DATA_DIR", data_dir)
+    manager._config = None
+
+    loaded = manager.load()
+
+    assert loaded.player.auto_run_enabled is True
+    assert loaded.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
+    assert loaded.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
+    assert len(loaded.player.plan_sequence_groups) == len(AUTO_RUN_PROFILE_GROUPS)
 
 
 def test_packaged_ui_branding_migrates_legacy_random_name_to_fixed_korean_brand():

@@ -85,6 +85,7 @@ class AutomationRule:
     move_mouse_before_search: bool = False  # ??????????? ??? ???????? (hover ??? ???)
     alternate_mouse_route: bool = False  # 이미지 클릭 시 기본 직선 이동 대신 반대 우회 경로로 접근
     click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
+    click_until_image_disappears_delay: float = 0.5  # 사라질 때까지 반복 클릭 전용 대기시간
 
     # ????
     wait_after: float = 0.5  # ??? ???????? (??
@@ -146,6 +147,13 @@ class AutomationRule:
             )
         except (TypeError, ValueError):
             self.trigger_missing_key_repeat_delay_random_range = 0.3
+        try:
+            self.click_until_image_disappears_delay = max(
+                0.0,
+                float(self.click_until_image_disappears_delay or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.click_until_image_disappears_delay = 0.5
         if self.children is None:
             self.children = []
         if self.monitoring_watches is None:
@@ -198,6 +206,7 @@ class AutomationRule:
             "move_mouse_before_search": self.move_mouse_before_search,
             "alternate_mouse_route": self.alternate_mouse_route,
             "click_until_image_disappears": self.click_until_image_disappears,
+            "click_until_image_disappears_delay": self.click_until_image_disappears_delay,
             "wait_after": self.wait_after,
             "wait_random": self.wait_random,
             "enabled": self.enabled,
@@ -289,6 +298,10 @@ class AutomationRule:
             move_mouse_before_search=data.get("move_mouse_before_search", False),
             alternate_mouse_route=data.get("alternate_mouse_route", False),
             click_until_image_disappears=data.get("click_until_image_disappears", False),
+            click_until_image_disappears_delay=data.get(
+                "click_until_image_disappears_delay",
+                data.get("repeat_delay", 0.5),
+            ),
             wait_after=data.get("wait_after", 0.5),
             wait_random=data.get("wait_random", False),
             wait_random_range=data.get("wait_random_range", 0.3),

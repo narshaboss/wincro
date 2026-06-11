@@ -2038,6 +2038,7 @@ class MainWindow(ctk.CTk):
             lambda: None,
             config_rule_id=config_rule_id,
             auto_run=True,
+            source_rule=source_rule,
         )
         self._mini_gm_current_rule = source_rule
         self._mini_cancel_game_mode_wait()
@@ -2056,9 +2057,15 @@ class MainWindow(ctk.CTk):
                     return
                 if not gm._is_running:
                     completed_ok = getattr(gm, '_completed_normally', False)
+                    completion_msg = getattr(gm, '_completion_message', None)
+                    skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))
                     gm.destroy()
                     self._mini_gm_dialog = None
-                    self._mini_on_game_mode_complete(completed_ok)
+                    self._mini_on_game_mode_complete(
+                        completed_ok,
+                        completion_msg,
+                        skip_current_playlist=skip_current_playlist,
+                    )
                     return
                 self._mini_gm_after_id = self.after(500, _check_gm_done)
             except Exception:
@@ -2067,7 +2074,13 @@ class MainWindow(ctk.CTk):
 
         self._mini_gm_after_id = self.after(500, _check_gm_done)
 
-    def _mini_on_game_mode_complete(self, success: bool, error_msg: str = None):
+    def _mini_on_game_mode_complete(
+        self,
+        success: bool,
+        error_msg: str = None,
+        *,
+        skip_current_playlist: bool = False,
+    ):
         if getattr(self, '_mini_stop_requested', False):
             self._mini_on_complete(False, error_msg or "stopped")
             return
@@ -2075,6 +2088,11 @@ class MainWindow(ctk.CTk):
         self._mini_remaining_rules = []
         gm_rule = getattr(self, "_mini_gm_current_rule", None)
         self._mini_gm_current_rule = None
+        if skip_current_playlist:
+            message = error_msg or PLAYLIST_SKIP_TRIGGER_MISSING
+            logger.warning(f"[mini-player] game_mode trigger missing -> playlist skip: {message}")
+            self._mini_on_playlist_skip(message)
+            return
         if success:
             def _continue_success():
                 if remaining:

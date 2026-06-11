@@ -318,8 +318,22 @@ class ArduinoHID:
         if self._supports_key_combo_tap:
             return self._send_command("KQ," + ",".join(str(code) for code in keycodes))
 
-        logger.warning("Arduino HID KQ unsupported; refusing raw KP/KR combo tap because it can hold arrow keys too long")
-        return False
+        logger.warning("Arduino HID KQ unsupported; using guarded KP/KR combo tap fallback")
+        ok = True
+        try:
+            ok = self.release_all() and ok
+            time.sleep(0.005)
+            for key in normalized[:-1]:
+                ok = self.key_press(key) and ok
+            time.sleep(0.016)
+            ok = self.key_press(normalized[-1]) and ok
+            time.sleep(0.006)
+            ok = self.key_release(normalized[-1]) and ok
+            time.sleep(0.002)
+        finally:
+            ok = self.release_all() and ok
+            time.sleep(0.005)
+        return ok
 
     def set_typing_delay(self, delay_ms: int) -> bool:
         """Arduino 타이핑 딜레이 설정 (0~200ms)"""

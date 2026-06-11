@@ -176,23 +176,20 @@ void processCommand(String cmd) {
       return;
     }
 
-    for (int i = count - 1; i >= 0; i--) {
-      Keyboard.release(keycodes[i]);
-    }
-    delay(2);
+    Keyboard.releaseAll();
+    delay(5);
 
     for (int i = 0; i < count - 1; i++) {
       Keyboard.press(keycodes[i]);
     }
-    delay(2);
+    delay(16);
 
     Keyboard.press(keycodes[count - 1]);
-    delayMicroseconds(800);
+    delay(6);
     Keyboard.release(keycodes[count - 1]);
-    for (int i = count - 2; i >= 0; i--) {
-      Keyboard.release(keycodes[i]);
-    }
     delay(2);
+    Keyboard.releaseAll();
+    delay(5);
     Serial.println("OK");
     return;
   }

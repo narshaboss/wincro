@@ -206,3 +206,31 @@ def test_trigger_playlist_skip_ui_and_sequence_hooks_exist():
     assert "PLAYLIST_SKIP_TRIGGER_MISSING" in main_window_src
     assert "def _mini_on_playlist_skip(self, message: str):" in main_window_src
     assert "self._run_sequence_plan(next_index)" in main_window_src
+
+
+def test_game_mode_trigger_gate_receives_source_rule_in_all_playback_paths():
+    player_view_src = PLAYER_VIEW.read_text(encoding="utf-8")
+    main_window_src = MAIN_WINDOW.read_text(encoding="utf-8")
+
+    assert "def __init__(self, parent, plan: AutomationPlan, save_callback, refresh_callback=None,\n                 config_rule_id=None, auto_run=False, source_rule=None):" in player_view_src
+    assert "self._source_rule = source_rule" in player_view_src
+    assert "def _handle_source_trigger_gate(self) -> bool:" in player_view_src
+    assert "result = trigger_executor._handle_trigger_gate(rule, datetime.now(), \"특화\")" in player_view_src
+    assert "if not self._handle_source_trigger_gate():" in player_view_src
+    assert player_view_src.count("source_rule=source_rule") >= 2
+    assert "source_rule=source_rule" in main_window_src
+
+
+def test_game_mode_trigger_missing_skip_propagates_to_playlist_handlers():
+    player_view_src = PLAYER_VIEW.read_text(encoding="utf-8")
+    main_window_src = MAIN_WINDOW.read_text(encoding="utf-8")
+
+    assert "self._skip_current_playlist = True" in player_view_src
+    assert "skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))" in player_view_src
+    assert "skip_current_playlist = bool(getattr(gm, \"_skip_current_playlist\", False))" in player_view_src
+    assert "skip_current_playlist: bool = False" in player_view_src
+    assert "message = error_msg or PLAYLIST_SKIP_TRIGGER_MISSING" in player_view_src
+
+    assert "skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))" in main_window_src
+    assert "skip_current_playlist: bool = False" in main_window_src
+    assert "self._mini_on_playlist_skip(message)" in main_window_src

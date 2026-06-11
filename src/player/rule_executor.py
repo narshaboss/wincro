@@ -1386,7 +1386,8 @@ class RuleExecutor:
                 input_ctrl = get_input_controller()
                 key_events = getattr(rule, "action_key_events", None) or []
                 if key_events:
-                    input_ctrl.replay_key_events(key_events)
+                    if not input_ctrl.replay_key_events(key_events):
+                        return self._make_result(rule, False, "기록 키 실행 실패", start_time)
                     return self._make_result(rule, True, "기록 키 실행 완료", start_time)
                 if rule.action_keys:
                     keys = [k.lower() for k in rule.action_keys]
@@ -1664,7 +1665,8 @@ class RuleExecutor:
                 input_ctrl = get_input_controller()
                 key_events = getattr(rule, "action_key_events", None) or []
                 if key_events:
-                    input_ctrl.replay_key_events(key_events)
+                    if not input_ctrl.replay_key_events(key_events):
+                        return self._make_result(rule, False, "기록 키 실패", start_time)
                     logger.info(f"{_GREEN}{self._step_prefix}✓ 기록 키 완료{_RESET}")
                     return self._make_result(rule, True, "기록 키 완료", start_time)
                 if rule.action_keys:
@@ -1678,7 +1680,8 @@ class RuleExecutor:
                 input_ctrl = get_input_controller()
                 key_events = getattr(rule, "action_key_events", None) or []
                 if key_events:
-                    input_ctrl.replay_key_events(key_events)
+                    if not input_ctrl.replay_key_events(key_events):
+                        return self._make_result(rule, False, "기록 키 입력 실패", start_time)
                     logger.info(f"{_GREEN}{self._step_prefix}✓ 기록 키 입력 완료{_RESET}")
                     return self._make_result(rule, True, "기록 키 입력 완료", start_time)
                 if rule.action_keys:
@@ -2492,6 +2495,17 @@ class RuleExecutor:
         return self._make_result(rule, False, "클릭 실패", start_time)
 
     def _repeat_delay_for_rule(self, rule: AutomationRule) -> float:
+        if getattr(rule, "click_until_image_disappears", False):
+            delay = float(
+                getattr(
+                    rule,
+                    "click_until_image_disappears_delay",
+                    getattr(rule, "repeat_delay", 0.5),
+                )
+                or 0.0
+            )
+            return max(0.05, delay)
+
         delay = float(getattr(rule, "repeat_delay", 0.5) or 0.0)
         if getattr(rule, "repeat_delay_random", False):
             delay_range = float(getattr(rule, "repeat_delay_random_range", 0.3) or 0.0)
@@ -2625,11 +2639,30 @@ class RuleExecutor:
             f"(최대 {max_clicks}회/{max_seconds:.0f}초){_RESET}"
         )
 
+        def _finish_guarded(reason: str) -> RuleExecutionResult:
+            """반복 보호 한도에 걸려도 전체 재생은 멈추지 않는다.
+
+            이 기능은 선택 이미지가 계속 보일 때까지 클릭하는 보조 동작이다.
+            작은 템플릿/유사 이미지가 남은 화면에서 실패를 반환하면 전체 재생목록이
+            멈추므로, 클릭과 하위 액션이 이미 수행된 뒤에는 경고 후 다음 액션으로 넘긴다.
+            """
+            logger.warning(
+                f"{_YELLOW}{self._step_prefix}⚠ 이미지 반복 클릭 {reason} → 다음 액션 진행 "
+                f"({clicks}회 클릭){_RESET}"
+            )
+            self._mark_child_rules_handled_by_parent(rule)
+            return self._make_result(
+                rule,
+                True,
+                f"이미지 반복 클릭 {reason} 후 진행 ({clicks}회)",
+                start_time,
+            )
+
         while not self._stop_event.is_set():
             if time.time() - started >= max_seconds:
-                return self._make_result(rule, False, f"이미지 반복 클릭 시간초과 ({clicks}회)", start_time)
+                return _finish_guarded("시간초과")
             if clicks >= max_clicks:
-                return self._make_result(rule, False, f"이미지 반복 클릭 한도 도달 ({clicks}회)", start_time)
+                return _finish_guarded("한도 도달")
 
             if target is None:
                 target = self._find_rule_image_click_target(rule, valid_images)

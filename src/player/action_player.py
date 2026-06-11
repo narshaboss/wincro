@@ -821,7 +821,8 @@ class ActionPlayer:
             elif action_type == ActionType.HOTKEY.value:
                 key_events = getattr(action, "key_events", None) or []
                 if key_events:
-                    input_ctrl.replay_key_events(key_events, speed_multiplier=speed_multiplier)
+                    if not input_ctrl.replay_key_events(key_events, speed_multiplier=speed_multiplier):
+                        return False, "기록 키 실행 실패"
                 elif action.keys:
                     keys = [k.lower() for k in action.keys]
                     input_ctrl.hotkey(*keys)
@@ -831,7 +832,8 @@ class ActionPlayer:
             elif action_type == ActionType.KEY_PRESS.value:
                 key_events = getattr(action, "key_events", None) or []
                 if key_events:
-                    input_ctrl.replay_key_events(key_events, speed_multiplier=speed_multiplier)
+                    if not input_ctrl.replay_key_events(key_events, speed_multiplier=speed_multiplier):
+                        return False, "기록 키 입력 실패"
                 elif action.keys:
                     keys = [str(key).lower().strip() for key in action.keys if str(key).strip()]
                     if len(keys) == 1:

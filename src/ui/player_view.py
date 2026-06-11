@@ -46,7 +46,7 @@ from ..player.boss_state_machine import (
     make_noise_signature as boss_sm_make_noise_signature,
 )
 from ..player.boss_detector import BossDetector, BossFrameEvidence
-from ..player.rule_executor import RuleExecutor
+from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
 from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
 from .main_window import BaseView
@@ -61,7 +61,7 @@ from .constants import (
 )
 from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
-from .analyzer_view import ImageCropDialog
+from .analyzer_view import ImageCropDialog, submit_thumbnail_task
 from ..utils.waypoint_presets import (
     get_image_preset,
     list_arrival_key_presets,
@@ -86,6 +86,9 @@ import tkinter as tk
 from tkinter import Canvas
 
 logger = get_logger(__name__)
+
+# Heavy full-detail rows become noticeable well before 200 actions on typical PCs.
+COMPACT_ACTION_ROW_THRESHOLD = 80
 
 # 자동화 계획 저장 폴더
 PLANS_DIR = DATA_DIR / "plans"
@@ -263,6 +266,11 @@ def _convert_action_to_monitor_dict(action):
         monitor_action["wait_random_range"] = getattr(action, 'wait_random_range', 0.3)
         monitor_action["alternate_mouse_route"] = getattr(action, 'alternate_mouse_route', False)
         monitor_action["click_until_image_disappears"] = getattr(action, 'click_until_image_disappears', False)
+        monitor_action["click_until_image_disappears_delay"] = getattr(
+            action,
+            'click_until_image_disappears_delay',
+            getattr(action, 'repeat_delay', 0.5),
+        )
         monitor_action["repeat_count"] = getattr(action, 'repeat_count', 1)
         monitor_action["repeat_delay"] = getattr(action, 'repeat_delay', 0.5)
         monitor_action["repeat_delay_random"] = getattr(action, 'repeat_delay_random', False)
@@ -444,12 +452,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 자식이 있는 규칙은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
+        self._total_rule_count = self._count_rule_tree(self._plan.initial_rules)
+        self._compact_rule_rows = self._total_rule_count >= COMPACT_ACTION_ROW_THRESHOLD
 
         # 드래그 앤 드롭 상태
         self._drag_data = {"rule": None, "widget": None, "start_y": 0}
         self._drop_target = None
         self._rule_widgets = {}  # rule_id -> widget 매핑
         self._selected_rule = None  # 선택된 규칙
+        self._rule_parent_cache = None
+        self._image_rule_cache = None
 
         # 부분 실행 상태
         self._is_running = False
@@ -458,9 +470,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._active_partial_rule_id = None
         self._active_partial_rule_index = None
         self._active_partial_rule_message = ""
+        self._partial_run_generation = 0
         self._partial_status_label = None
         self._gm_current_rule = None
         self._gm_wait_after_id = None
+        self._action_list_refresh_job = None
+        self._rule_metadata_refresh_job = None
+        self._rule_metadata_refresh_generation = 0
 
         self.title(f"계획 수정 - {plan.name}")
         self.geometry("950x700")
@@ -558,6 +574,24 @@ class PlanDetailDialog(ctk.CTkToplevel):
         name = rule.description or ACTION_NAMES.get(rule.action_type, rule.action_type or "동작")
         return str(name).strip() or "동작"
 
+    def _rule_detail_text(self, rule: AutomationRule) -> str:
+        details = []
+        if rule.action_x is not None and rule.action_y is not None:
+            details.append(f"({rule.action_x}, {rule.action_y})")
+        if rule.action_text:
+            text_preview = rule.action_text[:25] + "..." if len(rule.action_text) > 25 else rule.action_text
+            details.append(f'"{text_preview}"')
+        if rule.action_keys:
+            details.append(f"[{' + '.join(rule.action_keys).upper()}]")
+        if getattr(rule, "target_image", None) and getattr(rule, "alternate_mouse_route", False):
+            details.append("이동경로 변경")
+        if (
+            (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        ):
+            details.append("사라질때까지 반복")
+        return " | ".join(details)
+
     def _set_partial_status_text(self, text: str, active: bool = False) -> None:
         label = getattr(self, "_partial_status_label", None)
         if label is None:
@@ -606,6 +640,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
     def _visible_rule_index(self, rule_id: Optional[str]) -> tuple:
         if not rule_id:
             return -1, None
+        scrollable = getattr(self, "_scrollable", None)
+        if isinstance(scrollable, VirtualScrollFrame):
+            try:
+                idx = self._find_visible_rule_item_index(rule_id)
+                if idx >= 0:
+                    items = scrollable.get_items()
+                    if 0 <= idx < len(items):
+                        return idx, items[idx]
+            except (tk.TclError, RuntimeError, AttributeError, IndexError):
+                pass
         for idx, item in enumerate(self._get_flat_rules_with_depth()):
             rule = item.get("rule")
             if rule is not None and getattr(rule, "rule_id", None) == rule_id:
@@ -617,6 +661,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
         if not self.winfo_exists():
             return
+        if not getattr(self, "_is_running", False):
+            return
 
         previous_rule_id = getattr(self, "_active_partial_rule_id", None)
         self._active_partial_rule_id = rule_id
@@ -624,7 +670,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         expanded = self._expand_ancestors_for_rule(rule_id)
         if expanded:
-            self._refresh_action_list()
+            self._sync_visible_rules_from_model()
 
         index, item = self._visible_rule_index(rule_id)
         self._active_partial_rule_index = index if index >= 0 else None
@@ -663,15 +709,32 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._active_partial_rule_message = ""
         self._set_rule_row_runtime_style(previous_rule_id)
         self._set_partial_status_text("현재 실행: 대기 중", active=False)
+        if previous_rule_id:
+            try:
+                previous_rule = self._rule_widgets.get(previous_rule_id, {}).get("rule")
+                if previous_rule is not None:
+                    self._update_rule_row_in_place(previous_rule)
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _make_partial_progress_callback(self):
+        callback_generation = getattr(self, "_partial_run_generation", 0)
+
         def on_progress(progress):
             rule_id = getattr(progress, "current_rule", None)
             message = getattr(progress, "message", "") or ""
             if not rule_id:
                 return
+
+            def apply_progress():
+                if callback_generation != getattr(self, "_partial_run_generation", 0):
+                    return
+                if not getattr(self, "_is_running", False):
+                    return
+                self._set_current_partial_rule(rule_id, message)
+
             try:
-                self.after(0, lambda rid=rule_id, msg=message: self._set_current_partial_rule(rid, msg))
+                self.after(0, apply_progress)
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -679,6 +742,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _start_partial_run_visual(self, rule_id: Optional[str]) -> None:
         """부분실행 시작 시 현재 버튼 상태를 재생중으로 표시."""
+        self._partial_run_generation = getattr(self, "_partial_run_generation", 0) + 1
         self._running_rule_id = rule_id
         self._set_partial_run_button_state(None, False)
         self._set_partial_run_button_state(rule_id, True)
@@ -686,6 +750,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _stop_partial_run_visual(self) -> None:
         """부분실행 종료 시 버튼 상태를 기본값으로 복원."""
+        self._partial_run_generation = getattr(self, "_partial_run_generation", 0) + 1
         self._set_partial_run_button_state(None, False)
         self._running_rule_id = None
         self._clear_current_partial_rule()
@@ -714,13 +779,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _init_collapsed_items(self):
         """자식이 있는 규칙을 접힌 상태로 초기화"""
-        def add_collapsed(rules):
-            for rule in rules:
-                if rule.children:
-                    self._collapsed_items.add(rule.rule_id)
-                    add_collapsed(rule.children)
-        add_collapsed(self._plan.initial_rules)
-        add_collapsed(self._plan.monitoring_rules)
+        for rule in [*self._plan.initial_rules, *self._plan.monitoring_rules]:
+            if rule.children:
+                self._collapsed_items.add(rule.rule_id)
+
+    def _count_rule_tree(self, rules) -> int:
+        total = 0
+        for rule in rules or []:
+            total += 1 + self._count_rule_tree(getattr(rule, "children", []) or [])
+        return total
 
     def _setup_ui(self):
         """UI 구성"""
@@ -954,13 +1021,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 동작 목록 (가상 스크롤)
         self._scrollable = VirtualScrollFrame(
             main,
-            item_height=75,  # 각 항목 높이
-            buffer_count=5,  # 위아래 버퍼
+            item_height=76 if self._compact_rule_rows else 75,
+            buffer_count=2 if self._compact_rule_rows else 5,
             fg_color=COLORS["bg_card"],
             corner_radius=12,
         )
         self._scrollable.pack(fill="both", expand=True)
         self._scrollable.set_render_callback(self._render_rule_item)
+        self._scrollable.set_destroy_callback(self._on_rule_item_destroy)
+        self._scrollable.set_update_callback(self._on_rule_item_update)
 
         # 창이 표시된 후 렌더링 시작 (렉 방지)
         self.after(50, self._refresh_action_list)
@@ -1007,6 +1076,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 "parent_id": rule.parent_id,
             })
 
+            # 전체 접힘 상태에서는 펼친 부모의 하위 부모만 지연 접힘 처리한다.
+            if (
+                getattr(self, "_all_collapsed", False)
+                and depth > 0
+                and rule.children
+                and rule.rule_id not in self._collapsed_items
+            ):
+                self._collapsed_items.add(rule.rule_id)
+
             # 접히지 않은 경우에만 자식 추가
             if rule.children and rule.rule_id not in self._collapsed_items:
                 for child in rule.children:
@@ -1017,14 +1095,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         return result
 
-    def _refresh_action_list(self):
+    def _refresh_action_list(self, preserve_scroll: bool = True):
         """동작 목록 새로고침 (가상 스크롤 방식)"""
         logger.debug("[_refresh_action_list] 액션 목록 새로고침 시작")
         if self._scrollable is None:
             return
-
-        self._thumbnail_refs = []
-        self._rule_widgets = {}  # 위젯 매핑 초기화
+        self._invalidate_rule_tree_cache()
 
         # 평탄화된 규칙 목록 생성
         flat_rules = self._get_flat_rules_with_depth()
@@ -1032,7 +1108,51 @@ class PlanDetailDialog(ctk.CTkToplevel):
         logger.debug(f"[_refresh_action_list] {len(flat_rules)}개 규칙 로드됨")
 
         # 가상 스크롤에 항목 설정
-        self._scrollable.set_items(flat_rules)
+        self._scrollable.set_items(flat_rules, preserve_scroll=preserve_scroll)
+
+    def _sync_visible_rules_from_model(self, preserve_scroll: bool = True) -> bool:
+        """모델 기준 가시 규칙 목록만 재동기화하고 기존 행 위젯은 최대한 재사용한다."""
+        scrollable = getattr(self, "_scrollable", None)
+        if not isinstance(scrollable, VirtualScrollFrame):
+            self._schedule_action_list_refresh(preserve_scroll=preserve_scroll)
+            return False
+        try:
+            scrollable.set_items(self._get_flat_rules_with_depth(), preserve_scroll=preserve_scroll)
+            return True
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._schedule_action_list_refresh(preserve_scroll=preserve_scroll)
+            return False
+
+    def _schedule_action_list_refresh(self, delay_ms: int = 16, preserve_scroll: bool = True):
+        """동작 목록 전체 갱신을 한 프레임으로 합쳐 UI 멈춤을 줄인다."""
+        if self._action_list_refresh_job is not None:
+            return
+
+        def _run_refresh():
+            self._action_list_refresh_job = None
+            try:
+                self._refresh_action_list(preserve_scroll=preserve_scroll)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        try:
+            self._action_list_refresh_job = self.after(delay_ms, _run_refresh)
+        except (tk.TclError, RuntimeError):
+            self._action_list_refresh_job = None
+
+    def _refresh_rule_row(self, rule_id: Optional[str]) -> bool:
+        """보이는 단일 액션 카드만 다시 그린다."""
+        if not rule_id or self._scrollable is None:
+            return False
+        try:
+            index = self._find_visible_rule_item_index(rule_id)
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+        if index < 0:
+            return False
+        getattr(self, "_rule_widgets", {}).pop(rule_id, None)
+        self._scrollable.refresh_item(index)
+        return True
 
     def _render_rule_item(self, parent, item_data: dict, index: int):
         """
@@ -1043,7 +1163,36 @@ class PlanDetailDialog(ctk.CTkToplevel):
         depth = item_data["depth"]
         index_str = item_data["index_str"]
 
+        if self._compact_rule_rows:
+            return self._create_compact_rule_item(parent, rule, depth, index_str)
         return self._create_action_item_virtual(parent, rule, depth, index_str)
+
+    def _on_rule_item_destroy(self, item_data: dict, index: int, widget) -> None:
+        rule = item_data.get("rule") if isinstance(item_data, dict) else None
+        rule_id = getattr(rule, "rule_id", None)
+        if not rule_id:
+            return
+        widget_data = self._rule_widgets.get(rule_id)
+        if widget_data and widget_data.get("wrapper") is widget:
+            self._rule_widgets.pop(rule_id, None)
+
+    def _on_rule_item_update(self, item_data: dict, index: int, widget, old_item_data=None) -> None:
+        rule = item_data.get("rule") if isinstance(item_data, dict) else None
+        rule_id = getattr(rule, "rule_id", None)
+        if not rule_id:
+            return
+        widget_data = self._rule_widgets.get(rule_id)
+        if not widget_data or widget_data.get("wrapper") is not widget:
+            return
+        widget_data["rule"] = rule
+        widget_data["depth"] = item_data.get("depth")
+        widget_data["index_str"] = item_data.get("index_str")
+        number_label = widget_data.get("number_label")
+        if number_label is not None:
+            try:
+                number_label.configure(text=str(item_data.get("index_str") or index + 1))
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _create_action_item_virtual(self, parent, rule: AutomationRule, depth: int, index_str: str):
         """가상 스크롤용 항목 생성 (pack 대신 반환)"""
@@ -1082,6 +1231,427 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 fg_color=COLORS["success"] if has_random else COLORS["bg_card"],
                 text_color="white" if has_random else COLORS["text_secondary"],
             )
+
+    def _update_rule_row_in_place(self, rule: AutomationRule) -> bool:
+        widget_data = self._rule_widgets.get(rule.rule_id)
+        if not widget_data:
+            return False
+        widget = widget_data.get("widget")
+        type_label = widget_data.get("type_label")
+        name_label = widget_data.get("name_label")
+        detail_label = widget_data.get("detail_label")
+        number_label = widget_data.get("number_label")
+        if widget is None:
+            return False
+        is_enabled = _rule_is_enabled(rule)
+        action_color = ACTION_COLORS.get(rule.action_type, COLORS["text_muted"])
+        try:
+            widget.configure(
+                fg_color=self._rule_item_bg_color(rule),
+                border_width=2 if getattr(self, "_active_partial_rule_id", None) == rule.rule_id else 0,
+                border_color="#facc15" if getattr(self, "_active_partial_rule_id", None) == rule.rule_id else COLORS["border"],
+            )
+            if number_label is not None:
+                number_label.configure(fg_color=action_color if is_enabled else COLORS["bg_card_hover"])
+            if getattr(self, "_compact_rule_rows", False):
+                if name_label is None:
+                    return False
+                name_label.configure(
+                    text=self._compact_rule_label_text(rule),
+                    text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
+                )
+                run_btn = widget_data.get("run_btn")
+                if run_btn is not None and getattr(self, "_running_rule_id", None) != rule.rule_id:
+                    run_btn.configure(
+                        fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
+                        hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+                        text_color="white" if is_enabled else COLORS["text_muted"],
+                        state="normal" if is_enabled else "disabled",
+                    )
+                self._update_rule_buttons(rule)
+                if "skip_btn" in widget_data:
+                    is_skip = getattr(rule, "skip_on_not_found", False)
+                    widget_data["skip_btn"].configure(
+                        fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
+                        hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+                        text_color="white" if is_skip else COLORS["text_secondary"],
+                    )
+                return True
+            if type_label is None or name_label is None or detail_label is None:
+                return False
+            type_label.configure(
+                text=ACTION_NAMES.get(rule.action_type, rule.action_type or "동작"),
+                text_color=action_color if is_enabled else COLORS["text_muted"],
+            )
+            name_label.configure(
+                text=f" - {rule.description}" if rule.description else "",
+                text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
+            )
+            detail_label.configure(
+                text=self._rule_detail_text(rule),
+                text_color=COLORS["text_secondary"] if is_enabled else COLORS["text_muted"],
+            )
+            child_count_label = widget_data.get("child_count_label")
+            if child_count_label is not None:
+                child_count_label.configure(
+                    text=f"  ({len(rule.children)}개 하위)" if rule.children else "",
+                    text_color=COLORS["text_muted"] if is_enabled else COLORS["text_muted"],
+                )
+            run_btn = widget_data.get("run_btn")
+            if run_btn is not None and getattr(self, "_running_rule_id", None) != rule.rule_id:
+                run_btn.configure(
+                    fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
+                    hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+                    text_color="white" if is_enabled else COLORS["text_muted"],
+                    state="normal" if is_enabled else "disabled",
+                )
+            self._update_rule_buttons(rule)
+            if "skip_btn" in widget_data:
+                is_skip = getattr(rule, "skip_on_not_found", False)
+                widget_data["skip_btn"].configure(
+                    fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
+                    hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+                    text_color="white" if is_skip else COLORS["text_secondary"],
+                )
+            return True
+        except (tk.TclError, RuntimeError):
+            return False
+
+    def _update_rule_parent_summary(self, rule: AutomationRule) -> bool:
+        if getattr(self, "_compact_rule_rows", False):
+            return self._update_rule_row_in_place(rule)
+        widget_data = getattr(self, "_rule_widgets", {}).get(getattr(rule, "rule_id", None))
+        if not widget_data:
+            return False
+        child_count = len(getattr(rule, "children", []) or [])
+        child_count_label = widget_data.get("child_count_label")
+        toggle_btn = widget_data.get("toggle_btn")
+        if child_count <= 0:
+            if child_count_label is not None or toggle_btn is not None:
+                return False
+            return self._update_rule_row_in_place(rule)
+        if child_count_label is None or toggle_btn is None:
+            return False
+        try:
+            child_count_label.configure(text=f"  ({child_count}개 하위)")
+            toggle_btn.configure(text="▶" if rule.rule_id in self._collapsed_items else "▼")
+            return self._update_rule_row_in_place(rule)
+        except (tk.TclError, RuntimeError):
+            return False
+
+    def _update_visible_rule_rows_in_place(self) -> None:
+        for widget_data in list(self._rule_widgets.values()):
+            rule = widget_data.get("rule")
+            if rule is not None:
+                self._update_rule_row_in_place(rule)
+
+    def _refresh_rule_thumbnail(self, rule: AutomationRule) -> bool:
+        widget_data = self._rule_widgets.get(getattr(rule, "rule_id", None))
+        thumb_frame = widget_data.get("thumb_frame") if widget_data else None
+        if thumb_frame is None:
+            return False
+        try:
+            for child in thumb_frame.winfo_children():
+                child.destroy()
+            self._display_thumbnail(thumb_frame, rule, size=widget_data.get("thumb_size", 60))
+            return True
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+    def _compact_rule_label_text(self, rule: AutomationRule) -> str:
+        action_name = ACTION_NAMES.get(rule.action_type, rule.action_type or "동작")
+        if not _rule_is_enabled(rule):
+            action_name = f"[비활성] {action_name}"
+        label_text = action_name
+        if rule.description:
+            label_text += f" - {rule.description}"
+        if rule.children:
+            label_text += f"  ({len(rule.children)}개 하위)"
+        details = []
+        detail_text = self._rule_detail_text(rule)
+        if detail_text:
+            details.append(detail_text)
+        if getattr(rule, "is_monitoring_mode", False):
+            details.append("모니터링")
+        if getattr(rule, "trigger_image", None):
+            details.append("트리거")
+        if details:
+            label_text += "  |  " + " / ".join(details)
+        return label_text
+
+    def _show_rule_context_menu(self, event, rule: AutomationRule, depth: int):
+        from tkinter import Menu
+
+        popup = Menu(self, tearoff=0)
+        popup.add_command(label="이름 설정", command=lambda: self._edit_rule_name(rule))
+        if rule.action_type in ["click", "double_click", "right_click"]:
+            click_menu = Menu(popup, tearoff=0)
+            click_menu.add_command(
+                label="✓ 왼쪽 클릭" if rule.action_type == "click" else "  왼쪽 클릭",
+                command=lambda: self._change_rule_click_type(rule, "click"),
+            )
+            click_menu.add_command(
+                label="✓ 더블 클릭" if rule.action_type == "double_click" else "  더블 클릭",
+                command=lambda: self._change_rule_click_type(rule, "double_click"),
+            )
+            click_menu.add_command(
+                label="✓ 오른쪽 클릭" if rule.action_type == "right_click" else "  오른쪽 클릭",
+                command=lambda: self._change_rule_click_type(rule, "right_click"),
+            )
+            popup.add_cascade(label="클릭 유형", menu=click_menu)
+            if getattr(rule, "target_image", None):
+                popup.add_command(
+                    label=("✓ " if getattr(rule, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
+                    command=lambda: self._toggle_rule_alternate_mouse_route(rule),
+                )
+        popup.add_separator()
+        popup.add_command(label="복사", command=lambda: self._copy_rule(rule))
+        popup.add_command(
+            label="비활성화" if _rule_is_enabled(rule) else "활성화",
+            command=lambda: self._toggle_rule_enabled(rule),
+        )
+        if get_action_clipboard() is not None:
+            monitor_menu = Menu(popup, tearoff=0)
+            has_monitoring = False
+            for mi, mr in enumerate(self._plan.initial_rules):
+                if getattr(mr, 'is_monitoring_mode', False) and getattr(mr, 'monitoring_watches', []):
+                    has_monitoring = True
+                    action_name = mr.description[:15] if mr.description else f"액션{mi+1}"
+                    for wi, _watch in enumerate(mr.monitoring_watches):
+                        watch_label = f"{action_name} - 감시{wi+1}"
+                        monitor_menu.add_command(
+                            label=watch_label,
+                            command=lambda m=mi, w=wi: self._paste_as_monitor_action(m, w),
+                        )
+            if has_monitoring:
+                popup.add_cascade(label="모니터링 액션으로 붙이기", menu=monitor_menu)
+            popup.add_command(label="하위로 붙여넣기", command=lambda: self._paste_rule(rule))
+            popup.add_command(label="최상위에 붙여넣기", command=self._paste_rule_top)
+        else:
+            popup.add_command(label="하위로 붙여넣기", state="disabled")
+            popup.add_command(label="최상위에 붙여넣기", state="disabled")
+        if depth > 0:
+            popup.add_separator()
+            popup.add_command(label="종속 해제", command=lambda: self._detach_rule(rule))
+        popup.tk_popup(event.x_root, event.y_root)
+
+    def _create_compact_rule_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = "1"):
+        """큰 플랜용 경량 카드. 설정 복귀/이동/접기 반응성을 우선한다."""
+        has_children = len(rule.children) > 0
+        is_collapsed = rule.rule_id in self._collapsed_items
+        is_enabled = _rule_is_enabled(rule)
+        is_running_current = getattr(self, "_active_partial_rule_id", None) == rule.rule_id
+        indent = depth * 24
+
+        item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
+        row = ctk.CTkFrame(
+            item_wrapper,
+            fg_color=self._rule_item_bg_color(rule),
+            corner_radius=8,
+            border_width=2 if is_running_current else 0,
+            border_color="#facc15" if is_running_current else COLORS["border"],
+        )
+        row.pack(fill="x", pady=3, padx=(10 + indent, 10))
+        self._rule_widgets[rule.rule_id] = {
+            "widget": row,
+            "rule": rule,
+            "depth": depth,
+            "index_str": index_str,
+            "wrapper": item_wrapper,
+        }
+
+        def start_drag(event, r=rule, w=row):
+            self._select_rule(r)
+            self._on_drag_start(event, r, w)
+
+        def bind_row(widget):
+            widget.bind("<Button-1>", start_drag)
+            widget.bind("<B1-Motion>", self._on_drag_motion)
+            widget.bind("<ButtonRelease-1>", self._on_drag_release)
+            widget.bind("<Button-3>", lambda e, r=rule, d=depth: self._show_rule_context_menu(e, r, d))
+
+        bind_row(row)
+
+        if has_children:
+            toggle_btn = ctk.CTkButton(
+                row,
+                text="▶" if is_collapsed else "▼",
+                font=ctk.CTkFont(size=10),
+                fg_color="transparent",
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_secondary"],
+                width=24,
+                height=24,
+                corner_radius=4,
+                command=lambda r=rule: self._toggle_item_collapse(r.rule_id),
+            )
+            toggle_btn.pack(side="left", padx=(8, 2), pady=8)
+            self._rule_widgets[rule.rule_id]["toggle_btn"] = toggle_btn
+        else:
+            ctk.CTkLabel(row, text="", width=24).pack(side="left", padx=(8, 2), pady=8)
+
+        number = ctk.CTkLabel(
+            row,
+            text=index_str,
+            width=38,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        number.pack(side="left", padx=(0, 6), pady=8)
+        bind_row(number)
+        self._rule_widgets[rule.rule_id]["number_label"] = number
+
+        if getattr(rule, "target_image", None):
+            thumb = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=44, height=44, corner_radius=6)
+            thumb.pack(side="left", padx=(0, 8), pady=6)
+            thumb.pack_propagate(False)
+            self._rule_widgets[rule.rule_id]["thumb_frame"] = thumb
+            self._rule_widgets[rule.rule_id]["thumb_size"] = 36
+            self._display_thumbnail(thumb, rule, size=36)
+
+        name_label = ctk.CTkLabel(
+            row,
+            text=self._compact_rule_label_text(rule),
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
+        )
+        name_label.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
+        bind_row(name_label)
+        self._rule_widgets[rule.rule_id]["name_label"] = name_label
+
+        move_frame = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], corner_radius=6)
+        move_frame.pack(side="right", padx=(3, 8), pady=8)
+        ctk.CTkButton(
+            move_frame,
+            text="▲",
+            width=28,
+            height=18,
+            fg_color="transparent",
+            hover_color=COLORS["accent_blue"],
+            text_color=COLORS["text_secondary"],
+            command=lambda r=rule: self._move_rule_up(r),
+        ).pack(side="top", padx=2, pady=(2, 0))
+        ctk.CTkButton(
+            move_frame,
+            text="▼",
+            width=28,
+            height=18,
+            fg_color="transparent",
+            hover_color=COLORS["accent_blue"],
+            text_color=COLORS["text_secondary"],
+            command=lambda r=rule: self._move_rule_down(r),
+        ).pack(side="top", padx=2, pady=(0, 2))
+
+        ctk.CTkButton(
+            row,
+            text="✕",
+            width=30,
+            height=24,
+            fg_color=COLORS["error"],
+            hover_color="#c0392b",
+            text_color="white",
+            command=lambda r=rule: self._delete_rule(r),
+        ).pack(side="right", padx=3, pady=8)
+
+        run_btn = ctk.CTkButton(
+            row,
+            text="▶",
+            width=30,
+            height=24,
+            fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
+            hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+            text_color="white" if is_enabled else COLORS["text_muted"],
+            command=lambda r=rule: self._test_run_rule(r),
+            state="normal" if is_enabled else "disabled",
+        )
+        run_btn.pack(side="right", padx=3, pady=8)
+        self._rule_widgets[rule.rule_id]["run_btn"] = run_btn
+
+        if rule.action_type == "game_mode":
+            ctk.CTkButton(
+                row,
+                text="⚙",
+                width=30,
+                height=24,
+                fg_color="#a3be8c",
+                hover_color="#8fa87a",
+                text_color="white",
+                command=lambda r=rule: self._open_game_mode_dialog(config_rule_id=r.rule_id),
+            ).pack(side="right", padx=3, pady=8)
+
+        is_monitoring = getattr(rule, "is_monitoring_mode", False)
+        ctk.CTkButton(
+            row,
+            text="M",
+            width=30,
+            height=24,
+            fg_color="#2ecc71" if is_monitoring else COLORS["bg_card"],
+            hover_color="#27ae60" if is_monitoring else COLORS["bg_card_hover"],
+            text_color="white" if is_monitoring else COLORS["text_secondary"],
+            command=lambda r=rule: self._edit_monitoring_mode(r),
+        ).pack(side="right", padx=3, pady=8)
+
+        has_trigger = bool(getattr(rule, "trigger_image", None))
+        ctk.CTkButton(
+            row,
+            text="c",
+            width=30,
+            height=24,
+            fg_color="#2ecc71" if has_trigger else COLORS["bg_card"],
+            hover_color="#27ae60" if has_trigger else COLORS["bg_card_hover"],
+            text_color="white" if has_trigger else COLORS["text_secondary"],
+            command=lambda r=rule: self._edit_trigger_image(r),
+        ).pack(side="right", padx=3, pady=8)
+
+        is_skip = getattr(rule, "skip_on_not_found", False)
+        skip_btn = ctk.CTkButton(
+            row,
+            text="S",
+            width=30,
+            height=24,
+            fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
+            hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+            text_color="white" if is_skip else COLORS["text_secondary"],
+            command=lambda r=rule: self._toggle_skip_mode(r),
+        )
+        skip_btn.pack(side="right", padx=3, pady=8)
+        self._rule_widgets[rule.rule_id]["skip_btn"] = skip_btn
+
+        repeat_count = getattr(rule, "repeat_count", 1)
+        until_disappears = bool(
+            (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        )
+        repeat_btn = ctk.CTkButton(
+            row,
+            text=f"x{repeat_count}",
+            width=38,
+            height=24,
+            fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+            hover_color="#ea580c" if until_disappears else ("#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"]),
+            text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
+            command=lambda r=rule: self._edit_repeat_count(r),
+        )
+        repeat_btn.pack(side="right", padx=3, pady=8)
+        self._rule_widgets[rule.rule_id]["repeat_btn"] = repeat_btn
+
+        wait_random = getattr(rule, "wait_random", False)
+        typing_random = getattr(rule, "typing_random", False) if rule.action_type == "type" else False
+        has_random = wait_random or typing_random
+        delay_btn = ctk.CTkButton(
+            row,
+            text=f"{rule.wait_after:.1f}초" + ("*" if has_random else ""),
+            width=52,
+            height=24,
+            fg_color=COLORS["success"] if has_random else COLORS["bg_card"],
+            hover_color="#2ea44f" if has_random else COLORS["bg_card_hover"],
+            text_color="white" if has_random else COLORS["text_secondary"],
+            command=lambda r=rule: self._edit_wait_time(r),
+        )
+        delay_btn.pack(side="right", padx=3, pady=8)
+        self._rule_widgets[rule.rule_id]["delay_btn"] = delay_btn
+        return item_wrapper
 
     def _create_action_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = "1", use_pack: bool = True):
         """동작 항목 생성 (드래그 앤 드롭 지원)"""
@@ -1213,6 +1783,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         )
         num_lbl.pack(side="left", padx=(0, 8))
         bind_drag(num_lbl)
+        self._rule_widgets[rule.rule_id]["number_label"] = num_lbl
 
         # 자식이 있으면 접기/펼치기 토글 버튼
         if has_children:
@@ -1229,6 +1800,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 command=lambda r=rule: self._toggle_item_collapse(r.rule_id),
             )
             toggle_btn.pack(side="left", padx=(0, 4))
+            self._rule_widgets[rule.rule_id]["toggle_btn"] = toggle_btn
 
         action_names = ACTION_NAMES
 
@@ -1236,6 +1808,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         thumb = ctk.CTkFrame(content, fg_color=COLORS["bg_card"], width=50, height=50, corner_radius=6)
         thumb.pack(side="left", padx=(0, 10))
         thumb.pack_propagate(False)
+        self._rule_widgets[rule.rule_id]["thumb_frame"] = thumb
         self._display_thumbnail(thumb, rule)
 
         # 정보 영역
@@ -1258,15 +1831,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
         )
         type_lbl.pack(side="left")
         bind_drag(type_lbl)
+        self._rule_widgets[rule.rule_id]["type_label"] = type_lbl
 
         # 이름(설명) 표시
-        if rule.description:
-            name_lbl = ctk.CTkLabel(
-                row1, text=f" - {rule.description}",
-                font=ctk.CTkFont(size=12), text_color=primary_text_color,
-            )
-            name_lbl.pack(side="left")
-            bind_drag(name_lbl)
+        name_lbl = ctk.CTkLabel(
+            row1,
+            text=f" - {rule.description}" if rule.description else "",
+            font=ctk.CTkFont(size=12),
+            text_color=primary_text_color,
+        )
+        name_lbl.pack(side="left")
+        bind_drag(name_lbl)
+        self._rule_widgets[rule.rule_id]["name_label"] = name_lbl
 
         if not is_enabled:
             disabled_lbl = ctk.CTkLabel(
@@ -1294,6 +1870,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             )
             child_lbl.pack(side="left")
             bind_drag(child_lbl)
+            self._rule_widgets[rule.rule_id]["child_count_label"] = child_lbl
 
         # 모니터링 모드 표시 (초록색)
         if getattr(rule, 'is_monitoring_mode', False):
@@ -1322,29 +1899,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
         row2 = ctk.CTkFrame(info, fg_color="transparent")
         row2.pack(fill="x", pady=(4, 0), anchor="w")
 
-        details = []
-        if rule.action_x is not None and rule.action_y is not None:
-            details.append(f"({rule.action_x}, {rule.action_y})")
-        if rule.action_text:
-            text_preview = rule.action_text[:25] + "..." if len(rule.action_text) > 25 else rule.action_text
-            details.append(f'"{text_preview}"')
-        if rule.action_keys:
-            details.append(f"[{' + '.join(rule.action_keys).upper()}]")
-        if getattr(rule, "target_image", None) and getattr(rule, "alternate_mouse_route", False):
-            details.append("이동경로 변경")
-        if (
-            (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
-            and getattr(rule, "click_until_image_disappears", False)
-        ):
-            details.append("사라질때까지 반복")
-
-        if details:
-            detail_lbl = ctk.CTkLabel(
-                row2, text=" | ".join(details),
-                font=ctk.CTkFont(size=11), text_color=secondary_text_color,
-            )
-            detail_lbl.pack(side="left")
-            bind_drag(detail_lbl)
+        detail_lbl = ctk.CTkLabel(
+            row2,
+            text=self._rule_detail_text(rule),
+            font=ctk.CTkFont(size=11),
+            text_color=secondary_text_color,
+        )
+        detail_lbl.pack(side="left")
+        bind_drag(detail_lbl)
+        self._rule_widgets[rule.rule_id]["detail_label"] = detail_lbl
 
         # row2 빈 공간도 드래그 가능
         spacer2 = ctk.CTkLabel(row2, text="", fg_color="transparent")
@@ -1620,20 +2183,25 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if self._is_ancestor(dragged, target):
             return
 
+        old_parent = None
         # 현재 위치에서 제거
         if dragged in self._plan.initial_rules:
             self._plan.initial_rules.remove(dragged)
         else:
             parent = self._find_parent_rule(dragged)
             if parent and dragged in parent.children:
+                old_parent = parent
                 parent.children.remove(dragged)
 
         # 대상의 자식으로 추가
         dragged.parent_id = target.rule_id
         target.children.append(dragged)
+        self._collapsed_items.discard(target.rule_id)
+        self._invalidate_rule_tree_cache()
 
         self._modified = True
-        self._refresh_action_list()
+        if not self._apply_visible_rule_attach(dragged, target, old_parent):
+            self._sync_visible_rules_from_model()
         logger.info(f"규칙을 '{target.rule_id}'의 하위로 이동")
 
     def _is_ancestor(self, potential_ancestor: AutomationRule, target: AutomationRule) -> bool:
@@ -1647,12 +2215,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return False
         return check_children(potential_ancestor)
 
-    def _display_thumbnail(self, parent, rule: AutomationRule):
+    def _display_thumbnail(self, parent, rule: AutomationRule, size: int = 60):
         """썸네일 표시 (클릭하여 편집) - 캐시 사용, 비동기 로딩"""
+        size = max(24, int(size or 60))
+        button_size = size + 8
         # game_mode는 이미지 없이 아이콘만 표시
         if rule.action_type == "game_mode":
             ctk.CTkLabel(
-                parent, text="🎮", font=ctk.CTkFont(size=20),
+                parent, text="🎮", font=ctk.CTkFont(size=max(14, min(20, size // 2))),
                 text_color=COLORS["text_muted"],
             ).pack(expand=True)
             return
@@ -1662,14 +2232,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if image_path and Path(image_path).exists():
             try:
                 # 캐시된 썸네일 확인
-                target_size = (60, 60)
+                target_size = (size, size)
                 ctk_image = get_cached_thumbnail(image_path, target_size)
 
                 if ctk_image is not None:
                     # 캐시 히트 — 즉시 표시
                     thumb_btn = ctk.CTkButton(
                         parent, image=ctk_image, text="",
-                        width=68, height=68,
+                        width=button_size, height=button_size,
                         fg_color="transparent",
                         hover_color=COLORS["bg_card_hover"],
                         corner_radius=4,
@@ -1681,12 +2251,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
                 # 캐시 미스 — 플레이스홀더 표시 후 백그라운드 로딩
                 placeholder = ctk.CTkLabel(
-                    parent, text="📷", font=ctk.CTkFont(size=18),
+                    parent, text="📷", font=ctk.CTkFont(size=max(12, min(18, size // 2))),
                     text_color=COLORS["text_muted"],
                 )
                 placeholder.pack(expand=True)
 
-                def _load_thumb(path=image_path, r=rule, ph=placeholder, pr=parent):
+                def _load_thumb(path=image_path, r=rule, ph=placeholder, pr=parent, thumb_size=size, btn_size=button_size):
                     try:
                         img_arr = np.fromfile(path, np.uint8)
                         img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
@@ -1694,7 +2264,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                             return
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
-                        scale = min(60 / w, 60 / h)
+                        scale = min(thumb_size / w, thumb_size / h)
                         new_w, new_h = int(w * scale), int(h * scale)
                         resized = cv2.resize(img_rgb, (new_w, new_h))
                         pil_image = Image.fromarray(resized)
@@ -1706,7 +2276,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                                 ph.destroy()
                                 thumb_btn = ctk.CTkButton(
                                     pr, image=ctk_img, text="",
-                                    width=68, height=68,
+                                    width=btn_size, height=btn_size,
                                     fg_color="transparent",
                                     hover_color=COLORS["bg_card_hover"],
                                     corner_radius=4,
@@ -1721,7 +2291,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     except (IOError, OSError, ValueError):
                         pass
 
-                threading.Thread(target=_load_thumb, daemon=True).start()
+                submit_thumbnail_task(_load_thumb)
                 return
             except (IOError, OSError, ValueError):
                 pass
@@ -1736,6 +2306,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _collect_all_image_rules(self) -> list:
         """이미지가 있는 모든 규칙 수집 (재귀)"""
+        cached = getattr(self, "_image_rule_cache", None)
+        if cached is not None:
+            return list(cached)
+
         result = []
         def collect(rules):
             for r in rules:
@@ -1745,7 +2319,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     collect(r.children)
         collect(self._plan.initial_rules)
         collect(self._plan.monitoring_rules)
+        self._image_rule_cache = tuple(result)
         return result
+
+    def _invalidate_rule_image_cache(self) -> None:
+        self._image_rule_cache = None
 
     def _open_image_editor(self, image_path: str, rule: AutomationRule):
         """이미지 편집기 열기"""
@@ -1759,29 +2337,55 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 수정 여부 추적 (다이얼로그 닫힐 때 한 번만 새로고침)
         needs_refresh = [False]
+        changed_rule_ids = set()
+        changed_rules = []
 
-        def on_crop_complete(new_path: str):
+        def mark_changed(target):
+            target = target or rule
+            changed_rule_ids.add(getattr(target, "rule_id", rule.rule_id))
+            if target is not None and target not in changed_rules:
+                changed_rules.append(target)
+
+        def on_crop_complete(new_path: str, target_rule=None, old_path=None):
+            target = target_rule or rule
             self._modified = True
             needs_refresh[0] = True
+            mark_changed(target)
+            self._invalidate_rule_image_cache()
             logger.info(f"이미지 크롭 완료: {new_path}")
+            if old_path:
+                invalidate_thumbnail_cache(old_path)
             invalidate_thumbnail_cache(new_path)  # 캐시 무효화
 
-        def on_delete():
-            rule.target_image = None
+        def on_delete(target_rule=None, old_path=None):
+            target = target_rule or rule
+            if target is not None:
+                target.target_image = None
             self._modified = True
             needs_refresh[0] = True
-            invalidate_thumbnail_cache(image_path)  # 캐시 무효화
-            logger.info(f"이미지 삭제됨: {rule.rule_id}")
+            mark_changed(target)
+            self._invalidate_rule_image_cache()
+            invalidate_thumbnail_cache(old_path or image_path)  # 캐시 무효화
+            logger.info(f"이미지 삭제됨: {getattr(target, 'rule_id', rule.rule_id)}")
 
-        def on_change(new_path: str):
-            rule.target_image = new_path
+        def on_change(new_path: str, target_rule=None, old_path=None):
+            target = target_rule or rule
+            if target is not None:
+                target.target_image = new_path
             self._modified = True
             needs_refresh[0] = True
+            mark_changed(target)
+            self._invalidate_rule_image_cache()
+            if old_path:
+                invalidate_thumbnail_cache(old_path)
+            invalidate_thumbnail_cache(new_path)
             logger.info(f"이미지 변경 완료: {new_path}")
 
-        def on_search_radius_change():
+        def on_search_radius_change(target_rule=None):
+            target = target_rule or rule
             self._modified = True
             needs_refresh[0] = True
+            mark_changed(target)
 
         dialog = ImageCropDialog(
             self, image_path,
@@ -1797,13 +2401,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 다이얼로그 닫힌 후 한 번만 새로고침
         if needs_refresh[0]:
-            self._refresh_action_list()
+            for changed_rule in changed_rules or [rule]:
+                updated = self._update_rule_row_in_place(changed_rule)
+                thumb_updated = self._refresh_rule_thumbnail(changed_rule)
+                if not updated and not thumb_updated:
+                    self._refresh_rule_row(getattr(changed_rule, "rule_id", rule.rule_id))
 
     def _mark_modified(self):
         """수정됨 표시"""
         self._modified = True
 
-    def _save_plan(self):
+    def _save_plan(self, show_message: bool = True) -> bool:
         """계획 저장"""
         try:
             # 이름 업데이트
@@ -1832,12 +2440,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
             self._modified = False
 
-            from tkinter import messagebox
-            messagebox.showinfo("저장 완료", "계획이 저장되었습니다.")
+            if show_message:
+                from tkinter import messagebox
+                messagebox.showinfo("저장 완료", "계획이 저장되었습니다.")
+            return True
         except Exception as e:
             logger.error(f"계획 저장 실패: {e}")
-            from tkinter import messagebox
-            messagebox.showerror("저장 실패", f"저장 중 오류가 발생했습니다:\n{e}")
+            if show_message:
+                from tkinter import messagebox
+                messagebox.showerror("저장 실패", f"저장 중 오류가 발생했습니다:\n{e}")
+            return False
 
     def _delete_monitor_action(self, rule: AutomationRule, watch_idx: int, action_idx: int):
         """모니터링 액션 삭제"""
@@ -1847,7 +2459,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if action_idx < len(monitor_actions):
                 monitor_actions.pop(action_idx)
                 self._modified = True
-                self._refresh_action_list()
+                if not self._update_rule_row_in_place(rule):
+                    self._refresh_rule_row(rule.rule_id)
                 logger.info(f"모니터링 액션 삭제: watch {watch_idx}, action {action_idx}")
 
     def _delete_rule(self, rule: AutomationRule):
@@ -1856,6 +2469,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if not messagebox.askyesno("삭제 확인", "이 액션을 삭제하시겠습니까?"):
             return
 
+        parent = None
         # 최상위에서 찾기
         if rule in self._plan.initial_rules:
             self._plan.initial_rules.remove(rule)
@@ -1871,8 +2485,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if rule.action_type == "game_mode" and hasattr(self, '_plan'):
             self._plan.game_modes.pop(rule.rule_id, None)
 
+        self._invalidate_rule_tree_cache()
         self._modified = True
-        self._refresh_action_list()
+        if self._selected_rule is not None and self._selected_rule.rule_id == rule.rule_id:
+            self._selected_rule = None
+        self._refresh_after_rule_deleted(rule, parent)
         logger.info(f"규칙 삭제: {rule.rule_id}")
 
     def _move_rule_up(self, rule: AutomationRule):
@@ -1890,9 +2507,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         idx = rules_list.index(rule)
         if idx > 0:
+            other_rule = rules_list[idx - 1]
             rules_list[idx], rules_list[idx - 1] = rules_list[idx - 1], rules_list[idx]
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_rule_sibling_swap(rule, other_rule):
+                self._sync_visible_rules_from_model()
 
     def _move_rule_down(self, rule: AutomationRule):
         """규칙을 아래로 이동"""
@@ -1909,9 +2528,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         idx = rules_list.index(rule)
         if idx < len(rules_list) - 1:
+            other_rule = rules_list[idx + 1]
             rules_list[idx], rules_list[idx + 1] = rules_list[idx + 1], rules_list[idx]
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_rule_sibling_swap(rule, other_rule):
+                self._sync_visible_rules_from_model()
 
     def _edit_wait_time(self, rule: AutomationRule):
         """대기시간 및 랜덤 설정"""
@@ -2054,7 +2675,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         if result["saved"]:
             self._modified = True
-            self._update_rule_buttons(rule)
+            if not self._update_rule_row_in_place(rule):
+                self._update_rule_buttons(rule)
             logger.info(f"대기시간 설정 완료")
 
     def _edit_repeat_count(self, rule: AutomationRule):
@@ -2065,7 +2687,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         )
         dialog = ctk.CTkToplevel(self)
         dialog.title("반복 설정")
-        dialog_height = 490 if is_image_click else 420
+        dialog_height = 570 if is_image_click else 420
         dialog.geometry(f"350x{dialog_height}")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
@@ -2093,6 +2715,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
 
         click_until_var = ctk.BooleanVar(value=bool(getattr(rule, "click_until_image_disappears", False)))
+        click_until_delay_entry = None
         if is_image_click:
             ctk.CTkCheckBox(
                 main_frame,
@@ -2108,6 +2731,39 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 wraplength=300,
                 justify="left",
             ).pack(anchor="w", pady=(0, 4))
+            click_until_delay_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+            click_until_delay_frame.pack(anchor="w", pady=(4, 0))
+            ctk.CTkLabel(
+                click_until_delay_frame,
+                text="전용 반복 대기시간:",
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_primary"],
+            ).pack(side="left")
+            click_until_delay_entry = ctk.CTkEntry(
+                click_until_delay_frame,
+                width=75,
+                height=30,
+                font=ctk.CTkFont(size=12),
+            )
+            click_until_delay_entry.insert(
+                0,
+                f"{getattr(rule, 'click_until_image_disappears_delay', getattr(rule, 'repeat_delay', 0.5)):.2f}",
+            )
+            click_until_delay_entry.pack(side="left", padx=(6, 4))
+            ctk.CTkLabel(
+                click_until_delay_frame,
+                text="초",
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(side="left")
+            ctk.CTkLabel(
+                main_frame,
+                text="클릭과 하위액션 실행 후 다음 이미지 재검색 전 대기합니다.",
+                font=ctk.CTkFont(size=10),
+                text_color=COLORS["text_muted"],
+                wraplength=300,
+                justify="left",
+            ).pack(anchor="w", pady=(3, 0))
 
         # 반복 대기시간
         ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
@@ -2142,6 +2798,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 count = int(count_entry.get().strip())
                 delay = float(delay_entry.get().strip().replace(',', '.'))
                 delay_range = float(delay_range_entry.get().strip().replace(',', '.'))
+                click_until_delay = delay
+                click_until_enabled = bool(is_image_click and click_until_var.get())
+                if click_until_delay_entry is not None:
+                    raw_click_until_delay = click_until_delay_entry.get().strip().replace(',', '.')
+                    if raw_click_until_delay:
+                        click_until_delay = float(raw_click_until_delay)
+                    elif click_until_enabled:
+                        from tkinter import messagebox
+                        messagebox.showerror("오류", "전용 반복 대기시간을 입력하세요")
+                        return
                 if count < 1:
                     from tkinter import messagebox
                     messagebox.showerror("오류", "반복 횟수는 1 이상이어야 합니다")
@@ -2154,11 +2820,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     from tkinter import messagebox
                     messagebox.showerror("오류", "±범위는 0 이상이어야 합니다")
                     return
+                if click_until_delay < 0:
+                    from tkinter import messagebox
+                    messagebox.showerror("오류", "전용 반복 대기시간은 0 이상이어야 합니다")
+                    return
                 rule.repeat_count = count
                 rule.repeat_delay = delay
                 rule.repeat_delay_random = delay_random_var.get()
                 rule.repeat_delay_random_range = delay_range
-                rule.click_until_image_disappears = bool(is_image_click and click_until_var.get())
+                rule.click_until_image_disappears = click_until_enabled
+                rule.click_until_image_disappears_delay = click_until_delay
                 result["saved"] = True
                 dialog.destroy()
             except ValueError:
@@ -2177,7 +2848,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         if result["saved"]:
             self._modified = True
-            self._update_rule_buttons(rule)
+            if not self._update_rule_row_in_place(rule) and not self._refresh_rule_row(rule.rule_id):
+                self._update_rule_buttons(rule)
             logger.info(
                 f"반복 설정: {rule.repeat_count}회, 대기 {rule.repeat_delay}초 "
                 f"(랜덤: {rule.repeat_delay_random}, 사라질때까지: {getattr(rule, 'click_until_image_disappears', False)})"
@@ -2200,7 +2872,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 if _gm_cfg is not None:
                     _gm_cfg.name = result.strip()
             self._modified = True
-            self._refresh_action_list()
+            if not self._update_rule_row_in_place(rule):
+                self._refresh_rule_row(rule.rule_id)
             logger.info(f"규칙 이름 수정: {rule.description}")
 
     def _change_rule_click_type(self, rule: AutomationRule, new_type: str):
@@ -2224,7 +2897,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.description = rule.description.replace(old_name, new_name)
 
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
         logger.info(f"클릭 유형 변경: {old_type} → {new_type}")
 
     def _toggle_rule_alternate_mouse_route(self, rule: AutomationRule):
@@ -2233,7 +2907,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
         rule.alternate_mouse_route = not getattr(rule, "alternate_mouse_route", False)
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
         logger.info(f"마우스 이동경로 변경: {'활성화' if rule.alternate_mouse_route else '비활성화'}")
 
     def _stop_execution(self):
@@ -2382,7 +3057,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # GameModeDialog를 숨겨서 생성 + 자동 실행
         self._gm_dialog = GameModeDialog(self, self._plan, self._save_plan, self._refresh_action_list,
-                                         config_rule_id=config_rule_id, auto_run=True)
+                                         config_rule_id=config_rule_id, auto_run=True, source_rule=source_rule)
         self._gm_dialog.withdraw()  # 창 숨기기
         self._running_executor = None
 
@@ -2399,9 +3074,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 if not gm._is_running:
                     # 정상 완료 vs 사용자 중지 구분 (_on_arrival에서 _completed_normally 설정)
                     completed_ok = getattr(gm, '_completed_normally', False)
+                    completion_msg = getattr(gm, '_completion_message', None)
+                    skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))
                     gm.destroy()
                     self._gm_dialog = None
-                    self._on_game_mode_complete(completed_ok)
+                    if skip_current_playlist:
+                        self._gm_remaining_rules = []
+                        self._on_game_mode_complete(False, completion_msg or "트리거 미감지로 현재 재생목록을 종료했습니다.")
+                    else:
+                        self._on_game_mode_complete(completed_ok, completion_msg)
                     return
                 self._gm_check_after_id = self.after(500, _check_gm_done)
             except Exception:
@@ -2811,8 +3492,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """룰 활성/비활성 토글."""
         rule.enabled = not _rule_is_enabled(rule)
         self._mark_modified()
-        self._save_plan()
-        self._refresh_action_list()
+        self._save_plan(show_message=False)
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
         logger.info(
             "룰 %s: %s",
             "활성화" if rule.enabled else "비활성화",
@@ -2835,7 +3517,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             )
 
         # 플랜 저장
-        self._save_plan()
+        self._mark_modified()
+        self._save_plan(show_message=False)
+        self._update_rule_row_in_place(rule)
 
         status = "활성화" if rule.skip_on_not_found else "비활성화"
         logger.info(f"스킵 모드 {status}: {rule.description or rule.action_type}")
@@ -3109,6 +3793,27 @@ class PlanDetailDialog(ctk.CTkToplevel):
             conf_label.configure(text=f"{int(conf_var.get())}%")
 
         conf_var.trace_add("write", update_conf_label)
+
+        def adjust_confidence(delta: int):
+            current = int(round(conf_var.get()))
+            conf_var.set(max(30, min(95, current + delta)))
+
+        def on_conf_key(event):
+            key = getattr(event, "keysym", "")
+            if key == "Left":
+                adjust_confidence(-1)
+                return "break"
+            if key == "Right":
+                adjust_confidence(1)
+                return "break"
+            return None
+
+        conf_slider.bind("<Left>", on_conf_key)
+        conf_slider.bind("<Right>", on_conf_key)
+        dialog.bind("<Left>", on_conf_key)
+        dialog.bind("<Right>", on_conf_key)
+        dialog.after(100, conf_slider.focus_set)
+
         stop_playlist_var = ctk.BooleanVar(
             value=bool(getattr(rule, "stop_playlist_on_trigger_missing", False))
         )
@@ -3180,7 +3885,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.trigger_missing_key_repeat_delay_random_range = get_trigger_missing_key_delay_range()
             logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
             self._modified = True
-            self._save_plan()  # JSON 파일에 즉시 저장
+            self._save_plan(show_message=False)  # JSON 파일에 즉시 저장
             from tkinter import messagebox
             messagebox.showinfo("저장 완료", f"인식률이 {int(conf_var.get())}%로 저장되었습니다.")
 
@@ -3409,6 +4114,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 저장/취소 버튼
         bottom_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         bottom_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 12))
+        result = {"saved": False}
 
         def save():
             rule.trigger_image = selected_path["value"]
@@ -3431,7 +4137,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.confidence = conf_var.get() / 100.0
             logger.info(f"트리거 이미지 인식률 설정: {int(conf_var.get())}%")
             self._modified = True
-            self._save_plan()  # JSON 파일에 즉시 저장
+            self._save_plan(show_message=False)  # JSON 파일에 즉시 저장
+            result["saved"] = True
             dialog.destroy()
 
         ctk.CTkButton(
@@ -3450,7 +4157,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         ).pack(side="left", padx=10)
 
         dialog.wait_window()
-        self._refresh_action_list()
+        if result["saved"]:
+            if not self._update_rule_row_in_place(rule):
+                self._refresh_rule_row(rule.rule_id)
 
     def _edit_monitoring_mode(self, rule: AutomationRule):
         """모니터링 모드 설정"""
@@ -3460,15 +4169,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
         editor.wait_window()
         if editor.was_saved:
             self._modified = True
+            if not self._update_rule_row_in_place(rule):
+                self._refresh_rule_row(rule.rule_id)
         logger.info(f"[다이얼로그 종료] rule.is_monitoring_mode={rule.is_monitoring_mode}, watches={len(rule.monitoring_watches)}")
-        self._refresh_action_list()
 
     def _detach_rule(self, rule: AutomationRule):
         """규칙을 부모에서 분리하여 부모 바로 아래로 이동"""
         parent = self._find_parent_rule(rule)
         if parent and _detach_child_after_parent(self._plan.initial_rules, parent, rule, "rule_id"):
+            self._invalidate_rule_tree_cache()
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_rule_detach(parent, rule):
+                self._sync_visible_rules_from_model()
             logger.info(f"규칙 종속 해제: {rule.rule_id}")
 
     def _setup_copied_game_mode_maps(self, src_rule_id: str, config):
@@ -3532,6 +4244,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 대상 규칙의 자식으로 추가
         target_rule.children.append(new_rule)
+        self._invalidate_rule_tree_cache()
         # 붙여넣은 규칙 + 모든 하위 규칙을 접힌 상태로 등록
         def _collapse_all(r):
             if r.children:
@@ -3539,11 +4252,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             for c in r.children:
                 _collapse_all(c)
         _collapse_all(new_rule)
-        # 부모도 자식이 생겼으면 접기
-        if target_rule.rule_id not in self._collapsed_items and target_rule.children:
-            self._collapsed_items.add(target_rule.rule_id)
+        # 대상 부모는 사용자가 방금 붙여넣은 항목을 바로 볼 수 있게 펼쳐 둔다.
+        self._collapsed_items.discard(target_rule.rule_id)
         self._modified = True
-        self._refresh_action_list()
+        self._refresh_after_rule_added(target_rule, new_rule)
         logger.info(f"규칙 붙여넣기: {new_rule.rule_id} -> {target_rule.rule_id}")
 
     def _paste_rule_top(self):
@@ -3576,6 +4288,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 최상위에 추가
         self._plan.initial_rules.append(new_rule)
+        self._invalidate_rule_tree_cache()
         # 붙여넣은 규칙 + 모든 하위 규칙을 접힌 상태로 등록
         def _collapse_all(r):
             if r.children:
@@ -3584,7 +4297,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 _collapse_all(c)
         _collapse_all(new_rule)
         self._modified = True
-        self._refresh_action_list()
+        self._refresh_after_rule_added(None, new_rule)
         logger.info(f"규칙 최상위에 붙여넣기: {new_rule.rule_id}")
 
     def _paste_as_monitor_action(self, rule_index: int, watch_index: int):
@@ -3616,6 +4329,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 watches[watch_index]["monitor_actions"] = []
             watches[watch_index]["monitor_actions"].extend(monitor_actions)
             self._modified = True
+            if not self._update_rule_row_in_place(rule):
+                self._refresh_rule_row(rule.rule_id)
             logger.info(f"모니터링 액션 추가: 액션{rule_index+1} 감시{watch_index+1} - {len(monitor_actions)}개 (자식 포함)")
 
     def _paste_as_monitoring_watch(self, rule: AutomationRule):
@@ -3672,7 +4387,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.monitoring_watches.append(new_watch)
             rule.is_monitoring_mode = True
             self._modified = True
-            self._refresh_action_list()
+            if not self._update_rule_row_in_place(rule):
+                self._refresh_rule_row(rule.rule_id)
             logger.info(f"모니터링 액션 추가 (새 감시 항목): {len(monitor_actions)}개")
             return
 
@@ -3683,8 +4399,75 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         rule.is_monitoring_mode = True
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
         logger.info(f"모니터링 액션 추가 (감시 {watch_idx+1}): {len(monitor_actions)}개")
+
+    def _add_rule_to_current_parent(self, new_rule: AutomationRule) -> Optional[AutomationRule]:
+        """Add a newly created rule under the selected rule when it is still in this plan."""
+        parent_rule = getattr(self, "_selected_rule", None)
+        parent_id = getattr(parent_rule, "rule_id", None)
+        current_parent = None
+        if parent_rule is not None:
+            parent_path = _find_item_path_by_id(self._plan.initial_rules, parent_id, "rule_id")
+            current_parent = parent_path[-1] if parent_path else None
+            if current_parent is None:
+                self._selected_rule = None
+            else:
+                self._selected_rule = current_parent
+
+        if current_parent is not None:
+            new_rule.parent_id = current_parent.rule_id
+            if getattr(current_parent, "children", None) is None:
+                current_parent.children = []
+            current_parent.children.append(new_rule)
+            self._collapsed_items.discard(current_parent.rule_id)
+            self._invalidate_rule_tree_cache()
+            return current_parent
+
+        new_rule.parent_id = None
+        self._plan.initial_rules.append(new_rule)
+        self._invalidate_rule_tree_cache()
+        return None
+
+    def _refresh_after_rule_added(self, parent_rule: Optional[AutomationRule], new_rule: AutomationRule) -> None:
+        self._invalidate_rule_tree_cache()
+        if not isinstance(self._scrollable, VirtualScrollFrame):
+            self._schedule_action_list_refresh()
+            return
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._schedule_action_list_refresh()
+            return
+
+        if parent_rule is None:
+            item = {
+                "rule": new_rule,
+                "depth": 0,
+                "index_str": str(len(self._plan.initial_rules)),
+                "parent_id": None,
+            }
+            self._scrollable.splice_items(len(items), 0, [item])
+            return
+
+        parent_index = self._find_visible_rule_item_index(parent_rule.rule_id)
+        if parent_index < 0:
+            return
+        parent_item = items[parent_index]
+        parent_depth = int(parent_item.get("depth") or 0)
+        parent_index_str = str(parent_item.get("index_str") or "")
+        insert_index = parent_index + 1 + self._visible_rule_descendant_count(items, parent_index, parent_depth)
+        child_index = len(getattr(parent_rule, "children", []) or [])
+        item = {
+            "rule": new_rule,
+            "depth": parent_depth + 1,
+            "index_str": f"{parent_index_str}.{child_index}",
+            "parent_id": parent_rule.rule_id,
+        }
+        self._scrollable.splice_items(insert_index, 0, [item])
+        if not self._update_rule_parent_summary(parent_rule):
+            self._refresh_rule_row(parent_rule.rule_id)
 
     def _add_text_action(self):
         """텍스트 입력 액션 추가"""
@@ -3702,10 +4485,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 action_text=text,
                 wait_after=0.5,
             )
-            self._plan.initial_rules.append(new_rule)
+            parent_rule = self._add_rule_to_current_parent(new_rule)
             self._modified = True
-            self._refresh_action_list()
-            logger.info(f"텍스트 액션 추가: {text[:30]}...")
+            self._refresh_after_rule_added(parent_rule, new_rule)
+            suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+            logger.info(f"텍스트 액션 추가{suffix}: {text[:30]}...")
 
     def _add_key_action(self):
         """키 입력 액션 추가"""
@@ -3722,10 +4506,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 action_key_events=key_events,
                 wait_after=0.5,
             )
-            self._plan.initial_rules.append(new_rule)
+            parent_rule = self._add_rule_to_current_parent(new_rule)
             self._modified = True
-            self._refresh_action_list()
-            logger.info(f"키 액션 추가: {key_text}")
+            self._refresh_after_rule_added(parent_rule, new_rule)
+            suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+            logger.info(f"키 액션 추가{suffix}: {key_text}")
 
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
@@ -3761,10 +4546,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             action_y=y,
             wait_after=0.5,
         )
-        self._plan.initial_rules.append(new_rule)
+        parent_rule = self._add_rule_to_current_parent(new_rule)
         self._modified = True
-        self._refresh_action_list()
-        logger.info(f"마우스 클릭 액션 추가: ({x}, {y})")
+        self._refresh_after_rule_added(parent_rule, new_rule)
+        suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+        logger.info(f"마우스 클릭 액션 추가{suffix}: ({x}, {y})")
 
     def _add_image_action(self):
         """이미지 클릭 액션 추가"""
@@ -3800,10 +4586,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 target_image=str(dest_path),
                 wait_after=0.5,
             )
-            self._plan.initial_rules.append(new_rule)
+            parent_rule = self._add_rule_to_current_parent(new_rule)
             self._modified = True
-            self._refresh_action_list()
-            logger.info(f"이미지 클릭 액션 추가: {dest_path}")
+            self._refresh_after_rule_added(parent_rule, new_rule)
+            suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+            logger.info(f"이미지 클릭 액션 추가{suffix}: {dest_path}")
         except Exception as e:
             from tkinter import messagebox
             logger.error(f"이미지 액션 추가 실패: {e}")
@@ -3857,10 +4644,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     target_image=str(dest_path),
                     wait_after=0.5,
                 )
-                self._plan.initial_rules.append(new_rule)
+                parent_rule = self._add_rule_to_current_parent(new_rule)
                 self._modified = True
-                self._refresh_action_list()
-                logger.info(f"스크린샷 액션 추가: {dest_path}")
+                self._refresh_after_rule_added(parent_rule, new_rule)
+                suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+                logger.info(f"스크린샷 액션 추가{suffix}: {dest_path}")
 
         except Exception as e:
             logger.error(f"스크린샷 실패: {e}")
@@ -3886,13 +4674,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
 
         try:
+            children = list(rule.children)
             moved_count = _flatten_children_after_parent(self._plan.initial_rules, rule, "rule_id")
             if moved_count <= 0:
                 messagebox.showerror("오류", "액션을 찾을 수 없습니다.")
                 return
 
+            self._invalidate_rule_tree_cache()
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_rule_flatten_children(rule, children):
+                self._sync_visible_rules_from_model()
             logger.info(f"하위 해체 완료: {child_count}개 액션")
             messagebox.showinfo("완료", f"{child_count}개의 하위 액션이 해체되었습니다.")
 
@@ -3952,7 +4743,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         apply_random(self._plan.initial_rules)
 
         self._modified = True
-        self._refresh_action_list()
+        self._update_visible_rule_rows_in_place()
         logger.info(f"전체 랜덤 {'활성화' if new_state else '비활성화'}: {count}개 액션")
 
     def _toggle_all_children(self):
@@ -3973,6 +4764,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             # 해제: 1번 액션의 자식들을 부모 바로 아래 같은 레벨로 이동
             children = list(first_rule.children)
             _flatten_children_after_parent(self._plan.initial_rules, first_rule, "rule_id")
+            self._invalidate_rule_tree_cache()
 
             logger.info(f"하위 종속 해제: {len(children)}개 액션")
         else:
@@ -3988,6 +4780,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             for child in children_to_move:
                 child.parent_id = first_rule.rule_id
                 first_rule.children.append(child)
+            self._invalidate_rule_tree_cache()
 
             # 접힌 상태 해제 (보이도록)
             self._collapsed_items.discard(first_rule.rule_id)
@@ -3995,7 +4788,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             logger.info(f"하위 종속: {len(children_to_move)}개 액션을 1번 아래로")
 
         self._modified = True
-        self._refresh_action_list()
+        if 'children' in locals():
+            if not self._apply_visible_rule_flatten_children(first_rule, children):
+                self._sync_visible_rules_from_model()
+        else:
+            self._sync_visible_rules_from_model()
 
     def _toggle_all_collapse(self):
         """모든 액션 접기/펼치기"""
@@ -4010,10 +4807,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             for rule in self._plan.initial_rules:
                 if rule.children:
                     self._collapsed_items.add(rule.rule_id)
-                self._collect_parent_rule_ids(rule)
             self._all_collapsed = True
             self._collapse_btn.configure(text="모두 펼치기")
-        self._refresh_action_list()
+            if self._apply_visible_rule_collapse_to_roots():
+                return
+        self._sync_visible_rules_from_model()
 
     def _collect_parent_rule_ids(self, rule: AutomationRule):
         """자식이 있는 모든 규칙의 ID 수집 (재귀)"""
@@ -4022,17 +4820,519 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 self._collapsed_items.add(child.rule_id)
             self._collect_parent_rule_ids(child)
 
-    def _toggle_item_collapse(self, rule_id: str):
-        """개별 액션 접기/펼치기 (가상 스크롤: 리스트 재생성)"""
-        if rule_id in self._collapsed_items:
-            # 펼치기
-            self._collapsed_items.discard(rule_id)
-        else:
-            # 접기
-            self._collapsed_items.add(rule_id)
+    def _find_visible_rule_item_index(self, rule_id: str) -> int:
+        if not isinstance(self._scrollable, VirtualScrollFrame):
+            return -1
+        return self._scrollable.find_item_index_by_object_id(rule_id, "AutomationRule")
 
-        # 가상 스크롤 리스트 새로고침
-        self._refresh_action_list()
+    def _visible_rule_descendant_count(self, items: list, parent_index: int, parent_depth: int) -> int:
+        count = 0
+        for item in items[parent_index + 1:]:
+            if int(item.get("depth") or 0) <= parent_depth:
+                break
+            count += 1
+        return count
+
+    def _retag_rule_index_prefix(self, items: list, old_prefix: str, new_prefix: str) -> list:
+        retagged = []
+        marker = f"{old_prefix}."
+        for item in items:
+            new_item = dict(item)
+            index_str = str(new_item.get("index_str") or "")
+            if index_str == old_prefix:
+                new_item["index_str"] = new_prefix
+            elif old_prefix and index_str.startswith(marker):
+                new_item["index_str"] = new_prefix + index_str[len(old_prefix):]
+            retagged.append(new_item)
+        return retagged
+
+    def _reindex_visible_rule_items(self, items: list) -> list:
+        counters = {}
+        prefixes = {}
+        retagged = []
+        for item in items:
+            depth = int(item.get("depth") or 0)
+            for key in list(counters.keys()):
+                if key > depth:
+                    counters.pop(key, None)
+                    prefixes.pop(key, None)
+            counters[depth] = counters.get(depth, 0) + 1
+            if depth <= 0:
+                index_str = str(counters[depth])
+            else:
+                parent_prefix = prefixes.get(depth - 1, "")
+                index_str = f"{parent_prefix}.{counters[depth]}" if parent_prefix else str(counters[depth])
+            prefixes[depth] = index_str
+            new_item = dict(item)
+            new_item["index_str"] = index_str
+            retagged.append(new_item)
+        return retagged
+
+    def _reindex_rule_items_at_indices(self, items: list, indices: list) -> dict:
+        wanted = set(indices or [])
+        if not wanted:
+            return {}
+        max_index = max(wanted)
+        counters = {}
+        prefixes = {}
+        updates = {}
+        for pos, item in enumerate(items[:max_index + 1]):
+            depth = int(item.get("depth") or 0)
+            for key in list(counters.keys()):
+                if key > depth:
+                    counters.pop(key, None)
+                    prefixes.pop(key, None)
+            counters[depth] = counters.get(depth, 0) + 1
+            if depth <= 0:
+                index_str = str(counters[depth])
+            else:
+                parent_prefix = prefixes.get(depth - 1, "")
+                index_str = f"{parent_prefix}.{counters[depth]}" if parent_prefix else str(counters[depth])
+            prefixes[depth] = index_str
+            if pos in wanted:
+                new_item = dict(item)
+                new_item["index_str"] = index_str
+                updates[pos] = new_item
+        return updates
+
+    def _update_visible_rule_numbering_only(self) -> None:
+        scrollable = getattr(self, "_scrollable", None)
+        if not isinstance(scrollable, VirtualScrollFrame):
+            return
+        visible_indices = sorted(getattr(scrollable, "_visible_widgets", {}).keys())
+        if not visible_indices:
+            scrollable.update_items_metadata(
+                self._reindex_visible_rule_items(list(scrollable.get_items()))
+            )
+            return
+        items = list(scrollable.get_items())
+        updates = self._reindex_rule_items_at_indices(items, visible_indices)
+        scrollable.update_visible_items_metadata(lambda index, _old: updates.get(index))
+
+    def _schedule_full_rule_metadata_refresh(self, delay_ms: int = 120) -> None:
+        self._rule_metadata_refresh_generation = getattr(self, "_rule_metadata_refresh_generation", 0) + 1
+        generation = self._rule_metadata_refresh_generation
+        if getattr(self, "_rule_metadata_refresh_job", None) is not None:
+            return
+
+        chunk_size = 800
+
+        def _run_refresh():
+            scrollable = getattr(self, "_scrollable", None)
+            if not isinstance(scrollable, VirtualScrollFrame):
+                self._rule_metadata_refresh_job = None
+                return
+            items = scrollable.get_items()
+            counters = {}
+            prefixes = {}
+
+            def _process_chunk(start: int = 0):
+                if generation != getattr(self, "_rule_metadata_refresh_generation", 0):
+                    self._rule_metadata_refresh_job = None
+                    self._schedule_full_rule_metadata_refresh(delay_ms=0)
+                    return
+                current_scrollable = getattr(self, "_scrollable", None)
+                if current_scrollable is not scrollable:
+                    self._rule_metadata_refresh_job = None
+                    return
+                updates = {}
+                end = min(len(items), start + chunk_size)
+                for pos in range(start, end):
+                    item = items[pos]
+                    depth = int(item.get("depth") or 0)
+                    for key in list(counters.keys()):
+                        if key > depth:
+                            counters.pop(key, None)
+                            prefixes.pop(key, None)
+                    counters[depth] = counters.get(depth, 0) + 1
+                    if depth <= 0:
+                        index_str = str(counters[depth])
+                    else:
+                        parent_prefix = prefixes.get(depth - 1, "")
+                        index_str = f"{parent_prefix}.{counters[depth]}" if parent_prefix else str(counters[depth])
+                    prefixes[depth] = index_str
+                    if item.get("index_str") != index_str:
+                        new_item = dict(item)
+                        new_item["index_str"] = index_str
+                        items[pos] = new_item
+                        updates[pos] = new_item
+                if updates:
+                    scrollable.update_visible_items_metadata(lambda index, _old: updates.get(index))
+                if end < len(items):
+                    try:
+                        self._rule_metadata_refresh_job = self.after(1, lambda: _process_chunk(end))
+                    except (tk.TclError, RuntimeError, AttributeError):
+                        self._rule_metadata_refresh_job = None
+                    return
+                self._rule_metadata_refresh_job = None
+
+            _process_chunk(0)
+
+        try:
+            self._rule_metadata_refresh_job = self.after(delay_ms, _run_refresh)
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._rule_metadata_refresh_job = None
+
+    def _refresh_rule_numbering_after_patch(self) -> None:
+        self._update_visible_rule_numbering_only()
+        self._schedule_full_rule_metadata_refresh()
+
+    def _refresh_after_rule_deleted(self, deleted_rule: AutomationRule, parent_rule: Optional[AutomationRule]) -> None:
+        self._invalidate_rule_tree_cache()
+        if not isinstance(self._scrollable, VirtualScrollFrame):
+            self._schedule_action_list_refresh()
+            return
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._schedule_action_list_refresh()
+            return
+
+        deleted_index = self._find_visible_rule_item_index(deleted_rule.rule_id)
+        if deleted_index < 0:
+            if parent_rule is not None:
+                if not self._update_rule_parent_summary(parent_rule):
+                    self._refresh_rule_row(parent_rule.rule_id)
+            return
+
+        depth = int(items[deleted_index].get("depth") or 0)
+        remove_count = 1 + self._visible_rule_descendant_count(items, deleted_index, depth)
+        self._scrollable.splice_items(deleted_index, remove_count, [])
+        self._refresh_rule_numbering_after_patch()
+        if parent_rule is not None:
+            if not self._update_rule_parent_summary(parent_rule):
+                self._refresh_rule_row(parent_rule.rule_id)
+
+    def _build_visible_rule_subtree_items(
+        self,
+        rule: AutomationRule,
+        depth: int,
+        index_str: str,
+        parent_id=None,
+    ) -> list:
+        result = [{
+            "rule": rule,
+            "depth": depth,
+            "index_str": index_str,
+            "parent_id": parent_id if parent_id is not None else getattr(rule, "parent_id", None),
+        }]
+        if (
+            getattr(self, "_all_collapsed", False)
+            and depth > 0
+            and rule.children
+            and rule.rule_id not in self._collapsed_items
+        ):
+            self._collapsed_items.add(rule.rule_id)
+        if rule.children and rule.rule_id not in self._collapsed_items:
+            for child_idx, child in enumerate(rule.children, 1):
+                result.extend(
+                    self._build_visible_rule_subtree_items(
+                        child,
+                        depth + 1,
+                        f"{index_str}.{child_idx}",
+                        rule.rule_id,
+                    )
+                )
+        return result
+
+    def _retarget_visible_rule_block(
+        self,
+        block: list,
+        *,
+        new_depth: int,
+        new_parent_id,
+    ) -> list:
+        if not block:
+            return []
+        old_depth = int(block[0].get("depth") or 0)
+        depth_delta = new_depth - old_depth
+        adjusted = []
+        for offset, item in enumerate(block):
+            next_item = dict(item)
+            next_item["depth"] = int(next_item.get("depth") or 0) + depth_delta
+            if offset == 0:
+                next_item["parent_id"] = new_parent_id
+            adjusted.append(next_item)
+        return adjusted
+
+    def _reindex_visible_rules_after_patch(self) -> None:
+        if isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            self._refresh_rule_numbering_after_patch()
+
+    def _apply_visible_rule_attach(
+        self,
+        moved_rule: AutomationRule,
+        target_rule: AutomationRule,
+        old_parent_rule: Optional[AutomationRule],
+    ) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        moved_index = self._find_visible_rule_item_index(moved_rule.rule_id)
+        if moved_index >= 0:
+            moved_depth = int(items[moved_index].get("depth") or 0)
+            remove_count = 1 + self._visible_rule_descendant_count(items, moved_index, moved_depth)
+            self._scrollable.splice_items(moved_index, remove_count, [])
+
+        target_index = self._find_visible_rule_item_index(target_rule.rule_id)
+        if target_index < 0:
+            self._reindex_visible_rules_after_patch()
+            if old_parent_rule is not None:
+                if not self._update_rule_parent_summary(old_parent_rule):
+                    self._refresh_rule_row(old_parent_rule.rule_id)
+            return True
+
+        current_items = list(self._scrollable.get_items())
+        target_item = current_items[target_index]
+        target_depth = int(target_item.get("depth") or 0)
+        target_index_str = str(target_item.get("index_str") or "")
+        existing_count = self._visible_rule_descendant_count(current_items, target_index, target_depth)
+        child_items = self._build_visible_rule_child_items(target_rule, target_depth, target_index_str)
+        self._scrollable.splice_items(target_index + 1, existing_count, child_items)
+        self._reindex_visible_rules_after_patch()
+        if old_parent_rule is not None and old_parent_rule.rule_id != target_rule.rule_id:
+            if not self._update_rule_parent_summary(old_parent_rule):
+                self._refresh_rule_row(old_parent_rule.rule_id)
+        if not self._update_rule_parent_summary(target_rule):
+            self._refresh_rule_row(target_rule.rule_id)
+        return True
+
+    def _apply_visible_rule_detach(
+        self,
+        parent_rule: AutomationRule,
+        child_rule: AutomationRule,
+    ) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        parent_index = self._find_visible_rule_item_index(parent_rule.rule_id)
+        if parent_index < 0:
+            child_index = self._find_visible_rule_item_index(child_rule.rule_id)
+            if child_index >= 0:
+                child_depth = int(items[child_index].get("depth") or 0)
+                remove_count = 1 + self._visible_rule_descendant_count(items, child_index, child_depth)
+                self._scrollable.splice_items(child_index, remove_count, [])
+                self._reindex_visible_rules_after_patch()
+                return True
+            return False
+
+        parent_depth = int(items[parent_index].get("depth") or 0)
+        child_index = self._find_visible_rule_item_index(child_rule.rule_id)
+        if child_index >= 0:
+            child_depth = int(items[child_index].get("depth") or 0)
+            remove_count = 1 + self._visible_rule_descendant_count(items, child_index, child_depth)
+            child_block = list(items[child_index:child_index + remove_count])
+            self._scrollable.splice_items(child_index, remove_count, [])
+        else:
+            child_block = self._build_visible_rule_subtree_items(
+                child_rule,
+                parent_depth,
+                str(items[parent_index].get("index_str") or ""),
+                getattr(child_rule, "parent_id", None),
+            )
+
+        current_items = list(self._scrollable.get_items())
+        parent_index = self._find_visible_rule_item_index(parent_rule.rule_id)
+        if parent_index < 0:
+            self._reindex_visible_rules_after_patch()
+            return True
+
+        parent_depth = int(current_items[parent_index].get("depth") or 0)
+        insert_index = parent_index + 1 + self._visible_rule_descendant_count(current_items, parent_index, parent_depth)
+        adjusted_block = self._retarget_visible_rule_block(
+            child_block,
+            new_depth=parent_depth,
+            new_parent_id=getattr(child_rule, "parent_id", None),
+        )
+        self._scrollable.splice_items(insert_index, 0, adjusted_block)
+        self._reindex_visible_rules_after_patch()
+        if not self._update_rule_parent_summary(parent_rule):
+            self._refresh_rule_row(parent_rule.rule_id)
+        return True
+
+    def _apply_visible_rule_flatten_children(
+        self,
+        parent_rule: AutomationRule,
+        flattened_children: list,
+    ) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        parent_index = self._find_visible_rule_item_index(parent_rule.rule_id)
+        if parent_index < 0:
+            return False
+
+        parent_depth = int(items[parent_index].get("depth") or 0)
+        remove_count = self._visible_rule_descendant_count(items, parent_index, parent_depth)
+        replacement = []
+        for child in flattened_children:
+            replacement.extend(
+                self._build_visible_rule_subtree_items(
+                    child,
+                    parent_depth,
+                    str(items[parent_index].get("index_str") or ""),
+                    getattr(child, "parent_id", None),
+                )
+            )
+        self._scrollable.splice_items(parent_index + 1, remove_count, replacement)
+        self._reindex_visible_rules_after_patch()
+        if not self._update_rule_parent_summary(parent_rule):
+            self._refresh_rule_row(parent_rule.rule_id)
+        return True
+
+    def _apply_visible_rule_collapse_to_roots(self) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        root_items = [
+            {
+                "rule": rule,
+                "depth": 0,
+                "index_str": str(index),
+                "parent_id": getattr(rule, "parent_id", None),
+            }
+            for index, rule in enumerate(getattr(self._plan, "initial_rules", []) or [], 1)
+        ]
+        if not root_items:
+            return False
+        self._scrollable.set_items(root_items, preserve_scroll=True)
+        for item in root_items:
+            rule = item.get("rule")
+            rule_id = getattr(rule, "rule_id", None)
+            if not rule_id:
+                continue
+            toggle_btn = getattr(self, "_rule_widgets", {}).get(rule_id, {}).get("toggle_btn")
+            if toggle_btn is not None:
+                try:
+                    toggle_btn.configure(text="▶" if rule_id in self._collapsed_items else "▼")
+                except (tk.TclError, RuntimeError):
+                    pass
+        return True
+
+    def _apply_visible_rule_sibling_swap(self, rule_a: AutomationRule, rule_b: AutomationRule) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        idx_a = self._find_visible_rule_item_index(rule_a.rule_id)
+        idx_b = self._find_visible_rule_item_index(rule_b.rule_id)
+        if idx_a < 0 or idx_b < 0:
+            return self._hidden_rule_sibling_swap_has_no_visible_effect(rule_a, rule_b)
+        if idx_a == idx_b:
+            return False
+        if idx_a > idx_b:
+            idx_a, idx_b = idx_b, idx_a
+
+        depth_a = int(items[idx_a].get("depth") or 0)
+        depth_b = int(items[idx_b].get("depth") or 0)
+        if depth_a != depth_b:
+            return False
+        end_a = idx_a + 1 + self._visible_rule_descendant_count(items, idx_a, depth_a)
+        end_b = idx_b + 1 + self._visible_rule_descendant_count(items, idx_b, depth_b)
+        if end_a != idx_b:
+            return False
+
+        prefix_a = str(items[idx_a].get("index_str") or "")
+        prefix_b = str(items[idx_b].get("index_str") or "")
+        block_a = self._retag_rule_index_prefix(items[idx_a:end_a], prefix_a, prefix_b)
+        block_b = self._retag_rule_index_prefix(items[idx_b:end_b], prefix_b, prefix_a)
+        self._scrollable.replace_items_range(idx_a, end_b - idx_a, block_b + block_a)
+        return True
+
+    def _hidden_rule_sibling_swap_has_no_visible_effect(self, rule_a: AutomationRule, rule_b: AutomationRule) -> bool:
+        parent_a = self._find_parent_rule(rule_a)
+        parent_b = self._find_parent_rule(rule_b)
+        if parent_a is None or parent_b is None:
+            return False
+        if getattr(parent_a, "rule_id", None) != getattr(parent_b, "rule_id", None):
+            return False
+
+        current = parent_a
+        while current is not None:
+            current_id = getattr(current, "rule_id", None)
+            if current_id in self._collapsed_items:
+                self._update_rule_parent_summary(current)
+                return True
+            current = self._find_parent_rule(current)
+        return False
+
+    def _build_visible_rule_child_items(self, parent_rule: AutomationRule, parent_depth: int, parent_index_str: str) -> list:
+        result = []
+
+        def add_rule(rule: AutomationRule, depth: int, index_str: str):
+            result.append({
+                "rule": rule,
+                "depth": depth,
+                "index_str": index_str,
+                "parent_id": rule.parent_id,
+            })
+            if (
+                getattr(self, "_all_collapsed", False)
+                and depth > 0
+                and rule.children
+                and rule.rule_id not in self._collapsed_items
+            ):
+                self._collapsed_items.add(rule.rule_id)
+            if rule.children and rule.rule_id not in self._collapsed_items:
+                for child_idx, child in enumerate(rule.children, 1):
+                    add_rule(child, depth + 1, f"{index_str}.{child_idx}")
+
+        for child_idx, child in enumerate(parent_rule.children, 1):
+            add_rule(child, parent_depth + 1, f"{parent_index_str}.{child_idx}")
+        return result
+
+    def _toggle_item_collapse(self, rule_id: str):
+        """개별 액션 접기/펼치기."""
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            if rule_id in self._collapsed_items:
+                self._collapsed_items.discard(rule_id)
+            else:
+                self._collapsed_items.add(rule_id)
+            return
+
+        index = self._find_visible_rule_item_index(rule_id)
+        if index < 0:
+            if rule_id in self._collapsed_items:
+                self._collapsed_items.discard(rule_id)
+            else:
+                self._collapsed_items.add(rule_id)
+            return
+
+        items = self._scrollable.get_items()
+        item = items[index]
+        rule = item.get("rule")
+        depth = int(item.get("depth") or 0)
+        index_str = str(item.get("index_str") or "")
+
+        if rule_id in self._collapsed_items:
+            self._collapsed_items.discard(rule_id)
+            new_items = self._build_visible_rule_child_items(rule, depth, index_str)
+            self._scrollable.splice_items(index + 1, 0, new_items)
+        else:
+            self._collapsed_items.add(rule_id)
+            remove_count = self._visible_rule_descendant_count(items, index, depth)
+            self._scrollable.splice_items(index + 1, remove_count, [])
+
+        toggle_btn = self._rule_widgets.get(rule_id, {}).get("toggle_btn")
+        if toggle_btn is not None:
+            try:
+                toggle_btn.configure(text="▶" if rule_id in self._collapsed_items else "▼")
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _move_to_child(self, rule: AutomationRule):
         """현재 규칙을 이전 규칙의 자식으로 이동"""
@@ -4050,9 +5350,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._plan.initial_rules.remove(rule)
         rule.parent_id = prev_rule.rule_id
         prev_rule.children.append(rule)
+        self._collapsed_items.discard(prev_rule.rule_id)
+        self._invalidate_rule_tree_cache()
 
         self._modified = True
-        self._refresh_action_list()
+        if not self._apply_visible_rule_attach(rule, prev_rule, None):
+            self._sync_visible_rules_from_model()
         logger.info(f"규칙 '{rule.rule_id}'을 '{prev_rule.rule_id}'의 하위로 이동")
 
     def _move_to_parent(self, rule: AutomationRule):
@@ -4065,17 +5368,40 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if not _detach_child_after_parent(self._plan.initial_rules, parent_rule, rule, "rule_id"):
             return
 
+        self._invalidate_rule_tree_cache()
         self._modified = True
-        self._refresh_action_list()
+        if not self._apply_visible_rule_detach(parent_rule, rule):
+            self._sync_visible_rules_from_model()
         logger.info(f"규칙 '{rule.rule_id}'을 상위로 이동")
+
+    def _invalidate_rule_tree_cache(self) -> None:
+        self._rule_parent_cache = None
+        self._invalidate_rule_image_cache()
+
+    def _get_rule_parent_cache(self) -> dict:
+        cache = getattr(self, "_rule_parent_cache", None)
+        if cache is not None:
+            return cache
+
+        cache = {}
+
+        def visit(items, parent):
+            for item in items or []:
+                rule_id = getattr(item, "rule_id", None)
+                if rule_id is not None:
+                    cache[rule_id] = parent
+                visit(getattr(item, "children", []) or [], item)
+
+        visit(getattr(self._plan, "initial_rules", []) or [], None)
+        self._rule_parent_cache = cache
+        return cache
 
     def _find_parent_rule(self, target: AutomationRule) -> Optional[AutomationRule]:
         """대상 규칙의 부모 규칙 찾기"""
-        for rule in self._plan.initial_rules:
-            parent = self._find_parent_in_tree(rule, target)
-            if parent:
-                return parent
-        return None
+        target_id = getattr(target, "rule_id", None)
+        if target_id is None:
+            return None
+        return self._get_rule_parent_cache().get(target_id)
 
     def _find_parent_in_tree(self, rule: AutomationRule, target: AutomationRule) -> Optional[AutomationRule]:
         """트리에서 대상의 부모 찾기 (재귀)"""
@@ -4148,7 +5474,7 @@ class GameModeDialog(ctk.CTkToplevel):
     """게임 특화모드 설정 다이얼로그"""
 
     def __init__(self, parent, plan: AutomationPlan, save_callback, refresh_callback=None,
-                 config_rule_id=None, auto_run=False):
+                 config_rule_id=None, auto_run=False, source_rule=None):
         super().__init__(parent)
 
         self._plan = plan
@@ -4181,6 +5507,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._boss_item_passive_last_log_at = 0.0
         self._wp_cards = []
         self._auto_run = auto_run
+        self._source_rule = source_rule
+        self._completion_message = ""
+        self._skip_current_playlist = False
         self._wp_empty_label = None
         self._config_rule_id = config_rule_id  # None이면 새 특화모드
         self._stop_reason = ""
@@ -5194,10 +6523,56 @@ class GameModeDialog(ctk.CTkToplevel):
             self._refresh_badges_async()
         threading.Thread(target=do_save, daemon=True).start()
 
+    def _handle_source_trigger_gate(self) -> bool:
+        """특화모드 액션에 설정된 트리거 이미지를 좌표 루프 시작 전에 적용한다."""
+        rule = getattr(self, "_source_rule", None)
+        if rule is None or not getattr(rule, "trigger_image", None):
+            return True
+
+        try:
+            trigger_executor = RuleExecutor()
+            trigger_executor._stop_event = self._stop_event
+
+            def _on_trigger_progress(progress):
+                message = getattr(progress, "message", "")
+                if message:
+                    self._schedule_ui_log(f"⏳ {message}", dedupe_key="game-mode-trigger-progress", dedupe_window=1.0)
+
+            trigger_executor.set_callbacks(on_progress=_on_trigger_progress)
+
+            self._schedule_ui_log("⏳ 특화모드 트리거 이미지 확인 중...")
+            from datetime import datetime
+            result = trigger_executor._handle_trigger_gate(rule, datetime.now(), "특화")
+            if result is None:
+                self._schedule_ui_log("✅ 특화모드 트리거 감지 → 좌표 이동 시작")
+                return True
+
+            self._completion_message = result.message or ""
+            if getattr(result, "skip_current_playlist", False):
+                self._skip_current_playlist = True
+                self._completed_normally = True
+                self._is_running = False
+                self._stop_event.set()
+                self._schedule_ui_log("⏭ 특화모드 트리거 미감지 → 현재 재생목록 종료", force=True)
+                return False
+
+            self._mark_stop_reason("trigger_gate_failed", result.message or "trigger gate failed", overwrite=True)
+            self._stop_event.set()
+            self._schedule_ui_log(f"⚠️ 특화모드 트리거 실패: {result.message}", force=True)
+            return False
+        except Exception as e:
+            self._completion_message = f"특화모드 트리거 처리 오류: {e}"
+            self._mark_stop_reason("trigger_gate_exception", self._completion_message, overwrite=True)
+            self._stop_event.set()
+            self._schedule_ui_log(f"⚠️ {self._completion_message}", force=True)
+            return False
+
     def _run_loop(self):
         """좌표 기반 실행 루프"""
         _my_thread = threading.current_thread()
         try:
+            if not self._handle_source_trigger_gate():
+                return
             self._run_coordinate_loop()
         except Exception as e:
             self._mark_stop_reason("run_loop_exception", f"{type(e).__name__}: {e}", overwrite=True)
@@ -23249,12 +24624,20 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 자식이 있는 액션은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
+        self._total_action_count = self._count_action_tree(self._sequence.actions)
+        # 재생목록 액션 행은 목록 크기와 무관하게 자동사냥과 같은 compact 디자인으로 통일한다.
+        self._compact_action_rows = True
 
         # 드래그 앤 드롭 상태
         self._drag_data = {"action": None, "widget": None, "start_y": 0}
         self._drop_target = None
         self._action_widgets = {}  # action_id -> widget 매핑
         self._selected_action = None  # 선택된 액션
+        self._action_parent_cache = None
+        self._image_action_cache = None
+        self._action_list_refresh_job = None
+        self._action_metadata_refresh_job = None
+        self._action_metadata_refresh_generation = 0
 
         self.title(f"재생 수정 - {sequence.name}")
         self.geometry("950x700")
@@ -23273,13 +24656,15 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
     def _init_collapsed_items(self):
         """자식이 있는 액션을 접힌 상태로 초기화"""
-        def add_collapsed(actions):
-            for action in actions:
-                if action.children:
-                    self._collapsed_items.add(action.action_id)
-                    add_collapsed(action.children)
-        if self._sequence.actions:
-            add_collapsed(self._sequence.actions)
+        for action in self._sequence.actions:
+            if action.children:
+                self._collapsed_items.add(action.action_id)
+
+    def _count_action_tree(self, actions) -> int:
+        total = 0
+        for action in actions or []:
+            total += 1 + self._count_action_tree(getattr(action, "children", []) or [])
+        return total
 
     def _setup_ui(self):
         """UI 구성"""
@@ -23476,29 +24861,53 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", pady=(5, 15))
 
-        # 액션 목록
-        self._scrollable = ctk.CTkScrollableFrame(
+        # 액션 목록: 많은 액션에서도 보이는 카드만 생성한다.
+        self._scrollable = VirtualScrollFrame(
             main,
+            item_height=76,
+            buffer_count=2,
             fg_color=COLORS["bg_card"],
             corner_radius=12,
-            scrollbar_button_color=COLORS["bg_card_hover"],
         )
         self._scrollable.pack(fill="both", expand=True)
-
-        # 로딩 표시
-        self._loading_label = ctk.CTkLabel(
-            self._scrollable, text="로딩 중...",
-            font=ctk.CTkFont(size=14), text_color=COLORS["text_secondary"]
-        )
-        self._loading_label.pack(pady=20)
+        self._scrollable.set_render_callback(self._render_action_item)
+        self._scrollable.set_destroy_callback(self._on_action_item_destroy)
+        self._scrollable.set_update_callback(self._on_action_item_update)
 
         # 창이 표시된 후 렌더링 시작 (렉 방지)
-        self.after(50, self._refresh_action_list)
+        self.after(50, lambda: self._refresh_action_list(preserve_scroll=False))
 
-    def _refresh_action_list(self):
-        """액션 목록 새로고침 (배치 처리로 렉 방지)"""
+    def _get_flat_actions_with_depth(self) -> list:
+        """접힘 상태를 반영한 표시용 액션 목록."""
+        result = []
+
+        def add_action(action: Action, depth: int, index_str: str):
+            result.append({
+                "action": action,
+                "depth": depth,
+                "index_str": index_str,
+            })
+            if (
+                getattr(self, "_all_collapsed", False)
+                and depth > 0
+                and action.children
+                and action.action_id not in self._collapsed_items
+            ):
+                self._collapsed_items.add(action.action_id)
+            if action.children and action.action_id not in self._collapsed_items:
+                for child_idx, child in enumerate(action.children, 1):
+                    add_action(child, depth + 1, f"{index_str}-{child_idx}")
+
+        top_level_actions = [action for action in self._sequence.actions if not action.parent_id]
+        for idx, action in enumerate(top_level_actions, 1):
+            add_action(action, 0, str(idx))
+        return result
+
+    def _refresh_action_list(self, preserve_scroll: bool = True):
+        """액션 목록 새로고침 (가상 스크롤 방식)"""
         if self._scrollable is None:
             return
+        self._invalidate_action_tree_cache()
 
         # 진행 중인 배치 렌더링 취소
         if hasattr(self, '_batch_render_id') and self._batch_render_id:
@@ -23508,26 +24917,88 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 pass
             self._batch_render_id = None
 
-        # 기존 항목 일괄 삭제
-        children = self._scrollable.winfo_children()
-        for widget in children:
-            widget.destroy()
+        self._scrollable.set_items(self._get_flat_actions_with_depth(), preserve_scroll=preserve_scroll)
 
-        self._thumbnail_refs = []
-        self._action_widgets = {}  # 위젯 매핑 초기화
+    def _sync_visible_actions_from_model(self, preserve_scroll: bool = True) -> bool:
+        """모델 기준 가시 액션 목록만 재동기화하고 기존 행 위젯은 최대한 재사용한다."""
+        scrollable = getattr(self, "_scrollable", None)
+        if scrollable is None:
+            self._schedule_action_list_refresh(preserve_scroll=preserve_scroll)
+            return False
 
-        # 최상위 액션만 필터링 (parent_id가 없는 것)
-        top_level_actions = []
-        for action in self._sequence.actions:
-            if not action.parent_id:
-                top_level_actions.append(action)
+        if hasattr(self, '_batch_render_id') and self._batch_render_id:
+            try:
+                self.after_cancel(self._batch_render_id)
+            except (tk.TclError, ValueError):
+                pass
+            self._batch_render_id = None
 
-        # 배치 처리로 렌더링 (한 번에 5개씩)
-        actions_to_render = [(i + 1, action) for i, action in enumerate(top_level_actions)]
-        self._render_actions_batch(actions_to_render, 0, batch_size=5)
+        if not isinstance(scrollable, VirtualScrollFrame):
+            self._schedule_action_list_refresh(preserve_scroll=preserve_scroll)
+            return False
+        try:
+            scrollable.set_items(self._get_flat_actions_with_depth(), preserve_scroll=preserve_scroll)
+            return True
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._schedule_action_list_refresh(preserve_scroll=preserve_scroll)
+            return False
+
+    def _schedule_action_list_refresh(self, delay_ms: int = 16, preserve_scroll: bool = True):
+        """여러 수정 요청을 한 번의 배치 렌더로 합친다."""
+        if self._action_list_refresh_job is not None:
+            return
+
+        def _run_refresh():
+            self._action_list_refresh_job = None
+            try:
+                self._refresh_action_list(preserve_scroll=preserve_scroll)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        try:
+            self._action_list_refresh_job = self.after(delay_ms, _run_refresh)
+        except (tk.TclError, RuntimeError):
+            self._action_list_refresh_job = None
+
+    def _render_action_item(self, parent, item_data: dict, index: int):
+        action = item_data["action"]
+        depth = item_data["depth"]
+        index_str = item_data["index_str"]
+        return self._create_compact_action_item(parent, action, depth=depth, index_str=index_str, use_pack=False)
+
+    def _on_action_item_destroy(self, item_data: dict, index: int, widget) -> None:
+        action = item_data.get("action") if isinstance(item_data, dict) else None
+        action_id = getattr(action, "action_id", None)
+        if not action_id:
+            return
+        widget_data = self._action_widgets.get(action_id)
+        if widget_data and widget_data.get("wrapper") is widget:
+            self._action_widgets.pop(action_id, None)
+
+    def _on_action_item_update(self, item_data: dict, index: int, widget, old_item_data=None) -> None:
+        action = item_data.get("action") if isinstance(item_data, dict) else None
+        action_id = getattr(action, "action_id", None)
+        if not action_id:
+            return
+        widget_data = self._action_widgets.get(action_id)
+        if not widget_data or widget_data.get("wrapper") is not widget:
+            return
+        widget_data["action"] = action
+        widget_data["depth"] = item_data.get("depth")
+        widget_data["index_str"] = item_data.get("index_str")
+        number_label = widget_data.get("number_label")
+        if number_label is not None:
+            try:
+                number_label.configure(text=str(item_data.get("index_str") or index + 1))
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _render_actions_batch(self, actions_list, start_idx, batch_size=5):
         """액션들을 배치로 나눠서 렌더링 (UI 블로킹 방지)"""
+        if isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            self._batch_render_id = None
+            return
+
         if start_idx >= len(actions_list):
             self._batch_render_id = None
             return
@@ -23535,7 +25006,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         end_idx = min(start_idx + batch_size, len(actions_list))
         for i in range(start_idx, end_idx):
             idx, action = actions_list[i]
-            self._create_action_item(self._scrollable, action, depth=0, index_str=str(idx))
+            self._create_compact_action_item(self._scrollable, action, depth=0, index_str=str(idx))
 
         # 다음 배치를 after()로 예약 (UI 반응성 유지)
         if end_idx < len(actions_list):
@@ -23575,7 +25046,348 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 text_color="white" if has_random else COLORS["text_secondary"],
             )
 
-    def _create_action_item(self, parent, action: Action, depth: int = 0, index_str: str = "1"):
+    def _compact_action_label_text(self, action: Action) -> str:
+        action_name = ACTION_NAMES.get(action.action_type, action.action_type or "동작")
+        if not getattr(action, "enabled", True):
+            action_name = f"[비활성] {action_name}"
+        label_text = action_name
+        if action.description:
+            label_text += f" - {action.description}"
+        if action.children:
+            label_text += f"  ({len(action.children)}개 하위)"
+        details = []
+        if action.x is not None and action.y is not None:
+            details.append(f"({action.x},{action.y})")
+        if action.keys:
+            details.append("+".join(action.keys).upper())
+        if action.text:
+            details.append(action.text[:20] + ("..." if len(action.text) > 20 else ""))
+        if getattr(action, "target_image", None):
+            details.append("이미지")
+        if getattr(action, "alternate_mouse_route", False):
+            details.append("경로변경")
+        if getattr(action, "click_until_image_disappears", False):
+            details.append("사라질때까지")
+        if details:
+            label_text += "  |  " + " / ".join(details)
+        return label_text
+
+    def _action_detail_text(self, action: Action, *, compact: bool = False) -> str:
+        details = []
+        if action.x is not None and action.y is not None:
+            details.append(f"({action.x},{action.y})" if compact else f"위치: ({action.x}, {action.y})")
+        if action.text:
+            limit = 20 if compact else 30
+            text_preview = action.text[:limit] + ("..." if len(action.text) > limit else "")
+            details.append(text_preview if compact else f'"{text_preview}"')
+        if action.keys:
+            details.append("+".join(action.keys).upper() if compact else f"[{' + '.join(action.keys).upper()}]")
+        if getattr(action, "target_image", None):
+            if compact:
+                details.append("이미지")
+            if getattr(action, "alternate_mouse_route", False):
+                details.append("경로변경" if compact else "이동경로 변경")
+            if getattr(action, "click_until_image_disappears", False):
+                details.append("사라질때까지" if compact else "사라질때까지 반복")
+        separator = " / " if compact else "  |  "
+        return separator.join(details)
+
+    def _update_compact_action_row(self, action: Action) -> bool:
+        widget_data = getattr(self, "_action_widgets", {}).get(action.action_id)
+        if not widget_data:
+            return False
+        row = widget_data.get("widget")
+        if row is None:
+            return False
+        try:
+            is_selected = self._selected_action is not None and self._selected_action.action_id == action.action_id
+            is_enabled = getattr(action, "enabled", True)
+            row.configure(fg_color="#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"]))
+            if getattr(self, "_compact_action_rows", False):
+                name_label = widget_data.get("name_label")
+                if name_label is None:
+                    return False
+                name_label.configure(
+                    text=self._compact_action_label_text(action),
+                    text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
+                )
+            else:
+                type_label = widget_data.get("type_label")
+                name_label = widget_data.get("name_label")
+                detail_label = widget_data.get("detail_label")
+                number_label = widget_data.get("number_label")
+                action_color = ACTION_COLORS.get(action.action_type, COLORS["text_muted"])
+                type_color = action_color if is_enabled else COLORS["text_muted"]
+                if type_label is None or name_label is None or detail_label is None:
+                    return False
+                type_text = ACTION_NAMES.get(action.action_type, action.action_type or "동작")
+                if not is_enabled:
+                    type_text = f"[비활성] {type_text}"
+                type_label.configure(text=type_text, text_color=type_color)
+                name_label.configure(
+                    text=f" - {action.description}" if action.description else "",
+                    text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
+                )
+                detail_label.configure(
+                    text=self._action_detail_text(action, compact=False),
+                    text_color=COLORS["text_secondary"] if is_enabled else COLORS["text_muted"],
+                )
+                child_count_label = widget_data.get("child_count_label")
+                if child_count_label is not None:
+                    child_count_label.configure(
+                        text=f"  ({len(action.children)}개 하위)" if action.children else "",
+                        text_color=COLORS["text_secondary"] if is_enabled else COLORS["text_muted"],
+                    )
+                if number_label is not None:
+                    number_label.configure(
+                        fg_color=action_color if is_enabled else COLORS["bg_card_hover"],
+                    )
+            self._update_action_buttons(action)
+            if "skip_btn" in widget_data:
+                is_skip = getattr(action, "skip_on_not_found", False)
+                widget_data["skip_btn"].configure(
+                    fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
+                    hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+                    text_color="white" if is_skip else COLORS["text_secondary"],
+                )
+            return True
+        except (tk.TclError, RuntimeError):
+            return False
+
+    def _update_action_parent_summary(self, action: Action) -> bool:
+        if getattr(self, "_compact_action_rows", False):
+            return self._update_compact_action_row(action)
+        widget_data = getattr(self, "_action_widgets", {}).get(getattr(action, "action_id", None))
+        if not widget_data:
+            return False
+        child_count = len(getattr(action, "children", []) or [])
+        child_count_label = widget_data.get("child_count_label")
+        toggle_btn = widget_data.get("toggle_btn")
+        if child_count <= 0:
+            if child_count_label is not None or toggle_btn is not None:
+                return False
+            return self._update_compact_action_row(action)
+        if child_count_label is None or toggle_btn is None:
+            return False
+        try:
+            child_count_label.configure(text=f"  ({child_count}개 하위)")
+            toggle_btn.configure(text="▶" if action.action_id in self._collapsed_items else "▼")
+            return self._update_compact_action_row(action)
+        except (tk.TclError, RuntimeError):
+            return False
+
+    def _update_visible_action_rows_in_place(self) -> None:
+        for widget_data in list(self._action_widgets.values()):
+            action = widget_data.get("action")
+            if action is not None:
+                self._update_compact_action_row(action)
+
+    def _refresh_action_thumbnail(self, action: Action) -> bool:
+        widget_data = self._action_widgets.get(getattr(action, "action_id", None))
+        thumb_frame = widget_data.get("thumb_frame") if widget_data else None
+        if thumb_frame is None:
+            return False
+        try:
+            for child in thumb_frame.winfo_children():
+                child.destroy()
+            self._display_thumbnail(thumb_frame, action, size=widget_data.get("thumb_size", 60))
+            return True
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+    def _show_action_context_menu(self, event, action: Action, depth: int):
+        from tkinter import Menu
+        popup = Menu(self, tearoff=0)
+        popup.add_command(label="이름 설정", command=lambda: self._edit_action_name(action))
+        if action.action_type in ["click", "double_click", "right_click"]:
+            click_menu = Menu(popup, tearoff=0)
+            click_menu.add_command(
+                label="✓ 왼쪽 클릭" if action.action_type == "click" else "  왼쪽 클릭",
+                command=lambda: self._change_action_click_type(action, "click"),
+            )
+            click_menu.add_command(
+                label="✓ 더블 클릭" if action.action_type == "double_click" else "  더블 클릭",
+                command=lambda: self._change_action_click_type(action, "double_click"),
+            )
+            click_menu.add_command(
+                label="✓ 오른쪽 클릭" if action.action_type == "right_click" else "  오른쪽 클릭",
+                command=lambda: self._change_action_click_type(action, "right_click"),
+            )
+            popup.add_cascade(label="클릭 유형", menu=click_menu)
+            if getattr(action, "target_image", None):
+                popup.add_command(
+                    label=("✓ " if getattr(action, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
+                    command=lambda: self._toggle_action_alternate_mouse_route(action),
+                )
+        popup.add_separator()
+        popup.add_command(
+            label="비활성화" if getattr(action, "enabled", True) else "활성화",
+            command=lambda: self._toggle_action_enabled(action),
+        )
+        popup.add_command(label="복사", command=lambda: self._copy_action(action))
+        if get_action_clipboard() is not None:
+            popup.add_command(label="하위로 붙여넣기", command=lambda: self._paste_action(action))
+            popup.add_command(label="최상위에 붙여넣기", command=self._paste_action_top)
+        else:
+            popup.add_command(label="하위로 붙여넣기", state="disabled")
+            popup.add_command(label="최상위에 붙여넣기", state="disabled")
+        if depth > 0:
+            popup.add_separator()
+            popup.add_command(label="종속 해제", command=lambda: self._detach_action(action))
+        popup.tk_popup(event.x_root, event.y_root)
+
+    def _create_compact_action_item(self, parent, action: Action, depth: int = 0, index_str: str = "1", before_widget=None, use_pack: bool = True):
+        """큰 재생목록용 경량 카드. 보이는 위젯 수를 줄여 수정 반응을 우선한다."""
+        has_children = len(action.children) > 0
+        is_collapsed = action.action_id in self._collapsed_items
+        is_enabled = getattr(action, "enabled", True)
+        is_selected = self._selected_action is not None and self._selected_action.action_id == action.action_id
+        indent = depth * 24
+
+        item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
+        if use_pack:
+            pack_options = {"fill": "x"}
+            if before_widget is not None:
+                pack_options["before"] = before_widget
+            item_wrapper.pack(**pack_options)
+
+        row = ctk.CTkFrame(
+            item_wrapper,
+            fg_color="#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"]),
+            corner_radius=8,
+        )
+        row.pack(fill="x", pady=3, padx=(10 + indent, 10))
+        self._action_widgets[action.action_id] = {
+            "widget": row,
+            "action": action,
+            "depth": depth,
+            "index_str": index_str,
+            "wrapper": item_wrapper,
+        }
+
+        def select_action(_event=None, a=action):
+            self._select_action(a)
+
+        def start_drag(event, a=action, w=row):
+            self._select_action(a)
+            self._on_drag_start(event, a, w)
+
+        def bind_row(widget):
+            widget.bind("<Button-1>", start_drag)
+            widget.bind("<B1-Motion>", self._on_drag_motion)
+            widget.bind("<ButtonRelease-1>", self._on_drag_release)
+            widget.bind("<Button-3>", lambda e, a=action, d=depth: self._show_action_context_menu(e, a, d))
+
+        row.bind("<Button-1>", start_drag)
+        row.bind("<B1-Motion>", self._on_drag_motion)
+        row.bind("<ButtonRelease-1>", self._on_drag_release)
+        row.bind("<Button-3>", lambda e, a=action, d=depth: self._show_action_context_menu(e, a, d))
+
+        if has_children:
+            toggle_btn = ctk.CTkButton(
+                row,
+                text="▶" if is_collapsed else "▼",
+                font=ctk.CTkFont(size=10),
+                fg_color="transparent",
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_secondary"],
+                width=24,
+                height=24,
+                corner_radius=4,
+                command=lambda a=action: self._toggle_item_collapse(a.action_id),
+            )
+            toggle_btn.pack(side="left", padx=(8, 2), pady=8)
+        else:
+            ctk.CTkLabel(row, text="", width=24).pack(side="left", padx=(8, 2), pady=8)
+
+        number = ctk.CTkLabel(
+            row,
+            text=index_str,
+            width=38,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        number.pack(side="left", padx=(0, 6), pady=8)
+        bind_row(number)
+        self._action_widgets[action.action_id]["number_label"] = number
+
+        if getattr(action, "target_image", None):
+            thumb = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=44, height=44, corner_radius=6)
+            thumb.pack(side="left", padx=(0, 8), pady=6)
+            thumb.pack_propagate(False)
+            self._action_widgets[action.action_id]["thumb_frame"] = thumb
+            self._action_widgets[action.action_id]["thumb_size"] = 36
+            self._display_thumbnail(thumb, action, size=36)
+
+        name_label = ctk.CTkLabel(
+            row,
+            text=self._compact_action_label_text(action),
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
+        )
+        name_label.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
+        bind_row(name_label)
+
+        is_skip_action = getattr(action, "skip_on_not_found", False)
+        skip_btn_action = ctk.CTkButton(
+            row,
+            text="S",
+            width=30,
+            height=24,
+            fg_color="#2ecc71" if is_skip_action else COLORS["bg_card"],
+            hover_color="#27ae60" if is_skip_action else COLORS["bg_card_hover"],
+            text_color="white" if is_skip_action else COLORS["text_secondary"],
+            command=lambda a=action: self._toggle_skip_mode_action(a),
+        )
+        skip_btn_action.pack(side="right", padx=3, pady=8)
+        self._action_widgets[action.action_id]["skip_btn"] = skip_btn_action
+
+        repeat_count = getattr(action, "repeat_count", 1)
+        until_disappears = bool(getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False))
+        repeat_btn = ctk.CTkButton(
+            row,
+            text=f"x{repeat_count}",
+            width=38,
+            height=24,
+            fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+            hover_color="#ea580c" if until_disappears else ("#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"]),
+            text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
+            command=lambda a=action: self._edit_repeat_count_action(a),
+        )
+        repeat_btn.pack(side="right", padx=3, pady=8)
+
+        wait_time = action.wait_after if action.wait_after else 0.5
+        has_random = getattr(action, "wait_random", False) or (action.action_type == "type" and getattr(action, "typing_random", False))
+        delay_btn = ctk.CTkButton(
+            row,
+            text=f"{wait_time:.1f}초" + ("*" if has_random else ""),
+            width=52,
+            height=24,
+            fg_color=COLORS["success"] if has_random else COLORS["bg_card"],
+            hover_color="#2ea44f" if has_random else COLORS["bg_card_hover"],
+            text_color="white" if has_random else COLORS["text_secondary"],
+            command=lambda a=action: self._edit_wait_time_action(a),
+        )
+        delay_btn.pack(side="right", padx=3, pady=8)
+
+        ctk.CTkButton(
+            row,
+            text="✕",
+            width=30,
+            height=24,
+            fg_color=COLORS["error"],
+            hover_color="#c0392b",
+            text_color="white",
+            command=lambda a=action: self._delete_action(a),
+        ).pack(side="right", padx=(3, 8), pady=8)
+
+        self._action_widgets[action.action_id]["repeat_btn"] = repeat_btn
+        self._action_widgets[action.action_id]["delay_btn"] = delay_btn
+        self._action_widgets[action.action_id]["name_label"] = name_label
+        return item_wrapper
+
+    def _create_action_item(self, parent, action: Action, depth: int = 0, index_str: str = "1", before_widget=None, use_pack: bool = True):
         """액션 항목 생성 (드래그 앤 드롭 지원)"""
         index = index_str  # 계층적 번호 (예: "3", "3-1", "3-2-1")
         has_children = len(action.children) > 0
@@ -23586,7 +25398,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 외부 wrapper (item + children 포함) - 펼치기/접기 시 순서 유지를 위해
         item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
-        item_wrapper.pack(fill="x")
+        if use_pack:
+            pack_options = {"fill": "x"}
+            if before_widget is not None:
+                pack_options["before"] = before_widget
+            item_wrapper.pack(**pack_options)
 
         # 선택 상태에 따른 배경색
         is_selected = self._selected_action is not None and self._selected_action.action_id == action.action_id
@@ -23597,7 +25413,13 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         item.pack(fill="x", pady=4, padx=(10 + indent, 10))
 
         # 위젯 매핑 저장
-        self._action_widgets[action.action_id] = {"widget": item, "action": action, "depth": depth, "wrapper": item_wrapper}
+        self._action_widgets[action.action_id] = {
+            "widget": item,
+            "action": action,
+            "depth": depth,
+            "index_str": index_str,
+            "wrapper": item_wrapper,
+        }
 
         # 클릭 시 선택
         def select_action(event, a=action):
@@ -23698,6 +25520,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         )
         num_lbl.pack(side="left", padx=(0, 8))
         bind_drag(num_lbl)
+        self._action_widgets[action.action_id]["number_label"] = num_lbl
 
         # 자식이 있으면 접기/펼치기 토글 버튼
         if has_children:
@@ -23714,6 +25537,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 command=lambda a=action: self._toggle_item_collapse(a.action_id),
             )
             toggle_btn.pack(side="left", padx=(0, 4))
+            self._action_widgets[action.action_id]["toggle_btn"] = toggle_btn
 
         action_names = ACTION_NAMES
 
@@ -23721,6 +25545,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         thumb = ctk.CTkFrame(content, fg_color=COLORS["bg_card"], width=60, height=60, corner_radius=6)
         thumb.pack(side="left", padx=(0, 10))
         thumb.pack_propagate(False)
+        self._action_widgets[action.action_id]["thumb_frame"] = thumb
         self._display_thumbnail(thumb, action)
 
         # 정보 영역
@@ -23746,15 +25571,18 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         )
         type_lbl.pack(side="left")
         bind_drag(type_lbl)
+        self._action_widgets[action.action_id]["type_label"] = type_lbl
 
         # 이름(설명) 표시
-        if action.description:
-            name_lbl = ctk.CTkLabel(
-                row1, text=f" - {action.description}",
-                font=ctk.CTkFont(size=12), text_color=primary_text_color,
-            )
-            name_lbl.pack(side="left")
-            bind_drag(name_lbl)
+        name_lbl = ctk.CTkLabel(
+            row1,
+            text=f" - {action.description}" if action.description else "",
+            font=ctk.CTkFont(size=12),
+            text_color=primary_text_color,
+        )
+        name_lbl.pack(side="left")
+        bind_drag(name_lbl)
+        self._action_widgets[action.action_id]["name_label"] = name_lbl
 
         # 자식 수 표시
         if has_children:
@@ -23764,6 +25592,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             )
             child_lbl.pack(side="left")
             bind_drag(child_lbl)
+            self._action_widgets[action.action_id]["child_count_label"] = child_lbl
 
         # 빈 공간 (드래그 가능)
         spacer = ctk.CTkLabel(row1, text="", fg_color="transparent")
@@ -23774,26 +25603,15 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         row2 = ctk.CTkFrame(info, fg_color="transparent")
         row2.pack(fill="x", pady=(4, 0), anchor="w")
 
-        details = []
-        if action.x is not None and action.y is not None:
-            details.append(f"위치: ({action.x}, {action.y})")
-        if action.text:
-            text_preview = action.text[:30] + "..." if len(action.text) > 30 else action.text
-            details.append(f'"{text_preview}"')
-        if action.keys:
-            details.append(f"[{' + '.join(action.keys).upper()}]")
-        if getattr(action, "target_image", None) and getattr(action, "alternate_mouse_route", False):
-            details.append("이동경로 변경")
-        if getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False):
-            details.append("사라질때까지 반복")
-
-        if details:
-            detail_lbl = ctk.CTkLabel(
-                row2, text="  |  ".join(details),
-                font=ctk.CTkFont(size=11), text_color=secondary_text_color,
-            )
-            detail_lbl.pack(side="left")
-            bind_drag(detail_lbl)
+        detail_lbl = ctk.CTkLabel(
+            row2,
+            text=self._action_detail_text(action, compact=False),
+            font=ctk.CTkFont(size=11),
+            text_color=secondary_text_color,
+        )
+        detail_lbl.pack(side="left")
+        bind_drag(detail_lbl)
+        self._action_widgets[action.action_id]["detail_label"] = detail_lbl
 
         # row2 빈 공간도 드래그 가능
         spacer2 = ctk.CTkLabel(row2, text="", fg_color="transparent")
@@ -23907,26 +25725,100 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         self._action_widgets[action.action_id]["repeat_btn"] = repeat_btn
         self._action_widgets[action.action_id]["delay_btn"] = delay_btn
 
-        # 자식 액션들 표시 (항상 생성, visibility로 제어)
+        # 자식 액션들 표시 (접힌 상태에서는 생성하지 않고 펼칠 때 생성)
         # item_wrapper 안에 생성하여 펼치기/접기 시 순서 유지
-        if has_children:
+        if has_children and use_pack:
             children_container = ctk.CTkFrame(item_wrapper, fg_color="transparent")
+            widget_data = self._action_widgets[action.action_id]
             if not is_collapsed:
                 children_container.pack(fill="x")
             # 위젯 매핑에 children_container 추가
-            self._action_widgets[action.action_id]["children_container"] = children_container
-            for child_idx, child in enumerate(action.children, 1):
-                child_index_str = f"{index}-{child_idx}"  # 예: "3-1", "3-2"
-                self._create_action_item(children_container, child, depth + 1, index_str=child_index_str)
+            widget_data["children_container"] = children_container
+            widget_data["children_rendered"] = False
+            if not is_collapsed:
+                self._ensure_action_children_rendered(action.action_id)
+        return item_wrapper
 
-    def _display_thumbnail(self, parent, action: Action):
+    def _ensure_action_children_rendered(self, action_id) -> bool:
+        """접힌 하위 액션은 펼칠 때 처음 렌더링한다."""
+        widget_data = self._action_widgets.get(action_id)
+        if not widget_data or widget_data.get("children_rendered"):
+            return bool(widget_data)
+
+        children_container = widget_data.get("children_container")
+        action = widget_data.get("action")
+        if children_container is None or action is None:
+            return False
+
+        depth = int(widget_data.get("depth") or 0)
+        index = str(widget_data.get("index_str") or "")
+        for child_idx, child in enumerate(getattr(action, "children", []) or [], 1):
+            child_index_str = f"{index}-{child_idx}" if index else str(child_idx)
+            self._create_compact_action_item(children_container, child, depth + 1, index_str=child_index_str)
+        widget_data["children_rendered"] = True
+        return True
+
+    def _drop_action_widget_mappings(self, action: Action) -> None:
+        """재렌더 대상 액션 서브트리의 오래된 위젯 매핑을 제거한다."""
+        self._action_widgets.pop(action.action_id, None)
+        for child in getattr(action, "children", []) or []:
+            self._drop_action_widget_mappings(child)
+
+    def _refresh_action_row(self, action: Optional[Action]) -> bool:
+        """구조가 바뀌지 않는 수정은 해당 액션 카드만 다시 그린다."""
+        if action is None:
+            return False
+
+        widget_data = getattr(self, "_action_widgets", {}).get(action.action_id)
+        if not widget_data:
+            try:
+                index = self._find_visible_action_item_index(action.action_id)
+            except (tk.TclError, RuntimeError, AttributeError):
+                index = -1
+            if index >= 0:
+                self._scrollable.refresh_item(index)
+                return True
+            return False
+
+        if isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            try:
+                index = self._find_visible_action_item_index(action.action_id)
+            except (tk.TclError, RuntimeError, AttributeError):
+                return False
+            if index < 0:
+                return False
+            getattr(self, "_action_widgets", {}).pop(action.action_id, None)
+            self._scrollable.refresh_item(index)
+            return True
+
+        wrapper = widget_data.get("wrapper")
+        if wrapper is None:
+            return False
+
+        try:
+            parent = wrapper.master
+            siblings = parent.winfo_children()
+            wrapper_index = siblings.index(wrapper)
+            before_widget = siblings[wrapper_index + 1] if wrapper_index + 1 < len(siblings) else None
+            depth = int(widget_data.get("depth") or 0)
+            index_str = str(widget_data.get("index_str") or "")
+            self._drop_action_widget_mappings(action)
+            wrapper.destroy()
+            self._create_compact_action_item(parent, action, depth=depth, index_str=index_str, before_widget=before_widget)
+            return True
+        except (tk.TclError, RuntimeError, ValueError):
+            return False
+
+    def _display_thumbnail(self, parent, action: Action, size: int = 60):
         """썸네일 표시 - 캐시 사용, 비동기 로딩"""
+        size = max(24, int(size or 60))
+        button_size = size + 8
         image_path = action.target_image
 
         if image_path and Path(image_path).exists():
             try:
                 # 캐시된 썸네일 확인
-                target_size = (60, 60)
+                target_size = (size, size)
                 ctk_image = get_cached_thumbnail(image_path, target_size)
 
                 if ctk_image is not None:
@@ -23935,8 +25827,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                         parent,
                         image=ctk_image,
                         text="",
-                        width=68,
-                        height=68,
+                        width=button_size,
+                        height=button_size,
                         fg_color="transparent",
                         hover_color=COLORS["bg_card_hover"],
                         corner_radius=4,
@@ -23948,12 +25840,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
                 # 캐시 미스 — 플레이스홀더 표시 후 백그라운드 로딩
                 placeholder = ctk.CTkLabel(
-                    parent, text="📷", font=ctk.CTkFont(size=18),
+                    parent, text="📷", font=ctk.CTkFont(size=max(12, min(18, size // 2))),
                     text_color=COLORS["text_muted"],
                 )
                 placeholder.pack(expand=True)
 
-                def _load_thumb(path=image_path, a=action, ph=placeholder, pr=parent):
+                def _load_thumb(path=image_path, a=action, ph=placeholder, pr=parent, thumb_size=size, btn_size=button_size):
                     try:
                         img_arr = np.fromfile(path, np.uint8)
                         img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
@@ -23961,7 +25853,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                             return
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         h, w = img_rgb.shape[:2]
-                        scale = min(60 / w, 60 / h)
+                        scale = min(thumb_size / w, thumb_size / h)
                         new_w, new_h = int(w * scale), int(h * scale)
                         resized = cv2.resize(img_rgb, (new_w, new_h))
                         pil_image = Image.fromarray(resized)
@@ -23973,7 +25865,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                                 ph.destroy()
                                 thumb_btn = ctk.CTkButton(
                                     pr, image=ctk_img, text="",
-                                    width=68, height=68,
+                                    width=btn_size, height=btn_size,
                                     fg_color="transparent",
                                     hover_color=COLORS["bg_card_hover"],
                                     corner_radius=4,
@@ -23988,7 +25880,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     except (IOError, OSError, ValueError):
                         pass
 
-                threading.Thread(target=_load_thumb, daemon=True).start()
+                submit_thumbnail_task(_load_thumb)
                 return
             except (IOError, OSError, ValueError):
                 pass
@@ -23997,12 +25889,16 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             parent,
             text=icons.get(action.action_type, "📋"),
-            font=ctk.CTkFont(size=20),
+            font=ctk.CTkFont(size=max(14, min(20, size // 2))),
             text_color=COLORS["text_muted"],
         ).pack(expand=True)
 
     def _collect_all_image_actions(self) -> list:
         """이미지가 있는 모든 액션 수집 (재귀)"""
+        cached = getattr(self, "_image_action_cache", None)
+        if cached is not None:
+            return list(cached)
+
         result = []
         def collect(actions):
             for a in actions:
@@ -24011,7 +25907,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 if a.children:
                     collect(a.children)
         collect(self._sequence.actions)
+        self._image_action_cache = tuple(result)
         return result
+
+    def _invalidate_action_image_cache(self) -> None:
+        self._image_action_cache = None
 
     def _open_image_editor(self, image_path: str, action: Action):
         """이미지 편집기 열기"""
@@ -24025,33 +25925,52 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 수정 여부 추적 (다이얼로그 닫힐 때 한 번만 새로고침)
         needs_refresh = [False]
+        changed_actions = []
 
-        def on_crop_complete(new_path: str):
+        def on_crop_complete(new_path: str, target_action=None, old_path=None):
+            target = target_action or action
             self._modified = True
             needs_refresh[0] = True
+            if target is not None and target not in changed_actions:
+                changed_actions.append(target)
+            self._invalidate_action_image_cache()
             logger.info(f"이미지 크롭 완료: {new_path}")
+            if old_path:
+                invalidate_thumbnail_cache(old_path)
             invalidate_thumbnail_cache(new_path)  # 캐시 무효화
 
-        def on_delete():
-            action.target_image = None
+        def on_delete(target_action=None, old_path=None):
+            target = target_action or action
+            if target is not None:
+                target.target_image = None
             self._modified = True
             needs_refresh[0] = True
-            invalidate_thumbnail_cache(image_path)  # 캐시 무효화
-            logger.info(f"이미지 삭제됨: {action.action_id}")
+            if target is not None and target not in changed_actions:
+                changed_actions.append(target)
+            self._invalidate_action_image_cache()
+            invalidate_thumbnail_cache(old_path or image_path)  # 캐시 무효화
+            logger.info(f"이미지 삭제됨: {getattr(target, 'action_id', action.action_id)}")
 
-        def on_change(new_path: str):
-            old_path = action.target_image
-            action.target_image = new_path
+        def on_change(new_path: str, target_action=None, old_path=None):
+            target = target_action or action
+            if target is not None:
+                target.target_image = new_path
             self._modified = True
             needs_refresh[0] = True
+            if target is not None and target not in changed_actions:
+                changed_actions.append(target)
+            self._invalidate_action_image_cache()
             if old_path:
                 invalidate_thumbnail_cache(old_path)
             invalidate_thumbnail_cache(new_path)
             logger.info(f"이미지 변경 완료: {new_path}")
 
-        def on_search_radius_change():
+        def on_search_radius_change(target_action=None):
+            target = target_action or action
             self._modified = True
             needs_refresh[0] = True
+            if target is not None and target not in changed_actions:
+                changed_actions.append(target)
 
         dialog = ImageCropDialog(
             self, image_path,
@@ -24065,9 +25984,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         )
         self.wait_window(dialog)
 
-        # 다이얼로그 닫힌 후 한 번만 새로고침
         if needs_refresh[0]:
-            self._refresh_action_list()
+            for changed_action in changed_actions or [action]:
+                updated = self._update_compact_action_row(changed_action)
+                thumb_updated = self._refresh_action_thumbnail(changed_action)
+                if not updated and not thumb_updated:
+                    self._refresh_action_row(changed_action)
 
     def _save_sequence(self):
         """재생 저장"""
@@ -24090,6 +26012,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if not messagebox.askyesno("삭제 확인", "이 액션을 삭제하시겠습니까?"):
             return
 
+        parent = None
         # 최상위에서 찾기
         if action in self._sequence.actions:
             self._sequence.actions.remove(action)
@@ -24099,8 +26022,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             if parent and action in parent.children:
                 parent.children.remove(action)
 
+        self._invalidate_action_tree_cache()
         self._modified = True
-        self._refresh_action_list()
+        if self._selected_action is not None and self._selected_action.action_id == action.action_id:
+            self._selected_action = None
+        self._refresh_after_action_deleted(action, parent)
         logger.info("액션 삭제됨")
 
     def _move_action_up(self, action: Action):
@@ -24116,9 +26042,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         idx = actions_list.index(action)
         if idx > 0:
+            other_action = actions_list[idx - 1]
             actions_list[idx], actions_list[idx - 1] = actions_list[idx - 1], actions_list[idx]
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_action_sibling_swap(action, other_action):
+                self._sync_visible_actions_from_model()
 
     def _move_action_down(self, action: Action):
         """액션을 아래로 이동"""
@@ -24133,9 +26061,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         idx = actions_list.index(action)
         if idx < len(actions_list) - 1:
+            other_action = actions_list[idx + 1]
             actions_list[idx], actions_list[idx + 1] = actions_list[idx + 1], actions_list[idx]
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_action_sibling_swap(action, other_action):
+                self._sync_visible_actions_from_model()
 
     def _edit_wait_time_action(self, action: Action):
         """대기시간 및 랜덤 설정"""
@@ -24279,7 +26209,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         if result["saved"]:
             self._modified = True
-            self._update_action_buttons(action)
+            if not self._update_compact_action_row(action):
+                self._update_action_buttons(action)
             logger.info(f"대기시간 설정 완료")
 
     def _toggle_skip_mode_action(self, action: Action):
@@ -24308,7 +26239,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         is_image_click = bool(action.action_type in ["click", "double_click", "right_click"] and getattr(action, "target_image", None))
         dialog = ctk.CTkToplevel(self)
         dialog.title("반복 설정")
-        dialog_height = 490 if is_image_click else 420
+        dialog_height = 570 if is_image_click else 420
         dialog.geometry(f"350x{dialog_height}")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
@@ -24336,6 +26267,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
 
         click_until_var = ctk.BooleanVar(value=bool(getattr(action, "click_until_image_disappears", False)))
+        click_until_delay_entry = None
         if is_image_click:
             ctk.CTkCheckBox(
                 main_frame,
@@ -24351,6 +26283,39 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 wraplength=300,
                 justify="left",
             ).pack(anchor="w", pady=(0, 4))
+            click_until_delay_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+            click_until_delay_frame.pack(anchor="w", pady=(4, 0))
+            ctk.CTkLabel(
+                click_until_delay_frame,
+                text="전용 반복 대기시간:",
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_primary"],
+            ).pack(side="left")
+            click_until_delay_entry = ctk.CTkEntry(
+                click_until_delay_frame,
+                width=75,
+                height=30,
+                font=ctk.CTkFont(size=12),
+            )
+            click_until_delay_entry.insert(
+                0,
+                f"{getattr(action, 'click_until_image_disappears_delay', getattr(action, 'repeat_delay', 0.5)):.2f}",
+            )
+            click_until_delay_entry.pack(side="left", padx=(6, 4))
+            ctk.CTkLabel(
+                click_until_delay_frame,
+                text="초",
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(side="left")
+            ctk.CTkLabel(
+                main_frame,
+                text="클릭과 하위액션 실행 후 다음 이미지 재검색 전 대기합니다.",
+                font=ctk.CTkFont(size=10),
+                text_color=COLORS["text_muted"],
+                wraplength=300,
+                justify="left",
+            ).pack(anchor="w", pady=(3, 0))
 
         # 반복 대기시간
         ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
@@ -24385,6 +26350,16 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 count = int(count_entry.get().strip())
                 delay = float(delay_entry.get().strip().replace(',', '.'))
                 delay_range = float(delay_range_entry.get().strip().replace(',', '.'))
+                click_until_delay = delay
+                click_until_enabled = bool(is_image_click and click_until_var.get())
+                if click_until_delay_entry is not None:
+                    raw_click_until_delay = click_until_delay_entry.get().strip().replace(',', '.')
+                    if raw_click_until_delay:
+                        click_until_delay = float(raw_click_until_delay)
+                    elif click_until_enabled:
+                        from tkinter import messagebox
+                        messagebox.showerror("오류", "전용 반복 대기시간을 입력하세요")
+                        return
                 if count < 1:
                     from tkinter import messagebox
                     messagebox.showerror("오류", "반복 횟수는 1 이상이어야 합니다")
@@ -24397,11 +26372,16 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     from tkinter import messagebox
                     messagebox.showerror("오류", "±범위는 0 이상이어야 합니다")
                     return
+                if click_until_delay < 0:
+                    from tkinter import messagebox
+                    messagebox.showerror("오류", "전용 반복 대기시간은 0 이상이어야 합니다")
+                    return
                 action.repeat_count = count
                 action.repeat_delay = delay
                 action.repeat_delay_random = delay_random_var.get()
                 action.repeat_delay_random_range = delay_range
-                action.click_until_image_disappears = bool(is_image_click and click_until_var.get())
+                action.click_until_image_disappears = click_until_enabled
+                action.click_until_image_disappears_delay = click_until_delay
                 result["saved"] = True
                 dialog.destroy()
             except ValueError:
@@ -24420,7 +26400,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         if result["saved"]:
             self._modified = True
-            self._update_action_buttons(action)
+            if not self._update_compact_action_row(action) and not self._refresh_action_row(action):
+                self._update_action_buttons(action)
             logger.info(
                 f"반복 설정: {action.repeat_count}회, 대기 {action.repeat_delay}초 "
                 f"(랜덤: {action.repeat_delay_random}, 사라질때까지: {getattr(action, 'click_until_image_disappears', False)})"
@@ -24438,7 +26419,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if result is not None:  # 빈 문자열도 허용 (이름 삭제)
             action.description = result.strip()
             self._modified = True
-            self._refresh_action_list()
+            if not self._update_compact_action_row(action):
+                self._refresh_action_row(action)
             logger.info(f"액션 이름 수정: {action.description}")
 
     def _change_action_click_type(self, action: Action, new_type: str):
@@ -24462,7 +26444,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             action.description = action.description.replace(old_name, new_name)
 
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
         logger.info(f"클릭 유형 변경: {old_type} → {new_type}")
 
     def _toggle_action_alternate_mouse_route(self, action: Action):
@@ -24471,22 +26454,26 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
         action.alternate_mouse_route = not getattr(action, "alternate_mouse_route", False)
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
         logger.info(f"마우스 이동경로 변경: {'활성화' if action.alternate_mouse_route else '비활성화'}")
 
     def _detach_action(self, action: Action):
         """액션을 부모에서 분리하여 부모 바로 아래로 이동"""
         parent = self._find_parent_action(action)
         if parent and _detach_child_after_parent(self._sequence.actions, parent, action, "action_id"):
+            self._invalidate_action_tree_cache()
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_action_detach(parent, action):
+                self._sync_visible_actions_from_model()
             logger.info(f"액션 종속 해제: {action.action_id}")
 
     def _toggle_action_enabled(self, action: Action):
         """액션 활성 상태 토글"""
         action.enabled = not getattr(action, "enabled", True)
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
         logger.info(
             "액션 %s: %s",
             "활성화" if action.enabled else "비활성화",
@@ -24523,8 +26510,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 대상 액션의 자식으로 추가
         target_action.children.append(new_action)
+        self._collapsed_items.discard(target_action.action_id)
+        self._invalidate_action_tree_cache()
         self._modified = True
-        self._refresh_action_list()
+        self._refresh_after_action_added(target_action, new_action)
         logger.info(f"액션 붙여넣기: {new_action.action_id} -> {target_action.action_id}")
 
     def _paste_action_top(self):
@@ -24550,8 +26539,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 최상위에 추가
         self._sequence.actions.append(new_action)
+        self._invalidate_action_tree_cache()
         self._modified = True
-        self._refresh_action_list()
+        self._refresh_after_action_added(None, new_action)
         logger.info(f"액션 최상위에 붙여넣기: {new_action.action_id}")
 
     def _paste_as_monitoring_watch_action(self, action: Action):
@@ -24607,7 +26597,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             logger.info(f"모니터링 액션 추가 (새 감시 항목): {len(monitor_actions)}개")
             action.is_monitoring_mode = True
             self._modified = True
-            self._refresh_action_list()
+            if not self._update_compact_action_row(action):
+                self._refresh_action_row(action)
             return
 
         # 선택된 감시 항목에 추가
@@ -24618,7 +26609,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         logger.info(f"모니터링 액션 추가 (감시 {watch_idx+1}): {len(monitor_actions)}개")
         action.is_monitoring_mode = True
         self._modified = True
-        self._refresh_action_list()
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
 
     def _paste_as_monitor_action_seq(self, action_index: int, watch_index: int):
         """클립보드의 액션을 모니터링 액션으로 붙여넣기 (Sequence용)"""
@@ -24681,6 +26673,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             monitor_action["typing_delay"] = getattr(clipboard, 'typing_delay', 0.1)
             monitor_action["typing_delay_range"] = getattr(clipboard, 'typing_delay_range', 0.05)
             monitor_action["click_until_image_disappears"] = getattr(clipboard, 'click_until_image_disappears', False)
+            monitor_action["click_until_image_disappears_delay"] = getattr(
+                clipboard,
+                'click_until_image_disappears_delay',
+                getattr(clipboard, 'repeat_delay', 0.5),
+            )
             monitor_action["search_radius"] = getattr(clipboard, 'search_radius', 0)
             monitor_action["search_region"] = getattr(clipboard, 'search_region', None)
 
@@ -24689,7 +26686,74 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 watches[watch_index]["monitor_actions"] = []
             watches[watch_index]["monitor_actions"].append(monitor_action)
             self._modified = True
+            if not self._update_compact_action_row(action):
+                self._refresh_action_row(action)
             logger.info(f"모니터링 액션 추가: 액션{action_index+1} 감시{watch_index+1} - {monitor_action['type']}")
+
+    def _add_action_to_current_parent(self, new_action: Action) -> Optional[Action]:
+        """Add a newly created action under the selected action when it is still in this sequence."""
+        parent_action = getattr(self, "_selected_action", None)
+        parent_id = getattr(parent_action, "action_id", None)
+        current_parent = None
+        if parent_action is not None:
+            parent_path = _find_item_path_by_id(getattr(self._sequence, "actions", []) or [], parent_id, "action_id")
+            current_parent = parent_path[-1] if parent_path else None
+            if current_parent is None:
+                self._selected_action = None
+            else:
+                self._selected_action = current_parent
+
+        if current_parent is not None:
+            new_action.parent_id = current_parent.action_id
+            if getattr(current_parent, "children", None) is None:
+                current_parent.children = []
+            current_parent.children.append(new_action)
+            self._collapsed_items.discard(current_parent.action_id)
+            self._invalidate_action_tree_cache()
+            return current_parent
+
+        new_action.parent_id = None
+        self._sequence.actions.append(new_action)
+        self._invalidate_action_tree_cache()
+        return None
+
+    def _refresh_after_action_added(self, parent_action: Optional[Action], new_action: Action) -> None:
+        self._invalidate_action_tree_cache()
+        if not isinstance(self._scrollable, VirtualScrollFrame):
+            self._schedule_action_list_refresh()
+            return
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._schedule_action_list_refresh()
+            return
+
+        if parent_action is None:
+            top_level_count = len([action for action in self._sequence.actions if not action.parent_id])
+            item = {
+                "action": new_action,
+                "depth": 0,
+                "index_str": str(top_level_count),
+            }
+            self._scrollable.splice_items(len(items), 0, [item])
+            return
+
+        parent_index = self._find_visible_action_item_index(parent_action.action_id)
+        if parent_index < 0:
+            return
+        parent_item = items[parent_index]
+        parent_depth = int(parent_item.get("depth") or 0)
+        parent_index_str = str(parent_item.get("index_str") or "")
+        insert_index = parent_index + 1 + self._visible_action_descendant_count(items, parent_index, parent_depth)
+        child_index = len(getattr(parent_action, "children", []) or [])
+        item = {
+            "action": new_action,
+            "depth": parent_depth + 1,
+            "index_str": f"{parent_index_str}-{child_index}",
+        }
+        self._scrollable.splice_items(insert_index, 0, [item])
+        if not self._update_action_parent_summary(parent_action):
+            self._refresh_action_row(parent_action)
 
     def _add_text_action(self):
         """텍스트 입력 액션 추가"""
@@ -24707,10 +26771,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 timestamp=0,
                 wait_after=0.5,
             )
-            self._sequence.actions.append(new_action)
+            parent_action = self._add_action_to_current_parent(new_action)
             self._modified = True
-            self._refresh_action_list()
-            logger.info(f"텍스트 액션 추가: {text[:30]}...")
+            self._refresh_after_action_added(parent_action, new_action)
+            suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+            logger.info(f"텍스트 액션 추가{suffix}: {text[:30]}...")
 
     def _add_key_action(self):
         """키 입력 액션 추가"""
@@ -24727,10 +26792,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 timestamp=0,
                 wait_after=0.5,
             )
-            self._sequence.actions.append(new_action)
+            parent_action = self._add_action_to_current_parent(new_action)
             self._modified = True
-            self._refresh_action_list()
-            logger.info(f"키 액션 추가: {key_text}")
+            self._refresh_after_action_added(parent_action, new_action)
+            suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+            logger.info(f"키 액션 추가{suffix}: {key_text}")
 
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
@@ -24766,10 +26832,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             timestamp=0,
             wait_after=0.5,
         )
-        self._sequence.actions.append(new_action)
+        parent_action = self._add_action_to_current_parent(new_action)
         self._modified = True
-        self._refresh_action_list()
-        logger.info(f"마우스 클릭 액션 추가: ({x}, {y})")
+        self._refresh_after_action_added(parent_action, new_action)
+        suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+        logger.info(f"마우스 클릭 액션 추가{suffix}: ({x}, {y})")
 
     def _add_image_action(self):
         """이미지 클릭 액션 추가"""
@@ -24806,10 +26873,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 timestamp=0,
                 wait_after=0.5,
             )
-            self._sequence.actions.append(new_action)
+            parent_action = self._add_action_to_current_parent(new_action)
             self._modified = True
-            self._refresh_action_list()
-            logger.info(f"이미지 클릭 액션 추가: {dest_path}")
+            self._refresh_after_action_added(parent_action, new_action)
+            suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+            logger.info(f"이미지 클릭 액션 추가{suffix}: {dest_path}")
         except Exception as e:
             from tkinter import messagebox
             logger.error(f"이미지 액션 추가 실패: {e}")
@@ -24863,10 +26931,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     timestamp=0,
                     wait_after=0.5,
                 )
-                self._sequence.actions.append(new_action)
+                parent_action = self._add_action_to_current_parent(new_action)
                 self._modified = True
-                self._refresh_action_list()
-                logger.info(f"스크린샷 액션 추가: {dest_path}")
+                self._refresh_after_action_added(parent_action, new_action)
+                suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+                logger.info(f"스크린샷 액션 추가{suffix}: {dest_path}")
 
         except Exception as e:
             logger.error(f"스크린샷 실패: {e}")
@@ -24892,13 +26961,16 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
 
         try:
+            children = list(action.children)
             moved_count = _flatten_children_after_parent(self._sequence.actions, action, "action_id")
             if moved_count <= 0:
                 messagebox.showerror("오류", "액션을 찾을 수 없습니다.")
                 return
 
+            self._invalidate_action_tree_cache()
             self._modified = True
-            self._refresh_action_list()
+            if not self._apply_visible_action_flatten_children(action, children):
+                self._sync_visible_actions_from_model()
             logger.info(f"하위 해체 완료: {child_count}개 액션")
             messagebox.showinfo("완료", f"{child_count}개의 하위 액션이 해체되었습니다.")
 
@@ -24958,7 +27030,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         apply_random(self._sequence.actions)
 
         self._modified = True
-        self._refresh_action_list()
+        self._update_visible_action_rows_in_place()
         logger.info(f"전체 랜덤 {'활성화' if new_state else '비활성화'}: {count}개 액션")
 
     def _toggle_all_children(self):
@@ -24979,6 +27051,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             # 해제: 1번 액션의 자식들을 부모 바로 아래 같은 레벨로 이동
             children = list(first_action.children)
             _flatten_children_after_parent(self._sequence.actions, first_action, "action_id")
+            self._invalidate_action_tree_cache()
 
             logger.info(f"하위 종속 해제: {len(children)}개 액션")
         else:
@@ -24994,6 +27067,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             for child in children_to_move:
                 child.parent_id = first_action.action_id
                 first_action.children.append(child)
+            self._invalidate_action_tree_cache()
 
             # 접힌 상태 해제 (보이도록)
             self._collapsed_items.discard(first_action.action_id)
@@ -25001,7 +27075,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             logger.info(f"하위 종속: {len(children_to_move)}개 액션을 1번 아래로")
 
         self._modified = True
-        self._refresh_action_list()
+        if 'children' in locals():
+            if not self._apply_visible_action_flatten_children(first_action, children):
+                self._sync_visible_actions_from_model()
+        else:
+            self._sync_visible_actions_from_model()
 
     def _toggle_all_collapse(self):
         """모든 액션 접기/펼치기"""
@@ -25016,10 +27094,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             for action in self._sequence.actions:
                 if action.children:
                     self._collapsed_items.add(action.action_id)
-                self._collect_parent_action_ids(action)
             self._all_collapsed = True
             self._collapse_btn.configure(text="모두 펼치기")
-        self._refresh_action_list()
+            if self._apply_visible_action_collapse_to_roots():
+                return
+        self._sync_visible_actions_from_model()
 
     def _collect_parent_action_ids(self, action: Action):
         """자식이 있는 모든 액션의 ID 수집 (재귀)"""
@@ -25028,39 +27107,500 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 self._collapsed_items.add(child.action_id)
             self._collect_parent_action_ids(child)
 
-    def _toggle_item_collapse(self, action_id: str):
-        """개별 액션 접기/펼치기 (새로고침 없이 visibility 토글)"""
-        widget_data = self._action_widgets.get(action_id)
-        if not widget_data:
+    def _find_visible_action_item_index(self, action_id: str) -> int:
+        if not isinstance(self._scrollable, VirtualScrollFrame):
+            return -1
+        return self._scrollable.find_item_index_by_object_id(action_id, "Action")
+
+    def _visible_action_descendant_count(self, items: list, parent_index: int, parent_depth: int) -> int:
+        count = 0
+        for item in items[parent_index + 1:]:
+            if int(item.get("depth") or 0) <= parent_depth:
+                break
+            count += 1
+        return count
+
+    def _retag_action_index_prefix(self, items: list, old_prefix: str, new_prefix: str) -> list:
+        retagged = []
+        marker = f"{old_prefix}-"
+        for item in items:
+            new_item = dict(item)
+            index_str = str(new_item.get("index_str") or "")
+            if index_str == old_prefix:
+                new_item["index_str"] = new_prefix
+            elif old_prefix and index_str.startswith(marker):
+                new_item["index_str"] = new_prefix + index_str[len(old_prefix):]
+            retagged.append(new_item)
+        return retagged
+
+    def _reindex_visible_action_items(self, items: list) -> list:
+        counters = {}
+        prefixes = {}
+        retagged = []
+        for item in items:
+            depth = int(item.get("depth") or 0)
+            for key in list(counters.keys()):
+                if key > depth:
+                    counters.pop(key, None)
+                    prefixes.pop(key, None)
+            counters[depth] = counters.get(depth, 0) + 1
+            if depth <= 0:
+                index_str = str(counters[depth])
+            else:
+                parent_prefix = prefixes.get(depth - 1, "")
+                index_str = f"{parent_prefix}-{counters[depth]}" if parent_prefix else str(counters[depth])
+            prefixes[depth] = index_str
+            new_item = dict(item)
+            new_item["index_str"] = index_str
+            retagged.append(new_item)
+        return retagged
+
+    def _reindex_action_items_at_indices(self, items: list, indices: list) -> dict:
+        wanted = set(indices or [])
+        if not wanted:
+            return {}
+        max_index = max(wanted)
+        counters = {}
+        prefixes = {}
+        updates = {}
+        for pos, item in enumerate(items[:max_index + 1]):
+            depth = int(item.get("depth") or 0)
+            for key in list(counters.keys()):
+                if key > depth:
+                    counters.pop(key, None)
+                    prefixes.pop(key, None)
+            counters[depth] = counters.get(depth, 0) + 1
+            if depth <= 0:
+                index_str = str(counters[depth])
+            else:
+                parent_prefix = prefixes.get(depth - 1, "")
+                index_str = f"{parent_prefix}-{counters[depth]}" if parent_prefix else str(counters[depth])
+            prefixes[depth] = index_str
+            if pos in wanted:
+                new_item = dict(item)
+                new_item["index_str"] = index_str
+                updates[pos] = new_item
+        return updates
+
+    def _update_visible_action_numbering_only(self) -> None:
+        scrollable = getattr(self, "_scrollable", None)
+        if not isinstance(scrollable, VirtualScrollFrame):
+            return
+        visible_indices = sorted(getattr(scrollable, "_visible_widgets", {}).keys())
+        if not visible_indices:
+            scrollable.update_items_metadata(
+                self._reindex_visible_action_items(list(scrollable.get_items()))
+            )
+            return
+        items = list(scrollable.get_items())
+        updates = self._reindex_action_items_at_indices(items, visible_indices)
+        scrollable.update_visible_items_metadata(lambda index, _old: updates.get(index))
+
+    def _schedule_full_action_metadata_refresh(self, delay_ms: int = 120) -> None:
+        self._action_metadata_refresh_generation = getattr(self, "_action_metadata_refresh_generation", 0) + 1
+        generation = self._action_metadata_refresh_generation
+        if getattr(self, "_action_metadata_refresh_job", None) is not None:
             return
 
-        children_container = widget_data.get("children_container")
-        if not children_container:
+        chunk_size = 800
+
+        def _run_refresh():
+            scrollable = getattr(self, "_scrollable", None)
+            if not isinstance(scrollable, VirtualScrollFrame):
+                self._action_metadata_refresh_job = None
+                return
+            items = scrollable.get_items()
+            counters = {}
+            prefixes = {}
+
+            def _process_chunk(start: int = 0):
+                if generation != getattr(self, "_action_metadata_refresh_generation", 0):
+                    self._action_metadata_refresh_job = None
+                    self._schedule_full_action_metadata_refresh(delay_ms=0)
+                    return
+                current_scrollable = getattr(self, "_scrollable", None)
+                if current_scrollable is not scrollable:
+                    self._action_metadata_refresh_job = None
+                    return
+                updates = {}
+                end = min(len(items), start + chunk_size)
+                for pos in range(start, end):
+                    item = items[pos]
+                    depth = int(item.get("depth") or 0)
+                    for key in list(counters.keys()):
+                        if key > depth:
+                            counters.pop(key, None)
+                            prefixes.pop(key, None)
+                    counters[depth] = counters.get(depth, 0) + 1
+                    if depth <= 0:
+                        index_str = str(counters[depth])
+                    else:
+                        parent_prefix = prefixes.get(depth - 1, "")
+                        index_str = f"{parent_prefix}-{counters[depth]}" if parent_prefix else str(counters[depth])
+                    prefixes[depth] = index_str
+                    if item.get("index_str") != index_str:
+                        new_item = dict(item)
+                        new_item["index_str"] = index_str
+                        items[pos] = new_item
+                        updates[pos] = new_item
+                if updates:
+                    scrollable.update_visible_items_metadata(lambda index, _old: updates.get(index))
+                if end < len(items):
+                    try:
+                        self._action_metadata_refresh_job = self.after(1, lambda: _process_chunk(end))
+                    except (tk.TclError, RuntimeError, AttributeError):
+                        self._action_metadata_refresh_job = None
+                    return
+                self._action_metadata_refresh_job = None
+
+            _process_chunk(0)
+
+        try:
+            self._action_metadata_refresh_job = self.after(delay_ms, _run_refresh)
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._action_metadata_refresh_job = None
+
+    def _refresh_action_numbering_after_patch(self) -> None:
+        self._update_visible_action_numbering_only()
+        self._schedule_full_action_metadata_refresh()
+
+    def _refresh_after_action_deleted(self, deleted_action: Action, parent_action: Optional[Action]) -> None:
+        self._invalidate_action_tree_cache()
+        if not isinstance(self._scrollable, VirtualScrollFrame):
+            self._schedule_action_list_refresh()
             return
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            self._schedule_action_list_refresh()
+            return
+
+        deleted_index = self._find_visible_action_item_index(deleted_action.action_id)
+        if deleted_index < 0:
+            if parent_action is not None:
+                if not self._update_action_parent_summary(parent_action):
+                    self._refresh_action_row(parent_action)
+            return
+
+        depth = int(items[deleted_index].get("depth") or 0)
+        remove_count = 1 + self._visible_action_descendant_count(items, deleted_index, depth)
+        self._scrollable.splice_items(deleted_index, remove_count, [])
+        self._refresh_action_numbering_after_patch()
+        if parent_action is not None:
+            if not self._update_action_parent_summary(parent_action):
+                self._refresh_action_row(parent_action)
+
+    def _build_visible_action_subtree_items(self, action: Action, depth: int, index_str: str) -> list:
+        result = [{
+            "action": action,
+            "depth": depth,
+            "index_str": index_str,
+        }]
+        if (
+            getattr(self, "_all_collapsed", False)
+            and depth > 0
+            and action.children
+            and action.action_id not in self._collapsed_items
+        ):
+            self._collapsed_items.add(action.action_id)
+        if action.children and action.action_id not in self._collapsed_items:
+            for child_idx, child in enumerate(action.children, 1):
+                result.extend(
+                    self._build_visible_action_subtree_items(
+                        child,
+                        depth + 1,
+                        f"{index_str}-{child_idx}",
+                    )
+                )
+        return result
+
+    def _retarget_visible_action_block(self, block: list, *, new_depth: int) -> list:
+        if not block:
+            return []
+        old_depth = int(block[0].get("depth") or 0)
+        depth_delta = new_depth - old_depth
+        adjusted = []
+        for item in block:
+            next_item = dict(item)
+            next_item["depth"] = int(next_item.get("depth") or 0) + depth_delta
+            adjusted.append(next_item)
+        return adjusted
+
+    def _reindex_visible_actions_after_patch(self) -> None:
+        if isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            self._refresh_action_numbering_after_patch()
+
+    def _apply_visible_action_attach(
+        self,
+        moved_action: Action,
+        target_action: Action,
+        old_parent_action: Optional[Action],
+    ) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        moved_index = self._find_visible_action_item_index(moved_action.action_id)
+        if moved_index >= 0:
+            moved_depth = int(items[moved_index].get("depth") or 0)
+            remove_count = 1 + self._visible_action_descendant_count(items, moved_index, moved_depth)
+            self._scrollable.splice_items(moved_index, remove_count, [])
+
+        target_index = self._find_visible_action_item_index(target_action.action_id)
+        if target_index < 0:
+            self._reindex_visible_actions_after_patch()
+            if old_parent_action is not None:
+                if not self._update_action_parent_summary(old_parent_action):
+                    self._refresh_action_row(old_parent_action)
+            return True
+
+        current_items = list(self._scrollable.get_items())
+        target_item = current_items[target_index]
+        target_depth = int(target_item.get("depth") or 0)
+        target_index_str = str(target_item.get("index_str") or "")
+        existing_count = self._visible_action_descendant_count(current_items, target_index, target_depth)
+        child_items = self._build_visible_action_child_items(target_action, target_depth, target_index_str)
+        self._scrollable.splice_items(target_index + 1, existing_count, child_items)
+        self._reindex_visible_actions_after_patch()
+        if old_parent_action is not None and old_parent_action.action_id != target_action.action_id:
+            if not self._update_action_parent_summary(old_parent_action):
+                self._refresh_action_row(old_parent_action)
+        if not self._update_action_parent_summary(target_action):
+            self._refresh_action_row(target_action)
+        return True
+
+    def _apply_visible_action_detach(self, parent_action: Action, child_action: Action) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        parent_index = self._find_visible_action_item_index(parent_action.action_id)
+        if parent_index < 0:
+            child_index = self._find_visible_action_item_index(child_action.action_id)
+            if child_index >= 0:
+                child_depth = int(items[child_index].get("depth") or 0)
+                remove_count = 1 + self._visible_action_descendant_count(items, child_index, child_depth)
+                self._scrollable.splice_items(child_index, remove_count, [])
+                self._reindex_visible_actions_after_patch()
+                return True
+            return False
+
+        parent_depth = int(items[parent_index].get("depth") or 0)
+        child_index = self._find_visible_action_item_index(child_action.action_id)
+        if child_index >= 0:
+            child_depth = int(items[child_index].get("depth") or 0)
+            remove_count = 1 + self._visible_action_descendant_count(items, child_index, child_depth)
+            child_block = list(items[child_index:child_index + remove_count])
+            self._scrollable.splice_items(child_index, remove_count, [])
+        else:
+            child_block = self._build_visible_action_subtree_items(
+                child_action,
+                parent_depth,
+                str(items[parent_index].get("index_str") or ""),
+            )
+
+        current_items = list(self._scrollable.get_items())
+        parent_index = self._find_visible_action_item_index(parent_action.action_id)
+        if parent_index < 0:
+            self._reindex_visible_actions_after_patch()
+            return True
+
+        parent_depth = int(current_items[parent_index].get("depth") or 0)
+        insert_index = parent_index + 1 + self._visible_action_descendant_count(current_items, parent_index, parent_depth)
+        adjusted_block = self._retarget_visible_action_block(child_block, new_depth=parent_depth)
+        self._scrollable.splice_items(insert_index, 0, adjusted_block)
+        self._reindex_visible_actions_after_patch()
+        if not self._update_action_parent_summary(parent_action):
+            self._refresh_action_row(parent_action)
+        return True
+
+    def _apply_visible_action_flatten_children(
+        self,
+        parent_action: Action,
+        flattened_children: list,
+    ) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        parent_index = self._find_visible_action_item_index(parent_action.action_id)
+        if parent_index < 0:
+            return False
+
+        parent_depth = int(items[parent_index].get("depth") or 0)
+        remove_count = self._visible_action_descendant_count(items, parent_index, parent_depth)
+        replacement = []
+        for child in flattened_children:
+            replacement.extend(
+                self._build_visible_action_subtree_items(
+                    child,
+                    parent_depth,
+                    str(items[parent_index].get("index_str") or ""),
+                )
+            )
+        self._scrollable.splice_items(parent_index + 1, remove_count, replacement)
+        self._reindex_visible_actions_after_patch()
+        if not self._update_action_parent_summary(parent_action):
+            self._refresh_action_row(parent_action)
+        return True
+
+    def _apply_visible_action_collapse_to_roots(self) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        root_items = [
+            {
+                "action": action,
+                "depth": 0,
+                "index_str": str(index),
+            }
+            for index, action in enumerate(getattr(self._sequence, "actions", []) or [], 1)
+            if not getattr(action, "parent_id", None)
+        ]
+        if not root_items:
+            return False
+        self._scrollable.set_items(root_items, preserve_scroll=True)
+        for item in root_items:
+            action = item.get("action")
+            action_id = getattr(action, "action_id", None)
+            if not action_id:
+                continue
+            toggle_btn = getattr(self, "_action_widgets", {}).get(action_id, {}).get("toggle_btn")
+            if toggle_btn is not None:
+                try:
+                    toggle_btn.configure(text="▶" if action_id in self._collapsed_items else "▼")
+                except (tk.TclError, RuntimeError):
+                    pass
+        return True
+
+    def _apply_visible_action_sibling_swap(self, action_a: Action, action_b: Action) -> bool:
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            return False
+        try:
+            items = list(self._scrollable.get_items())
+        except (tk.TclError, RuntimeError, AttributeError):
+            return False
+
+        idx_a = self._find_visible_action_item_index(action_a.action_id)
+        idx_b = self._find_visible_action_item_index(action_b.action_id)
+        if idx_a < 0 or idx_b < 0:
+            return self._hidden_action_sibling_swap_has_no_visible_effect(action_a, action_b)
+        if idx_a == idx_b:
+            return False
+        if idx_a > idx_b:
+            idx_a, idx_b = idx_b, idx_a
+
+        depth_a = int(items[idx_a].get("depth") or 0)
+        depth_b = int(items[idx_b].get("depth") or 0)
+        if depth_a != depth_b:
+            return False
+        end_a = idx_a + 1 + self._visible_action_descendant_count(items, idx_a, depth_a)
+        end_b = idx_b + 1 + self._visible_action_descendant_count(items, idx_b, depth_b)
+        if end_a != idx_b:
+            return False
+
+        prefix_a = str(items[idx_a].get("index_str") or "")
+        prefix_b = str(items[idx_b].get("index_str") or "")
+        block_a = self._retag_action_index_prefix(items[idx_a:end_a], prefix_a, prefix_b)
+        block_b = self._retag_action_index_prefix(items[idx_b:end_b], prefix_b, prefix_a)
+        self._scrollable.replace_items_range(idx_a, end_b - idx_a, block_b + block_a)
+        return True
+
+    def _hidden_action_sibling_swap_has_no_visible_effect(self, action_a: Action, action_b: Action) -> bool:
+        parent_a = self._find_parent_action(action_a)
+        parent_b = self._find_parent_action(action_b)
+        if parent_a is None or parent_b is None:
+            return False
+        if getattr(parent_a, "action_id", None) != getattr(parent_b, "action_id", None):
+            return False
+
+        current = parent_a
+        while current is not None:
+            current_id = getattr(current, "action_id", None)
+            if current_id in self._collapsed_items:
+                self._update_action_parent_summary(current)
+                return True
+            current = self._find_parent_action(current)
+        return False
+
+    def _build_visible_action_child_items(self, parent_action: Action, parent_depth: int, parent_index_str: str) -> list:
+        result = []
+
+        def add_action(action: Action, depth: int, index_str: str):
+            result.append({
+                "action": action,
+                "depth": depth,
+                "index_str": index_str,
+            })
+            if (
+                getattr(self, "_all_collapsed", False)
+                and depth > 0
+                and action.children
+                and action.action_id not in self._collapsed_items
+            ):
+                self._collapsed_items.add(action.action_id)
+            if action.children and action.action_id not in self._collapsed_items:
+                for child_idx, child in enumerate(action.children, 1):
+                    add_action(child, depth + 1, f"{index_str}-{child_idx}")
+
+        for child_idx, child in enumerate(parent_action.children, 1):
+            add_action(child, parent_depth + 1, f"{parent_index_str}-{child_idx}")
+        return result
+
+    def _toggle_item_collapse(self, action_id: str):
+        """개별 액션 접기/펼치기."""
+        if not isinstance(getattr(self, "_scrollable", None), VirtualScrollFrame):
+            widget_data = self._action_widgets.get(action_id)
+            if not widget_data:
+                return
+            children_container = widget_data.get("children_container")
+            if action_id in self._collapsed_items:
+                self._collapsed_items.discard(action_id)
+                self._ensure_action_children_rendered(action_id)
+                if children_container is not None:
+                    children_container.pack(fill="x")
+            else:
+                self._collapsed_items.add(action_id)
+                if children_container is not None:
+                    children_container.pack_forget()
+            return
+
+        index = self._find_visible_action_item_index(action_id)
+        if index < 0:
+            if action_id in self._collapsed_items:
+                self._collapsed_items.discard(action_id)
+            else:
+                self._collapsed_items.add(action_id)
+            return
+
+        items = self._scrollable.get_items()
+        item = items[index]
+        action = item.get("action")
+        depth = int(item.get("depth") or 0)
+        index_str = str(item.get("index_str") or "")
 
         if action_id in self._collapsed_items:
-            # 펼치기
             self._collapsed_items.discard(action_id)
-            children_container.pack(fill="x")
+            new_items = self._build_visible_action_child_items(action, depth, index_str)
+            self._scrollable.splice_items(index + 1, 0, new_items)
         else:
-            # 접기
             self._collapsed_items.add(action_id)
-            children_container.pack_forget()
+            remove_count = self._visible_action_descendant_count(items, index, depth)
+            self._scrollable.splice_items(index + 1, remove_count, [])
 
-        # 토글 버튼 텍스트 업데이트
-        item_widget = widget_data.get("widget")
-        if item_widget:
+        toggle_btn = self._action_widgets.get(action_id, {}).get("toggle_btn")
+        if toggle_btn is not None:
             try:
-                # content > toggle_btn 찾기
-                for child in item_widget.winfo_children():
-                    for subchild in child.winfo_children():
-                        if isinstance(subchild, ctk.CTkButton):
-                            text = subchild.cget("text")
-                            if text in ("▶", "▼"):
-                                new_text = "▼" if action_id not in self._collapsed_items else "▶"
-                                subchild.configure(text=new_text)
-                                break
-            except Exception:
+                toggle_btn.configure(text="▶" if action_id in self._collapsed_items else "▼")
+            except (tk.TclError, RuntimeError):
                 pass
 
     def _on_drag_start(self, event, action: Action, widget):
@@ -25143,21 +27683,26 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if self._is_ancestor_action(dragged, target):
             return
 
+        old_parent = None
         # 현재 위치에서 제거
         if dragged in self._sequence.actions:
             self._sequence.actions.remove(dragged)
         else:
             parent = self._find_parent_action(dragged)
             if parent and dragged in parent.children:
+                old_parent = parent
                 parent.children.remove(dragged)
 
         # 대상의 자식으로 추가
         dragged.parent_id = target.action_id
         if dragged not in target.children:
             target.children.append(dragged)
+        self._collapsed_items.discard(target.action_id)
+        self._invalidate_action_tree_cache()
 
         self._modified = True
-        self._refresh_action_list()
+        if not self._apply_visible_action_attach(dragged, target, old_parent):
+            self._sync_visible_actions_from_model()
         logger.info(f"액션을 '{target.action_id}'의 하위로 이동")
 
     def _is_ancestor_action(self, potential_ancestor: Action, target: Action) -> bool:
@@ -25171,13 +27716,34 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return False
         return check_children(potential_ancestor)
 
+    def _invalidate_action_tree_cache(self) -> None:
+        self._action_parent_cache = None
+        self._invalidate_action_image_cache()
+
+    def _get_action_parent_cache(self) -> dict:
+        cache = getattr(self, "_action_parent_cache", None)
+        if cache is not None:
+            return cache
+
+        cache = {}
+
+        def visit(items, parent):
+            for item in items or []:
+                action_id = getattr(item, "action_id", None)
+                if action_id is not None:
+                    cache[action_id] = parent
+                visit(getattr(item, "children", []) or [], item)
+
+        visit(getattr(self._sequence, "actions", []) or [], None)
+        self._action_parent_cache = cache
+        return cache
+
     def _find_parent_action(self, target: Action) -> Optional[Action]:
         """대상 액션의 부모 액션 찾기"""
-        for action in self._sequence.actions:
-            parent = self._find_parent_in_tree_action(action, target)
-            if parent:
-                return parent
-        return None
+        target_id = getattr(target, "action_id", None)
+        if target_id is None:
+            return None
+        return self._get_action_parent_cache().get(target_id)
 
     def _find_parent_in_tree_action(self, action: Action, target: Action) -> Optional[Action]:
         """트리에서 대상의 부모 찾기 (재귀)"""
@@ -26211,6 +28777,11 @@ class PlayerView(BaseView):
             search_region=getattr(action, "search_region", None),
             alternate_mouse_route=getattr(action, "alternate_mouse_route", False),
             click_until_image_disappears=getattr(action, "click_until_image_disappears", False),
+            click_until_image_disappears_delay=getattr(
+                action,
+                "click_until_image_disappears_delay",
+                getattr(action, "repeat_delay", 0.5),
+            ),
             wait_after=getattr(action, "wait_after", 0.0),
             wait_random=getattr(action, "wait_random", False),
             wait_random_range=getattr(action, "wait_random_range", 0.3),
@@ -26527,6 +29098,7 @@ class PlayerView(BaseView):
             lambda: None,
             config_rule_id=config_rule_id,
             auto_run=True,
+            source_rule=source_rule,
         )
         self._playback_gm_current_rule = source_rule
         self._cancel_playback_game_mode_wait()
@@ -26545,9 +29117,15 @@ class PlayerView(BaseView):
                     return
                 if not gm._is_running:
                     completed_ok = getattr(gm, "_completed_normally", False)
+                    completion_msg = getattr(gm, "_completion_message", None)
+                    skip_current_playlist = bool(getattr(gm, "_skip_current_playlist", False))
                     gm.destroy()
                     self._playback_gm_dialog = None
-                    self._on_playback_game_mode_complete(completed_ok)
+                    self._on_playback_game_mode_complete(
+                        completed_ok,
+                        completion_msg,
+                        skip_current_playlist=skip_current_playlist,
+                    )
                     return
                 self._playback_gm_after_id = self.after(500, _check_gm_done)
             except Exception:
@@ -26556,11 +29134,22 @@ class PlayerView(BaseView):
 
         self._playback_gm_after_id = self.after(500, _check_gm_done)
 
-    def _on_playback_game_mode_complete(self, success: bool, error_msg: str = None):
+    def _on_playback_game_mode_complete(
+        self,
+        success: bool,
+        error_msg: str = None,
+        *,
+        skip_current_playlist: bool = False,
+    ):
         remaining = list(getattr(self, "_playback_remaining_rules", []) or [])
         self._playback_remaining_rules = []
         gm_rule = getattr(self, "_playback_gm_current_rule", None)
         self._playback_gm_current_rule = None
+        if skip_current_playlist:
+            message = error_msg or PLAYLIST_SKIP_TRIGGER_MISSING
+            logger.warning(f"[재생] 특화모드 트리거 미감지 → 현재 재생목록 종료: {message}")
+            self._show_plan_complete(True, message)
+            return
         if success:
             def _continue_success():
                 if remaining:

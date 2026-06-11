@@ -22,29 +22,60 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
         action_type="click",
         target_image=str(target),
         repeat_count=7,
+        repeat_delay=1.2,
         click_until_image_disappears=True,
+        click_until_image_disappears_delay=0.15,
     )
     saved_rule = rule.to_dict()
 
     assert saved_rule["click_until_image_disappears"] is True
-    assert AutomationRule.from_dict(saved_rule, templates_dir=tmp_path).click_until_image_disappears is True
+    assert saved_rule["click_until_image_disappears_delay"] == 0.15
+    restored_rule = AutomationRule.from_dict(saved_rule, templates_dir=tmp_path)
+    assert restored_rule.click_until_image_disappears is True
+    assert restored_rule.click_until_image_disappears_delay == 0.15
+    legacy_rule = AutomationRule.from_dict(
+        {
+            "action_type": "click",
+            "target_image": str(target),
+            "repeat_delay": 0.9,
+            "click_until_image_disappears": True,
+        },
+        templates_dir=tmp_path,
+    )
+    assert legacy_rule.click_until_image_disappears_delay == 0.9
 
     action = Action.from_dict(
         {
             "action_type": "click",
             "target_image": str(target),
             "repeat_count": 7,
+            "repeat_delay": 1.1,
             "click_until_image_disappears": True,
+            "click_until_image_disappears_delay": 0.2,
         }
     )
 
     assert action.click_until_image_disappears is True
     assert action.to_dict()["click_until_image_disappears"] is True
+    assert action.click_until_image_disappears_delay == 0.2
+    assert action.to_dict()["click_until_image_disappears_delay"] == 0.2
+    legacy_action = Action.from_dict(
+        {
+            "action_type": "click",
+            "target_image": str(target),
+            "repeat_delay": 0.8,
+            "click_until_image_disappears": True,
+        }
+    )
+    assert legacy_action.click_until_image_disappears_delay == 0.8
 
 
 def test_player_repeat_dialog_exposes_disappear_click_option():
     text = _text(PLAYER_VIEW)
 
+    assert "click_until_delay_entry" in text
+    assert "click_until_image_disappears_delay" in text
+    assert "전용 반복 대기시간:" in text
     assert "이미지가 사라질 때까지 반복 클릭" in text
     assert "켜면 매번 이미지를 다시 찾아 클릭합니다." in text
     assert 'text="사라짐" if until_disappears' not in text
@@ -67,7 +98,29 @@ def test_rule_executor_clicks_until_image_disappears_by_researching_target():
     assert "def _execute_child_rules_for_repeat_click(" in text
     assert "self._mark_child_rules_handled_by_parent(rule)" in text
     assert "target = self._find_rule_image_click_target(rule, valid_images)" in text
+    assert "click_until_image_disappears_delay" in text
     assert 'and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))' in text
+
+
+def test_click_until_image_disappears_uses_dedicated_repeat_delay():
+    executor = RuleExecutor()
+    rule = AutomationRule(
+        action_type="click",
+        target_image="target.png",
+        repeat_delay=9.0,
+        repeat_delay_random=True,
+        repeat_delay_random_range=5.0,
+        click_until_image_disappears=True,
+        click_until_image_disappears_delay=0.25,
+    )
+
+    assert executor._repeat_delay_for_rule(rule) == 0.25
+
+    class LegacyRule:
+        click_until_image_disappears = True
+        repeat_delay = 0.75
+
+    assert executor._repeat_delay_for_rule(LegacyRule()) == 0.75
 
 
 def test_click_until_image_disappears_repeats_only_child_actions(tmp_path, monkeypatch):
@@ -133,3 +186,48 @@ def test_click_until_image_disappears_repeats_only_child_actions(tmp_path, monke
     assert execution_order == ["click", "child", "click", "child"]
     assert child.rule_id in executor._child_rules_executed_with_parent
     assert sibling.rule_id not in executor._child_rules_executed_with_parent
+
+
+def test_click_until_image_disappears_guard_limit_does_not_stop_playlist(tmp_path, monkeypatch):
+    target = tmp_path / "target.png"
+    target.write_bytes(b"fake")
+
+    parent = AutomationRule(
+        action_type="double_click",
+        target_image=str(target),
+        repeat_count=1,
+        repeat_delay=0,
+        click_until_image_disappears=True,
+    )
+    child = AutomationRule(action_type="hotkey", action_keys=["enter"], wait_after=0, description="child-enter")
+    parent.children = [child]
+
+    executor = RuleExecutor()
+    found_target = {
+        "x": 10,
+        "y": 20,
+        "confidence": 1.0,
+        "image": str(target),
+        "method": "test",
+        "locations": [(10, 20, 1.0)],
+    }
+    monkeypatch.setattr(executor, "_find_rule_image_click_target", lambda rule, images: found_target)
+    monkeypatch.setattr(executor, "_repeat_delay_for_rule", lambda rule: 0)
+
+    click_calls = []
+    child_calls = []
+
+    def fake_click(rule, action_type, click_x, click_y, start_time, *, image_click=False):
+        click_calls.append((rule.rule_id, action_type, click_x, click_y, image_click))
+        return executor._make_result(rule, True, "click 완료", start_time)
+
+    monkeypatch.setattr(executor, "_execute_click_at", fake_click)
+    monkeypatch.setattr(executor, "_execute_child_rules_for_repeat_click", lambda rule, start_time: child_calls.append(rule.rule_id) or None)
+
+    result = executor._execute_rule_with_retry(parent, max_retries=1, step_num="1")
+
+    assert result.success is True
+    assert "한도 도달 후 진행" in result.message
+    assert len(click_calls) == 5
+    assert child_calls == [parent.rule_id] * 5
+    assert child.rule_id in executor._child_rules_executed_with_parent

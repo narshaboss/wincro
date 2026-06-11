@@ -10,7 +10,10 @@ from tkinter import filedialog, Canvas
 from typing import Optional, Callable
 from pathlib import Path
 import os
+import re
+import queue
 import threading
+import time
 import cv2
 import numpy as np
 import json
@@ -42,6 +45,38 @@ logger = get_logger(__name__)
 _thumbnail_cache = {}  # {cache_key: CTkImage}
 _thumbnail_cache_lock = threading.Lock()
 MAX_THUMBNAIL_CACHE = 100
+_thumbnail_task_queue = queue.Queue()
+_thumbnail_worker_lock = threading.Lock()
+_thumbnail_workers_started = False
+_THUMBNAIL_WORKER_COUNT = 4
+
+
+def submit_thumbnail_task(task):
+    """Run thumbnail decoding on a small daemon worker pool instead of one thread per image."""
+    global _thumbnail_workers_started
+    if not _thumbnail_workers_started:
+        with _thumbnail_worker_lock:
+            if not _thumbnail_workers_started:
+                for index in range(_THUMBNAIL_WORKER_COUNT):
+                    worker = threading.Thread(
+                        target=_thumbnail_worker_loop,
+                        name=f"wincro-thumbnail-{index + 1}",
+                        daemon=True,
+                    )
+                    worker.start()
+                _thumbnail_workers_started = True
+    _thumbnail_task_queue.put(task)
+
+
+def _thumbnail_worker_loop():
+    while True:
+        task = _thumbnail_task_queue.get()
+        try:
+            task()
+        except Exception as exc:
+            logger.warning(f"Thumbnail worker error: {exc}")
+        finally:
+            _thumbnail_task_queue.task_done()
 
 
 def get_cached_thumbnail(image_path: str, size: tuple):
@@ -59,6 +94,75 @@ def set_cached_thumbnail(image_path: str, size: tuple, ctk_image):
             oldest_key = next(iter(_thumbnail_cache))
             del _thumbnail_cache[oldest_key]
         _thumbnail_cache[cache_key] = ctk_image
+
+
+def invalidate_thumbnail_cache(image_path: str):
+    """변경된 이미지 경로의 썸네일 캐시를 제거합니다."""
+    if not image_path:
+        return
+    with _thumbnail_cache_lock:
+        keys_to_remove = [key for key in _thumbnail_cache if image_path in key]
+        for key in keys_to_remove:
+            del _thumbnail_cache[key]
+
+
+_WINDOWS_RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def sanitize_template_filename(raw_name: str, fallback_suffix: str = ".png") -> Optional[str]:
+    """Return a safe template filename while preserving Korean characters."""
+    name = (raw_name or "").strip()
+    if not name:
+        return None
+
+    name = Path(name).name
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if not name:
+        return None
+
+    path = Path(name)
+    suffix = path.suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".gif"}:
+        stem = path.stem
+    else:
+        stem = name
+        suffix = fallback_suffix if fallback_suffix.startswith(".") else f".{fallback_suffix}"
+
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .")
+    if not stem or stem.upper() in _WINDOWS_RESERVED_FILENAMES:
+        return None
+    return f"{stem}{suffix}"
+
+
+def unique_template_path(directory: Path, filename: str) -> Path:
+    """Return a non-destructive path that does not collide with image or sidecar mask files."""
+    directory.mkdir(parents=True, exist_ok=True)
+    candidate = directory / filename
+    if not candidate.exists() and not get_sidecar_mask_path(candidate).exists():
+        return candidate
+
+    stem = candidate.stem
+    suffix = candidate.suffix or ".png"
+    for index in range(2, 10000):
+        next_candidate = directory / f"{stem}_{index}{suffix}"
+        if not next_candidate.exists() and not get_sidecar_mask_path(next_candidate).exists():
+            return next_candidate
+    return directory / f"{stem}_{int(time.time())}{suffix}"
+
+
+def write_image_file(path: Path, image: np.ndarray) -> bool:
+    """Write OpenCV image arrays with Unicode path support on Windows."""
+    suffix = path.suffix or ".png"
+    ok, encoded = cv2.imencode(suffix, image)
+    if not ok:
+        return False
+    encoded.tofile(str(path))
+    return True
 
 
 class ScreenRegionSelector(tk.Toplevel):
@@ -260,6 +364,9 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._crop_mask_needs_refresh = False
         self._full_image_mask = None
         self._background_cutout_var = ctk.BooleanVar(value=False)
+        self._crop_filename_var = tk.StringVar(value="")
+        self._crop_filename_entry = None
+        self._crop_filename_hint_label = None
         self._edit_mode = "select"
 
         # 이미지 내비게이션
@@ -332,7 +439,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             pass
 
     def _on_crop_arrow_key(self, event):
-        if self._crop_coords is None:
+        if self._crop_coords is None or (
+            event.keysym in ("Left", "Right") and self._is_full_image_crop_selection()
+        ):
             if event.keysym == "Left":
                 self._navigate_image(-1)
                 return "break"
@@ -352,6 +461,13 @@ class ImageCropDialog(ctk.CTkToplevel):
         if dx or dy:
             self._move_crop_selection(dx, dy)
         return "break"
+
+    def _is_full_image_crop_selection(self) -> bool:
+        if self._original_image is None or self._crop_coords is None:
+            return False
+        height, width = self._original_image.shape[:2]
+        x1, y1, x2, y2 = self._crop_coords
+        return int(x1) <= 0 and int(y1) <= 0 and int(x2) >= width and int(y2) >= height
 
     def _move_crop_selection(self, dx: int, dy: int) -> bool:
         if self._original_image is None or self._crop_coords is None:
@@ -568,6 +684,36 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._update_nav_buttons()
 
         # 버튼 프레임 (하단에 배치)
+        name_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=10)
+        name_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 6))
+
+        ctk.CTkLabel(
+            name_frame,
+            text="저장 전 이름",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left", padx=(12, 8), pady=8)
+
+        self._crop_filename_entry = ctk.CTkEntry(
+            name_frame,
+            textvariable=self._crop_filename_var,
+            placeholder_text=self._crop_filename_placeholder(),
+            height=30,
+            font=ctk.CTkFont(size=12),
+            state="normal" if self._crop_coords is not None else "disabled",
+        )
+        self._crop_filename_entry.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=8)
+        self._crop_filename_entry.bind("<Return>", lambda _event: self._save_crop())
+
+        self._crop_filename_hint_label = ctk.CTkLabel(
+            name_frame,
+            text="크롭 후 입력하면 templates에 해당 이름으로 저장",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        )
+        self._crop_filename_hint_label.pack(side="left", padx=(0, 12), pady=8)
+        self._update_crop_filename_state()
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(side="bottom", pady=15)
 
@@ -612,8 +758,8 @@ class ImageCropDialog(ctk.CTkToplevel):
         ).pack(side="left", padx=5)
 
         # 멀티이미지 버튼 (rule이 있을 때만)
-        if self._rule is not None:
-            alt_count = len(self._rule.target_images) if self._rule.target_images else 0
+        if self._rule is not None and hasattr(self._rule, 'target_images'):
+            alt_count = len(getattr(self._rule, 'target_images', []) or [])
             alt_text = f"멀티이미지 ({alt_count})" if alt_count > 0 else "멀티이미지 추가"
             self._alt_image_btn = ctk.CTkButton(
                 btn_frame,
@@ -943,8 +1089,33 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._crop_mask = normalize_binary_mask(self._crop_mask, cropped.shape[:2])
             self._crop_mask_needs_refresh = True
         self._save_btn.configure(state="normal")
+        self._update_crop_filename_state()
         self._refresh_preview()
         self._update_canvas_image()
+
+    def _crop_filename_placeholder(self) -> str:
+        stem = Path(self._image_path).stem or "template"
+        return f"비우면 자동 저장: {stem}_crop_랜덤"
+
+    def _update_crop_filename_state(self):
+        ready = self._crop_coords is not None
+        if self._crop_filename_entry is not None:
+            self._crop_filename_entry.configure(
+                state="normal" if ready else "disabled",
+                placeholder_text=self._crop_filename_placeholder(),
+                border_color=COLORS["success"] if ready else COLORS["border"],
+            )
+        if self._crop_filename_hint_label is not None:
+            self._crop_filename_hint_label.configure(
+                text="이름 입력 후 저장하면 즉시 해당 파일명으로 저장"
+                if ready
+                else "크롭 영역을 먼저 선택하세요",
+                text_color=COLORS["success"] if ready else COLORS["text_muted"],
+            )
+
+    def _reset_crop_filename(self):
+        self._crop_filename_var.set("")
+        self._update_crop_filename_state()
 
     def _ensure_current_crop_mask(self, *, refresh_view: bool = False):
         if self._original_image is None or self._crop_coords is None:
@@ -1103,21 +1274,29 @@ class ImageCropDialog(ctk.CTkToplevel):
             original_path = Path(self._image_path)
             stem = original_path.stem
             suffix = ".png" if cutout_enabled else (original_path.suffix or ".png")
-            parent = original_path.parent
+            custom_filename = sanitize_template_filename(self._crop_filename_var.get(), suffix)
+            if self._crop_filename_var.get().strip() and custom_filename is None:
+                messagebox.showwarning("알림", "저장 이름으로 사용할 수 없는 파일명입니다.")
+                return
 
-            # 크롭 파일명: 원본이름_crop_랜덤.확장자
-            new_filename = f"{stem}_crop_{uuid.uuid4().hex[:6]}{suffix}"
-            new_path = parent / new_filename
+            if custom_filename:
+                new_path = unique_template_path(DATA_DIR / "templates", custom_filename)
+                logger.info(f"[크롭] 사용자 지정 파일명 적용: {new_path.name}")
+            else:
+                parent = original_path.parent
+                new_filename = f"{stem}_crop_{uuid.uuid4().hex[:6]}{suffix}"
+                new_path = unique_template_path(parent, new_filename)
+
             mask_path = get_sidecar_mask_path(new_path)
 
             # 새 파일과 자유형 마스크를 함께 저장
             if cutout_enabled:
                 cropped_bgra = cv2.cvtColor(cropped, cv2.COLOR_RGB2BGRA)
                 cropped_bgra[:, :, 3] = crop_mask
-                success = cv2.imwrite(str(new_path), cropped_bgra)
+                success = write_image_file(new_path, cropped_bgra)
             else:
-                success = cv2.imwrite(str(new_path), cropped_bgr)
-            mask_success = cv2.imwrite(str(mask_path), crop_mask)
+                success = write_image_file(new_path, cropped_bgr)
+            mask_success = write_image_file(mask_path, crop_mask)
 
             if success and mask_success:
                 new_size = os.path.getsize(str(new_path)) if new_path.exists() else 0
@@ -1128,8 +1307,17 @@ class ImageCropDialog(ctk.CTkToplevel):
                 logger.info(f"[크롭] 원본 후처리 대기: {self._image_path}")
                 logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}, 파일크기: {new_size} bytes")
 
-                if self._on_crop:
-                    self._on_crop(str(new_path))
+                old_path = self._set_current_rule_image(str(new_path))
+                if old_path:
+                    try:
+                        invalidate_thumbnail_cache(old_path)
+                    except Exception:
+                        pass
+                try:
+                    invalidate_thumbnail_cache(str(new_path))
+                except Exception:
+                    pass
+                self._invoke_image_callback(self._on_crop, str(new_path), self._rule, old_path)
                 self.destroy()
             else:
                 logger.error(f"[크롭] 저장 실패: image={new_path}, mask={mask_path}, image_ok={success}, mask_ok={mask_success}")
@@ -1155,9 +1343,15 @@ class ImageCropDialog(ctk.CTkToplevel):
                     mask_path.unlink()
                     logger.info(f"마스크 파일 삭제: {mask_path}")
 
+                old_path = self._set_current_rule_image(None)
+                if old_path:
+                    try:
+                        invalidate_thumbnail_cache(old_path)
+                    except Exception:
+                        pass
+
                 # 콜백 호출
-                if self._on_delete:
-                    self._on_delete()
+                self._invoke_image_callback(self._on_delete, self._rule, old_path)
 
                 self.destroy()
             except Exception as e:
@@ -1202,15 +1396,139 @@ class ImageCropDialog(ctk.CTkToplevel):
                 shutil.copy2(new_path, dest_path)
                 logger.info(f"이미지 변경 완료: {new_path} -> {dest_path}")
 
+            old_path = self._set_current_rule_image(str(dest_path))
+            self._reset_crop_filename()
+            if old_path:
+                try:
+                    invalidate_thumbnail_cache(old_path)
+                except Exception:
+                    pass
+            try:
+                invalidate_thumbnail_cache(str(dest_path))
+            except Exception:
+                pass
+
             # 콜백 호출 (새 경로 전달)
-            if self._on_change:
-                self._on_change(str(dest_path))
+            self._invoke_image_callback(self._on_change, str(dest_path), self._rule, old_path)
 
             self.destroy()
         except Exception as e:
             from tkinter import messagebox
             logger.error(f"이미지 변경 실패: {e}")
             messagebox.showerror("오류", f"이미지 변경 실패: {e}")
+
+    def _invoke_image_callback(self, callback, *args):
+        """Call image callbacks with the richest supported signature."""
+        if callback is None:
+            return
+        try:
+            import inspect
+            sig = inspect.signature(callback)
+            accepts_varargs = any(p.kind == p.VAR_POSITIONAL for p in sig.parameters.values())
+            if accepts_varargs:
+                callback(*args)
+                return
+            positional = [
+                p for p in sig.parameters.values()
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+            callback(*args[:len(positional)])
+        except (TypeError, ValueError):
+            # Fallback for callables without inspectable signatures.
+            for count in range(len(args), -1, -1):
+                try:
+                    callback(*args[:count])
+                    return
+                except TypeError:
+                    continue
+            raise
+
+    def _set_current_rule_image(self, image_path: Optional[str]) -> Optional[str]:
+        old_path = self._image_path
+        if self._rule is not None and hasattr(self._rule, 'target_image'):
+            old_path = getattr(self._rule, 'target_image', old_path)
+            self._rule.target_image = image_path
+        self._image_path = image_path or ""
+        return old_path
+
+    def _rule_search_center(self):
+        if self._rule is None:
+            return None, None
+        if hasattr(self._rule, 'action_x') or hasattr(self._rule, 'action_y'):
+            return getattr(self._rule, 'action_x', None), getattr(self._rule, 'action_y', None)
+        return getattr(self._rule, 'x', None), getattr(self._rule, 'y', None)
+
+    def _set_rule_search_center(self, x: int, y: int):
+        if self._rule is None:
+            return
+        if hasattr(self._rule, 'action_x') or hasattr(self._rule, 'action_y'):
+            self._rule.action_x = x
+            self._rule.action_y = y
+        elif hasattr(self._rule, 'x') or hasattr(self._rule, 'y'):
+            self._rule.x = x
+            self._rule.y = y
+
+    def _search_button_state(self):
+        search_region = getattr(self._rule, 'search_region', None) if self._rule is not None else None
+        search_radius = getattr(self._rule, 'search_radius', 0) if self._rule is not None else 0
+        has_region = search_region is not None or search_radius > 0
+        if search_region:
+            w, h = search_region[2] - search_region[0], search_region[3] - search_region[1]
+            text = f"검색범위: {w}x{h}"
+        elif search_radius > 0:
+            text = f"검색범위: {search_radius}px"
+        else:
+            text = "검색범위: 전체"
+        return text, has_region
+
+    def _confidence_button_state(self):
+        conf_value = getattr(self._rule, 'confidence', 0.65) if self._rule is not None else 0.65
+        conf_value = conf_value or 0.65
+        conf_pct = int(conf_value * 100)
+        return f"인식률: {conf_pct}%", conf_pct
+
+    def _refresh_rule_setting_controls(self):
+        if hasattr(self, '_alt_image_btn'):
+            if self._rule is not None and hasattr(self._rule, 'target_images'):
+                alt_count = len(getattr(self._rule, 'target_images', []) or [])
+                self._alt_image_btn.configure(
+                    text=f"멀티이미지 ({alt_count})" if alt_count > 0 else "멀티이미지 추가",
+                    state="normal",
+                    fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
+                    hover_color="#ea580c" if alt_count > 0 else COLORS["bg_card_hover"],
+                    text_color="white" if alt_count > 0 else COLORS["text_secondary"],
+                )
+            else:
+                self._alt_image_btn.configure(
+                    text="멀티이미지 없음",
+                    state="disabled",
+                    fg_color=COLORS["bg_card"],
+                    hover_color=COLORS["bg_card_hover"],
+                    text_color=COLORS["text_muted"],
+                )
+
+        if hasattr(self, '_search_radius_btn'):
+            text, has_region = self._search_button_state()
+            self._search_radius_btn.configure(
+                text=text,
+                state="normal" if self._rule is not None else "disabled",
+                fg_color="#8b5cf6" if has_region else COLORS["bg_card"],
+                hover_color="#7c3aed" if has_region else COLORS["bg_card_hover"],
+                text_color="white" if has_region else COLORS["text_secondary"],
+            )
+
+        if hasattr(self, '_confidence_btn'):
+            text, conf_pct = self._confidence_button_state()
+            self._confidence_btn.configure(
+                text=text,
+                state="normal" if self._rule is not None else "disabled",
+                fg_color="#f59e0b" if conf_pct != 65 else COLORS["bg_card"],
+                hover_color="#d97706" if conf_pct != 65 else COLORS["bg_card_hover"],
+                text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
+            )
+
+        if hasattr(self, '_move_mouse_var'):
+            self._move_mouse_var.set(bool(getattr(self._rule, 'move_mouse_before_search', False)))
 
     def _set_search_radius(self):
         """검색 범위 설정 - 화면에서 직접 영역 선택"""
@@ -1230,8 +1548,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 중심점도 업데이트 (backward compat)
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
-            self._rule.action_x = center_x
-            self._rule.action_y = center_y
+            self._set_rule_search_center(center_x, center_y)
             self._rule.search_radius = max(x2 - x1, y2 - y1) // 2
 
             logger.info(f"검색 범위 설정: ({x1}, {y1}) ~ ({x2}, {y2})")
@@ -1242,17 +1559,10 @@ class ImageCropDialog(ctk.CTkToplevel):
 
             # 버튼 텍스트 업데이트
             w, h = x2 - x1, y2 - y1
-            if hasattr(self, '_search_radius_btn'):
-                self._search_radius_btn.configure(
-                    text=f"검색범위: {w}x{h}",
-                    fg_color="#8b5cf6",
-                    hover_color="#7c3aed",
-                    text_color="white"
-                )
+            self._refresh_rule_setting_controls()
 
             # 콜백 호출
-            if self._on_search_radius_change:
-                self._on_search_radius_change()
+            self._invoke_image_callback(self._on_search_radius_change, self._rule)
 
             messagebox.showinfo(
                 "설정 완료",
@@ -1270,9 +1580,13 @@ class ImageCropDialog(ctk.CTkToplevel):
         existing_region = None
         if self._rule and getattr(self._rule, 'search_region', None):
             existing_region = self._rule.search_region
-        elif self._rule and self._rule.search_radius and self._rule.action_x is not None and self._rule.action_y is not None:
-            cx, cy, r = self._rule.action_x, self._rule.action_y, self._rule.search_radius
-            existing_region = [cx - r, cy - r, cx + r, cy + r]
+        elif self._rule and getattr(self._rule, 'search_radius', 0):
+            cx, cy = self._rule_search_center()
+            r = self._rule.search_radius
+            if cx is None or cy is None:
+                existing_region = None
+            else:
+                existing_region = [cx - r, cy - r, cx + r, cy + r]
 
         # 잠시 후 영역 선택 시작 (다이얼로그 숨김 완료 후)
         self.after(100, lambda: ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region))
@@ -1282,8 +1596,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         if self._rule is not None:
             self._rule.move_mouse_before_search = self._move_mouse_var.get()
             logger.info(f"검색 전 마우스 이동: {'활성화' if self._rule.move_mouse_before_search else '비활성화'}")
-            if self._on_search_radius_change:
-                self._on_search_radius_change()
+            self._invoke_image_callback(self._on_search_radius_change, self._rule)
 
     def _set_confidence(self):
         """인식률 설정 다이얼로그"""
@@ -1358,6 +1671,26 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         conf_var.trace_add("write", update_label)
 
+        def adjust_confidence(delta: int):
+            current = int(round(conf_var.get()))
+            conf_var.set(max(30, min(95, current + delta)))
+
+        def on_conf_key(event):
+            key = getattr(event, "keysym", "")
+            if key == "Left":
+                adjust_confidence(-1)
+                return "break"
+            if key == "Right":
+                adjust_confidence(1)
+                return "break"
+            return None
+
+        conf_slider.bind("<Left>", on_conf_key)
+        conf_slider.bind("<Right>", on_conf_key)
+        conf_dialog.bind("<Left>", on_conf_key)
+        conf_dialog.bind("<Right>", on_conf_key)
+        conf_dialog.after(100, conf_slider.focus_set)
+
         def save_conf():
             self._rule.confidence = conf_var.get() / 100.0
             conf_pct = int(conf_var.get())
@@ -1372,8 +1705,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                     text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
                 )
 
-            if self._on_search_radius_change:
-                self._on_search_radius_change()
+            self._invoke_image_callback(self._on_search_radius_change, self._rule)
 
             conf_dialog.destroy()
 
@@ -1406,32 +1738,45 @@ class ImageCropDialog(ctk.CTkToplevel):
         if not self._image_list or self._current_index < 0:
             return
 
-        new_index = self._current_index + direction
+        step = 1 if direction > 0 else -1
+        new_index = self._current_index
+        new_image_path = None
+        new_rule = None
 
-        # 범위 체크
-        if new_index < 0 or new_index >= len(self._image_list):
-            return
+        while True:
+            new_index += step
 
-        # 새 이미지 정보 가져오기
-        item = self._image_list[new_index]
+            # 범위 체크
+            if new_index < 0 or new_index >= len(self._image_list):
+                return
 
-        # 이미지 경로 추출 (AutomationRule 또는 Action 객체)
-        if hasattr(item, 'target_image'):
-            new_image_path = item.target_image
-            new_rule = item if hasattr(item, 'rule_type') else None
-        elif hasattr(item, 'image_path'):
-            new_image_path = item.image_path
-            new_rule = None
-        else:
-            return
+            # 새 이미지 정보 가져오기
+            item = self._image_list[new_index]
 
-        if not new_image_path or not Path(new_image_path).exists():
-            return
+            # 이미지 경로 추출 (AutomationRule 또는 Action 객체)
+            if hasattr(item, 'target_image'):
+                new_image_path = item.target_image
+                new_rule = item
+            elif hasattr(item, 'image_path'):
+                new_image_path = item.image_path
+                new_rule = None
+            else:
+                continue
+
+            if not new_image_path:
+                continue
+
+            if not Path(new_image_path).exists():
+                logger.warning(f"이미지 내비게이션 건너뜀: 파일 없음 index={new_index + 1} path={new_image_path}")
+                continue
+
+            break
 
         # 현재 인덱스 업데이트
         self._current_index = new_index
         self._image_path = new_image_path
         self._rule = new_rule
+        self._crop_filename_var.set("")
 
         # 크롭 상태 초기화
         self._crop_coords = None
@@ -1468,9 +1813,12 @@ class ImageCropDialog(ctk.CTkToplevel):
         if self._crop_coords is not None:
             self._refresh_preview()
             self._save_btn.configure(state="normal")
+        self._update_crop_filename_state()
 
         # 내비게이션 버튼 상태 업데이트
         self._update_nav_buttons()
+        self._refresh_rule_setting_controls()
+        self.after(10, self._focus_crop_canvas)
 
         logger.info(f"이미지 전환: {new_index + 1}/{len(self._image_list)} - {filename}")
 
@@ -1497,22 +1845,15 @@ class ImageCropDialog(ctk.CTkToplevel):
 
     def _manage_alt_images(self):
         """멀티이미지 관리 다이얼로그"""
-        if self._rule is None:
+        if self._rule is None or not hasattr(self._rule, 'target_images'):
             return
 
         dialog = AltImageDialog(self, self._rule, self._on_search_radius_change)
         self.wait_window(dialog)
 
         # 버튼 텍스트 업데이트
-        if hasattr(self, '_alt_image_btn'):
-            alt_count = len(self._rule.target_images) if self._rule.target_images else 0
-            alt_text = f"멀티이미지 ({alt_count})" if alt_count > 0 else "멀티이미지 추가"
-            self._alt_image_btn.configure(
-                text=alt_text,
-                fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
-                hover_color="#ea580c" if alt_count > 0 else COLORS["bg_card_hover"],
-                text_color="white" if alt_count > 0 else COLORS["text_secondary"],
-            )
+        self._invoke_image_callback(self._on_search_radius_change, self._rule)
+        self._refresh_rule_setting_controls()
 
 
 class AltImageDialog(ctk.CTkToplevel):
@@ -1810,6 +2151,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         self._scrollable = None
         self._action_widgets = {}
         self._collapsible_rule_ids = set()
+        self._render_batch_after_id = None
+        self._render_batch_after_ids = set()
+        self._render_batch_generation = 0
+        self._render_batch_size = 24
 
         # 자식이 있는 규칙은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
@@ -1970,6 +2315,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _refresh_action_list(self):
         """액션 목록 새로고침"""
+        self._cancel_action_list_render_batch()
         # 썸네일 참조 정리
         self._thumbnail_refs.clear()
         self._action_widgets = {}
@@ -1979,10 +2325,105 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         for widget in self._scrollable.winfo_children():
             widget.destroy()
 
-        # 규칙 렌더링. 접힌 하위 항목은 필요할 때만 지연 생성한다.
-        self._render_rules(self._scrollable, self._plan.initial_rules, depth=0)
-        self._render_rules(self._scrollable, self._plan.monitoring_rules, depth=0)
-        self._sync_all_collapsed_state()
+        # Large analyzed playlists can contain hundreds of rows. Render top-level
+        # rows in short UI-thread batches so the dialog opens and returns smoothly.
+        items = self._build_root_rule_render_items()
+        self._render_action_list_batch(items, start=0, generation=self._render_batch_generation)
+
+    def _cancel_action_list_render_batch(self):
+        self._render_batch_generation += 1
+        after_ids = set(getattr(self, "_render_batch_after_ids", set()))
+        after_id = getattr(self, "_render_batch_after_id", None)
+        if after_id:
+            after_ids.add(after_id)
+        self._render_batch_after_id = None
+        self._render_batch_after_ids.clear()
+        for after_id in after_ids:
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _schedule_action_list_render_batch(self, callback):
+        after_id = None
+
+        def run_callback():
+            self._render_batch_after_ids.discard(after_id)
+            if self._render_batch_after_id == after_id:
+                self._render_batch_after_id = None
+            callback()
+
+        after_id = self.after(1, run_callback)
+        self._render_batch_after_ids.add(after_id)
+        self._render_batch_after_id = after_id
+        return after_id
+
+    def _build_root_rule_render_items(self):
+        items = []
+        for rules in (self._plan.initial_rules, self._plan.monitoring_rules):
+            items.extend(self._build_rule_render_items(rules, depth=0, prefix=""))
+        return items
+
+    def _build_rule_render_items(self, rules, depth=0, prefix: str = ""):
+        items = []
+        for index, rule in enumerate(rules, start=1):
+            label = f"{prefix}-{index}" if prefix else str(index)
+            items.append((rule, depth, label))
+        return items
+
+    def _render_action_list_batch(self, items, start: int, generation: int, batch_size: Optional[int] = None):
+        if generation != self._render_batch_generation:
+            return
+        if self._scrollable is None:
+            return
+        batch_size = batch_size or self._render_batch_size
+        end = min(len(items), start + batch_size)
+        for rule, depth, label in items[start:end]:
+            self._create_action_item(self._scrollable, label, rule, depth)
+
+        if end >= len(items):
+            self._render_batch_after_id = None
+            self._sync_all_collapsed_state()
+            return
+
+        try:
+            self._schedule_action_list_render_batch(
+                lambda: self._render_action_list_batch(items, end, generation, batch_size=batch_size)
+            )
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _render_rule_children_batch(self, rule_id: str, parent, items, start: int, generation: int, batch_size: Optional[int] = None):
+        if generation != self._render_batch_generation:
+            return
+        widget_data = self._action_widgets.get(rule_id)
+        if not widget_data:
+            return
+        batch_size = batch_size or self._render_batch_size
+        end = min(len(items), start + batch_size)
+        for rule, depth, label in items[start:end]:
+            self._create_action_item(parent, label, rule, depth)
+
+        if end >= len(items):
+            widget_data["children_rendered"] = True
+            widget_data["children_rendering"] = False
+            self._sync_all_collapsed_state()
+            return
+
+        widget_data["children_rendering"] = True
+        try:
+            self._schedule_action_list_render_batch(
+                lambda: self._render_rule_children_batch(
+                    rule_id,
+                    parent,
+                    items,
+                    end,
+                    generation,
+                    batch_size=batch_size,
+                )
+            )
+        except (tk.TclError, RuntimeError):
+            widget_data["children_rendering"] = False
 
     def _render_rules(self, parent, rules, depth=0, prefix: str = ""):
         """규칙 목록 렌더링 (계층 구조 지원)"""
@@ -1992,19 +2433,19 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _ensure_children_rendered(self, rule_id: str) -> None:
         widget_data = self._action_widgets.get(rule_id)
-        if not widget_data or widget_data.get("children_rendered"):
+        if not widget_data or widget_data.get("children_rendered") or widget_data.get("children_rendering"):
             return
         rule = widget_data.get("rule")
         container = widget_data.get("children_container")
         if not rule or container is None:
             return
-        self._render_rules(
-            container,
+        items = self._build_rule_render_items(
             rule.children,
             depth=widget_data.get("depth", 0) + 1,
             prefix=str(widget_data.get("index_label", "")),
         )
-        widget_data["children_rendered"] = True
+        widget_data["children_rendering"] = True
+        self._render_rule_children_batch(rule_id, container, items, 0, self._render_batch_generation)
 
     def _apply_rule_collapse_state(self, rule_id: str) -> None:
         widget_data = self._action_widgets.get(rule_id)
@@ -2050,7 +2491,36 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             self._all_collapsed = self._collapsible_rule_ids.issubset(self._collapsed_items)
         self._collapse_btn.configure(text="모두 펼치기" if self._all_collapsed else "모두 접기")
 
-    def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0):
+    def _drop_rule_widget_mappings(self, rule: AutomationRule) -> None:
+        """Remove stale widget mappings for a rule subtree before row-level redraw."""
+        self._action_widgets.pop(rule.rule_id, None)
+        for child in getattr(rule, "children", []) or []:
+            self._drop_rule_widget_mappings(child)
+
+    def _refresh_rule_row(self, rule_id: str) -> bool:
+        """Rebuild one visible rule row/subtree without refreshing the full action list."""
+        widget_data = self._action_widgets.get(rule_id)
+        if not widget_data:
+            return False
+        wrapper = widget_data.get("wrapper")
+        rule = widget_data.get("rule")
+        parent = wrapper.master if wrapper is not None else None
+        if wrapper is None or rule is None or parent is None:
+            return False
+        try:
+            siblings = list(parent.winfo_children())
+            current_index = siblings.index(wrapper)
+            before_widget = siblings[current_index + 1] if current_index + 1 < len(siblings) else None
+            index_label = str(widget_data.get("index_label") or "")
+            depth = int(widget_data.get("depth") or 0)
+            self._drop_rule_widget_mappings(rule)
+            wrapper.destroy()
+            self._create_action_item(parent, index_label, rule, depth, before_widget=before_widget)
+            return True
+        except (tk.TclError, RuntimeError, ValueError, AttributeError):
+            return False
+
+    def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0, before_widget=None):
         """동작 항목 생성"""
         # 깊이에 따른 들여쓰기 계산
         indent = depth * 25
@@ -2060,7 +2530,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         bg_color = COLORS["bg_dark"] if depth == 0 else "#252535"
 
         item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
-        item_wrapper.pack(fill="x")
+        if before_widget is not None:
+            item_wrapper.pack(fill="x", before=before_widget)
+        else:
+            item_wrapper.pack(fill="x")
 
         item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
         item.pack(fill="x", pady=3, padx=(left_pad, 10))
@@ -2072,6 +2545,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             "depth": depth,
             "index_label": index,
             "children_rendered": False,
+            "children_rendering": False,
         }
 
         content = ctk.CTkFrame(item, fg_color="transparent")
@@ -2198,10 +2672,103 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             self._action_widgets[rule.rule_id]["children_container"] = children_container
             if rule.rule_id not in self._collapsed_items:
                 children_container.pack(fill="x")
-                self._render_rules(children_container, rule.children, depth=depth + 1, prefix=str(index))
-                self._action_widgets[rule.rule_id]["children_rendered"] = True
+                self._ensure_children_rendered(rule.rule_id)
 
     def _display_thumbnail(self, parent, rule: AutomationRule):
+        """Display an action thumbnail without blocking the UI thread."""
+        image_path = rule.target_image
+
+        def show_fallback():
+            icons = {
+                "click": "M",
+                "double_click": "M",
+                "right_click": "M",
+                "type": "T",
+                "hotkey": "K",
+                "key_press": "K",
+                "scroll": "S",
+                "drag": "D",
+            }
+            ctk.CTkLabel(
+                parent,
+                text=icons.get(rule.action_type, "A"),
+                font=ctk.CTkFont(size=24, weight="bold"),
+                text_color=COLORS["text_muted"],
+            ).pack(expand=True)
+
+        def pack_thumbnail(ctk_image, width: int, height: int, path: str):
+            thumb_btn = ctk.CTkButton(
+                parent,
+                image=ctk_image,
+                text="",
+                width=width + 10,
+                height=height + 10,
+                fg_color="transparent",
+                hover_color=COLORS["bg_card_hover"],
+                corner_radius=4,
+                command=lambda p=path, r=rule: self._open_image_editor(p, r),
+            )
+            thumb_btn.pack(expand=True)
+            self._thumbnail_refs.append(ctk_image)
+
+        if not (image_path and self._is_valid_image_path(image_path)):
+            show_fallback()
+            return
+
+        cached = get_cached_thumbnail(image_path, (60, 60))
+        if cached is not None:
+            pack_thumbnail(cached, 60, 60, image_path)
+            return
+
+        placeholder = ctk.CTkLabel(
+            parent,
+            text="IMG",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_muted"],
+        )
+        placeholder.pack(expand=True)
+
+        def load_thumbnail(path=image_path, target_rule=rule, placeholder_widget=placeholder):
+            try:
+                img_arr = np.fromfile(path, np.uint8)
+                img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    raise ValueError("Image load failed")
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                h, w = img_rgb.shape[:2]
+                scale = min(60 / w, 60 / h)
+                new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+                resized = cv2.resize(img_rgb, (new_w, new_h))
+                pil_image = Image.fromarray(resized)
+
+                def apply_thumbnail():
+                    try:
+                        if getattr(target_rule, "target_image", None) != path:
+                            return
+                        if not placeholder_widget.winfo_exists():
+                            return
+                        ctk_image = ctk.CTkImage(
+                            light_image=pil_image,
+                            dark_image=pil_image,
+                            size=(new_w, new_h),
+                        )
+                        set_cached_thumbnail(path, (60, 60), ctk_image)
+                        placeholder_widget.destroy()
+                        pack_thumbnail(ctk_image, new_w, new_h, path)
+                    except (tk.TclError, RuntimeError):
+                        pass
+
+                self.after(0, apply_thumbnail)
+            except Exception as e:
+                logger.warning(f"Thumbnail load failed: {path} - {e}")
+                try:
+                    self.after(0, lambda: placeholder_widget.configure(text="ERR"))
+                except (tk.TclError, RuntimeError):
+                    pass
+
+        submit_thumbnail_task(load_thumbnail)
+
+    def _display_thumbnail_sync_legacy(self, parent, rule: AutomationRule):
         """썸네일 표시 (클릭 시 확대/크롭)"""
         image_path = rule.target_image
 
@@ -2256,14 +2823,68 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _open_image_editor(self, image_path: str, rule: AutomationRule):
         """이미지 편집기 열기"""
-        def on_crop_complete(new_path: str):
-            # 크롭 완료 후 썸네일 캐시 무효화
-            from .player_view import invalidate_thumbnail_cache
+        all_image_rules = []
+
+        def collect(rules):
+            for item in rules:
+                if getattr(item, 'target_image', None):
+                    all_image_rules.append(item)
+                if getattr(item, 'children', None):
+                    collect(item.children)
+
+        collect(self._plan.initial_rules)
+        collect(self._plan.monitoring_rules)
+
+        current_index = -1
+        for i, item in enumerate(all_image_rules):
+            if getattr(item, 'rule_id', None) == getattr(rule, 'rule_id', None):
+                current_index = i
+                break
+
+        needs_refresh = [False]
+        changed_rule_ids = set()
+
+        def mark_changed(target_rule=None, old_path=None, new_path=None):
+            target = target_rule or rule
+            self._plan.modified = True
+            needs_refresh[0] = True
+            changed_rule_ids.add(getattr(target, 'rule_id', rule.rule_id))
+            if old_path:
+                invalidate_thumbnail_cache(old_path)
+            if new_path:
+                invalidate_thumbnail_cache(new_path)
+
+        def on_crop_complete(new_path: str, target_rule=None, old_path=None):
             invalidate_thumbnail_cache(new_path)
+            mark_changed(target_rule, old_path=old_path, new_path=new_path)
             logger.info(f"이미지 크롭 완료: {new_path}")
 
-        dialog = ImageCropDialog(self, image_path, on_crop=on_crop_complete)
+        def on_delete(target_rule=None, old_path=None):
+            mark_changed(target_rule, old_path=old_path)
+            logger.info(f"이미지 삭제됨: {getattr(target_rule or rule, 'rule_id', rule.rule_id)}")
+
+        def on_change(new_path: str, target_rule=None, old_path=None):
+            mark_changed(target_rule, old_path=old_path, new_path=new_path)
+            logger.info(f"이미지 변경 완료: {new_path}")
+
+        def on_search_radius_change(target_rule=None):
+            mark_changed(target_rule or rule)
+
+        dialog = ImageCropDialog(
+            self,
+            image_path,
+            on_crop=on_crop_complete,
+            on_delete=on_delete,
+            on_change=on_change,
+            rule=rule,
+            on_search_radius_change=on_search_radius_change,
+            image_list=all_image_rules,
+            current_index=current_index,
+        )
         self.wait_window(dialog)
+        if needs_refresh[0]:
+            for rule_id in changed_rule_ids:
+                self._refresh_rule_row(rule_id)
 
     def _on_approve(self):
         self._result = True
@@ -2277,6 +2898,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _cleanup_resources(self):
         """다이얼로그 리소스 정리"""
+        self._cancel_action_list_render_batch()
         # 썸네일 이미지 참조 해제 (메모리 누수 방지)
         self._thumbnail_refs.clear()
 

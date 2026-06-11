@@ -33,8 +33,9 @@ _HOTKEY_SETTLE_DELAY = 0.06
 _HOTKEY_HOLD_DELAY = 0.08
 _HOTKEY_RELEASE_DELAY = 0.02
 _COMBO_PRE_RELEASE_DELAY = 0.002
-_COMBO_MODIFIER_SETTLE_DELAY = 0.003
-_COMBO_POST_RELEASE_DELAY = 0.004
+_COMBO_MODIFIER_SETTLE_DELAY = 0.016
+_COMBO_PRIMARY_TAP_DELAY = 0.006
+_COMBO_POST_RELEASE_DELAY = 0.006
 _MODIFIER_KEYS = {"shift", "ctrl", "alt", "win", "cmd", "command", "option"}
 _DIRECTION_KEYS = {"up", "down", "left", "right"}
 _KEY_EVENT_MAX_DELAY = 5.0
@@ -61,6 +62,59 @@ def unblock_automation_input() -> None:
 
 def is_automation_input_blocked() -> bool:
     return _input_block_event.is_set()
+
+
+def _recorded_modifier_direction_combo_keys(events) -> list[str] | None:
+    """Return combo keys when recorded events are exactly modifier(s)+direction tap."""
+    if not events:
+        return None
+
+    direction_down_index = None
+    for idx, event in enumerate(events):
+        if event["event"] == "down" and event["key"] in _DIRECTION_KEYS:
+            if direction_down_index is not None:
+                return None
+            direction_down_index = idx
+    if direction_down_index is None:
+        return None
+
+    direction_key = events[direction_down_index]["key"]
+    direction_up_index = None
+    for idx in range(direction_down_index + 1, len(events)):
+        event = events[idx]
+        if event["event"] == "up" and event["key"] == direction_key:
+            direction_up_index = idx
+            break
+    if direction_up_index is None:
+        return None
+
+    modifiers: list[str] = []
+    pressed_modifiers = set()
+    for event in events[:direction_down_index]:
+        if event["event"] != "down" or event["key"] not in _MODIFIER_KEYS:
+            return None
+        key = event["key"]
+        if key in pressed_modifiers:
+            return None
+        modifiers.append(key)
+        pressed_modifiers.add(key)
+
+    if not modifiers:
+        return None
+
+    if any(event["event"] == "down" for event in events[direction_down_index + 1:]):
+        return None
+
+    released_modifiers: list[str] = []
+    for event in events[direction_up_index + 1:]:
+        if event["event"] != "up" or event["key"] not in pressed_modifiers:
+            return None
+        released_modifiers.append(event["key"])
+
+    if set(released_modifiers) != pressed_modifiers:
+        return None
+
+    return modifiers + [direction_key]
 
 
 def _get_arduino():
@@ -468,6 +522,7 @@ class InputController:
 
                 primary_pressed = True
                 pyautogui.keyDown(primary_key)
+                time.sleep(_COMBO_PRIMARY_TAP_DELAY)
                 pyautogui.keyUp(primary_key)
                 primary_pressed = False
             except Exception as e:
@@ -496,15 +551,7 @@ class InputController:
             arduino = _get_arduino()
             if arduino is not None:
                 try:
-                    supports_kq = bool(getattr(arduino, "supports_key_combo_tap", lambda: False)())
-                    if supports_kq:
-                        return bool(arduino.key_combo_tap(*normalized_keys))
-                    logger.warning(
-                        f"[ArduinoInput] KQ unsupported for {combo}; raw KP/KR fallback skipped to avoid long arrow hold"
-                    )
-                    if self._strict_mode():
-                        logger.warning(f"[ArduinoStrict] blocked software fallback for tap_combo_once:{combo}")
-                        return False
+                    return bool(arduino.key_combo_tap(*normalized_keys))
                 except Exception as e:
                     logger.error(f"[ArduinoInput] tap_combo_once:{combo} failed via Arduino: {e}")
                     if self._strict_mode():
@@ -600,6 +647,25 @@ class InputController:
 
         if not sanitized_events:
             return True
+
+        atomic_combo_keys = _recorded_modifier_direction_combo_keys(sanitized_events)
+        if atomic_combo_keys:
+            replay_id = int(time.time() * 1000) % 1000000
+            combo = "+".join(atomic_combo_keys)
+            logger.info(
+                "[KeyReplay] atomic modifier-direction tap id=%s combo=%s events=%s",
+                replay_id,
+                combo,
+                len(sanitized_events),
+            )
+            ok = self.tap_combo_once(*atomic_combo_keys)
+            logger.info(
+                "[KeyReplay] atomic modifier-direction done id=%s combo=%s ok=%s",
+                replay_id,
+                combo,
+                "Y" if ok else "N",
+            )
+            return ok
 
         direction_down_index = next(
             (

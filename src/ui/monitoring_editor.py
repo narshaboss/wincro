@@ -276,6 +276,11 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ma["wait_random_range"] = getattr(act, 'wait_random_range', 0.3)
             ma["alternate_mouse_route"] = getattr(act, 'alternate_mouse_route', False)
             ma["click_until_image_disappears"] = getattr(act, 'click_until_image_disappears', False)
+            ma["click_until_image_disappears_delay"] = getattr(
+                act,
+                'click_until_image_disappears_delay',
+                getattr(act, 'repeat_delay', 0.5),
+            )
             ma["repeat_count"] = getattr(act, 'repeat_count', 1)
             ma["repeat_delay"] = getattr(act, 'repeat_delay', 0.5)
             ma["repeat_delay_random"] = getattr(act, 'repeat_delay_random', False)

@@ -34,14 +34,17 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.226"
-AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_v4"
+APP_VERSION = "1.0.227"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_v5"
+# 1.0.227에서만 기존 PC의 자동실행 그룹을 패키지 기본값으로 1회 재적용한다.
+# 다음 버전에서 APP_VERSION만 올라가면 이 강제 적용은 자동으로 비활성화된다.
+AUTO_RUN_PROFILE_FORCE_APP_VERSION = "1.0.227"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
 AUTO_RUN_PROFILE_GROUP_REPEAT = 4
 AUTO_RUN_PROFILE_PLANS = (
     ("plan_20260118_174859.json", 1),
-    ("plan_20260605_123819.json", 1),
+    ("plan_20260605_123819.json", 5),
     ("plan_20260605_140615.json", 1),
 )
 AUTO_RUN_FACTORY_GROUP_ID = "packaged_wongak_factory"
@@ -214,20 +217,17 @@ class ConfigManager:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     self._config = self._dict_to_config(data)
-                    self._apply_packaged_player_defaults(self._config)
-                    self._apply_packaged_ui_branding(self._config)
+                    self._normalize_loaded_local_config(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
-                    self._apply_packaged_player_defaults(self._config)
-                    self._apply_packaged_ui_branding(self._config)
+                    self._seed_packaged_defaults(self._config)
                     self._load_status = "error"
                     self._load_error = f"{type(e).__name__}: {e}"
             else:
                 self._config = AppConfig()
-                self._apply_packaged_player_defaults(self._config)
-                self._apply_packaged_ui_branding(self._config)
+                self._seed_packaged_defaults(self._config)
                 self._load_status = "missing"
                 self._load_error = ""
             return self._config
@@ -309,12 +309,30 @@ class ConfigManager:
             last_opened=data.get("last_opened", ""),
         )
 
-    def _apply_packaged_player_defaults(self, config: AppConfig) -> None:
-        """Apply release-seeded playback defaults without touching PC-local settings.
+    def _seed_packaged_defaults(self, config: AppConfig) -> None:
+        """Seed defaults only for a fresh or unrecoverable local config."""
+        self._apply_packaged_player_defaults(config)
+        self._apply_packaged_ui_branding(config)
 
-        This intentionally updates only the playback auto-run fields.  The marker
-        prevents future launches from overwriting the user's later local edits.
-        """
+    def _normalize_loaded_local_config(self, config: AppConfig) -> None:
+        """Keep existing PC-local settings intact while normalizing shape only."""
+        normalize_plan_sequence_groups(config.player, mutate=True)
+        if not self._apply_release_player_profile_once(config):
+            mirror_active_group_to_legacy(config.player)
+
+    def _apply_release_player_profile_once(self, config: AppConfig) -> bool:
+        """Apply this release's playback defaults once without touching other settings."""
+        if APP_VERSION != AUTO_RUN_PROFILE_FORCE_APP_VERSION:
+            return False
+        player = config.player
+        if getattr(player, "auto_run_profile_version", "") == AUTO_RUN_PROFILE_VERSION:
+            self._repair_packaged_player_group_paths(player)
+            return False
+        self._apply_packaged_player_defaults(config)
+        return True
+
+    def _apply_packaged_player_defaults(self, config: AppConfig) -> None:
+        """Apply release-seeded playback defaults to a fresh config object."""
         player = config.player
         if getattr(player, "auto_run_profile_version", "") == AUTO_RUN_PROFILE_VERSION:
             self._repair_packaged_player_group_paths(player)

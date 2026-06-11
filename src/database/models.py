@@ -68,6 +68,7 @@ class Action:
     search_region: Optional[List[int]] = None  # 이미지 검색 영역 [x1, y1, x2, y2]
     alternate_mouse_route: bool = False  # 이미지 클릭 시 반대 우회 이동 경로 사용
     click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
+    click_until_image_disappears_delay: float = 0.5  # 사라질 때까지 반복 클릭 전용 대기시간
     scroll_amount: int = 0  # 스크롤 양 (양수: 위, 음수: 아래)
     drag_to_x: Optional[int] = None  # 드래그 종료 X
     drag_to_y: Optional[int] = None  # 드래그 종료 Y
@@ -98,6 +99,13 @@ class Action:
             self.action_id = f"action_{uuid.uuid4().hex[:8]}"
         if self.children is None:
             self.children = []
+        try:
+            self.click_until_image_disappears_delay = max(
+                0.0,
+                float(self.click_until_image_disappears_delay or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.click_until_image_disappears_delay = 0.5
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
@@ -116,6 +124,7 @@ class Action:
             'typing_random', 'typing_delay', 'typing_delay_range',
             'target_image', 'confidence', 'search_radius', 'search_region',
             'alternate_mouse_route', 'click_until_image_disappears',
+            'click_until_image_disappears_delay',
             'scroll_amount', 'drag_to_x', 'drag_to_y', 'drag_duration', 'timestamp',
             'description', 'wait_for_image', 'wait_for_image_timeout',
             'wait_for_image_disappear', 'repeat_count', 'repeat_delay',
@@ -124,6 +133,8 @@ class Action:
         }
         # 유효한 필드만 필터링 (새 버전에서 추가된 필드가 없어도 됨)
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        if "click_until_image_disappears_delay" not in filtered_data:
+            filtered_data["click_until_image_disappears_delay"] = data.get("repeat_delay", 0.5)
         # children 재귀적으로 처리
         children_data = data.get("children", [])
         children = [cls.from_dict(c) if isinstance(c, dict) else c for c in children_data]

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from src.analyzer.automation_models import AutomationRule
 from src.database.models import Action
 from src.ui.player_view import (
@@ -123,3 +125,26 @@ def test_find_item_path_by_id_returns_full_ancestor_path():
     path = _find_item_path_by_id([grand], "child", "rule_id")
 
     assert [rule.rule_id for rule in path] == ["grand", "parent", "child"]
+
+
+def test_partial_run_stop_updates_running_badge_without_row_rebuild():
+    source = Path("src/ui/player_view.py").read_text(encoding="utf-8", errors="ignore")
+    start = source.index("def _clear_current_partial_rule")
+    end = source.index("def _make_partial_progress_callback", start)
+    body = source[start:end]
+
+    assert "self._active_partial_rule_id = None" in body
+    assert "self._update_rule_row_in_place(previous_rule)" in body
+    assert "self._refresh_rule_row(previous_rule_id)" not in body
+    assert "self._schedule_action_list_refresh()" not in body
+
+
+def test_partial_run_progress_callback_ignores_late_updates_after_stop():
+    source = Path("src/ui/player_view.py").read_text(encoding="utf-8", errors="ignore")
+    start = source.index("def _make_partial_progress_callback")
+    end = source.index("def _start_partial_run_visual", start)
+    body = source[start:end]
+
+    assert "callback_generation" in body
+    assert "_partial_run_generation" in body
+    assert "not getattr(self, \"_is_running\", False)" in body

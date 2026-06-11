@@ -73,6 +73,7 @@ def test_tap_combo_once_software_path_releases_primary_and_modifier_immediately(
         ("up", "shift"),
     ]
     assert input_controller._COMBO_MODIFIER_SETTLE_DELAY in sleeps
+    assert input_controller._COMBO_PRIMARY_TAP_DELAY in sleeps
     assert input_controller._COMBO_POST_RELEASE_DELAY in sleeps
     assert input_controller.pyautogui.PAUSE == 0.3
 
@@ -149,22 +150,21 @@ def test_replay_key_events_preserves_down_up_order_and_delay(monkeypatch):
 
     assert controller.replay_key_events([
         {"event": "down", "key": "shift", "delay": 0.0},
-        {"event": "down", "key": "up", "delay": 0.011},
-        {"event": "up", "key": "up", "delay": 0.006},
+        {"event": "down", "key": "a", "delay": 0.011},
+        {"event": "up", "key": "a", "delay": 0.006},
         {"event": "up", "key": "shift", "delay": 0.004},
     ]) is True
-    assert events == [("down", "shift"), ("down", "up"), ("up", "up"), ("up", "shift")]
+    assert events == [("down", "shift"), ("down", "a"), ("up", "a"), ("up", "shift")]
     assert sleeps == [0.011, 0.006, 0.004]
 
 
-def test_replay_key_events_caps_recorded_modifier_direction_hold(monkeypatch):
+def test_replay_key_events_uses_atomic_tap_for_recorded_modifier_direction(monkeypatch):
     controller = InputController()
-    events = []
-    sleeps = []
+    calls = []
 
-    monkeypatch.setattr(controller, "key_down", lambda key: events.append(("down", key)) or True)
-    monkeypatch.setattr(controller, "key_up", lambda key: events.append(("up", key)) or True)
-    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(round(seconds, 4)))
+    monkeypatch.setattr(controller, "tap_combo_once", lambda *keys: calls.append(keys) or True)
+    monkeypatch.setattr(controller, "key_down", lambda key: (_ for _ in ()).throw(AssertionError("raw key_down used")))
+    monkeypatch.setattr(controller, "key_up", lambda key: (_ for _ in ()).throw(AssertionError("raw key_up used")))
 
     assert controller.replay_key_events([
         {"event": "down", "key": "shift", "delay": 0.0},
@@ -172,8 +172,7 @@ def test_replay_key_events_caps_recorded_modifier_direction_hold(monkeypatch):
         {"event": "up", "key": "up", "delay": 0.1497},
         {"event": "up", "key": "shift", "delay": 0.2257},
     ]) is True
-    assert events == [("down", "shift"), ("down", "up"), ("up", "up"), ("up", "shift")]
-    assert sleeps == [0.03, 0.012, 0.006]
+    assert calls == [("shift", "up")]
 
 
 def test_replay_key_events_releases_pressed_keys_on_failure(monkeypatch):
@@ -195,12 +194,36 @@ def test_replay_key_events_releases_pressed_keys_on_failure(monkeypatch):
     assert events == [("down", "shift"), ("down", "up"), ("up", "shift")]
 
 
-def test_arduino_combo_tap_old_firmware_refuses_raw_fallback(monkeypatch):
+def test_arduino_combo_tap_old_firmware_uses_guarded_raw_fallback(monkeypatch):
     hid = ArduinoHID()
     sent = []
 
     hid._supports_key_combo_tap = False
     monkeypatch.setattr(hid, "_send_command", lambda cmd, wait_response=True: sent.append((cmd, wait_response)) or True)
+    monkeypatch.setattr("src.utils.arduino_hid.time.sleep", lambda seconds: None)
 
-    assert hid.key_combo_tap("shift", "up") is False
-    assert sent == []
+    assert hid.key_combo_tap("shift", "up") is True
+    assert sent == [
+        ("KA", True),
+        ("KP,129", True),
+        ("KP,218", True),
+        ("KR,218", True),
+        ("KA", True),
+    ]
+
+
+def test_firmware_combo_tap_uses_release_all_and_stable_timing():
+    from pathlib import Path
+
+    for firmware_path in (
+        Path("arduino/wincro_hid.ino"),
+        Path("arduino/wincro_hid/wincro_hid.ino"),
+    ):
+        source = firmware_path.read_text(encoding="utf-8", errors="ignore")
+        start = source.index('if (cmd.startsWith("KQ,"))')
+        end = source.index('if (cmd.startsWith("KT,")', start) if 'if (cmd.startsWith("KT,")' in source[start:] else source.index('if (cmd.startsWith("KD,")', start)
+        body = source[start:end]
+
+        assert "Keyboard.releaseAll();" in body
+        assert "delay(16);" in body
+        assert "delay(6);" in body
