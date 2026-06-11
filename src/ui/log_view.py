@@ -14,6 +14,7 @@ from threading import Lock
 import customtkinter as ctk
 
 from .main_window import BaseView, GUILogHandler
+from .theme import COLORS, IOS_FONTS, IOS_METRICS
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher
 from ..utils.logger import get_logger
 
@@ -62,7 +63,13 @@ class LogView(BaseView):
 
     def _setup_controls(self) -> None:
         """상단 컨트롤 영역 구성"""
-        control_frame = ctk.CTkFrame(self)
+        control_frame = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         control_frame.pack(fill="x", padx=10, pady=(10, 5))
 
         # 필터 레이블
@@ -70,6 +77,7 @@ class LogView(BaseView):
             control_frame,
             text="필터:",
             font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
         )
         filter_label.pack(side="left", padx=(10, 5))
 
@@ -81,6 +89,15 @@ class LogView(BaseView):
             variable=self._filter_var,
             command=self._on_filter_change,
             width=120,
+            height=32,
+            fg_color=COLORS["bg_elevated"],
+            border_color=COLORS["border"],
+            button_color=COLORS["bg_card_hover"],
+            button_hover_color=COLORS["bg_card_hover"],
+            dropdown_fg_color=COLORS["bg_elevated"],
+            dropdown_hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._filter_combo.pack(side="left", padx=5)
 
@@ -91,6 +108,9 @@ class LogView(BaseView):
             text="자동 스크롤",
             variable=self._auto_scroll_var,
             command=self._on_auto_scroll_change,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_secondary"],
         )
         self._auto_scroll_check.pack(side="left", padx=20)
 
@@ -100,6 +120,11 @@ class LogView(BaseView):
             text="지우기",
             command=self._clear_logs,
             width=80,
+            height=32,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         self._clear_btn.pack(side="right", padx=10)
 
@@ -108,24 +133,30 @@ class LogView(BaseView):
             control_frame,
             text="로그: 0개",
             font=ctk.CTkFont(size=11),
-            text_color="gray",
+            text_color=COLORS["text_muted"],
         )
         self._count_label.pack(side="right", padx=10)
 
     def _setup_log_area(self) -> None:
         """로그 표시 영역 구성"""
-        log_frame = ctk.CTkFrame(self)
+        log_frame = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         log_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
         # 텍스트 영역 (tkinter Text 위젯 사용)
         self._log_text = tk.Text(
             log_frame,
             wrap="none",
-            font=("Consolas", 10),
-            bg="#1a1a2e",
-            fg="#eaeaea",
-            insertbackground="#eaeaea",
-            selectbackground="#4a4a6a",
+            font=(IOS_FONTS["fallback"], 10),
+            bg=COLORS["bg_log"],
+            fg=COLORS["text_secondary"],
+            insertbackground=COLORS["text_primary"],
+            selectbackground=COLORS["accent"],
             relief="flat",
             padx=10,
             pady=10,
@@ -142,7 +173,12 @@ class LogView(BaseView):
         self._log_text.configure(yscrollcommand=v_scroll.set)
 
         # 수평 스크롤바
-        h_scroll_frame = ctk.CTkFrame(self, height=20)
+        h_scroll_frame = ctk.CTkFrame(
+            self,
+            height=20,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         h_scroll_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         h_scroll = ctk.CTkScrollbar(
@@ -157,19 +193,19 @@ class LogView(BaseView):
         self._log_text.configure(state="disabled")
 
         # 태그 설정 (색상)
-        self._log_text.tag_configure("DEBUG", foreground="#88c0d0")
-        self._log_text.tag_configure("INFO", foreground="#a3be8c")
-        self._log_text.tag_configure("WARNING", foreground="#ebcb8b")
-        self._log_text.tag_configure("ERROR", foreground="#bf616a")
-        self._log_text.tag_configure("CRITICAL", foreground="#b48ead")
-        self._log_text.tag_configure("TIMESTAMP", foreground="#81a1c1")
+        self._log_text.tag_configure("DEBUG", foreground=COLORS["info"])
+        self._log_text.tag_configure("INFO", foreground=COLORS["success"])
+        self._log_text.tag_configure("WARNING", foreground=COLORS["warning"])
+        self._log_text.tag_configure("ERROR", foreground=COLORS["error"])
+        self._log_text.tag_configure("CRITICAL", foreground=COLORS["accent_pink"])
+        self._log_text.tag_configure("TIMESTAMP", foreground=COLORS["accent_blue"])
 
         # ANSI 색상 태그 (메시지 내 색상용)
-        self._log_text.tag_configure("ansi_cyan", foreground="#8be9fd")       # 청록 (액션 번호)
-        self._log_text.tag_configure("ansi_green", foreground="#50fa7b")      # 초록 (성공)
-        self._log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")     # 노랑 (경고/대기)
-        self._log_text.tag_configure("ansi_pink", foreground="#ff79c6")       # 분홍 (중지)
-        self._log_text.tag_configure("ansi_red", foreground="#ff5555")        # 빨강 (에러)
+        self._log_text.tag_configure("ansi_cyan", foreground=COLORS["accent_blue"])       # 청록 (액션 번호)
+        self._log_text.tag_configure("ansi_green", foreground=COLORS["success"])      # 초록 (성공)
+        self._log_text.tag_configure("ansi_yellow", foreground=COLORS["warning"])     # 노랑 (경고/대기)
+        self._log_text.tag_configure("ansi_pink", foreground=COLORS["accent_pink"])       # 분홍 (중지)
+        self._log_text.tag_configure("ansi_red", foreground=COLORS["error"])        # 빨강 (에러)
 
     def _setup_log_handler(self) -> None:
         """로그 핸들러 등록"""

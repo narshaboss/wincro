@@ -16,6 +16,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
     def __init__(self, parent, item_height=75, buffer_count=3, **kwargs):
         if "fg_color" not in kwargs:
             kwargs["fg_color"] = COLORS["bg_card"]
+        self._surface_color = kwargs["fg_color"]
         super().__init__(parent, **kwargs)
 
         self._item_height = item_height
@@ -31,7 +32,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
 
         self._canvas = tk.Canvas(
             self,
-            bg=self._apply_appearance_mode(COLORS["bg_card"]),
+            bg=self._apply_appearance_mode(self._surface_color),
             highlightthickness=0,
             borderwidth=0,
         )

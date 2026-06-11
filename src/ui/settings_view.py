@@ -34,6 +34,7 @@ from ..utils.startup_registry import (
 )
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
+from .theme import IOS_FONTS, IOS_METRICS
 
 logger = get_logger(__name__)
 
@@ -217,7 +218,13 @@ class SettingsView(BaseView):
         ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=5)
 
         # PC 자동종료 예약
-        shutdown_card = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=10)
+        shutdown_card = ctk.CTkFrame(
+            scroll_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         shutdown_card.pack(fill="x", padx=10, pady=(4, 10))
 
         shutdown_header = ctk.CTkFrame(shutdown_card, fg_color="transparent")
@@ -657,12 +664,24 @@ class SettingsView(BaseView):
         self._seq_selected_group_index = 0
         self._seq_selected_entry_index = 0
 
-        seq_shell = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=12)
+        seq_shell = ctk.CTkFrame(
+            scroll_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         seq_shell.pack(fill="x", padx=10, pady=(0, 10))
         seq_shell.grid_columnconfigure(0, weight=1)
         seq_shell.grid_columnconfigure(1, weight=2)
 
-        group_panel = ctk.CTkFrame(seq_shell, fg_color=COLORS["bg_card"], corner_radius=10)
+        group_panel = ctk.CTkFrame(
+            seq_shell,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["separator"],
+        )
         group_panel.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
 
         ctk.CTkLabel(
@@ -675,8 +694,8 @@ class SettingsView(BaseView):
         self._seq_group_listbox = tk.Listbox(
             group_panel,
             height=5,
-            font=("Consolas", 10),
-            bg=COLORS["bg_dark"],
+            font=(IOS_FONTS["fallback"], 10),
+            bg=COLORS["bg_log"],
             fg=COLORS["text_primary"],
             selectbackground=COLORS["accent"],
             selectforeground="#ffffff",
@@ -702,10 +721,11 @@ class SettingsView(BaseView):
             textvariable=self._seq_group_repeat_var,
             width=56,
             height=26,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_glass"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._seq_group_repeat_entry.pack(side="left", padx=(5, 5))
         ctk.CTkButton(
@@ -718,6 +738,7 @@ class SettingsView(BaseView):
             hover_color=COLORS["accent_hover"],
             text_color="#ffffff",
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left")
 
         group_btn_frame = ctk.CTkFrame(group_panel, fg_color="transparent")
@@ -733,10 +754,11 @@ class SettingsView(BaseView):
                 command=btn_cmd,
                 width=62,
                 height=26,
-                fg_color=COLORS["bg_card_hover"],
-                hover_color=COLORS["accent"],
+                fg_color=COLORS["bg_glass"],
+                hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_primary"],
                 font=ctk.CTkFont(size=10),
+                corner_radius=IOS_METRICS["pill_radius"],
             ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
@@ -744,13 +766,20 @@ class SettingsView(BaseView):
             text="이 그룹을 자동실행으로 지정",
             command=self._seq_set_active_group,
             height=28,
-            fg_color=COLORS["accent_blue"],
-            hover_color="#2563eb",
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
             text_color="#ffffff",
             font=ctk.CTkFont(size=11, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(fill="x", padx=10, pady=(0, 10))
 
-        entry_panel = ctk.CTkFrame(seq_shell, fg_color=COLORS["bg_card"], corner_radius=10)
+        entry_panel = ctk.CTkFrame(
+            seq_shell,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["separator"],
+        )
         entry_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
 
         self._seq_group_title_label = ctk.CTkLabel(
@@ -772,11 +801,12 @@ class SettingsView(BaseView):
             values=seq_plan_names,
             width=200,
             height=28,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_glass"],
             border_color=COLORS["border"],
-            dropdown_fg_color=COLORS["bg_card"],
-            dropdown_hover_color=COLORS["bg_dark"],
+            dropdown_fg_color=COLORS["bg_elevated"],
+            dropdown_hover_color=COLORS["bg_card_hover"],
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._seq_plan_add_dropdown.pack(side="left")
 
@@ -790,16 +820,23 @@ class SettingsView(BaseView):
             hover_color=COLORS["accent_hover"],
             text_color="#ffffff",
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=(5, 0))
 
-        seq_list_frame = ctk.CTkFrame(entry_panel, fg_color=COLORS["bg_dark"], corner_radius=8)
+        seq_list_frame = ctk.CTkFrame(
+            entry_panel,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
+            border_width=1,
+            border_color=COLORS["separator"],
+        )
         seq_list_frame.pack(fill="x", padx=10, pady=(0, 6))
 
         self._seq_listbox = tk.Listbox(
             seq_list_frame,
             height=6,
-            font=("Consolas", 11),
-            bg=COLORS["bg_dark"],
+            font=(IOS_FONTS["fallback"], 11),
+            bg=COLORS["bg_log"],
             fg=COLORS["text_primary"],
             selectbackground=COLORS["accent"],
             selectforeground="#ffffff",
@@ -825,10 +862,11 @@ class SettingsView(BaseView):
                 command=btn_cmd,
                 width=60,
                 height=26,
-                fg_color=COLORS["bg_card"],
+                fg_color=COLORS["bg_glass"],
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_primary"],
                 font=ctk.CTkFont(size=11),
+                corner_radius=IOS_METRICS["pill_radius"],
             ).pack(side="left", padx=(0, 5))
 
         # 반복횟수 수정 프레임
@@ -848,10 +886,11 @@ class SettingsView(BaseView):
             textvariable=self._seq_repeat_var,
             width=60,
             height=26,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_glass"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._seq_repeat_entry.pack(side="left", padx=(5, 5))
 
@@ -865,6 +904,7 @@ class SettingsView(BaseView):
             hover_color=COLORS["accent_hover"],
             text_color="#ffffff",
             font=ctk.CTkFont(size=11),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left")
 
         self._seq_group_listbox.bind("<<ListboxSelect>>", self._seq_on_group_select)

@@ -18,6 +18,7 @@ from ..i18n import RECORDER, BUTTONS
 from ..recorder import RecordingSession, get_screen_recorder
 from ..database import Recording, get_db
 from .main_window import BaseView, COLORS
+from .theme import IOS_METRICS
 from .ui_batcher import UiCallbackDispatcher
 from .virtual_scroll import VirtualScrollFrame
 
@@ -117,9 +118,10 @@ class RecorderView(BaseView):
             content,
             placeholder_text="비워두면 자동 생성 (예: 녹화_20240118_143022)",
             height=40,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_glass"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
+            corner_radius=IOS_METRICS["control_radius"],
         )
         self._name_entry.pack(fill="x", pady=(5, 15))
 
@@ -188,7 +190,13 @@ class RecorderView(BaseView):
         self._status_hint.pack(anchor="w")
 
         # 통계
-        stats_frame = ctk.CTkFrame(content, fg_color=COLORS["bg_dark"], corner_radius=8)
+        stats_frame = ctk.CTkFrame(
+            content,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["separator"],
+        )
         stats_frame.pack(fill="x")
 
         stats = [
@@ -257,10 +265,13 @@ class RecorderView(BaseView):
             variable=self._fps_var,
             width=80,
             height=32,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_glass"],
             border_color=COLORS["border"],
-            button_color=COLORS["bg_card_hover"],
-            dropdown_fg_color=COLORS["bg_card"],
+            button_color=COLORS["bg_elevated"],
+            button_hover_color=COLORS["bg_card_hover"],
+            dropdown_fg_color=COLORS["bg_elevated"],
+            dropdown_hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._fps_combo.pack(side="right")
 
@@ -327,7 +338,10 @@ class RecorderView(BaseView):
             card,
             item_height=72,
             buffer_count=5,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
         )
         self._recordings_scroll.set_render_callback(self._render_recording_item)
         self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -369,8 +383,8 @@ class RecorderView(BaseView):
         """?? ?? ??"""
         item = ctk.CTkFrame(
             parent or self._recordings_scroll,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=8,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["control_radius"],
             height=66,
         )
         item.pack_propagate(False)

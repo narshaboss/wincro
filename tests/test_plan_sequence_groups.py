@@ -385,7 +385,7 @@ def test_existing_config_load_preserves_pc_local_player_and_ui_settings(monkeypa
     assert loaded.ui.branding_profile_version == "older_brand_marker"
 
 
-def test_release_230_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
+def test_release_231_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -458,7 +458,7 @@ def test_release_230_forces_only_player_auto_run_group_once(monkeypatch, tmp_pat
     assert persisted["local_unknown_root"] == "keep-root"
 
 
-def test_release_230_reapplies_over_previous_marker_once(monkeypatch, tmp_path):
+def test_release_231_reapplies_over_previous_marker_once(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"
     data_dir.mkdir()

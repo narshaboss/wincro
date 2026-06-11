@@ -6,6 +6,10 @@ THEME = ROOT / "src" / "ui" / "theme.py"
 MAIN_WINDOW = ROOT / "src" / "ui" / "main_window.py"
 PLAYER_VIEW = ROOT / "src" / "ui" / "player_view.py"
 ANALYZER_VIEW = ROOT / "src" / "ui" / "analyzer_view.py"
+SETTINGS_VIEW = ROOT / "src" / "ui" / "settings_view.py"
+RECORDER_VIEW = ROOT / "src" / "ui" / "recorder_view.py"
+LOG_VIEW = ROOT / "src" / "ui" / "log_view.py"
+VIRTUAL_SCROLL = ROOT / "src" / "ui" / "virtual_scroll.py"
 
 
 def test_ios_theme_tokens_drive_shared_ui_style():
@@ -99,3 +103,60 @@ def test_alt_image_dialog_uses_ios_cards_without_losing_virtual_scroll():
     assert 'corner_radius=IOS_METRICS["pill_radius"]' in alt_slice
     assert '"#45a049"' not in alt_slice
     assert '"#dc2626"' not in alt_slice
+
+
+def test_settings_auto_run_group_editor_uses_ios_cards_and_keeps_selection_contract():
+    settings_view = SETTINGS_VIEW.read_text(encoding="utf-8")
+    player_slice = settings_view[
+        settings_view.index("def _setup_player_settings(self, parent) -> None:"):
+        settings_view.index("def _seq_plan_name")
+    ]
+
+    assert "from .theme import IOS_FONTS, IOS_METRICS" in settings_view
+    assert 'fg_color=COLORS["bg_glass"]' in player_slice
+    assert 'fg_color=COLORS["bg_elevated"]' in player_slice
+    assert 'corner_radius=IOS_METRICS["card_radius"]' in player_slice
+    assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in player_slice
+    assert 'corner_radius=IOS_METRICS["control_radius"]' in player_slice
+    assert 'corner_radius=IOS_METRICS["pill_radius"]' in player_slice
+    assert 'font=(IOS_FONTS["fallback"], 10)' in player_slice
+    assert 'font=(IOS_FONTS["fallback"], 11)' in player_slice
+    assert 'exportselection=False' in player_slice
+    assert '"#2563eb"' not in player_slice
+
+
+def test_recorder_view_uses_ios_surfaces_without_losing_virtualized_list():
+    recorder_view = RECORDER_VIEW.read_text(encoding="utf-8")
+
+    assert "from .theme import IOS_METRICS" in recorder_view
+    assert "UiCallbackDispatcher" in recorder_view
+    assert "VirtualScrollFrame(" in recorder_view
+    assert 'fg_color=COLORS["bg_glass"]' in recorder_view
+    assert 'fg_color=COLORS["bg_elevated"]' in recorder_view
+    assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in recorder_view
+    assert 'corner_radius=IOS_METRICS["control_radius"]' in recorder_view
+    assert 'fg_color=COLORS["bg_dark"]' not in recorder_view
+    assert 'corner_radius=8' not in recorder_view
+
+
+def test_log_view_uses_ios_log_surfaces_while_preserving_buffered_pump():
+    log_view = LOG_VIEW.read_text(encoding="utf-8")
+
+    assert "BufferedRecordPump" in log_view
+    assert "UiCallbackDispatcher" in log_view
+    assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in log_view
+    assert 'fg_color=COLORS["bg_glass"]' in log_view
+    assert 'bg=COLORS["bg_log"]' in log_view
+    assert 'font=(IOS_FONTS["fallback"], 10)' in log_view
+    assert 'foreground=COLORS["error"]' in log_view
+    assert '"#1a1a2e"' not in log_view
+    assert 'font=("Consolas", 10)' not in log_view
+    assert 'text_color="gray"' not in log_view
+
+
+def test_virtual_scroll_canvas_uses_configured_surface_color():
+    virtual_scroll = VIRTUAL_SCROLL.read_text(encoding="utf-8")
+
+    assert 'self._surface_color = kwargs["fg_color"]' in virtual_scroll
+    assert "bg=self._apply_appearance_mode(self._surface_color)" in virtual_scroll
+    assert "bg=self._apply_appearance_mode(COLORS[\"bg_card\"])" not in virtual_scroll

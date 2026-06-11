@@ -128,7 +128,10 @@ class LogPanel(ctk.CTkFrame):
             fg_color=COLORS["bg_elevated"],
             border_color=COLORS["border"],
             button_color=COLORS["bg_card_hover"],
-            dropdown_fg_color=COLORS["bg_card"],
+            button_hover_color=COLORS["bg_card_hover"],
+            dropdown_fg_color=COLORS["bg_elevated"],
+            dropdown_hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._filter_combo.pack(side="left", padx=5, pady=4)
 
@@ -163,7 +166,7 @@ class LogPanel(ctk.CTkFrame):
         self._log_text = tk.Text(
             self._log_container,
             wrap="none",
-            font=("Consolas", 11),
+            font=(IOS_FONTS["fallback"], 11),
             bg=COLORS["bg_log"],
             fg=COLORS["text_secondary"],
             insertbackground=COLORS["text_primary"],
@@ -180,25 +183,25 @@ class LogPanel(ctk.CTkFrame):
             self._log_container,
             command=self._log_text.yview,
             fg_color=COLORS["bg_log"],
-            button_color=COLORS["bg_card"],
+            button_color=COLORS["bg_elevated"],
             button_hover_color=COLORS["bg_card_hover"],
         )
         scrollbar.pack(side="right", fill="y")
         self._log_text.configure(yscrollcommand=scrollbar.set, state="disabled")
 
         # 태그 설정
-        self._log_text.tag_configure("DEBUG", foreground="#88c0d0")
+        self._log_text.tag_configure("DEBUG", foreground=COLORS["info"])
         self._log_text.tag_configure("INFO", foreground=COLORS["success"])
         self._log_text.tag_configure("WARNING", foreground=COLORS["warning"])
         self._log_text.tag_configure("ERROR", foreground=COLORS["error"])
-        self._log_text.tag_configure("CRITICAL", foreground="#b48ead")
+        self._log_text.tag_configure("CRITICAL", foreground=COLORS["accent_pink"])
 
         # ANSI 색상 태그
-        self._log_text.tag_configure("ansi_cyan", foreground="#8be9fd")     # 청록 (액션 번호)
-        self._log_text.tag_configure("ansi_green", foreground="#50fa7b")   # 초록 (성공)
-        self._log_text.tag_configure("ansi_yellow", foreground="#f1fa8c")  # 노랑 (경고/대기)
-        self._log_text.tag_configure("ansi_pink", foreground="#ff79c6")    # 분홍 (중지)
-        self._log_text.tag_configure("ansi_red", foreground="#ff5555")     # 빨강 (에러)
+        self._log_text.tag_configure("ansi_cyan", foreground=COLORS["accent_blue"])     # 청록 (액션 번호)
+        self._log_text.tag_configure("ansi_green", foreground=COLORS["success"])   # 초록 (성공)
+        self._log_text.tag_configure("ansi_yellow", foreground=COLORS["warning"])  # 노랑 (경고/대기)
+        self._log_text.tag_configure("ansi_pink", foreground=COLORS["accent_pink"])    # 분홍 (중지)
+        self._log_text.tag_configure("ansi_red", foreground=COLORS["error"])     # 빨강 (에러)
 
     def _setup_log_handler(self):
         root_logger = logging.getLogger()
@@ -474,7 +477,7 @@ class MainWindow(ctk.CTk):
             self.geometry(f"{self._config.ui.window_width}x{self._config.ui.window_height}")
             self.minsize(1000, 700)
 
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.configure(fg_color=COLORS["bg_content"])
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
 
         # 테마 설정
@@ -584,7 +587,7 @@ class MainWindow(ctk.CTk):
 
     def _setup_ui(self):
         # 메인 컨테이너
-        self._main_container = ctk.CTkFrame(self, fg_color=COLORS["bg_dark"])
+        self._main_container = ctk.CTkFrame(self, fg_color=COLORS["bg_content"])
         self._main_container.pack(fill="both", expand=True)
 
         # 플레이 모드면 미니 플레이어 UI
@@ -596,7 +599,7 @@ class MainWindow(ctk.CTk):
         self._setup_topbar()
 
         # 콘텐츠 영역
-        self._top_area = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_dark"])
+        self._top_area = ctk.CTkFrame(self._main_container, fg_color=COLORS["bg_content"])
         self._top_area.pack(fill="both", expand=True)
 
         self._setup_content_area()
@@ -704,7 +707,7 @@ class MainWindow(ctk.CTk):
             border_color=COLORS["border"],
             button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"],
-            dropdown_fg_color=COLORS["bg_card"],
+            dropdown_fg_color=COLORS["bg_elevated"],
             dropdown_hover_color=COLORS["bg_card_hover"],
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
             state="readonly",
@@ -781,7 +784,7 @@ class MainWindow(ctk.CTk):
         # 현재 실행 중인 자동실행 그룹/재생목록을 한눈에 보여준다.
         active_frame = ctk.CTkFrame(
             self._main_container,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
             border_width=1,
             border_color=COLORS["border"],
@@ -874,8 +877,8 @@ class MainWindow(ctk.CTk):
         # 컨트롤 프레임 (실행/중지 버튼)
         ctrl_frame = ctk.CTkFrame(
             self._main_container,
-            fg_color=COLORS["bg_card"],
-            corner_radius=14,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
             border_width=1,
             border_color=COLORS["border"],
         )
@@ -890,9 +893,9 @@ class MainWindow(ctk.CTk):
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
             border_width=1,
-            border_color="#6ee787",
+            border_color=COLORS["green_hover"],
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=12,
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._mini_on_play,
         )
         self._mini_play_btn.pack(side="left", padx=(10, 6), pady=8)
@@ -903,11 +906,11 @@ class MainWindow(ctk.CTk):
             width=116,
             height=38,
             fg_color=COLORS["warning"],
-            hover_color="#b8871d",
+            hover_color=COLORS["confidence_amber_hover"],
             border_width=1,
-            border_color="#f2cc60",
+            border_color=COLORS["warning"],
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=12,
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._mini_on_pause,
             state="disabled",
         )
@@ -921,9 +924,9 @@ class MainWindow(ctk.CTk):
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
             border_width=1,
-            border_color="#ff7b72",
+            border_color=COLORS["danger_hover"],
             font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=12,
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._mini_on_stop,
             state="disabled",
         )
@@ -940,8 +943,8 @@ class MainWindow(ctk.CTk):
         # 로그 영역 (남은 공간 전체 사용)
         log_frame = ctk.CTkFrame(
             self._main_container,
-            fg_color=COLORS["bg_card"],
-            corner_radius=14,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
             border_width=1,
             border_color=COLORS["border"],
         )
@@ -959,23 +962,23 @@ class MainWindow(ctk.CTk):
 
         self._mini_log_text = ctk.CTkTextbox(
             log_frame,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_log"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(family="Consolas", size=14),
+            font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=14),
             wrap="word",
         )
         self._mini_log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # 로그 색상 태그 설정
-        self._mini_log_text._textbox.tag_configure("DEBUG", foreground="#88c0d0")
+        self._mini_log_text._textbox.tag_configure("DEBUG", foreground=COLORS["info"])
         self._mini_log_text._textbox.tag_configure("INFO", foreground=COLORS["success"])
         self._mini_log_text._textbox.tag_configure("WARNING", foreground=COLORS["warning"])
         self._mini_log_text._textbox.tag_configure("ERROR", foreground=COLORS["error"])
-        self._mini_log_text._textbox.tag_configure("ansi_cyan", foreground="#8be9fd")
-        self._mini_log_text._textbox.tag_configure("ansi_green", foreground="#50fa7b")
-        self._mini_log_text._textbox.tag_configure("ansi_yellow", foreground="#f1fa8c")
-        self._mini_log_text._textbox.tag_configure("ansi_pink", foreground="#ff79c6")
-        self._mini_log_text._textbox.tag_configure("ansi_red", foreground="#ff5555")
+        self._mini_log_text._textbox.tag_configure("ansi_cyan", foreground=COLORS["accent_blue"])
+        self._mini_log_text._textbox.tag_configure("ansi_green", foreground=COLORS["success"])
+        self._mini_log_text._textbox.tag_configure("ansi_yellow", foreground=COLORS["warning"])
+        self._mini_log_text._textbox.tag_configure("ansi_pink", foreground=COLORS["accent_pink"])
+        self._mini_log_text._textbox.tag_configure("ansi_red", foreground=COLORS["error"])
 
         # 로그 핸들러 설정
         self._setup_mini_log_handler()
@@ -2536,7 +2539,7 @@ class MainWindow(ctk.CTk):
         # 오른쪽: 버전 정보
         version_frame = ctk.CTkFrame(
             self._topbar,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["pill_radius"],
             border_width=1,
             border_color=COLORS["border"],
@@ -2566,7 +2569,7 @@ class MainWindow(ctk.CTk):
             width=80,
             height=IOS_METRICS["button_height_small"],
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_primary"],
             corner_radius=IOS_METRICS["pill_radius"],
@@ -2596,8 +2599,10 @@ class MainWindow(ctk.CTk):
 
         self._loading_view = ctk.CTkFrame(
             self._view_container,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
+            border_width=1,
+            border_color=COLORS["border"],
         )
         self._loading_content = ctk.CTkFrame(self._loading_view, fg_color="transparent")
         self._loading_content.place(relx=0.5, rely=0.5, anchor="center")
@@ -2620,7 +2625,7 @@ class MainWindow(ctk.CTk):
             width=240,
             mode="indeterminate",
             progress_color=COLORS["accent"],
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
         )
         self._loading_bar.pack(pady=(16, 0))
 
@@ -3026,7 +3031,7 @@ class BaseView(ctk.CTkFrame):
         """카드 컴포넌트 생성"""
         card = ctk.CTkFrame(
             parent,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
             border_width=1,
             border_color=COLORS["border"],
@@ -3084,11 +3089,11 @@ class BaseView(ctk.CTkFrame):
             "warning": {
                 "fg_color": COLORS["warning"],
                 "hover_color": COLORS["confidence_amber_hover"],
-                "text_color": COLORS["bg_dark"],
+                "text_color": COLORS["bg_content"],
             },
             "ghost": {
                 "fg_color": "transparent",
-                "hover_color": COLORS["bg_card"],
+                "hover_color": COLORS["bg_card_hover"],
                 "text_color": COLORS["text_secondary"],
             },
         }
