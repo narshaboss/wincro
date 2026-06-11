@@ -63,6 +63,7 @@ class AutomationRule:
     action_y: Optional[int] = None  # ??? Y ???
     action_text: Optional[str] = None  # ??????????
     action_keys: Optional[List[str]] = None  # ?????
+    action_key_events: List[Dict[str, Any]] = field(default_factory=list)  # recorded key down/up events
 
     # ??????
     drag_to_x: Optional[int] = None
@@ -124,6 +125,8 @@ class AutomationRule:
             self.rule_id = f"rule_{uuid.uuid4().hex[:8]}"
         if self.action_keys is None:
             self.action_keys = []
+        if self.action_key_events is None:
+            self.action_key_events = []
         if self.target_images is None:
             self.target_images = []
         if self.trigger_missing_keys is None:
@@ -179,6 +182,7 @@ class AutomationRule:
             "action_y": self.action_y,
             "action_text": self.action_text,
             "action_keys": self.action_keys,
+            "action_key_events": self.action_key_events,
             "drag_to_x": self.drag_to_x,
             "drag_to_y": self.drag_to_y,
             "drag_duration": self.drag_duration,
@@ -269,6 +273,7 @@ class AutomationRule:
             action_y=data.get("action_y"),
             action_text=data.get("action_text"),
             action_keys=data.get("action_keys", []),
+            action_key_events=data.get("action_key_events", []),
             drag_to_x=data.get("drag_to_x"),
             drag_to_y=data.get("drag_to_y"),
             drag_duration=data.get("drag_duration"),

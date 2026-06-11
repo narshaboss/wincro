@@ -70,6 +70,7 @@ class ArduinoHID:
         self._port = ""
         self._baud_rate = 115200
         self._supports_mouse_move = False
+        self._supports_key_combo_tap = False
 
     @property
     def is_connected(self) -> bool:
@@ -78,6 +79,10 @@ class ArduinoHID:
     def supports_mouse_move(self) -> bool:
         """True when the connected firmware supports MM relative move commands."""
         return self._supports_mouse_move
+
+    def supports_key_combo_tap(self) -> bool:
+        """True when the connected firmware supports KQ atomic combo tap commands."""
+        return self._supports_key_combo_tap
 
     def connect(self, port: str = None, baud_rate: int = None) -> bool:
         """아두이노에 연결"""
@@ -120,6 +125,7 @@ class ArduinoHID:
                     self._port = port
                     self._baud_rate = baud_rate
                     self._supports_mouse_move = self._probe_mouse_move_support()
+                    self._supports_key_combo_tap = self._probe_key_combo_tap_support()
                     logger.info(f"Arduino HID 연결 성공: {port}")
                     return True
                 else:
@@ -145,6 +151,7 @@ class ArduinoHID:
         self._serial = None
         self._connected = False
         self._supports_mouse_move = False
+        self._supports_key_combo_tap = False
         logger.info("Arduino HID 연결 해제")
 
     def _ping(self) -> bool:
@@ -197,6 +204,19 @@ class ArduinoHID:
             return supported
         except Exception as e:
             logger.warning(f"Arduino HID 마우스 이동 지원 확인 실패: {e}")
+            return False
+
+    def _probe_key_combo_tap_support(self) -> bool:
+        """Probe firmware-side instant combo tap support without sending keys."""
+        try:
+            supported = self._send_command("KQ")
+            if supported:
+                logger.info("Arduino HID key combo tap support confirmed")
+            else:
+                logger.warning("Arduino HID key combo tap unsupported; using raw KP/KR fallback")
+            return supported
+        except Exception as e:
+            logger.warning(f"Arduino HID key combo tap support probe failed: {e}")
             return False
 
     def _read_response(self, timeout: float = 1.0) -> str:
@@ -282,6 +302,24 @@ class ArduinoHID:
         self.key_press(key)
         time.sleep(0.05)
         return self.key_release(key)
+
+    def key_combo_tap(self, *keys: str) -> bool:
+        """Press modifiers, tap final key, and release modifiers with minimum host-side delay."""
+        normalized = [str(key).strip().lower() for key in keys if str(key).strip()]
+        if not normalized:
+            return True
+        if len(normalized) == 1:
+            return self.key_tap(normalized[0])
+
+        keycodes = [self._get_keycode(key) for key in normalized]
+        if any(not code for code in keycodes):
+            return False
+
+        if self._supports_key_combo_tap:
+            return self._send_command("KQ," + ",".join(str(code) for code in keycodes))
+
+        logger.warning("Arduino HID KQ unsupported; refusing raw KP/KR combo tap because it can hold arrow keys too long")
+        return False
 
     def set_typing_delay(self, delay_ms: int) -> bool:
         """Arduino 타이핑 딜레이 설정 (0~200ms)"""

@@ -2916,6 +2916,27 @@ class MainWindow(ctk.CTk):
 
     def _on_close(self):
         """윈도우 닫기"""
+        try:
+            from .player_view import force_stop_all_game_modes
+
+            stopped = force_stop_all_game_modes(
+                reason="app_close",
+                detail="MainWindow WM_DELETE_WINDOW",
+                join_timeout=1.5,
+            )
+            if stopped:
+                logger.warning(f"[안전종료] 실행 중 특화모드 {stopped}개 강제 중지 요청")
+        except Exception as e:
+            logger.error(f"[안전종료] 특화모드 강제 중지 실패: {e}")
+
+        def _last_resort_exit():
+            import time as _time
+            _time.sleep(3.0)
+            logger.error("[안전종료] 종료 후 프로세스가 남아 강제 종료합니다")
+            os._exit(0)
+
+        threading.Thread(target=_last_resort_exit, daemon=True).start()
+
         # 전역 키보드 리스너 정리
         if self._keyboard_listener:
             try:

@@ -13,12 +13,13 @@ import math
 import os
 import re
 import time
+import weakref
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
 from ..utils.json_utils import load_json_file
 from ..utils.plan_sequence_groups import sync_plan_repeat_in_groups
-from ..utils.input_controller import get_input_controller
+from ..utils.input_controller import block_automation_input, get_input_controller, unblock_automation_input
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
 from ..player import get_action_player, PlayerState, PlaybackProgress
@@ -96,6 +97,63 @@ import threading
 _thumbnail_cache = {}  # {cache_key: CTkImage}
 _thumbnail_cache_lock = threading.Lock()
 MAX_THUMBNAIL_CACHE = 100  # 최대 캐시 개수
+_active_game_mode_dialogs = weakref.WeakSet()
+_active_game_mode_dialogs_lock = threading.Lock()
+
+
+def _register_game_mode_dialog(dialog) -> None:
+    try:
+        with _active_game_mode_dialogs_lock:
+            _active_game_mode_dialogs.add(dialog)
+    except Exception:
+        pass
+
+
+def _unregister_game_mode_dialog(dialog) -> None:
+    try:
+        with _active_game_mode_dialogs_lock:
+            _active_game_mode_dialogs.discard(dialog)
+    except Exception:
+        pass
+
+
+def force_stop_all_game_modes(reason: str = "global_shutdown", detail: str = "", join_timeout: float = 1.5) -> int:
+    """Request every visible/hidden GameModeDialog to stop and release held inputs."""
+    try:
+        block_automation_input(f"{reason}: {detail}")
+    except Exception:
+        pass
+    try:
+        get_input_controller().release_all()
+    except Exception:
+        pass
+
+    with _active_game_mode_dialogs_lock:
+        dialogs = list(_active_game_mode_dialogs)
+
+    stopped = 0
+    for dialog in dialogs:
+        try:
+            if hasattr(dialog, "request_hard_stop"):
+                dialog.request_hard_stop(reason=reason, detail=detail, schedule_ui_stop=False)
+            else:
+                getattr(dialog, "_stop_event", threading.Event()).set()
+            stopped += 1
+        except Exception as e:
+            logger.warning(f"[안전중지] 특화모드 강제 중지 요청 실패: {e}")
+
+    deadline = time.time() + max(0.0, float(join_timeout or 0.0))
+    for dialog in dialogs:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            run_thread = getattr(dialog, "_run_thread", None)
+            if run_thread is not None and run_thread.is_alive():
+                run_thread.join(timeout=max(0.05, remaining))
+        except Exception:
+            pass
+    return stopped
 
 
 def _safe_grab(timeout: float = 5.0):
@@ -173,7 +231,11 @@ def _convert_action_to_monitor_dict(action):
     if action_type == "type":
         monitor_action = {"type": "텍스트 입력", "text": action.action_text or ""}
     elif action_type in ["hotkey", "key_press"]:
-        monitor_action = {"type": "키 입력", "keys": action.action_keys or []}
+        monitor_action = {
+            "type": "키 입력",
+            "keys": getattr(action, "action_keys", None) or getattr(action, "keys", []) or [],
+            "key_events": getattr(action, "action_key_events", None) or getattr(action, "key_events", []) or [],
+        }
     elif action_type in ["click", "double_click", "right_click"]:
         if getattr(action, 'target_image', None):
             monitor_action = {"type": "이미지 클릭", "image": action.target_image, "click_type": action_type}
@@ -2181,9 +2243,40 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if _gm:
             logger.info("[부분실행] 특화모드 중지 요청")
             try:
-                _gm._stop_event.set()
+                _gm.request_hard_stop(
+                    reason="manual_partial_game_mode_stop",
+                    detail="PlanDetailDialog stop button",
+                    schedule_ui_stop=True,
+                )
             except Exception:
-                pass
+                try:
+                    _gm._stop_event.set()
+                    get_input_controller().release_all()
+                except Exception:
+                    pass
+
+            def _watch_hidden_gm_stop(gm_ref):
+                try:
+                    _rt = getattr(gm_ref, "_run_thread", None)
+                    if _rt is not None and _rt.is_alive():
+                        _rt.join(timeout=2.0)
+                    if _rt is not None and _rt.is_alive():
+                        logger.error("[안전중지] 부분실행 특화모드 스레드가 중지 요청 후에도 살아있음")
+                        try:
+                            block_automation_input("partial game_mode thread still alive after stop")
+                            get_input_controller().release_all()
+                        except Exception:
+                            pass
+                        return
+                    try:
+                        if gm_ref.winfo_exists():
+                            gm_ref.after(0, gm_ref.destroy)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"[안전중지] 부분실행 특화모드 정리 실패: {e}")
+
+            threading.Thread(target=_watch_hidden_gm_stop, args=(_gm,), daemon=True).start()
             self._cancel_game_mode_wait()
             self._gm_current_rule = None
             self._is_running = False
@@ -3618,7 +3711,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """키 입력 액션 추가"""
         import uuid
         dialog = KeyInputDialog(self)
-        keys = dialog.get_keys()
+        keys, key_events = dialog.get_result()
 
         if keys:
             key_text = " + ".join(keys)
@@ -3626,6 +3719,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 rule_id=f"rule_{uuid.uuid4().hex[:8]}",
                 action_type="hotkey",
                 action_keys=[key.lower().strip() for key in keys],
+                action_key_events=key_events,
                 wait_after=0.5,
             )
             self._plan.initial_rules.append(new_rule)
@@ -4022,6 +4116,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # GameModeDialog 정리 (실행 완료 후에도 참조 남아 있을 수 있음)
         _gm = getattr(self, '_gm_dialog', None)
         if _gm:
+            try:
+                _gm.request_hard_stop(
+                    reason="partial_dialog_close_game_mode_stop",
+                    detail="PlanDetailDialog closing",
+                    schedule_ui_stop=True,
+                )
+            except Exception:
+                try:
+                    _gm._stop_event.set()
+                    get_input_controller().release_all()
+                except Exception:
+                    pass
             _rt = getattr(_gm, '_run_thread', None)
             if _rt is not None and _rt.is_alive():
                 _rt.join(timeout=2.0)
@@ -4100,6 +4206,8 @@ class GameModeDialog(ctk.CTkToplevel):
             max_items_per_flush=180,
         )
         self._map_runtime = GameModeMapRuntime(self)
+        self._hard_stop_requested = False
+        _register_game_mode_dialog(self)
 
         from ..analyzer.automation_models import GameModeConfig
         if config_rule_id and config_rule_id in plan.game_modes:
@@ -4135,6 +4243,15 @@ class GameModeDialog(ctk.CTkToplevel):
         # 자동 실행 모드: UI 구축 후 바로 실행 시작
         if self._auto_run:
             self.after(300, self._start_execution)
+
+    def destroy(self):
+        _unregister_game_mode_dialog(self)
+        if getattr(self, "_is_running", False) and not getattr(self, "_completed_normally", False):
+            try:
+                self.request_hard_stop(reason="dialog_destroy", detail="destroy called", schedule_ui_stop=False)
+            except Exception:
+                pass
+        return super().destroy()
 
     def after(self, ms, func=None, *args):
         """Worker thread의 after() 호출을 메인스레드 dispatcher로 우회한다."""
@@ -4486,6 +4603,41 @@ class GameModeDialog(ctk.CTkToplevel):
             self.after(0, self._stop_execution)
         except Exception:
             self._is_running = False
+
+    def request_hard_stop(self, reason="hard_stop", detail="", *, schedule_ui_stop=True):
+        """Stop every special-mode activity and prevent leftover threads from sending input."""
+        self._hard_stop_requested = True
+        try:
+            self._mark_manual_stop_context(reason, detail or "hard stop requested")
+        except Exception:
+            pass
+        try:
+            block_automation_input(f"{reason}: {detail}")
+        except Exception:
+            pass
+        for attr in ("_stop_event", "_bosstest_stop_event", "_itemtest_stop_event"):
+            try:
+                event = getattr(self, attr, None)
+                if event is not None:
+                    event.set()
+            except Exception:
+                pass
+        try:
+            self._bosstest_release_key()
+        except Exception:
+            pass
+        try:
+            get_input_controller().release_all()
+        except Exception:
+            pass
+        self._is_mapping = False
+        self._is_mapping_test = False
+        self._boss_segment_active = False
+        if schedule_ui_stop:
+            try:
+                self.after(0, self._stop_execution)
+            except Exception:
+                self._is_running = False
 
     def _build_ui(self):
         """UI 구성"""
@@ -4901,12 +5053,14 @@ class GameModeDialog(ctk.CTkToplevel):
     def _start_execution(self):
         if not self._ensure_arduino_ready_for_execution("특화모드 실행"):
             return
+        unblock_automation_input()
         try:
             self._apply_settings()
         except Exception as e:
             logger.error(f"[실행] 설정 적용 오류: {e}")
         self._is_running = True
         self._completed_normally = False
+        self._hard_stop_requested = False
         self._stop_reason = ""
         self._stop_detail = ""
         self._stop_marked_at = 0.0
@@ -4978,6 +5132,11 @@ class GameModeDialog(ctk.CTkToplevel):
         )
         _stop_coord_log_lines = self._get_stop_coordinate_log_lines()
         self._stop_event.set()
+        try:
+            block_automation_input(f"{self._stop_reason or 'stop_execution'}: {self._stop_detail or ''}")
+            get_input_controller().release_all()
+        except Exception:
+            pass
         self._is_running = False
         self._is_mapping = False
 
@@ -19138,25 +19297,38 @@ class GameModeDialog(ctk.CTkToplevel):
                     logger.info(f"[전환추적] 도착키 키 중단: key={key_name} rep={rep+1}/{repeat_count}")
                     break
                 try:
-                    # keyDown + hold + keyUp (게임이 즉시 press를 씹는 경우 방지)
+                    # 수정키+방향키는 캐릭터 방향 전환용이라 hold 없이 즉시 down/up 해야 이동하지 않는다.
                     input_ctrl = get_input_controller()
-                    key_parts = [part.strip().lower() for part in str(key_name).split("+") if part.strip()]
-                    if len(key_parts) > 1:
-                        for modifier in key_parts[:-1]:
-                            input_ctrl.key_down(modifier)
-                            time.sleep(0.02)
-                        input_ctrl.key_down(key_parts[-1])
-                        time.sleep(0.05)
-                        input_ctrl.key_up(key_parts[-1])
-                        for modifier in reversed(key_parts[:-1]):
-                            input_ctrl.key_up(modifier)
-                            time.sleep(0.02)
+                    key_events = kd.get("key_events", []) or []
+                    if key_events:
+                        input_ctrl.replay_key_events(key_events)
+                        self._key_press_count += 1
+                        logger.info(f"[전환추적] 도착키 기록입력 완료: key={key_name} rep={rep+1}/{repeat_count}")
                     else:
-                        input_ctrl.key_down(key_name)
-                        time.sleep(0.05)
-                        input_ctrl.key_up(key_name)
-                    self._key_press_count += 1
-                    logger.info(f"[전환추적] 도착키 입력 완료: key={key_name} rep={rep+1}/{repeat_count}")
+                        key_parts = [part.strip().lower() for part in str(key_name).split("+") if part.strip()]
+                        is_modified_direction = (
+                            len(key_parts) > 1
+                            and key_parts[-1] in {"up", "down", "left", "right"}
+                            and any(part in {"shift", "ctrl", "alt", "win", "cmd", "command", "option"} for part in key_parts[:-1])
+                        )
+                        if is_modified_direction:
+                            input_ctrl.tap_combo_once(*key_parts)
+                        elif len(key_parts) > 1:
+                            for modifier in key_parts[:-1]:
+                                input_ctrl.key_down(modifier)
+                                time.sleep(0.02)
+                            input_ctrl.key_down(key_parts[-1])
+                            time.sleep(0.05)
+                            input_ctrl.key_up(key_parts[-1])
+                            for modifier in reversed(key_parts[:-1]):
+                                input_ctrl.key_up(modifier)
+                                time.sleep(0.02)
+                        else:
+                            input_ctrl.key_down(key_name)
+                            time.sleep(0.05)
+                            input_ctrl.key_up(key_name)
+                        self._key_press_count += 1
+                        logger.info(f"[전환추적] 도착키 입력 완료: key={key_name} rep={rep+1}/{repeat_count}")
                 except Exception as _ke:
                     logger.error(f"[도착키] '{key_name}' 입력 오류: {_ke}")
                 # 반복 사이 대기
@@ -19367,10 +19539,12 @@ class GameModeDialog(ctk.CTkToplevel):
         def add_key():
             nonlocal selected_preset_name
             kid = KeyInputDialog(dlg)
-            captured = kid.get_key()
+            captured_keys, key_events = kid.get_result()
+            captured = "+".join(captured_keys) if captured_keys else ""
             if captured:
                 new_key = {
                     "key": captured.lower().strip(),
+                    "key_events": key_events,
                     "wait_after": 0.3,
                     "wait_random": False,
                     "wait_random_range": 0.3,
@@ -23020,8 +23194,11 @@ class GameModeDialog(ctk.CTkToplevel):
 
         _was_running = self._is_running
         if _was_running:
-            self._mark_manual_stop_context("dialog_close_stop", "_shutdown while running")
-            self._stop_execution()
+            self.request_hard_stop(
+                reason="dialog_close_stop",
+                detail="_shutdown while running",
+                schedule_ui_stop=True,
+            )
 
         # 워커 스레드 종료 대기 (최대 2초)
         _rt = getattr(self, '_run_thread', None)
@@ -24465,13 +24642,14 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         _clip_text = clipboard.action_text if _is_rule else clipboard.text
         _clip_keys = clipboard.action_keys if _is_rule else clipboard.keys
+        _clip_key_events = clipboard.action_key_events if _is_rule else getattr(clipboard, "key_events", [])
         _clip_x = clipboard.action_x if _is_rule else clipboard.x
         _clip_y = clipboard.action_y if _is_rule else clipboard.y
 
         if action_type == "type":
             monitor_action = {"type": "텍스트 입력", "text": _clip_text or ""}
         elif action_type in ["hotkey", "key_press"]:
-            monitor_action = {"type": "키 입력", "keys": _clip_keys or []}
+            monitor_action = {"type": "키 입력", "keys": _clip_keys or [], "key_events": _clip_key_events or []}
         elif action_type in ["click", "double_click", "right_click"]:
             if getattr(clipboard, 'target_image', None):
                 monitor_action = {"type": "이미지 클릭", "image": clipboard.target_image, "click_type": action_type}
@@ -24537,7 +24715,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
     def _add_key_action(self):
         """키 입력 액션 추가"""
         dialog = KeyInputDialog(self)
-        keys = dialog.get_keys()
+        keys, key_events = dialog.get_result()
 
         if keys:
             key_text = " + ".join(keys)
@@ -24545,6 +24723,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             new_action = Action(
                 action_type="hotkey",
                 keys=[key.lower().strip() for key in keys],
+                key_events=key_events,
                 timestamp=0,
                 wait_after=0.5,
             )
@@ -26021,6 +26200,7 @@ class PlayerView(BaseView):
             action_y=getattr(action, "y", None),
             action_text=getattr(action, "text", None),
             action_keys=list(getattr(action, "keys", None) or []),
+            action_key_events=list(getattr(action, "key_events", None) or []),
             drag_to_x=getattr(action, "drag_to_x", None),
             drag_to_y=getattr(action, "drag_to_y", None),
             drag_duration=getattr(action, "drag_duration", None),
@@ -26565,19 +26745,21 @@ class PlayerView(BaseView):
         if _gm is not None:
             logger.info("[중지] playback game_mode 비차단 중지 요청")
             try:
-                _gm._stop_event.set()
+                _gm.request_hard_stop(
+                    reason="playback_game_mode_stop",
+                    detail="PlayerView stop button",
+                    schedule_ui_stop=True,
+                )
             except Exception:
-                pass
+                try:
+                    _gm._stop_event.set()
+                    _gm._bosstest_stop_event.set()
+                    _gm._bosstest_release_key()
+                    get_input_controller().release_all()
+                except Exception:
+                    pass
             try:
-                _gm._bosstest_stop_event.set()
-            except Exception:
-                pass
-            try:
-                _gm._bosstest_release_key()
-            except Exception:
-                pass
-            try:
-                _gm._is_running = False
+                block_automation_input("playback game_mode stop")
             except Exception:
                 pass
             if self._playback_gm_after_id:
@@ -26732,6 +26914,33 @@ class PlayerView(BaseView):
 
     def cleanup(self) -> None:
         """리소스 정리"""
+        try:
+            external_owner = getattr(self, "_external_execution_owner", None)
+            if external_owner is not None:
+                external_owner._stop_execution()
+        except Exception as e:
+            logger.warning(f"외부 부분실행 정리 오류: {e}")
+
+        try:
+            gm = getattr(self, "_playback_gm_dialog", None)
+            if gm is not None:
+                gm.request_hard_stop(
+                    reason="player_view_cleanup",
+                    detail="PlayerView cleanup",
+                    schedule_ui_stop=True,
+                )
+        except Exception as e:
+            logger.warning(f"재생 특화모드 정리 오류: {e}")
+
+        try:
+            force_stop_all_game_modes(
+                reason="player_view_cleanup",
+                detail="PlayerView cleanup",
+                join_timeout=0.5,
+            )
+        except Exception as e:
+            logger.warning(f"특화모드 전체 정리 오류: {e}")
+
         # 배치 렌더링 타이머 취소
         if hasattr(self, '_batch_render_id') and self._batch_render_id:
             try:

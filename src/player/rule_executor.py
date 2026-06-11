@@ -23,7 +23,13 @@ from pathlib import Path
 import ctypes
 import ctypes.wintypes
 
-from ..utils.input_controller import get_input_controller, is_arduino_enabled, is_arduino_strict_enabled
+from ..utils.input_controller import (
+    block_automation_input,
+    get_input_controller,
+    is_arduino_enabled,
+    is_arduino_strict_enabled,
+    unblock_automation_input,
+)
 
 # pynput 사용 시도 (멀티모니터 지원)
 try:
@@ -623,6 +629,7 @@ class RuleExecutor:
 
         self._current_plan = plan
         self._results.clear()
+        unblock_automation_input()
         self._stop_event.clear()
         self._pause_event.set()
 
@@ -690,6 +697,11 @@ class RuleExecutor:
         """실행 중지 (비차단 — UI 스레드에서 안전하게 호출 가능)"""
         try:
             self._stop_event.set()
+            block_automation_input("RuleExecutor.stop")
+            try:
+                get_input_controller().release_all()
+            except Exception:
+                pass
             self._pause_event.set()  # 일시정지 상태에서도 종료 가능하게
             self._state = ExecutionState.STOPPED
             try:
@@ -1371,9 +1383,13 @@ class RuleExecutor:
 
             elif rule_type == RuleType.HOTKEY.value:
                 # 단축키
+                input_ctrl = get_input_controller()
+                key_events = getattr(rule, "action_key_events", None) or []
+                if key_events:
+                    input_ctrl.replay_key_events(key_events)
+                    return self._make_result(rule, True, "기록 키 실행 완료", start_time)
                 if rule.action_keys:
                     keys = [k.lower() for k in rule.action_keys]
-                    input_ctrl = get_input_controller()
                     input_ctrl.hotkey(*keys)
                     return self._make_result(rule, True, "단축키 실행 완료", start_time)
                 else:
@@ -1645,19 +1661,32 @@ class RuleExecutor:
                 return self._make_result(rule, False, "입력할 텍스트 없음", start_time)
 
             elif action_type == "hotkey":
+                input_ctrl = get_input_controller()
+                key_events = getattr(rule, "action_key_events", None) or []
+                if key_events:
+                    input_ctrl.replay_key_events(key_events)
+                    logger.info(f"{_GREEN}{self._step_prefix}✓ 기록 키 완료{_RESET}")
+                    return self._make_result(rule, True, "기록 키 완료", start_time)
                 if rule.action_keys:
                     keys = [k.lower() for k in rule.action_keys]
-                    input_ctrl = get_input_controller()
                     input_ctrl.hotkey(*keys)
                     logger.info(f"{_GREEN}{self._step_prefix}✓ 단축키 완료{_RESET}")
                     return self._make_result(rule, True, f"단축키 완료", start_time)
                 return self._make_result(rule, False, "단축키 없음", start_time)
 
             elif action_type == "key_press":
+                input_ctrl = get_input_controller()
+                key_events = getattr(rule, "action_key_events", None) or []
+                if key_events:
+                    input_ctrl.replay_key_events(key_events)
+                    logger.info(f"{_GREEN}{self._step_prefix}✓ 기록 키 입력 완료{_RESET}")
+                    return self._make_result(rule, True, "기록 키 입력 완료", start_time)
                 if rule.action_keys:
-                    input_ctrl = get_input_controller()
-                    for key in rule.action_keys:
-                        input_ctrl.press(key.lower())
+                    keys = [str(key).lower().strip() for key in rule.action_keys if str(key).strip()]
+                    if len(keys) == 1:
+                        input_ctrl.press(keys[0])
+                    elif keys:
+                        input_ctrl.hotkey(*keys)
                     logger.info(f"{_GREEN}{self._step_prefix}✓ 키 입력 완료{_RESET}")
                     return self._make_result(rule, True, f"키 입력 완료", start_time)
                 return self._make_result(rule, False, "키 없음", start_time)
@@ -3174,8 +3203,12 @@ class RuleExecutor:
 
             elif action_type == '키 입력':
                 keys = monitor_action.get('keys', [])
+                key_events = monitor_action.get('key_events', []) or []
+                input_ctrl = get_input_controller()
+                if key_events:
+                    input_ctrl.replay_key_events(key_events)
+                    return "기록 키 입력"
                 if keys:
-                    input_ctrl = get_input_controller()
                     key_list = [k.lower().strip() for k in keys if k.strip()]
                     if len(key_list) == 1:
                         input_ctrl.press(key_list[0])
@@ -3687,7 +3720,11 @@ class RuleExecutor:
                     if isinstance(kd, dict):
                         k = kd.get('key', '')
                         w = kd.get('wait_after', 0.3)
-                        if k:
+                        key_events = kd.get('key_events', []) or []
+                        if key_events:
+                            get_input_controller().replay_key_events(key_events)
+                            time.sleep(max(0.1, w))
+                        elif k:
                             get_input_controller().press(k)
                             time.sleep(max(0.1, w))
                     elif isinstance(kd, str) and kd.strip():

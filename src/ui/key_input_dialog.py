@@ -1,11 +1,14 @@
 """
 WinCro key input capture dialog.
 
-Captures a single key or a modifier combination such as shift+up.
+Captures both the display combo, such as shift+up, and the exact key
+down/up event sequence with inter-event timing.
 """
 
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 import customtkinter as ctk
-from typing import List, Optional
 
 from .theme import COLORS
 
@@ -57,18 +60,34 @@ def format_key_combo(keys: List[str]) -> str:
     return " + ".join((key or "").upper() for key in keys if key)
 
 
+def format_key_events(events: List[Dict[str, Any]]) -> str:
+    if not events:
+        return "기록 대기 중"
+    parts = []
+    for event in events[-6:]:
+        key = str(event.get("key", "")).upper()
+        event_type = "↓" if event.get("event") == "down" else "↑"
+        delay_ms = int(round(float(event.get("delay", 0.0) or 0.0) * 1000))
+        parts.append(f"{delay_ms}ms {key}{event_type}")
+    return "  ".join(parts)
+
+
 class KeyInputDialog(ctk.CTkToplevel):
-    """키 입력 감지 다이얼로그."""
+    """Key capture dialog with exact key down/up timing."""
 
     def __init__(self, parent):
         super().__init__(parent)
 
         self._captured_key: Optional[str] = None
         self._captured_keys: List[str] = []
+        self._captured_key_events: List[Dict[str, Any]] = []
         self._active_modifiers = set()
+        self._pressed_keys = set()
+        self._last_event_at: Optional[float] = None
+        self._did_wait = False
 
         self.title("키 입력")
-        self.geometry("350x210")
+        self.geometry("430x290")
         self.resizable(False, False)
         self.configure(fg_color=COLORS["bg_dark"])
 
@@ -76,36 +95,55 @@ class KeyInputDialog(ctk.CTkToplevel):
         self.grab_set()
 
         self.update_idletasks()
-        x = (self.winfo_screenwidth() - 350) // 2
-        y = (self.winfo_screenheight() - 210) // 2
+        x = (self.winfo_screenwidth() - 430) // 2
+        y = (self.winfo_screenheight() - 290) // 2
         self.geometry(f"+{x}+{y}")
 
         ctk.CTkLabel(
             self,
-            text="등록할 키를 누르세요",
-            font=ctk.CTkFont(size=14),
+            text="등록할 키를 실제로 눌렀다 떼세요",
+            font=ctk.CTkFont(size=15, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(pady=(20, 6))
 
         ctk.CTkLabel(
             self,
-            text="Shift/Ctrl/Alt를 누른 상태로 방향키나 특정 키를 누르면 조합키로 등록됩니다.",
+            text="Shift+방향키처럼 민감한 입력은 누른 순서, 누른 시간, 떼는 순서까지 같이 저장됩니다.",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
-            wraplength=300,
+            wraplength=360,
             justify="center",
-        ).pack(pady=(0, 8))
+        ).pack(pady=(0, 10))
 
         self._key_label = ctk.CTkLabel(
             self,
-            text="대기 중...",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            text="대기 중",
+            font=ctk.CTkFont(size=20, weight="bold"),
             text_color=COLORS["accent"],
         )
-        self._key_label.pack(pady=8)
+        self._key_label.pack(pady=(4, 8))
+
+        self._event_label = ctk.CTkLabel(
+            self,
+            text="기록 대기 중",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+            wraplength=380,
+            justify="center",
+        )
+        self._event_label.pack(pady=(0, 8))
+
+        helper = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=10)
+        helper.pack(fill="x", padx=24, pady=(0, 8))
+        ctk.CTkLabel(
+            helper,
+            text="예: Shift 누름 → Up 누름 → Up 뗌 → Shift 뗌 → 확인",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_primary"],
+        ).pack(pady=8)
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=16)
+        btn_frame.pack(pady=12)
 
         ctk.CTkButton(
             btn_frame,
@@ -137,21 +175,53 @@ class KeyInputDialog(ctk.CTkToplevel):
         self.bind("<KeyRelease>", self._on_key_release)
         self.focus_set()
 
+    def _record_event(self, event_type: str, key_name: str) -> None:
+        now = time.perf_counter()
+        delay = 0.0 if self._last_event_at is None else max(0.0, now - self._last_event_at)
+        self._last_event_at = now
+        self._captured_key_events.append({
+            "event": event_type,
+            "key": key_name,
+            "delay": round(delay, 4),
+        })
+        self._event_label.configure(text=format_key_events(self._captured_key_events))
+
     def _on_key_press(self, event):
         key_name = normalize_key_name(event.keysym)
+        if not key_name:
+            return
+
+        if key_name in self._pressed_keys:
+            return
+
+        self._pressed_keys.add(key_name)
         if key_name in MODIFIER_KEY_NAMES:
             self._active_modifiers.add(key_name)
+
+        self._record_event("down", key_name)
+
         keys = build_key_combo(event.keysym, active_modifiers=self._active_modifiers)
-        if not keys:
-            return
-        self._captured_keys = keys
-        self._captured_key = "+".join(keys)
-        self._key_label.configure(text=format_key_combo(keys))
+        if keys:
+            self._captured_keys = keys
+            self._captured_key = "+".join(keys)
+            self._key_label.configure(text=format_key_combo(keys))
 
     def _on_key_release(self, event):
         key_name = normalize_key_name(event.keysym)
+        if not key_name:
+            return
+
+        if key_name in self._pressed_keys:
+            self._record_event("up", key_name)
+            self._pressed_keys.discard(key_name)
+
         if key_name in MODIFIER_KEY_NAMES:
             self._active_modifiers.discard(key_name)
+
+    def _wait_for_close(self) -> None:
+        if not self._did_wait:
+            self._did_wait = True
+            self.wait_window()
 
     def _on_ok(self):
         self.destroy()
@@ -159,12 +229,21 @@ class KeyInputDialog(ctk.CTkToplevel):
     def _on_cancel(self):
         self._captured_key = None
         self._captured_keys = []
+        self._captured_key_events = []
         self.destroy()
 
+    def get_result(self) -> Tuple[List[str], List[Dict[str, Any]]]:
+        self._wait_for_close()
+        return list(self._captured_keys), [dict(event) for event in self._captured_key_events]
+
     def get_key(self) -> Optional[str]:
-        self.wait_window()
+        self._wait_for_close()
         return self._captured_key
 
     def get_keys(self) -> List[str]:
-        self.wait_window()
+        self._wait_for_close()
         return list(self._captured_keys)
+
+    def get_key_events(self) -> List[Dict[str, Any]]:
+        self._wait_for_close()
+        return [dict(event) for event in self._captured_key_events]

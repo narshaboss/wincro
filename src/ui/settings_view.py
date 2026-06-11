@@ -28,6 +28,10 @@ from ..utils.app_identity import (
     PRIMARY_APP_NAME,
     get_startup_entry_name,
 )
+from ..utils.startup_registry import (
+    get_auto_start_entry_candidates,
+    sync_auto_start_registry,
+)
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
 
@@ -2463,11 +2467,13 @@ del "%~f0"
         self._seq_write_groups_to_config(config)
 
         # 자동 시작 설정
+        old_startup_entry_name = get_startup_entry_name(config.ui)
         new_auto_start = self._auto_start_var.get()
         old_auto_start = config.ui.auto_start
         config.ui.auto_start = new_auto_start
 
         # 외관 설정
+        old_app_name = config.ui.app_name
         app_name = self._app_name_var.get().strip()
         if app_name:
             config.ui.app_name = app_name
@@ -2484,8 +2490,11 @@ del "%~f0"
         if save_config():
             logger.info("설정 저장 완료")
             self._sync_shutdown_schedule_from_settings()
-            if new_auto_start != old_auto_start:
-                self._update_auto_start_registry(new_auto_start)
+            if new_auto_start != old_auto_start or old_app_name != config.ui.app_name:
+                self._update_auto_start_registry(
+                    new_auto_start,
+                    extra_candidates=[old_app_name, old_startup_entry_name],
+                )
             top = self.winfo_toplevel()
             if hasattr(top, "update_title"):
                 top.update_title()
@@ -2556,61 +2565,18 @@ del "%~f0"
             return None
 
     def _get_auto_start_entry_candidates(self) -> list[str]:
-        config = get_config()
-        candidates = {
-            PRIMARY_APP_NAME,
-            (config.ui.app_name or "").strip(),
-            (getattr(config.ui, "random_name_alias", "") or "").strip(),
-            get_startup_entry_name(config.ui),
-            "WinCro",
-        }
-        return sorted(name for name in candidates if name)
+        return get_auto_start_entry_candidates(get_config().ui)
 
-    def _update_auto_start_registry(self, enable: bool) -> None:
+    def _update_auto_start_registry(self, enable: bool, extra_candidates: Optional[list[str]] = None) -> None:
         """윈도우 시작시 자동실행 레지스트리 설정"""
-        import sys
-        import winreg
-
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-
-        try:
-            # 실행 파일 경로 결정
-            if getattr(sys, 'frozen', False):
-                # exe로 실행 중
-                exe_path = sys.executable
-            else:
-                # 스크립트로 실행 중 - pythonw.exe 사용
-                python_exe = sys.executable.replace("python.exe", "pythonw.exe")
-                script_path = str(Path(__file__).parent.parent / "app.py")
-                exe_path = f'"{python_exe}" "{script_path}"'
-
-            # 레지스트리 키 열기
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                key_path,
-                0,
-                winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
-            )
-
-            if enable:
-                # 시작프로그램에 추가
-                entry_name = get_startup_entry_name(get_config().ui, save_callback=None)
-                winreg.SetValueEx(key, entry_name, 0, winreg.REG_SZ, exe_path)
-                logger.info(f"[자동시작] 레지스트리 등록: {entry_name} -> {exe_path}")
-            else:
-                # 시작프로그램에서 제거
-                for candidate in self._get_auto_start_entry_candidates():
-                    try:
-                        winreg.DeleteValue(key, candidate)
-                        logger.info(f"[자동시작] 레지스트리에서 제거됨: {candidate}")
-                    except FileNotFoundError:
-                        pass
-
-            winreg.CloseKey(key)
-
-        except Exception as e:
-            logger.error(f"[자동시작] 레지스트리 설정 실패: {e}")
-            self._show_message("오류", f"자동시작 설정 실패: {e}")
+        result = sync_auto_start_registry(
+            get_config().ui,
+            enable,
+            extra_candidates=extra_candidates,
+        )
+        if not result.ok:
+            logger.error(f"[자동시작] 레지스트리 설정 실패: {result.detail}")
+            self._show_message("오류", f"자동시작 설정 실패: {result.detail}")
 
     def _reset_settings(self) -> None:
         """설정 초기화"""

@@ -42,7 +42,7 @@ from pynput import keyboard
 
 from ..utils.logger import get_logger, create_execution_logger
 from ..utils.config import get_config
-from ..utils.input_controller import get_input_controller
+from ..utils.input_controller import block_automation_input, get_input_controller, unblock_automation_input
 from ..database.models import Action, ActionType, Sequence, ExecutionLog, ExecutionStatus
 from ..database.db_manager import get_db
 from ..analyzer.template_matcher import get_template_matcher
@@ -357,6 +357,7 @@ class ActionPlayer:
 
         self._current_sequence = sequence
         self._state = PlayerState.RUNNING
+        unblock_automation_input()
 
         # 진행 상태 초기화
         self._progress = PlaybackProgress(
@@ -420,6 +421,11 @@ class ActionPlayer:
             return False
 
         self._state = PlayerState.STOPPED
+        block_automation_input("ActionPlayer.stop")
+        try:
+            get_input_controller().release_all()
+        except Exception:
+            pass
         self._progress.state = PlayerState.STOPPED
         self._emergency_stop.stop()
         self._update_progress("사용자에 의해 중지됨")
@@ -813,16 +819,25 @@ class ActionPlayer:
                     return False, "입력할 텍스트가 없습니다"
 
             elif action_type == ActionType.HOTKEY.value:
-                if action.keys:
+                key_events = getattr(action, "key_events", None) or []
+                if key_events:
+                    input_ctrl.replay_key_events(key_events, speed_multiplier=speed_multiplier)
+                elif action.keys:
                     keys = [k.lower() for k in action.keys]
                     input_ctrl.hotkey(*keys)
                 else:
                     return False, "단축키가 없습니다"
 
             elif action_type == ActionType.KEY_PRESS.value:
-                if action.keys:
-                    for key in action.keys:
-                        input_ctrl.press(key.lower())
+                key_events = getattr(action, "key_events", None) or []
+                if key_events:
+                    input_ctrl.replay_key_events(key_events, speed_multiplier=speed_multiplier)
+                elif action.keys:
+                    keys = [str(key).lower().strip() for key in action.keys if str(key).strip()]
+                    if len(keys) == 1:
+                        input_ctrl.press(keys[0])
+                    elif keys:
+                        input_ctrl.hotkey(*keys)
                 else:
                     return False, "키가 없습니다"
 

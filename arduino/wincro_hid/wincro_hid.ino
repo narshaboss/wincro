@@ -180,6 +180,60 @@ void processCommand(String cmd) {
   }
 
   // 타이핑 딜레이 설정: KD,delay (ms)
+  // Instant combo tap: KQ,modifier,...,primary
+  // Press modifiers, tap primary once, then release modifiers without host round-trips.
+  if (cmd == "KQ") {
+    Serial.println("OK");
+    return;
+  }
+  if (cmd.startsWith("KQ,")) {
+    const int MAX_KEYS = 8;
+    int keycodes[MAX_KEYS];
+    int count = 0;
+    int start = 3;
+
+    while (start < cmd.length() && count < MAX_KEYS) {
+      int comma = cmd.indexOf(',', start);
+      String part = (comma == -1) ? cmd.substring(start) : cmd.substring(start, comma);
+      part.trim();
+      if (part.length() > 0) {
+        int keycode = part.toInt();
+        if (keycode < 0 || keycode > 255) {
+          Serial.println("ERR:INVALID_KEYCODE");
+          return;
+        }
+        keycodes[count++] = keycode;
+      }
+      if (comma == -1) break;
+      start = comma + 1;
+    }
+
+    if (count == 0) {
+      Serial.println("OK");
+      return;
+    }
+
+    for (int i = count - 1; i >= 0; i--) {
+      Keyboard.release(keycodes[i]);
+    }
+    delay(2);
+
+    for (int i = 0; i < count - 1; i++) {
+      Keyboard.press(keycodes[i]);
+    }
+    delay(2);
+
+    Keyboard.press(keycodes[count - 1]);
+    delayMicroseconds(800);
+    Keyboard.release(keycodes[count - 1]);
+    for (int i = count - 2; i >= 0; i--) {
+      Keyboard.release(keycodes[i]);
+    }
+    delay(2);
+    Serial.println("OK");
+    return;
+  }
+
   if (cmd.startsWith("KD,")) {
     int newDelay = cmd.substring(3).toInt();
     typingDelay = constrain(newDelay, 0, 200);

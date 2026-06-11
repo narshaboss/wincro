@@ -6,6 +6,7 @@ Mouse click / button / keyboard / scroll can use Arduino HID when enabled.
 """
 
 import math
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -31,6 +32,35 @@ _MOVE_MAX_STEP_DELAY = 0.02
 _HOTKEY_SETTLE_DELAY = 0.06
 _HOTKEY_HOLD_DELAY = 0.08
 _HOTKEY_RELEASE_DELAY = 0.02
+_COMBO_PRE_RELEASE_DELAY = 0.002
+_COMBO_MODIFIER_SETTLE_DELAY = 0.003
+_COMBO_POST_RELEASE_DELAY = 0.004
+_MODIFIER_KEYS = {"shift", "ctrl", "alt", "win", "cmd", "command", "option"}
+_DIRECTION_KEYS = {"up", "down", "left", "right"}
+_KEY_EVENT_MAX_DELAY = 5.0
+_RECORDED_DIRECTION_PRE_DELAY_CAP = 0.030
+_RECORDED_DIRECTION_HOLD_DELAY_CAP = 0.012
+_RECORDED_DIRECTION_POST_DELAY_CAP = 0.006
+_input_block_event = threading.Event()
+_input_block_reason = ""
+
+
+def block_automation_input(reason: str = "") -> None:
+    """Block automation-generated input until the next explicit execution start."""
+    global _input_block_reason
+    _input_block_reason = str(reason or "blocked")
+    _input_block_event.set()
+
+
+def unblock_automation_input() -> None:
+    """Allow automation-generated input again."""
+    global _input_block_reason
+    _input_block_reason = ""
+    _input_block_event.clear()
+
+
+def is_automation_input_blocked() -> bool:
+    return _input_block_event.is_set()
 
 
 def _get_arduino():
@@ -223,6 +253,10 @@ class InputController:
         return ok
 
     def _with_arduino_fallback(self, action_name, arduino_fn, fallback_fn):
+        if is_automation_input_blocked():
+            logger.warning(f"[InputSafety] blocked automation input: {action_name} reason={_input_block_reason or '-'}")
+            return False
+
         if self._use_arduino():
             arduino = _get_arduino()
             if arduino is not None:
@@ -255,6 +289,9 @@ class InputController:
 
     # Mouse operations
     def move_to(self, x: int, y: int, duration: float = 0.0) -> bool:
+        if is_automation_input_blocked():
+            logger.warning(f"[InputSafety] blocked automation input: move_to reason={_input_block_reason or '-'}")
+            return False
         arduino = _get_arduino()
         if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
             if self._arduino_move_to(x, y, duration=duration):
@@ -274,6 +311,9 @@ class InputController:
             return False
 
     def move(self, dx: int, dy: int) -> bool:
+        if is_automation_input_blocked():
+            logger.warning(f"[InputSafety] blocked automation input: move reason={_input_block_reason or '-'}")
+            return False
         arduino = _get_arduino()
         if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
             if self._arduino_move_relative(dx, dy):
@@ -334,6 +374,9 @@ class InputController:
         )
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.5, button: str = 'left') -> bool:
+        if is_automation_input_blocked():
+            logger.warning(f"[InputSafety] blocked automation input: drag reason={_input_block_reason or '-'}")
+            return False
         arduino = _get_arduino()
         if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
                 try:
@@ -386,11 +429,93 @@ class InputController:
 
     # Keyboard operations
     def press(self, key: str) -> bool:
+        key_text = str(key).strip().lower()
+        key_parts = [part.strip() for part in key_text.split("+") if part.strip()]
+        if len(key_parts) > 1:
+            return self.hotkey(*key_parts)
         return self._with_arduino_fallback(
-            f"press:{key}",
-            lambda a: a.key_tap(key),
-            lambda: pyautogui.press(key),
+            f"press:{key_text}",
+            lambda a: a.key_tap(key_text),
+            lambda: pyautogui.press(key_text),
         )
+
+    def tap_combo_once(self, *keys) -> bool:
+        """Press modifiers, tap the final key once, then release modifiers immediately."""
+        normalized_keys = [str(key).strip().lower() for key in keys if str(key).strip()]
+        if not normalized_keys:
+            return True
+        if len(normalized_keys) == 1:
+            return self.press(normalized_keys[0])
+
+        combo = "+".join(normalized_keys)
+
+        def _software_tap_combo() -> bool:
+            pressed_modifiers = []
+            primary_key = normalized_keys[-1]
+            primary_pressed = False
+            ok = True
+            previous_pause = getattr(pyautogui, "PAUSE", 0)
+            try:
+                pyautogui.PAUSE = 0
+                for key in reversed(normalized_keys):
+                    pyautogui.keyUp(key)
+                time.sleep(_COMBO_PRE_RELEASE_DELAY)
+
+                for key in normalized_keys[:-1]:
+                    pyautogui.keyDown(key)
+                    pressed_modifiers.append(key)
+                time.sleep(_COMBO_MODIFIER_SETTLE_DELAY)
+
+                primary_pressed = True
+                pyautogui.keyDown(primary_key)
+                pyautogui.keyUp(primary_key)
+                primary_pressed = False
+            except Exception as e:
+                ok = False
+                logger.error(f"[SoftwareInput] tap_combo_once failed: {combo} ({e})")
+            finally:
+                if primary_pressed:
+                    try:
+                        pyautogui.keyUp(primary_key)
+                    except Exception:
+                        pass
+                for key in reversed(pressed_modifiers):
+                    try:
+                        pyautogui.keyUp(key)
+                    except Exception:
+                        pass
+                time.sleep(_COMBO_POST_RELEASE_DELAY)
+                pyautogui.PAUSE = previous_pause
+            return ok
+
+        if is_automation_input_blocked():
+            logger.warning(f"[InputSafety] blocked automation input: tap_combo_once:{combo} reason={_input_block_reason or '-'}")
+            return False
+
+        if self._use_arduino():
+            arduino = _get_arduino()
+            if arduino is not None:
+                try:
+                    supports_kq = bool(getattr(arduino, "supports_key_combo_tap", lambda: False)())
+                    if supports_kq:
+                        return bool(arduino.key_combo_tap(*normalized_keys))
+                    logger.warning(
+                        f"[ArduinoInput] KQ unsupported for {combo}; raw KP/KR fallback skipped to avoid long arrow hold"
+                    )
+                    if self._strict_mode():
+                        logger.warning(f"[ArduinoStrict] blocked software fallback for tap_combo_once:{combo}")
+                        return False
+                except Exception as e:
+                    logger.error(f"[ArduinoInput] tap_combo_once:{combo} failed via Arduino: {e}")
+                    if self._strict_mode():
+                        logger.warning(f"[ArduinoStrict] blocked software fallback for tap_combo_once:{combo}")
+                        return False
+
+        if self._strict_mode():
+            logger.warning(f"[ArduinoStrict] blocked software fallback for tap_combo_once:{combo}")
+            return False
+
+        return _software_tap_combo()
 
     def key_down(self, key: str) -> bool:
         return self._with_arduino_fallback(
@@ -416,28 +541,214 @@ class InputController:
         combo = "+".join(normalized_keys)
         pressed_keys = []
         ok = True
+        primary_key = normalized_keys[-1]
+        has_modifier = any(key in _MODIFIER_KEYS for key in normalized_keys[:-1])
+        is_direction_tap = has_modifier and primary_key in _DIRECTION_KEYS
+        if is_direction_tap:
+            return self.tap_combo_once(*normalized_keys)
 
         # pyautogui.hotkey()/Arduino hotkey()의 짧은 탭 타이밍을 쓰지 않고,
         # modifier가 확실히 눌린 상태에서 본 키가 들어가도록 down/up을 직접 제어한다.
-        for key in normalized_keys:
-            if not self.key_down(key):
-                ok = False
-                logger.warning(f"[InputController] hotkey key_down failed: {combo} key={key}")
-                break
-            pressed_keys.append(key)
-            time.sleep(_HOTKEY_SETTLE_DELAY)
+        previous_pause = getattr(pyautogui, "PAUSE", 0)
+        try:
+            pyautogui.PAUSE = 0
+            for key in normalized_keys:
+                if not self.key_down(key):
+                    ok = False
+                    logger.warning(f"[InputController] hotkey key_down failed: {combo} key={key}")
+                    break
+                pressed_keys.append(key)
+                time.sleep(_HOTKEY_SETTLE_DELAY)
 
-        if ok:
-            time.sleep(_HOTKEY_HOLD_DELAY)
+            if ok:
+                time.sleep(_HOTKEY_HOLD_DELAY)
 
-        release_ok = True
-        for key in reversed(pressed_keys):
-            if not self.key_up(key):
-                release_ok = False
-                logger.warning(f"[InputController] hotkey key_up failed: {combo} key={key}")
-            time.sleep(_HOTKEY_RELEASE_DELAY)
+            release_ok = True
+            for key in reversed(pressed_keys):
+                if not self.key_up(key):
+                    release_ok = False
+                    logger.warning(f"[InputController] hotkey key_up failed: {combo} key={key}")
+                time.sleep(_HOTKEY_RELEASE_DELAY)
+        finally:
+            pyautogui.PAUSE = previous_pause
 
         return ok and release_ok
+
+    def replay_key_events(self, events, *, speed_multiplier: float = 1.0) -> bool:
+        """Replay recorded key down/up events with their captured inter-event delays."""
+        if not events:
+            return True
+
+        speed = max(0.01, float(speed_multiplier or 1.0))
+        sanitized_events = []
+        for raw_event in events:
+            if not isinstance(raw_event, dict):
+                continue
+            key = str(raw_event.get("key", "")).strip().lower()
+            event_type = str(raw_event.get("event", raw_event.get("type", ""))).strip().lower()
+            if not key or event_type not in {"down", "up"}:
+                continue
+            try:
+                raw_delay = float(raw_event.get("delay", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                raw_delay = 0.0
+            sanitized_events.append({
+                "event": event_type,
+                "key": key,
+                "delay": max(0.0, min(_KEY_EVENT_MAX_DELAY, raw_delay)),
+            })
+
+        if not sanitized_events:
+            return True
+
+        direction_down_index = next(
+            (
+                idx for idx, event in enumerate(sanitized_events)
+                if event["event"] == "down" and event["key"] in _DIRECTION_KEYS
+            ),
+            None,
+        )
+        direction_key = sanitized_events[direction_down_index]["key"] if direction_down_index is not None else ""
+        direction_up_index = None
+        if direction_down_index is not None:
+            direction_up_index = next(
+                (
+                    idx for idx in range(direction_down_index + 1, len(sanitized_events))
+                    if sanitized_events[idx]["event"] == "up" and sanitized_events[idx]["key"] == direction_key
+                ),
+                None,
+            )
+
+        modifier_before_direction = (
+            direction_down_index is not None
+            and any(
+                event["event"] == "down" and event["key"] in _MODIFIER_KEYS
+                for event in sanitized_events[:direction_down_index]
+            )
+        )
+        capped_direction_combo = (
+            modifier_before_direction
+            and direction_up_index is not None
+            and any(
+                event["event"] == "up" and event["key"] in _MODIFIER_KEYS
+                for event in sanitized_events[direction_up_index + 1:]
+            )
+        )
+        if capped_direction_combo:
+            original_pre = sanitized_events[direction_down_index]["delay"]
+            original_hold = sanitized_events[direction_up_index]["delay"]
+            sanitized_events[direction_down_index]["delay"] = min(
+                original_pre,
+                _RECORDED_DIRECTION_PRE_DELAY_CAP,
+            )
+            sanitized_events[direction_up_index]["delay"] = min(
+                original_hold,
+                _RECORDED_DIRECTION_HOLD_DELAY_CAP,
+            )
+            for idx in range(direction_up_index + 1, len(sanitized_events)):
+                if sanitized_events[idx]["event"] == "up" and sanitized_events[idx]["key"] in _MODIFIER_KEYS:
+                    original_post = sanitized_events[idx]["delay"]
+                    sanitized_events[idx]["delay"] = min(
+                        original_post,
+                        _RECORDED_DIRECTION_POST_DELAY_CAP,
+                    )
+                    break
+            if (
+                sanitized_events[direction_down_index]["delay"] != original_pre
+                or sanitized_events[direction_up_index]["delay"] != original_hold
+            ):
+                logger.info(
+                    "[KeyReplay] direction combo timing capped: key=%s pre=%.4f->%.4f hold=%.4f->%.4f",
+                    direction_key,
+                    original_pre,
+                    sanitized_events[direction_down_index]["delay"],
+                    original_hold,
+                    sanitized_events[direction_up_index]["delay"],
+                )
+
+        replay_id = int(time.time() * 1000) % 1000000
+        replay_started = time.perf_counter()
+        logger.info(
+            "[KeyReplay] start id=%s events=%s speed=%.2f capped_direction=%s seq=%s",
+            replay_id,
+            len(sanitized_events),
+            speed,
+            "Y" if capped_direction_combo else "N",
+            ",".join(f"{event['key']}:{event['event']}:{event['delay']:.4f}" for event in sanitized_events),
+        )
+        pressed_keys = []
+        ok = True
+
+        for idx, raw_event in enumerate(sanitized_events, start=1):
+            if is_automation_input_blocked():
+                logger.warning(f"[InputSafety] blocked automation input: replay_key_events reason={_input_block_reason or '-'}")
+                ok = False
+                break
+
+            key = raw_event["key"]
+            event_type = raw_event["event"]
+            delay = raw_event["delay"] / speed
+            if delay > 0:
+                time.sleep(delay)
+
+            event_started = time.perf_counter()
+            if event_type == "down":
+                if not self.key_down(key):
+                    ok = False
+                    logger.warning(
+                        "[KeyReplay] event id=%s %s/%s %s %s failed after_delay=%.4f elapsed=%.4f",
+                        replay_id,
+                        idx,
+                        len(sanitized_events),
+                        key,
+                        event_type,
+                        delay,
+                        time.perf_counter() - replay_started,
+                    )
+                    break
+                pressed_keys.append(key)
+            else:
+                if not self.key_up(key):
+                    ok = False
+                    logger.warning(
+                        "[KeyReplay] event id=%s %s/%s %s %s failed after_delay=%.4f elapsed=%.4f",
+                        replay_id,
+                        idx,
+                        len(sanitized_events),
+                        key,
+                        event_type,
+                        delay,
+                        time.perf_counter() - replay_started,
+                    )
+                    break
+                try:
+                    pressed_keys.remove(key)
+                except ValueError:
+                    pass
+            logger.info(
+                "[KeyReplay] event id=%s %s/%s %s %s delay=%.4f action_ms=%.1f elapsed=%.4f",
+                replay_id,
+                idx,
+                len(sanitized_events),
+                key,
+                event_type,
+                delay,
+                (time.perf_counter() - event_started) * 1000.0,
+                time.perf_counter() - replay_started,
+            )
+
+        for key in reversed(pressed_keys):
+            try:
+                self.key_up(key)
+            except Exception:
+                pass
+        logger.info(
+            "[KeyReplay] done id=%s ok=%s elapsed=%.4f",
+            replay_id,
+            "Y" if ok else "N",
+            time.perf_counter() - replay_started,
+        )
+        return ok
 
     def type_text(self, text: str, interval: float = 0.0) -> bool:
         return self._with_arduino_fallback(
@@ -452,13 +763,31 @@ class InputController:
         return self.type_text(str(text), interval=interval)
 
     def release_all(self) -> None:
+        released_by_arduino = False
         if self._use_arduino():
             arduino = _get_arduino()
             if arduino is not None:
                 try:
                     arduino.release_all()
+                    released_by_arduino = True
                 except Exception as e:
                     logger.error(f"[ArduinoInput] release_all failed: {e}")
+        if released_by_arduino:
+            return
+
+        for key in (
+            "shift", "ctrl", "alt", "win", "cmd", "command", "option",
+            "up", "down", "left", "right", "enter", "space", "esc",
+        ):
+            try:
+                pyautogui.keyUp(key)
+            except Exception:
+                pass
+        for button in ("left", "right", "middle"):
+            try:
+                pyautogui.mouseUp(button=button)
+            except Exception:
+                pass
 
 
 def get_input_controller() -> InputController:

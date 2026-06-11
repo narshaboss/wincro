@@ -1,42 +1,18 @@
+from types import SimpleNamespace
+
 from src.utils import input_controller
+from src.utils.arduino_hid import ArduinoHID
 from src.utils.input_controller import InputController
 
 
-def test_hotkey_holds_shift_until_arrow_is_released(monkeypatch):
+def test_hotkey_delegates_modified_arrow_to_instant_tap(monkeypatch):
     controller = InputController()
-    events = []
+    calls = []
 
-    monkeypatch.setattr(input_controller.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(controller, "key_down", lambda key: events.append(("down", key)) or True)
-    monkeypatch.setattr(controller, "key_up", lambda key: events.append(("up", key)) or True)
+    monkeypatch.setattr(controller, "tap_combo_once", lambda *keys: calls.append(keys) or True)
 
     assert controller.hotkey("shift", "up") is True
-    assert events == [
-        ("down", "shift"),
-        ("down", "up"),
-        ("up", "up"),
-        ("up", "shift"),
-    ]
-
-
-def test_hotkey_releases_pressed_modifier_when_primary_key_fails(monkeypatch):
-    controller = InputController()
-    events = []
-
-    def fake_key_down(key):
-        events.append(("down", key))
-        return key != "up"
-
-    monkeypatch.setattr(input_controller.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(controller, "key_down", fake_key_down)
-    monkeypatch.setattr(controller, "key_up", lambda key: events.append(("up", key)) or True)
-
-    assert controller.hotkey("shift", "up") is False
-    assert events == [
-        ("down", "shift"),
-        ("down", "up"),
-        ("up", "shift"),
-    ]
+    assert calls == [("shift", "up")]
 
 
 def test_hotkey_single_key_delegates_to_press(monkeypatch):
@@ -47,3 +23,184 @@ def test_hotkey_single_key_delegates_to_press(monkeypatch):
 
     assert controller.hotkey("up") is True
     assert pressed == ["up"]
+
+
+def test_press_plus_separated_combo_delegates_to_hotkey(monkeypatch):
+    controller = InputController()
+    calls = []
+
+    monkeypatch.setattr(controller, "hotkey", lambda *keys: calls.append(keys) or True)
+
+    assert controller.press("shift+up") is True
+    assert controller.press(" shift + up ") is True
+    assert calls == [("shift", "up"), ("shift", "up")]
+
+
+def test_tap_combo_once_uses_arduino_combo_command(monkeypatch):
+    controller = InputController()
+    calls = []
+    fake_arduino = SimpleNamespace(
+        supports_key_combo_tap=lambda: True,
+        key_combo_tap=lambda *keys: calls.append(keys) or True,
+    )
+
+    monkeypatch.setattr(controller, "_use_arduino", lambda: True)
+    monkeypatch.setattr(input_controller, "_get_arduino", lambda: fake_arduino)
+
+    assert controller.tap_combo_once("shift", "up") is True
+    assert calls == [("shift", "up")]
+
+
+def test_tap_combo_once_software_path_releases_primary_and_modifier_immediately(monkeypatch):
+    controller = InputController()
+    events = []
+    sleeps = []
+
+    monkeypatch.setattr(controller, "_use_arduino", lambda: False)
+    monkeypatch.setattr(controller, "_strict_mode", lambda: False)
+    monkeypatch.setattr(input_controller.pyautogui, "PAUSE", 0.3)
+    monkeypatch.setattr(input_controller.pyautogui, "keyDown", lambda key: events.append(("down", key)))
+    monkeypatch.setattr(input_controller.pyautogui, "keyUp", lambda key: events.append(("up", key)))
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert controller.tap_combo_once("shift", "up") is True
+    assert events == [
+        ("up", "up"),
+        ("up", "shift"),
+        ("down", "shift"),
+        ("down", "up"),
+        ("up", "up"),
+        ("up", "shift"),
+    ]
+    assert input_controller._COMBO_MODIFIER_SETTLE_DELAY in sleeps
+    assert input_controller._COMBO_POST_RELEASE_DELAY in sleeps
+    assert input_controller.pyautogui.PAUSE == 0.3
+
+
+def test_tap_combo_once_software_path_releases_modifier_when_primary_fails(monkeypatch):
+    controller = InputController()
+    events = []
+
+    def fake_key_down(key):
+        events.append(("down", key))
+        if key == "up":
+            raise RuntimeError("primary failed")
+
+    monkeypatch.setattr(controller, "_use_arduino", lambda: False)
+    monkeypatch.setattr(controller, "_strict_mode", lambda: False)
+    monkeypatch.setattr(input_controller.pyautogui, "keyDown", fake_key_down)
+    monkeypatch.setattr(input_controller.pyautogui, "keyUp", lambda key: events.append(("up", key)))
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: None)
+
+    assert controller.tap_combo_once("shift", "up") is False
+    assert events == [
+        ("up", "up"),
+        ("up", "shift"),
+        ("down", "shift"),
+        ("down", "up"),
+        ("up", "up"),
+        ("up", "shift"),
+    ]
+
+
+def test_hotkey_short_taps_modified_arrow_without_hold(monkeypatch):
+    controller = InputController()
+    sleeps = []
+
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(controller, "tap_combo_once", lambda *keys: True)
+
+    assert controller.hotkey("shift", "up") is True
+    assert sleeps == []
+    assert input_controller._HOTKEY_HOLD_DELAY not in sleeps
+
+
+def test_hotkey_keeps_hold_for_non_direction_combo(monkeypatch):
+    controller = InputController()
+    sleeps = []
+
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(controller, "key_down", lambda key: True)
+    monkeypatch.setattr(controller, "key_up", lambda key: True)
+
+    assert controller.hotkey("ctrl", "v") is True
+    assert input_controller._HOTKEY_HOLD_DELAY in sleeps
+
+
+def test_arduino_combo_tap_uses_single_firmware_command(monkeypatch):
+    hid = ArduinoHID()
+    sent = []
+
+    hid._supports_key_combo_tap = True
+    monkeypatch.setattr(hid, "_send_command", lambda cmd, wait_response=True: sent.append((cmd, wait_response)) or True)
+
+    assert hid.key_combo_tap("shift", "up") is True
+    assert sent == [("KQ,129,218", True)]
+
+
+def test_replay_key_events_preserves_down_up_order_and_delay(monkeypatch):
+    controller = InputController()
+    events = []
+    sleeps = []
+
+    monkeypatch.setattr(controller, "key_down", lambda key: events.append(("down", key)) or True)
+    monkeypatch.setattr(controller, "key_up", lambda key: events.append(("up", key)) or True)
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert controller.replay_key_events([
+        {"event": "down", "key": "shift", "delay": 0.0},
+        {"event": "down", "key": "up", "delay": 0.011},
+        {"event": "up", "key": "up", "delay": 0.006},
+        {"event": "up", "key": "shift", "delay": 0.004},
+    ]) is True
+    assert events == [("down", "shift"), ("down", "up"), ("up", "up"), ("up", "shift")]
+    assert sleeps == [0.011, 0.006, 0.004]
+
+
+def test_replay_key_events_caps_recorded_modifier_direction_hold(monkeypatch):
+    controller = InputController()
+    events = []
+    sleeps = []
+
+    monkeypatch.setattr(controller, "key_down", lambda key: events.append(("down", key)) or True)
+    monkeypatch.setattr(controller, "key_up", lambda key: events.append(("up", key)) or True)
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(round(seconds, 4)))
+
+    assert controller.replay_key_events([
+        {"event": "down", "key": "shift", "delay": 0.0},
+        {"event": "down", "key": "up", "delay": 0.4801},
+        {"event": "up", "key": "up", "delay": 0.1497},
+        {"event": "up", "key": "shift", "delay": 0.2257},
+    ]) is True
+    assert events == [("down", "shift"), ("down", "up"), ("up", "up"), ("up", "shift")]
+    assert sleeps == [0.03, 0.012, 0.006]
+
+
+def test_replay_key_events_releases_pressed_keys_on_failure(monkeypatch):
+    controller = InputController()
+    events = []
+
+    def fake_key_down(key):
+        events.append(("down", key))
+        return key != "up"
+
+    monkeypatch.setattr(controller, "key_down", fake_key_down)
+    monkeypatch.setattr(controller, "key_up", lambda key: events.append(("up", key)) or True)
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: None)
+
+    assert controller.replay_key_events([
+        {"event": "down", "key": "shift", "delay": 0.0},
+        {"event": "down", "key": "up", "delay": 0.0},
+    ]) is False
+    assert events == [("down", "shift"), ("down", "up"), ("up", "shift")]
+
+
+def test_arduino_combo_tap_old_firmware_refuses_raw_fallback(monkeypatch):
+    hid = ArduinoHID()
+    sent = []
+
+    hid._supports_key_combo_tap = False
+    monkeypatch.setattr(hid, "_send_command", lambda cmd, wait_response=True: sent.append((cmd, wait_response)) or True)
+
+    assert hid.key_combo_tap("shift", "up") is False
+    assert sent == []

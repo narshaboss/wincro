@@ -12,6 +12,8 @@ def test_primary_branding_uses_korean_business_support_name():
     assert app_identity.PRIMARY_APP_NAME == "업무지원도구"
     assert app_identity.PRIMARY_APP_DESCRIPTION == "업무 지원 자동화 도구"
     assert app_identity.PRIMARY_EXECUTABLE_FILE == "업무지원도구.exe"
+    assert "결재 도우미.exe" in app_identity.LEGACY_EXECUTABLE_ALIASES
+    assert "결제도우미.exe" in app_identity.LEGACY_EXECUTABLE_ALIASES
     assert "작업도우미.exe" in app_identity.LEGACY_EXECUTABLE_ALIASES
     assert "dwm.exe" in app_identity.LEGACY_EXECUTABLE_ALIASES
 

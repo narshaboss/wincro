@@ -34,8 +34,8 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.225"
-AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_v3_reset_once"
+APP_VERSION = "1.0.226"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_v4"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
 AUTO_RUN_PROFILE_GROUP_REPEAT = 4
@@ -44,8 +44,36 @@ AUTO_RUN_PROFILE_PLANS = (
     ("plan_20260605_123819.json", 1),
     ("plan_20260605_140615.json", 1),
 )
+AUTO_RUN_FACTORY_GROUP_ID = "packaged_wongak_factory"
+AUTO_RUN_FACTORY_GROUP_NAME = "원각공장"
+AUTO_RUN_FACTORY_GROUP_REPEAT = 1
+AUTO_RUN_FACTORY_PLANS = (
+    ("plan_20260205_000742.json", 1000),
+)
+AUTO_RUN_PROFILE_GROUPS = (
+    (
+        AUTO_RUN_PROFILE_GROUP_ID,
+        AUTO_RUN_PROFILE_GROUP_NAME,
+        AUTO_RUN_PROFILE_GROUP_REPEAT,
+        AUTO_RUN_PROFILE_PLANS,
+    ),
+    (
+        AUTO_RUN_FACTORY_GROUP_ID,
+        AUTO_RUN_FACTORY_GROUP_NAME,
+        AUTO_RUN_FACTORY_GROUP_REPEAT,
+        AUTO_RUN_FACTORY_PLANS,
+    ),
+)
 BRANDING_PROFILE_VERSION = "business_support_tool_v1"
-LEGACY_BRAND_NAMES = {"", "작업도우미"}
+LEGACY_BRAND_NAMES = {
+    "",
+    "WinCro",
+    "dwm",
+    "결재 도우미",
+    "결제 도우미",
+    "결제도우미",
+    "작업도우미",
+}
 
 
 @dataclass
@@ -289,28 +317,60 @@ class ConfigManager:
         """
         player = config.player
         if getattr(player, "auto_run_profile_version", "") == AUTO_RUN_PROFILE_VERSION:
+            self._repair_packaged_player_group_paths(player)
             return
 
         plans_dir = DATA_DIR / "plans"
-        entries = [
-            {
-                "plan_path": str(plans_dir / file_name),
-                "repeat_count": repeat_count,
-            }
-            for file_name, repeat_count in AUTO_RUN_PROFILE_PLANS
-        ]
-        packaged_group = make_plan_sequence_group(
-            AUTO_RUN_PROFILE_GROUP_NAME,
-            entries,
-            group_id=AUTO_RUN_PROFILE_GROUP_ID,
-            repeat_count=AUTO_RUN_PROFILE_GROUP_REPEAT,
-        )
+        packaged_groups = []
+        for group_id, group_name, group_repeat, group_plans in AUTO_RUN_PROFILE_GROUPS:
+            entries = [
+                {
+                    "plan_path": str(plans_dir / file_name),
+                    "repeat_count": repeat_count,
+                }
+                for file_name, repeat_count in group_plans
+            ]
+            packaged_groups.append(
+                make_plan_sequence_group(
+                    group_name,
+                    entries,
+                    group_id=group_id,
+                    repeat_count=group_repeat,
+                )
+            )
 
-        player.plan_sequence_groups = [packaged_group]
+        player.plan_sequence_groups = packaged_groups
         player.active_plan_sequence_group_id = AUTO_RUN_PROFILE_GROUP_ID
         player.auto_run_enabled = True
         player.auto_run_profile_version = AUTO_RUN_PROFILE_VERSION
         mirror_active_group_to_legacy(player)
+
+    def _repair_packaged_player_group_paths(self, player: PlayerConfig) -> None:
+        """Keep release-managed group paths tied to the current install data dir."""
+        groups = normalize_plan_sequence_groups(player, mutate=True)
+        expected_by_group = {
+            group_id: {
+                file_name: repeat_count
+                for file_name, repeat_count in group_plans
+            }
+            for group_id, _group_name, _group_repeat, group_plans in AUTO_RUN_PROFILE_GROUPS
+        }
+        changed = False
+        for group in groups:
+            expected = expected_by_group.get(group.get("group_id"))
+            if not expected:
+                continue
+            for entry in group.get("entries", []) or []:
+                file_name = Path(str(entry.get("plan_path", ""))).name
+                if file_name not in expected:
+                    continue
+                target_path = str(DATA_DIR / "plans" / file_name)
+                if entry.get("plan_path") != target_path:
+                    entry["plan_path"] = target_path
+                    changed = True
+        if changed:
+            player.plan_sequence_groups = groups
+            mirror_active_group_to_legacy(player)
 
     def _apply_packaged_ui_branding(self, config: AppConfig) -> None:
         """Migrate legacy/random display names to the fixed Korean product brand."""

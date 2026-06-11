@@ -53,6 +53,7 @@ class Action:
     button: str = "left"  # 마우스 버튼 (left, right, middle)
     text: Optional[str] = None  # 입력할 텍스트
     keys: Optional[List[str]] = None  # 단축키 조합
+    key_events: List[Dict[str, Any]] = field(default_factory=list)  # recorded key down/up events
     duration: float = 0.0  # 액션 지속 시간 (초)
     wait_before: float = 0.0  # 실행 전 대기 시간 (초)
     wait_after: float = 0.0  # 실행 후 대기 시간 (초)
@@ -110,7 +111,7 @@ class Action:
         """딕셔너리에서 생성 (하위 호환성 지원)"""
         # 유효한 필드 목록
         valid_fields = {
-            'action_type', 'x', 'y', 'button', 'text', 'keys', 'duration',
+            'action_type', 'x', 'y', 'button', 'text', 'keys', 'key_events', 'duration',
             'wait_before', 'wait_after', 'wait_random', 'wait_random_range',
             'typing_random', 'typing_delay', 'typing_delay_range',
             'target_image', 'confidence', 'search_radius', 'search_region',

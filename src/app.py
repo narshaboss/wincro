@@ -117,6 +117,7 @@ class WinCroApp:
 
             # Packaged playlists are authoritative after update; old plan backups are discarded.
             self._sync_shutdown_schedule_async()
+            self._sync_startup_registry_async()
             self._discard_legacy_plan_backup()
 
             # 메인 윈도우 생성
@@ -150,6 +151,29 @@ class WinCroApp:
                     logger.warning(f"[PC자동종료] 시작 동기화 실패: {result.status} {result.detail}")
             except Exception as e:
                 logger.error(f"[PC자동종료] 시작 동기화 예외: {e}", exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _sync_startup_registry_async(self) -> None:
+        """Repair Windows startup registration after app/exe name changes."""
+        if get_config_load_status() == "error":
+            logger.warning(f"[자동시작] 설정 로드 오류로 레지스트리 동기화 건너뜀: {get_config_load_error()}")
+            return
+
+        def _worker():
+            try:
+                from .utils.startup_registry import sync_auto_start_registry
+
+                result = sync_auto_start_registry(self._config.ui, self._config.ui.auto_start)
+                if result.ok:
+                    logger.info(
+                        f"[자동시작] 시작 동기화 완료: enabled={result.enabled} "
+                        f"entry={result.entry_name} removed={result.removed_entries}"
+                    )
+                else:
+                    logger.warning(f"[자동시작] 시작 동기화 실패: {result.detail}")
+            except Exception as e:
+                logger.error(f"[자동시작] 시작 동기화 예외: {e}", exc_info=True)
 
         threading.Thread(target=_worker, daemon=True).start()
 

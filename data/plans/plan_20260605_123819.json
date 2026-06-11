@@ -12,6 +12,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -62,6 +63,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -112,6 +114,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -164,6 +167,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -212,6 +216,7 @@
           "action_keys": [
             "enter"
           ],
+          "action_key_events": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -259,9 +264,9 @@
       "monitoring_watches": []
     },
     {
-      "rule_id": "rule_b43557db",
+      "rule_id": "rule_eb38ce67",
       "rule_type": "fixed_sequence",
-      "description": "위로이동후 입장",
+      "description": "",
       "action_type": "hotkey",
       "action_x": null,
       "action_y": null,
@@ -269,6 +274,28 @@
       "action_keys": [
         "shift",
         "up"
+      ],
+      "action_key_events": [
+        {
+          "event": "down",
+          "key": "shift",
+          "delay": 0.0
+        },
+        {
+          "event": "down",
+          "key": "up",
+          "delay": 0.4801
+        },
+        {
+          "event": "up",
+          "key": "up",
+          "delay": 0.1497
+        },
+        {
+          "event": "up",
+          "key": "shift",
+          "delay": 0.2257
+        }
       ],
       "drag_to_x": null,
       "drag_to_y": null,
@@ -301,7 +328,7 @@
       "trigger_missing_key_repeat_delay_random": false,
       "trigger_missing_key_repeat_delay_random_range": 0.3,
       "repeat_count": 2,
-      "repeat_delay": 0.5,
+      "repeat_delay": 0.8,
       "repeat_delay_random": true,
       "repeat_delay_random_range": 0.3,
       "timestamp": 0.0,
@@ -318,6 +345,7 @@
           "action_keys": [
             "5"
           ],
+          "action_key_events": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -350,10 +378,10 @@
           "trigger_missing_key_repeat_delay_random_range": 0.3,
           "repeat_count": 1,
           "repeat_delay": 0.5,
-          "repeat_delay_random": false,
+          "repeat_delay_random": true,
           "repeat_delay_random_range": 0.3,
           "timestamp": 0.0,
-          "parent_id": "rule_b43557db",
+          "parent_id": "rule_eb38ce67",
           "children": [],
           "is_monitoring_mode": false,
           "monitoring_final_image": null,
@@ -370,6 +398,7 @@
           "action_keys": [
             "enter"
           ],
+          "action_key_events": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -405,7 +434,7 @@
           "repeat_delay_random": true,
           "repeat_delay_random_range": 0.3,
           "timestamp": 0.0,
-          "parent_id": "rule_b43557db",
+          "parent_id": "rule_eb38ce67",
           "children": [],
           "is_monitoring_mode": false,
           "monitoring_final_image": null,
@@ -425,6 +454,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -473,6 +503,7 @@
           "action_keys": [
             "9"
           ],
+          "action_key_events": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -528,6 +559,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -576,6 +608,7 @@
           "action_keys": [
             "enter"
           ],
+          "action_key_events": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -631,6 +664,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -683,6 +717,7 @@
       "action_keys": [
         "o"
       ],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -731,6 +766,7 @@
           "action_keys": [
             "enter"
           ],
+          "action_key_events": [],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -786,6 +822,7 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [],
+      "action_key_events": [],
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -819,6 +856,81 @@
       "repeat_count": 2,
       "repeat_delay": 0.5,
       "repeat_delay_random": true,
+      "repeat_delay_random_range": 0.3,
+      "timestamp": 0.0,
+      "parent_id": null,
+      "children": [],
+      "is_monitoring_mode": false,
+      "monitoring_final_image": null,
+      "monitoring_watches": []
+    },
+    {
+      "rule_id": "rule_fcae69a4",
+      "rule_type": "fixed_sequence",
+      "description": "",
+      "action_type": "hotkey",
+      "action_x": null,
+      "action_y": null,
+      "action_text": null,
+      "action_keys": [
+        "shift",
+        "up"
+      ],
+      "action_key_events": [
+        {
+          "event": "down",
+          "key": "shift",
+          "delay": 0.0
+        },
+        {
+          "event": "down",
+          "key": "up",
+          "delay": 0.4801
+        },
+        {
+          "event": "up",
+          "key": "up",
+          "delay": 0.1497
+        },
+        {
+          "event": "up",
+          "key": "shift",
+          "delay": 0.2257
+        }
+      ],
+      "drag_to_x": null,
+      "drag_to_y": null,
+      "drag_duration": null,
+      "scroll_amount": 0,
+      "target_image": null,
+      "target_images": [],
+      "trigger_image": null,
+      "trigger_x": null,
+      "trigger_y": null,
+      "confidence": 0.65,
+      "search_radius": 0,
+      "search_region": null,
+      "move_mouse_before_search": false,
+      "alternate_mouse_route": false,
+      "click_until_image_disappears": false,
+      "wait_after": 0.5,
+      "wait_random": false,
+      "enabled": true,
+      "wait_random_range": 0.3,
+      "typing_random": false,
+      "typing_delay": 0.1,
+      "typing_delay_range": 0.05,
+      "timeout": 30.0,
+      "skip_on_not_found": false,
+      "stop_playlist_on_trigger_missing": false,
+      "trigger_missing_keys": [],
+      "trigger_missing_key_repeat_count": 1,
+      "trigger_missing_key_repeat_delay": 0.5,
+      "trigger_missing_key_repeat_delay_random": false,
+      "trigger_missing_key_repeat_delay_random_range": 0.3,
+      "repeat_count": 1,
+      "repeat_delay": 0.5,
+      "repeat_delay_random": false,
       "repeat_delay_random_range": 0.3,
       "timestamp": 0.0,
       "parent_id": null,

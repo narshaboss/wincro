@@ -12,6 +12,9 @@ PRIMARY_COMPANY_NAME = "윈크로"
 PRIMARY_EXECUTABLE_NAME = PRIMARY_APP_NAME
 PRIMARY_EXECUTABLE_FILE = f"{PRIMARY_EXECUTABLE_NAME}.exe"
 LEGACY_EXECUTABLE_ALIASES = [
+    "결재 도우미.exe",
+    "결제 도우미.exe",
+    "결제도우미.exe",
     "작업도우미.exe",
     "WinCro.exe",
     "dwm.exe",
