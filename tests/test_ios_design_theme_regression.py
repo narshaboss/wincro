@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 THEME = ROOT / "src" / "ui" / "theme.py"
 MAIN_WINDOW = ROOT / "src" / "ui" / "main_window.py"
 PLAYER_VIEW = ROOT / "src" / "ui" / "player_view.py"
+ANALYZER_VIEW = ROOT / "src" / "ui" / "analyzer_view.py"
 
 
 def test_ios_theme_tokens_drive_shared_ui_style():
@@ -31,3 +32,37 @@ def test_player_core_controls_use_ios_rounding_and_elevated_surfaces():
     assert 'hover_color=COLORS["green_hover"]' in player_view
     assert 'hover_color=COLORS["danger_hover"]' in player_view
     assert 'widget.configure(fg_color=COLORS["selection_green"])' in player_view
+
+
+def test_editor_action_rows_use_ios_cards_without_changing_virtual_scroll_contract():
+    player_view = PLAYER_VIEW.read_text(encoding="utf-8")
+
+    assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in player_view
+    assert 'fg_color=COLORS["selection_green"] if is_selected else (COLORS["bg_glass"] if is_enabled else COLORS["bg_card"])' in player_view
+    assert 'corner_radius=IOS_METRICS["control_radius"]' in player_view
+    assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in player_view
+    assert 'fg_color=COLORS["bg_elevated"]' in player_view
+    assert "item_height=76" in player_view
+
+
+def test_special_mode_coordinate_panels_use_ios_cards_and_status_surfaces():
+    player_view = PLAYER_VIEW.read_text(encoding="utf-8")
+    coordinate_slice = player_view[player_view.index("def _build_coordinate_ui(self):"):]
+
+    assert 'fg_color=COLORS["bg_glass"]' in coordinate_slice
+    assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in coordinate_slice
+    assert 'border_color=COLORS["border"]' in coordinate_slice
+    assert 'corner_radius=IOS_METRICS["pill_radius"]' in coordinate_slice
+    assert 'fg_color=COLORS["bg_elevated"]' in coordinate_slice
+    assert 'hover_color=COLORS["green_hover"]' in coordinate_slice
+
+
+def test_analyzer_action_rows_use_ios_tokens_while_preserving_batch_rendering():
+    analyzer_view = ANALYZER_VIEW.read_text(encoding="utf-8")
+
+    assert "from .theme import IOS_FONTS, IOS_METRICS" in analyzer_view
+    assert 'fg_color=COLORS["bg_glass"]' in analyzer_view
+    assert 'bg_color = COLORS["bg_glass"] if depth == 0 else COLORS["child_bg"]' in analyzer_view
+    assert 'corner_radius=IOS_METRICS["control_radius"]' in analyzer_view
+    assert 'fg_color=COLORS["bg_elevated"]' in analyzer_view
+    assert "self._schedule_action_list_render_batch" in analyzer_view

@@ -51,7 +51,7 @@ from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
 from .main_window import BaseView
 from .player_map_runtime import GameModeMapRuntime
-from .theme import COLORS
+from .theme import COLORS, IOS_FONTS, IOS_METRICS
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
 from .constants import (
     ACTION_NAMES, ACTION_NAMES_SHORT, ACTION_COLORS,
@@ -481,7 +481,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self.title(f"계획 수정 - {plan.name}")
         self.geometry("950x700")
         self.resizable(True, True)
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.configure(fg_color=COLORS["bg_content"])
 
         self.transient(parent)
         self.grab_set()
@@ -565,10 +565,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
     def _rule_item_bg_color(self, rule: AutomationRule) -> str:
         is_enabled = _rule_is_enabled(rule)
         if getattr(self, "_active_partial_rule_id", None) == rule.rule_id:
-            return "#7a4b00" if is_enabled else "#5c4330"
+            return COLORS["confidence_amber_hover"] if is_enabled else COLORS["bg_elevated"]
         if self._selected_rule is not None and self._selected_rule.rule_id == rule.rule_id:
-            return "#2e7d32"
-        return COLORS["bg_dark"] if is_enabled else COLORS["bg_card"]
+            return COLORS["selection_green"]
+        return COLORS["bg_glass"] if is_enabled else COLORS["bg_card"]
 
     def _rule_display_text(self, rule: AutomationRule) -> str:
         name = rule.description or ACTION_NAMES.get(rule.action_type, rule.action_type or "동작")
@@ -1007,12 +1007,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", pady=(5, 15))
 
-        run_status_frame = ctk.CTkFrame(main, fg_color="#1f2937", corner_radius=8)
+        run_status_frame = ctk.CTkFrame(
+            main,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         run_status_frame.pack(fill="x", pady=(0, 10))
         self._partial_status_label = ctk.CTkLabel(
             run_status_frame,
             text="현재 실행: 대기 중",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
             text_color=COLORS["text_secondary"],
             anchor="w",
         )
@@ -1023,8 +1029,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             main,
             item_height=76 if self._compact_rule_rows else 75,
             buffer_count=2 if self._compact_rule_rows else 5,
-            fg_color=COLORS["bg_card"],
-            corner_radius=12,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
         )
         self._scrollable.pack(fill="both", expand=True)
         self._scrollable.set_render_callback(self._render_rule_item)
@@ -1264,7 +1270,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 if run_btn is not None and getattr(self, "_running_rule_id", None) != rule.rule_id:
                     run_btn.configure(
                         fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
-                        hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+                        hover_color=COLORS["confidence_amber_hover"] if is_enabled else COLORS["bg_card_hover"],
                         text_color="white" if is_enabled else COLORS["text_muted"],
                         state="normal" if is_enabled else "disabled",
                     )
@@ -1272,8 +1278,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 if "skip_btn" in widget_data:
                     is_skip = getattr(rule, "skip_on_not_found", False)
                     widget_data["skip_btn"].configure(
-                        fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
-                        hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+                        fg_color=COLORS["success"] if is_skip else COLORS["bg_card"],
+                        hover_color=COLORS["green_hover"] if is_skip else COLORS["bg_card_hover"],
                         text_color="white" if is_skip else COLORS["text_secondary"],
                     )
                 return True
@@ -1301,7 +1307,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if run_btn is not None and getattr(self, "_running_rule_id", None) != rule.rule_id:
                 run_btn.configure(
                     fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
-                    hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+                    hover_color=COLORS["confidence_amber_hover"] if is_enabled else COLORS["bg_card_hover"],
                     text_color="white" if is_enabled else COLORS["text_muted"],
                     state="normal" if is_enabled else "disabled",
                 )
@@ -1309,8 +1315,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if "skip_btn" in widget_data:
                 is_skip = getattr(rule, "skip_on_not_found", False)
                 widget_data["skip_btn"].configure(
-                    fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
-                    hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+                    fg_color=COLORS["success"] if is_skip else COLORS["bg_card"],
+                    hover_color=COLORS["green_hover"] if is_skip else COLORS["bg_card_hover"],
                     text_color="white" if is_skip else COLORS["text_secondary"],
                 )
             return True
@@ -1447,7 +1453,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         row = ctk.CTkFrame(
             item_wrapper,
             fg_color=self._rule_item_bg_color(rule),
-            corner_radius=8,
+            corner_radius=IOS_METRICS["control_radius"],
             border_width=2 if is_running_current else 0,
             border_color="#facc15" if is_running_current else COLORS["border"],
         )
@@ -1482,7 +1488,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 text_color=COLORS["text_secondary"],
                 width=24,
                 height=24,
-                corner_radius=4,
+                corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._toggle_item_collapse(r.rule_id),
             )
             toggle_btn.pack(side="left", padx=(8, 2), pady=8)
@@ -1502,7 +1508,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._rule_widgets[rule.rule_id]["number_label"] = number
 
         if getattr(rule, "target_image", None):
-            thumb = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=44, height=44, corner_radius=6)
+            thumb = ctk.CTkFrame(
+                row,
+                fg_color=COLORS["bg_elevated"],
+                width=44,
+                height=44,
+                corner_radius=IOS_METRICS["control_radius_small"],
+            )
             thumb.pack(side="left", padx=(0, 8), pady=6)
             thumb.pack_propagate(False)
             self._rule_widgets[rule.rule_id]["thumb_frame"] = thumb
@@ -1520,7 +1532,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         bind_row(name_label)
         self._rule_widgets[rule.rule_id]["name_label"] = name_label
 
-        move_frame = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], corner_radius=6)
+        move_frame = ctk.CTkFrame(row, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         move_frame.pack(side="right", padx=(3, 8), pady=8)
         ctk.CTkButton(
             move_frame,
@@ -1528,7 +1540,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             width=28,
             height=18,
             fg_color="transparent",
-            hover_color=COLORS["accent_blue"],
+            hover_color=COLORS["hover_blue"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             text_color=COLORS["text_secondary"],
             command=lambda r=rule: self._move_rule_up(r),
         ).pack(side="top", padx=2, pady=(2, 0))
@@ -1538,7 +1551,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             width=28,
             height=18,
             fg_color="transparent",
-            hover_color=COLORS["accent_blue"],
+            hover_color=COLORS["hover_blue"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             text_color=COLORS["text_secondary"],
             command=lambda r=rule: self._move_rule_down(r),
         ).pack(side="top", padx=2, pady=(0, 2))
@@ -1549,8 +1563,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             width=30,
             height=24,
             fg_color=COLORS["error"],
-            hover_color="#c0392b",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._delete_rule(r),
         ).pack(side="right", padx=3, pady=8)
 
@@ -1560,8 +1575,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             width=30,
             height=24,
             fg_color=COLORS["accent_orange"] if is_enabled else COLORS["bg_card"],
-            hover_color="#d97706" if is_enabled else COLORS["bg_card_hover"],
+            hover_color=COLORS["confidence_amber_hover"] if is_enabled else COLORS["bg_card_hover"],
             text_color="white" if is_enabled else COLORS["text_muted"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._test_run_rule(r),
             state="normal" if is_enabled else "disabled",
         )
@@ -1574,9 +1590,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 text="⚙",
                 width=30,
                 height=24,
-                fg_color="#a3be8c",
-                hover_color="#8fa87a",
+                fg_color=COLORS["subordinate_cyan"],
+                hover_color=COLORS["hover_blue"],
                 text_color="white",
+                corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._open_game_mode_dialog(config_rule_id=r.rule_id),
             ).pack(side="right", padx=3, pady=8)
 
@@ -1586,9 +1603,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             text="M",
             width=30,
             height=24,
-            fg_color="#2ecc71" if is_monitoring else COLORS["bg_card"],
-            hover_color="#27ae60" if is_monitoring else COLORS["bg_card_hover"],
+            fg_color=COLORS["success"] if is_monitoring else COLORS["bg_card"],
+            hover_color=COLORS["green_hover"] if is_monitoring else COLORS["bg_card_hover"],
             text_color="white" if is_monitoring else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_monitoring_mode(r),
         ).pack(side="right", padx=3, pady=8)
 
@@ -1598,9 +1616,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             text="c",
             width=30,
             height=24,
-            fg_color="#2ecc71" if has_trigger else COLORS["bg_card"],
-            hover_color="#27ae60" if has_trigger else COLORS["bg_card_hover"],
+            fg_color=COLORS["success"] if has_trigger else COLORS["bg_card"],
+            hover_color=COLORS["green_hover"] if has_trigger else COLORS["bg_card_hover"],
             text_color="white" if has_trigger else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_trigger_image(r),
         ).pack(side="right", padx=3, pady=8)
 
@@ -1610,9 +1629,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             text="S",
             width=30,
             height=24,
-            fg_color="#2ecc71" if is_skip else COLORS["bg_card"],
-            hover_color="#27ae60" if is_skip else COLORS["bg_card_hover"],
+            fg_color=COLORS["success"] if is_skip else COLORS["bg_card"],
+            hover_color=COLORS["green_hover"] if is_skip else COLORS["bg_card_hover"],
             text_color="white" if is_skip else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._toggle_skip_mode(r),
         )
         skip_btn.pack(side="right", padx=3, pady=8)
@@ -1629,8 +1649,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             width=38,
             height=24,
             fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
-            hover_color="#ea580c" if until_disappears else ("#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"]),
+            hover_color=COLORS["confidence_amber_hover"] if until_disappears else (COLORS["hover_blue"] if repeat_count > 1 else COLORS["bg_card_hover"]),
             text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_repeat_count(r),
         )
         repeat_btn.pack(side="right", padx=3, pady=8)
@@ -1645,8 +1666,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             width=52,
             height=24,
             fg_color=COLORS["success"] if has_random else COLORS["bg_card"],
-            hover_color="#2ea44f" if has_random else COLORS["bg_card_hover"],
+            hover_color=COLORS["green_hover"] if has_random else COLORS["bg_card_hover"],
             text_color="white" if has_random else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_wait_time(r),
         )
         delay_btn.pack(side="right", padx=3, pady=8)
@@ -2986,7 +3008,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._gm_current_rule = None
         self._is_running = False
         self.title(f"계획 수정 - {self._plan.name}")
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.configure(fg_color=COLORS["bg_content"])
         self._stop_partial_run_visual()
         self._notify_player_partial_run_stopped()
 
@@ -5984,7 +6006,13 @@ class GameModeDialog(ctk.CTkToplevel):
         self._config.navigation_mode = "coordinate"
 
         # === 설정 섹션 ===
-        settings_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        settings_frame = ctk.CTkFrame(
+            main,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         settings_frame.pack(fill="x", pady=(0, 8))
         settings_inner = ctk.CTkFrame(settings_frame, fg_color="transparent")
         settings_inner.pack(fill="x", padx=12, pady=8)
@@ -6094,7 +6122,13 @@ class GameModeDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"]).pack(side="left", padx=(5, 0))
 
         # === 실행 컨트롤 섹션 ===
-        control_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        control_frame = ctk.CTkFrame(
+            main,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         control_frame.pack(fill="x", pady=(0, 8))
         control_inner = ctk.CTkFrame(control_frame, fg_color="transparent")
         control_inner.pack(fill="x", padx=12, pady=8)
@@ -6103,13 +6137,20 @@ class GameModeDialog(ctk.CTkToplevel):
         self._status_label.pack(side="left")
 
         # === 실시간 정보 섹션 ===
-        info_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=10)
+        info_frame = ctk.CTkFrame(
+            main,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         info_frame.pack(fill="x", pady=(0, 8))
 
         info_header = ctk.CTkFrame(info_frame, fg_color="transparent")
         info_header.pack(fill="x", padx=12, pady=(8, 4))
         ctk.CTkLabel(info_header, text="📊 실시간 정보", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left")
-        ctk.CTkButton(info_header, text="로그 지우기", width=70, height=22, fg_color=COLORS["bg_card_hover"],
+        ctk.CTkButton(info_header, text="로그 지우기", width=70, height=22, fg_color=COLORS["bg_elevated"],
+                      hover_color=COLORS["bg_card_hover"], corner_radius=IOS_METRICS["pill_radius"],
                       command=self._clear_log).pack(side="right")
 
         # 상태 표시 영역
@@ -6117,35 +6158,35 @@ class GameModeDialog(ctk.CTkToplevel):
         status_row.pack(fill="x", padx=12, pady=(0, 4))
 
         # 캐릭터 위치
-        char_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        char_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         char_info.pack(side="left", expand=True, fill="x", padx=(0, 4))
         ctk.CTkLabel(char_info, text="캐릭터", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
         self._char_pos_label = ctk.CTkLabel(char_info, text="-", font=ctk.CTkFont(size=12, weight="bold"))
         self._char_pos_label.pack()
 
         # 목표 위치
-        target_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        target_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         target_info.pack(side="left", expand=True, fill="x", padx=4)
         ctk.CTkLabel(target_info, text="목표", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
         self._target_pos_label = ctk.CTkLabel(target_info, text="-", font=ctk.CTkFont(size=12, weight="bold"))
         self._target_pos_label.pack()
 
         # 거리
-        dist_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        dist_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         dist_info.pack(side="left", expand=True, fill="x", padx=4)
         ctk.CTkLabel(dist_info, text="거리", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
         self._distance_label = ctk.CTkLabel(dist_info, text="-", font=ctk.CTkFont(size=12, weight="bold"))
         self._distance_label.pack()
 
         # 이동방향
-        dir_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        dir_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         dir_info.pack(side="left", expand=True, fill="x", padx=4)
         ctk.CTkLabel(dir_info, text="방향", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
         self._direction_label = ctk.CTkLabel(dir_info, text="-", font=ctk.CTkFont(size=14, weight="bold"))
         self._direction_label.pack()
 
         # 키입력 횟수
-        key_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        key_info = ctk.CTkFrame(status_row, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         key_info.pack(side="left", expand=True, fill="x", padx=(4, 0))
         ctk.CTkLabel(key_info, text="키입력", font=ctk.CTkFont(size=9), text_color=COLORS["text_secondary"]).pack()
         self._key_count_label = ctk.CTkLabel(key_info, text="0회", font=ctk.CTkFont(size=12, weight="bold"))
@@ -6153,7 +6194,8 @@ class GameModeDialog(ctk.CTkToplevel):
 
         # 로그 텍스트 영역 (더 크고 선명한 색상)
         self._log_text = ctk.CTkTextbox(info_frame, height=180, font=ctk.CTkFont(family="Consolas", size=13),
-                                         fg_color="#1a1a2e", text_color="#00ff88", corner_radius=6)
+                                         fg_color=COLORS["bg_log"], text_color=COLORS["success"],
+                                         corner_radius=IOS_METRICS["control_radius"])
         self._log_text.pack(fill="x", padx=12, pady=(4, 8))
         self._log_text.configure(state="disabled")
         self._key_press_count = 0  # 키 입력 횟수 카운터
@@ -15399,7 +15441,13 @@ class GameModeDialog(ctk.CTkToplevel):
     def _build_coordinate_ui(self):
         """좌표 기반 모드 UI 구성"""
         # === 경유지 설정 (목표 좌표 통합) ===
-        waypoint_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
+        waypoint_frame = ctk.CTkFrame(
+            self._coord_mode_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         waypoint_frame.pack(fill="x", pady=(0, 8))
         waypoint_inner = ctk.CTkFrame(waypoint_frame, fg_color="transparent")
         waypoint_inner.pack(fill="x", padx=12, pady=10)
@@ -15421,19 +15469,22 @@ class GameModeDialog(ctk.CTkToplevel):
                       font=ctk.CTkFont(size=12, weight="bold"),
                       command=self._add_waypoint).pack(side="left", padx=(0, 4))
         ctk.CTkButton(wp_add_row, text="📋 붙여넣기", width=90, height=32,
-                      fg_color="#3b4252", hover_color="#5e81ac",
-                      text_color="#88c0d0",
-                      border_width=1, border_color="#5e81ac",
+                      fg_color=COLORS["bg_elevated"], hover_color=COLORS["hover_blue"],
+                      text_color=COLORS["info"],
+                      border_width=1, border_color=COLORS["info"],
                       font=ctk.CTkFont(size=12),
                       command=self._paste_waypoint).pack(side="left", padx=(0, 8))
         self._run_btn = ctk.CTkButton(wp_add_row, text="▶ 전체 테스트", width=100, height=32,
-                                       fg_color="#a3be8c", command=self._toggle_execution)
+                                       fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
+                                       corner_radius=IOS_METRICS["pill_radius"], command=self._toggle_execution)
         self._run_btn.pack(side="left")
         self._mapping_test_btn = ctk.CTkButton(wp_add_row, text="▶ 전체맵핑테스트", width=120, height=32,
-                                                fg_color="#5e81ac", command=self._toggle_mapping_test)
+                                                fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
+                                                corner_radius=IOS_METRICS["pill_radius"], command=self._toggle_mapping_test)
         self._mapping_test_btn.pack(side="left", padx=(4, 0))
         ctk.CTkButton(wp_add_row, text="전체 맵 초기화", width=100, height=32,
-                      fg_color="#4c566a", hover_color="#bf616a",
+                      fg_color=COLORS["bg_elevated"], hover_color=COLORS["danger_hover"],
+                      corner_radius=IOS_METRICS["pill_radius"],
                       font=ctk.CTkFont(size=12),
                       command=self._clear_all_maps).pack(side="left", padx=(4, 0))
         self._all_map_lock_btn = ctk.CTkButton(
@@ -15441,8 +15492,9 @@ class GameModeDialog(ctk.CTkToplevel):
             text="전체맵 잠금",
             width=100,
             height=32,
-            fg_color="#3b4252",
-            hover_color="#5e81ac",
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["hover_blue"],
+            corner_radius=IOS_METRICS["pill_radius"],
             font=ctk.CTkFont(size=12),
             command=self._toggle_all_map_locks,
         )
@@ -15453,8 +15505,9 @@ class GameModeDialog(ctk.CTkToplevel):
         wp_collapse_row.pack(fill="x", pady=(0, 4))
         self._wp_collapse_all_btn = ctk.CTkButton(wp_collapse_row, text="모두 펼치기", width=90, height=26,
                       font=ctk.CTkFont(size=11),
-                      fg_color=COLORS["bg_card_hover"], hover_color=COLORS["bg_card"],
+                      fg_color=COLORS["bg_elevated"], hover_color=COLORS["bg_card_hover"],
                       text_color=COLORS["text_secondary"],
+                      corner_radius=IOS_METRICS["pill_radius"],
                       command=self._toggle_all_cards)
         self._wp_collapse_all_btn.pack(side="left")
         self._wp_all_collapsed = True  # 기본 접힌 상태
@@ -15473,7 +15526,13 @@ class GameModeDialog(ctk.CTkToplevel):
         self._save_btn.pack(fill="x", pady=(8, 0))
 
         # === OCR 영역 설정 ===
-        ocr_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
+        ocr_frame = ctk.CTkFrame(
+            self._coord_mode_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         ocr_frame.pack(fill="x", pady=(0, 8))
         ocr_inner = ctk.CTkFrame(ocr_frame, fg_color="transparent")
         ocr_inner.pack(fill="x", padx=12, pady=10)
@@ -15494,9 +15553,11 @@ class GameModeDialog(ctk.CTkToplevel):
             anchor="w",
         )
         self._coord_x_label.pack(side="left", padx=5)
-        ctk.CTkButton(x_row, text="영역 선택", width=70, height=26, fg_color="#5e81ac",
+        ctk.CTkButton(x_row, text="영역 선택", width=70, height=26, fg_color=COLORS["accent_blue"],
+                      hover_color=COLORS["hover_blue"], corner_radius=IOS_METRICS["pill_radius"],
                       command=lambda: self._select_coord_region("x")).pack(side="left", padx=2)
-        ctk.CTkButton(x_row, text="테스트", width=50, height=26, fg_color="#a3be8c",
+        ctk.CTkButton(x_row, text="테스트", width=50, height=26, fg_color=COLORS["success"],
+                      hover_color=COLORS["green_hover"], corner_radius=IOS_METRICS["pill_radius"],
                       command=lambda: self._test_coord_region("x")).pack(side="left", padx=2)
         self._coord_x_result = ctk.CTkLabel(x_row, text="", font=ctk.CTkFont(size=10), width=80)
         self._coord_x_result.pack(side="left", padx=5)
@@ -15512,9 +15573,11 @@ class GameModeDialog(ctk.CTkToplevel):
             anchor="w",
         )
         self._coord_y_label.pack(side="left", padx=5)
-        ctk.CTkButton(y_row, text="영역 선택", width=70, height=26, fg_color="#5e81ac",
+        ctk.CTkButton(y_row, text="영역 선택", width=70, height=26, fg_color=COLORS["accent_blue"],
+                      hover_color=COLORS["hover_blue"], corner_radius=IOS_METRICS["pill_radius"],
                       command=lambda: self._select_coord_region("y")).pack(side="left", padx=2)
-        ctk.CTkButton(y_row, text="테스트", width=50, height=26, fg_color="#a3be8c",
+        ctk.CTkButton(y_row, text="테스트", width=50, height=26, fg_color=COLORS["success"],
+                      hover_color=COLORS["green_hover"], corner_radius=IOS_METRICS["pill_radius"],
                       command=lambda: self._test_coord_region("y")).pack(side="left", padx=2)
         self._coord_y_result = ctk.CTkLabel(y_row, text="", font=ctk.CTkFont(size=10), width=80)
         self._coord_y_result.pack(side="left", padx=5)
@@ -15539,7 +15602,8 @@ class GameModeDialog(ctk.CTkToplevel):
             text_color=COLORS["text_secondary"],
         )
         self._coord_x_anchor_label.pack(side="left", padx=(0, 2))
-        ctk.CTkButton(anchor_row, text="X이미지", width=58, height=24, fg_color="#5e81ac",
+        ctk.CTkButton(anchor_row, text="X이미지", width=58, height=24, fg_color=COLORS["accent_blue"],
+                      hover_color=COLORS["hover_blue"], corner_radius=IOS_METRICS["pill_radius"],
                       font=ctk.CTkFont(size=10),
                       command=lambda: self._select_coord_anchor_image("x")).pack(side="left", padx=2)
         self._coord_y_anchor_label = ctk.CTkLabel(
@@ -15551,15 +15615,23 @@ class GameModeDialog(ctk.CTkToplevel):
             text_color=COLORS["text_secondary"],
         )
         self._coord_y_anchor_label.pack(side="left", padx=(8, 2))
-        ctk.CTkButton(anchor_row, text="Y이미지", width=58, height=24, fg_color="#5e81ac",
+        ctk.CTkButton(anchor_row, text="Y이미지", width=58, height=24, fg_color=COLORS["accent_blue"],
+                      hover_color=COLORS["hover_blue"], corner_radius=IOS_METRICS["pill_radius"],
                       font=ctk.CTkFont(size=10),
                       command=lambda: self._select_coord_anchor_image("y")).pack(side="left", padx=2)
-        ctk.CTkButton(anchor_row, text="해제", width=42, height=24, fg_color="#bf616a",
+        ctk.CTkButton(anchor_row, text="해제", width=42, height=24, fg_color=COLORS["error"],
+                      hover_color=COLORS["danger_hover"], corner_radius=IOS_METRICS["pill_radius"],
                       font=ctk.CTkFont(size=10),
                       command=self._clear_coord_anchor_images).pack(side="left", padx=(8, 0))
 
         # === 실시간 좌표 모니터링 ===
-        realtime_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
+        realtime_frame = ctk.CTkFrame(
+            self._coord_mode_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         realtime_frame.pack(fill="x", pady=(0, 8))
         realtime_inner = ctk.CTkFrame(realtime_frame, fg_color="transparent")
         realtime_inner.pack(fill="x", padx=12, pady=10)
@@ -15581,7 +15653,9 @@ class GameModeDialog(ctk.CTkToplevel):
         # 모니터링 시작/중지 버튼
         self._monitoring = False
         self._monitor_btn = ctk.CTkButton(coord_display, text="▶ 모니터링 시작", width=120, height=32,
-                                          fg_color="#5e81ac", command=self._toggle_coordinate_monitor)
+                                          fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
+                                          corner_radius=IOS_METRICS["pill_radius"],
+                                          command=self._toggle_coordinate_monitor)
         self._monitor_btn.pack(side="left", padx=10)
 
         # 인식 상태 (디버깅용)
@@ -15590,7 +15664,13 @@ class GameModeDialog(ctk.CTkToplevel):
         self._ocr_raw_label.pack(anchor="w", pady=(5, 0))
 
         # === 이미지 테스트 ===
-        imgtest_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
+        imgtest_frame = ctk.CTkFrame(
+            self._coord_mode_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         imgtest_frame.pack(fill="x", pady=(0, 8))
         imgtest_inner = ctk.CTkFrame(imgtest_frame, fg_color="transparent")
         imgtest_inner.pack(fill="x", padx=12, pady=10)
@@ -15609,12 +15689,14 @@ class GameModeDialog(ctk.CTkToplevel):
 
         ctk.CTkButton(imgtest_row, text="선택", width=50, height=28,
                       font=ctk.CTkFont(size=11),
-                      fg_color="#3a5a3a", hover_color="#4a7a4a",
+                      fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
+                      corner_radius=IOS_METRICS["pill_radius"],
                       command=self._imgtest_select).pack(side="left", padx=(5, 0))
 
         ctk.CTkButton(imgtest_row, text="테스트", width=60, height=28,
                       font=ctk.CTkFont(size=11),
-                      fg_color="#5e81ac", hover_color="#6e91bc",
+                      fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
+                      corner_radius=IOS_METRICS["pill_radius"],
                       command=self._imgtest_run).pack(side="left", padx=(5, 0))
 
         # 결과 + 이진화 미리보기 (한 줄)
@@ -15633,7 +15715,13 @@ class GameModeDialog(ctk.CTkToplevel):
         self._imgtest_image_path = None
 
         # === 보스 테스트 ===
-        bosstest_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
+        bosstest_frame = ctk.CTkFrame(
+            self._coord_mode_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         bosstest_frame.pack(fill="x", pady=(0, 8))
         bosstest_inner = ctk.CTkFrame(bosstest_frame, fg_color="transparent")
         bosstest_inner.pack(fill="x", padx=12, pady=10)
@@ -15651,12 +15739,17 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_boss_label.pack(side="left")
         ctk.CTkButton(
             bosstest_boss_row, text="보스 이미지", width=86, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#8f3f71", hover_color="#a34f83",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["accent_pink"], hover_color=COLORS["scroll_purple"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._bosstest_select("boss")
         ).pack(side="left", padx=(5, 0))
         self._bosstest_boss_preview = ctk.CTkLabel(bosstest_boss_row, text="없음", width=48, height=28)
         self._bosstest_boss_preview.pack(side="left", padx=(8, 0))
-        bosstest_ocr_row = ctk.CTkFrame(bosstest_inner, fg_color=COLORS["bg_card_hover"], corner_radius=6)
+        bosstest_ocr_row = ctk.CTkFrame(
+            bosstest_inner,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         bosstest_ocr_row.pack(fill="x", pady=(6, 0))
         self._bosstest_boss_ocr_label = ctk.CTkLabel(
             bosstest_ocr_row,
@@ -15678,7 +15771,8 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_char_label.pack(side="left")
         ctk.CTkButton(
             bosstest_char_row, text="캐릭터 이미지", width=86, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#3a5a3a", hover_color="#4a7a4a",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._bosstest_select("character")
         ).pack(side="left", padx=(5, 0))
         self._bosstest_char_preview = ctk.CTkLabel(bosstest_char_row, text="없음", width=48, height=28)
@@ -15692,7 +15786,8 @@ class GameModeDialog(ctk.CTkToplevel):
         self._itemtest_item_label.pack(side="left")
         ctk.CTkButton(
             itemtest_item_row, text="아이템 이미지", width=86, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#6a4a9a", hover_color="#7b5cad",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["scroll_purple"], hover_color="#DA8FFF",
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._itemtest_select
         ).pack(side="left", padx=(5, 0))
         self._itemtest_item_preview = ctk.CTkLabel(itemtest_item_row, text="없음", width=48, height=28)
@@ -15702,31 +15797,36 @@ class GameModeDialog(ctk.CTkToplevel):
         bosstest_result_row.pack(fill="x", pady=(8, 0))
         self._bosstest_button = ctk.CTkButton(
             bosstest_result_row, text="실화면 테스트", width=100, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#5e81ac", hover_color="#6e91bc",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._bosstest_run
         )
         self._bosstest_button.pack(side="left")
         self._bosstest_cont_button = ctk.CTkButton(
             bosstest_result_row, text="연속 테스트", width=90, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#4c7a5a", hover_color="#5a8b69",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._bosstest_run_continuous
         )
         self._bosstest_cont_button.pack(side="left", padx=(5, 0))
         self._bosstest_failsave_button = ctk.CTkButton(
             bosstest_result_row, text="실패 저장", width=80, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#8f3f71", hover_color="#a34f83",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["accent_pink"], hover_color=COLORS["scroll_purple"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._bosstest_save_failure_frame
         )
         self._bosstest_failsave_button.pack(side="left", padx=(5, 0))
         self._bosstest_selfcheck_button = ctk.CTkButton(
             bosstest_result_row, text="자가검사", width=80, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#4c566a", hover_color="#5c667a",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["bg_elevated"], hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._bosstest_run_self_check
         )
         self._bosstest_selfcheck_button.pack(side="left", padx=(5, 0))
         self._bosstest_copy_button = ctk.CTkButton(
             bosstest_result_row, text="결과복사", width=84, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#5c667a", hover_color="#6c768a",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["bg_elevated"], hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._copy_bosstest_result_text
         )
         self._bosstest_copy_button.pack(side="left", padx=(5, 0))
@@ -15747,7 +15847,8 @@ class GameModeDialog(ctk.CTkToplevel):
         itemtest_result_row.pack(fill="x", pady=(6, 0))
         self._itemtest_button = ctk.CTkButton(
             itemtest_result_row, text="아이템테스트", width=100, height=28,
-            font=ctk.CTkFont(size=11), fg_color="#7a5ac0", hover_color="#8c6dd2",
+            font=ctk.CTkFont(size=11), fg_color=COLORS["scroll_purple"], hover_color="#DA8FFF",
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._itemtest_run
         )
         self._itemtest_button.pack(side="left")
@@ -15761,7 +15862,13 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_char_image_path = None
 
         # === 숫자 템플릿 설정 (OCR 대신 사용) ===
-        template_frame = ctk.CTkFrame(self._coord_mode_frame, fg_color=COLORS["bg_card"], corner_radius=10)
+        template_frame = ctk.CTkFrame(
+            self._coord_mode_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         template_frame.pack(fill="x", pady=(0, 8))
         template_inner = ctk.CTkFrame(template_frame, fg_color="transparent")
         template_inner.pack(fill="x", padx=12, pady=10)
@@ -15783,7 +15890,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._digit_buttons = {}
         for i in range(10):
             btn = ctk.CTkButton(digit_row, text=str(i), width=30, height=28,
-                               fg_color=COLORS["bg_card_hover"],
+                               fg_color=COLORS["bg_elevated"],
+                               hover_color=COLORS["bg_card_hover"],
+                               corner_radius=IOS_METRICS["control_radius_small"],
                                command=lambda d=str(i): self._capture_digit_template(d))
             btn.pack(side="left", padx=2)
             self._digit_buttons[str(i)] = btn
@@ -15792,9 +15901,13 @@ class GameModeDialog(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(template_inner, fg_color="transparent")
         btn_row.pack(fill="x")
         ctk.CTkButton(btn_row, text="템플릿 저장", width=90, height=28,
-                      fg_color="#a3be8c", command=self._save_digit_templates).pack(side="left", padx=(0, 5))
+                      fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
+                      corner_radius=IOS_METRICS["pill_radius"],
+                      command=self._save_digit_templates).pack(side="left", padx=(0, 5))
         ctk.CTkButton(btn_row, text="상태 새로고침", width=90, height=28,
-                      fg_color=COLORS["bg_card_hover"], command=self._refresh_template_status).pack(side="left")
+                      fg_color=COLORS["bg_elevated"], hover_color=COLORS["bg_card_hover"],
+                      corner_radius=IOS_METRICS["pill_radius"],
+                      command=self._refresh_template_status).pack(side="left")
 
         # 초기 상태 확인
         self.after(100, self._refresh_template_status)
@@ -24669,7 +24782,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
     def _setup_ui(self):
         """UI 구성"""
         # 하단 버튼
-        btn_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_card"])
+        btn_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_glass"])
         btn_frame.pack(side="bottom", fill="x", pady=0)
 
         btn_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
@@ -24682,9 +24795,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             width=100,
             height=38,
             fg_color=COLORS["success"],
-            hover_color="#2ea44f",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=6,
+            hover_color=COLORS["green_hover"],
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         self._save_btn.pack(side="left", padx=8)
 
@@ -24694,10 +24807,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             command=self._on_close,
             width=100,
             height=38,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
-            corner_radius=6,
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=8)
 
         # 메인 영역
@@ -24729,11 +24842,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             command=self._toggle_all_collapse,
             width=80,
             height=30,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_glass"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
             font=ctk.CTkFont(size=12),
-            corner_radius=6,
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         self._collapse_btn.pack(side="right", padx=(5, 0))
 
@@ -24866,8 +24979,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             main,
             item_height=76,
             buffer_count=2,
-            fg_color=COLORS["bg_card"],
-            corner_radius=12,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
         )
         self._scrollable.pack(fill="both", expand=True)
         self._scrollable.set_render_callback(self._render_action_item)
@@ -25253,8 +25366,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         row = ctk.CTkFrame(
             item_wrapper,
-            fg_color="#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"]),
-            corner_radius=8,
+            fg_color=COLORS["selection_green"] if is_selected else (COLORS["bg_glass"] if is_enabled else COLORS["bg_card"]),
+            corner_radius=IOS_METRICS["control_radius"],
         )
         row.pack(fill="x", pady=3, padx=(10 + indent, 10))
         self._action_widgets[action.action_id] = {
@@ -25293,7 +25406,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 text_color=COLORS["text_secondary"],
                 width=24,
                 height=24,
-                corner_radius=4,
+                corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda a=action: self._toggle_item_collapse(a.action_id),
             )
             toggle_btn.pack(side="left", padx=(8, 2), pady=8)
@@ -25312,7 +25425,13 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         self._action_widgets[action.action_id]["number_label"] = number
 
         if getattr(action, "target_image", None):
-            thumb = ctk.CTkFrame(row, fg_color=COLORS["bg_card"], width=44, height=44, corner_radius=6)
+            thumb = ctk.CTkFrame(
+                row,
+                fg_color=COLORS["bg_elevated"],
+                width=44,
+                height=44,
+                corner_radius=IOS_METRICS["control_radius_small"],
+            )
             thumb.pack(side="left", padx=(0, 8), pady=6)
             thumb.pack_propagate(False)
             self._action_widgets[action.action_id]["thumb_frame"] = thumb
@@ -25335,9 +25454,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             text="S",
             width=30,
             height=24,
-            fg_color="#2ecc71" if is_skip_action else COLORS["bg_card"],
-            hover_color="#27ae60" if is_skip_action else COLORS["bg_card_hover"],
+            fg_color=COLORS["success"] if is_skip_action else COLORS["bg_card"],
+            hover_color=COLORS["green_hover"] if is_skip_action else COLORS["bg_card_hover"],
             text_color="white" if is_skip_action else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda a=action: self._toggle_skip_mode_action(a),
         )
         skip_btn_action.pack(side="right", padx=3, pady=8)
@@ -25351,8 +25471,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             width=38,
             height=24,
             fg_color=COLORS["accent_orange"] if until_disappears else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
-            hover_color="#ea580c" if until_disappears else ("#1a7fd4" if repeat_count > 1 else COLORS["bg_card_hover"]),
+            hover_color=COLORS["confidence_amber_hover"] if until_disappears else (COLORS["hover_blue"] if repeat_count > 1 else COLORS["bg_card_hover"]),
             text_color="white" if until_disappears or repeat_count > 1 else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda a=action: self._edit_repeat_count_action(a),
         )
         repeat_btn.pack(side="right", padx=3, pady=8)
@@ -25365,8 +25486,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             width=52,
             height=24,
             fg_color=COLORS["success"] if has_random else COLORS["bg_card"],
-            hover_color="#2ea44f" if has_random else COLORS["bg_card_hover"],
+            hover_color=COLORS["green_hover"] if has_random else COLORS["bg_card_hover"],
             text_color="white" if has_random else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda a=action: self._edit_wait_time_action(a),
         )
         delay_btn.pack(side="right", padx=3, pady=8)
@@ -25377,8 +25499,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             width=30,
             height=24,
             fg_color=COLORS["error"],
-            hover_color="#c0392b",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda a=action: self._delete_action(a),
         ).pack(side="right", padx=(3, 8), pady=8)
 
@@ -25407,9 +25530,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         # 선택 상태에 따른 배경색
         is_selected = self._selected_action is not None and self._selected_action.action_id == action.action_id
         is_enabled = getattr(action, "enabled", True)
-        bg_color = "#2e7d32" if is_selected else (COLORS["bg_dark"] if is_enabled else COLORS["bg_card"])
+        bg_color = COLORS["selection_green"] if is_selected else (COLORS["bg_glass"] if is_enabled else COLORS["bg_card"])
 
-        item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
+        item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=IOS_METRICS["control_radius"])
         item.pack(fill="x", pady=4, padx=(10 + indent, 10))
 
         # 위젯 매핑 저장

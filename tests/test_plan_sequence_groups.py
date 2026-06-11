@@ -385,7 +385,7 @@ def test_existing_config_load_preserves_pc_local_player_and_ui_settings(monkeypa
     assert loaded.ui.branding_profile_version == "older_brand_marker"
 
 
-def test_release_228_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
+def test_release_229_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -407,8 +407,11 @@ def test_release_228_forces_only_player_auto_run_group_once(monkeypatch, tmp_pat
         arduino=ArduinoConfig(com_port="COM9", enabled=True),
     )
     manager = ConfigManager()
+    raw_existing = manager._config_to_dict(existing)
+    raw_existing["ui"]["local_unknown"] = "keep-ui"
+    raw_existing["local_unknown_root"] = "keep-root"
     config_path.write_text(
-        json.dumps(manager._config_to_dict(existing), ensure_ascii=False, indent=2),
+        json.dumps(raw_existing, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -446,9 +449,16 @@ def test_release_228_forces_only_player_auto_run_group_once(monkeypatch, tmp_pat
         for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
         for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
     ]
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["player"]["auto_run_profile_version"] == AUTO_RUN_PROFILE_VERSION
+    assert persisted["player"]["plan_sequence_groups"][0]["entries"][1]["repeat_count"] == 5
+    assert persisted["ui"]["app_name"] == "PC Local"
+    assert persisted["ui"]["local_unknown"] == "keep-ui"
+    assert persisted["arduino"]["com_port"] == "COM9"
+    assert persisted["local_unknown_root"] == "keep-root"
 
 
-def test_release_228_reapplies_over_previous_v5_marker_once(monkeypatch, tmp_path):
+def test_release_229_reapplies_over_previous_marker_once(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -504,6 +514,12 @@ def test_release_228_reapplies_over_previous_v5_marker_once(monkeypatch, tmp_pat
         for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
         for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
     ]
+
+
+def test_packaged_auto_hunt_raid_default_keeps_raid_at_five_repeats():
+    plan_repeats = dict(AUTO_RUN_PROFILE_PLANS)
+
+    assert plan_repeats["plan_20260605_123819.json"] == 5
 
 
 def test_missing_config_load_seeds_packaged_defaults(monkeypatch, tmp_path):

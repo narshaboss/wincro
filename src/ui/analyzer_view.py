@@ -29,6 +29,7 @@ from ..analyzer import get_video_analyzer, AnalysisProgress
 from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from ..database import get_db, Recording, Sequence
 from .main_window import BaseView, COLORS
+from .theme import IOS_FONTS, IOS_METRICS
 from .image_crop_utils import (
     auto_extract_foreground_mask,
     fit_image_to_box,
@@ -393,7 +394,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         from pathlib import Path
         filename = Path(image_path).name
         self.title(f"이미지 편집: {filename}")
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.configure(fg_color=COLORS["bg_content"])
 
         # 모달 설정
         self.transient(parent)
@@ -561,8 +562,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=30,
             height=28,
             command=lambda: self._zoom(-0.1),
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left", padx=2)
 
         self._zoom_label = ctk.CTkLabel(
@@ -580,8 +582,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=30,
             height=28,
             command=lambda: self._zoom(0.1),
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left", padx=2)
 
         ctk.CTkButton(
@@ -590,8 +593,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=50,
             height=28,
             command=self._fit_to_canvas,
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=(10, 2))
 
         ctk.CTkButton(
@@ -600,8 +604,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=50,
             height=28,
             command=lambda: self._set_zoom(1.0),
-            fg_color=COLORS["bg_card"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=2)
 
         mode_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -614,8 +619,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             height=30,
             command=lambda: self._set_edit_mode("select"),
             fg_color=COLORS["accent_blue"],
-            hover_color="#2563eb",
+            hover_color=COLORS["hover_blue"],
             font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         self._select_mode_btn.pack(side="left", padx=4)
 
@@ -645,8 +651,9 @@ class ImageCropDialog(ctk.CTkToplevel):
                 height=30,
                 command=lambda: self._navigate_image(-1),
                 fg_color=COLORS["accent_blue"],
-                hover_color="#2563eb",
+                hover_color=COLORS["hover_blue"],
                 font=ctk.CTkFont(size=12, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
             )
             self._prev_btn.pack(side="left", padx=5)
 
@@ -667,8 +674,9 @@ class ImageCropDialog(ctk.CTkToplevel):
                 height=30,
                 command=lambda: self._navigate_image(1),
                 fg_color=COLORS["accent_blue"],
-                hover_color="#2563eb",
+                hover_color=COLORS["hover_blue"],
                 font=ctk.CTkFont(size=12, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
             )
             self._next_btn.pack(side="left", padx=5)
 
@@ -684,7 +692,13 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._update_nav_buttons()
 
         # 버튼 프레임 (하단에 배치)
-        name_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=10)
+        name_frame = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         name_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 6))
 
         ctk.CTkLabel(
@@ -725,9 +739,10 @@ class ImageCropDialog(ctk.CTkToplevel):
             height=40,
             state="disabled" if self._crop_coords is None else "normal",
             fg_color=COLORS["success"],
-            hover_color="#2ea44f",
+            hover_color=COLORS["green_hover"],
             text_color="white",
             font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         self._save_btn.pack(side="left", padx=5)
 
@@ -739,9 +754,10 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=100,
             height=40,
             fg_color=COLORS["accent_blue"],
-            hover_color="#2563eb",
+            hover_color=COLORS["hover_blue"],
             text_color="white",
             font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
 
         # 이미지 삭제 버튼
@@ -752,9 +768,10 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=100,
             height=40,
             fg_color=COLORS["error"],
-            hover_color="#dc2626",
+            hover_color=COLORS["danger_hover"],
             text_color="white",
             font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
 
         # 멀티이미지 버튼 (rule이 있을 때만)
@@ -2205,8 +2222,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             height=45,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            font=ctk.CTkFont(size=14, weight="bold"),
-            corner_radius=8,
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=15)
 
         ctk.CTkButton(
@@ -2215,10 +2232,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             command=self._on_cancel,
             width=100,
             height=45,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
-            corner_radius=8,
+            corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=15)
 
         # 메인 영역
@@ -2263,8 +2280,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         # 동작 목록
         self._scrollable = ctk.CTkScrollableFrame(
             main,
-            fg_color=COLORS["bg_card"],
-            corner_radius=12,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
             scrollbar_button_color=COLORS["bg_card_hover"],
         )
         self._scrollable.pack(fill="both", expand=True)
@@ -2527,7 +2544,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         left_pad = 10 + indent
 
         # 자식이 있으면 다른 배경색
-        bg_color = COLORS["bg_dark"] if depth == 0 else "#252535"
+        bg_color = COLORS["bg_glass"] if depth == 0 else COLORS["child_bg"]
 
         item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
         if before_widget is not None:
@@ -2535,7 +2552,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         else:
             item_wrapper.pack(fill="x")
 
-        item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=8)
+        item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=IOS_METRICS["control_radius"])
         item.pack(fill="x", pady=3, padx=(left_pad, 10))
 
         self._action_widgets[rule.rule_id] = {
@@ -2563,17 +2580,23 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 command=lambda r=rule: self._toggle_item_collapse(r.rule_id),
                 width=45,
                 height=24,
-                fg_color=COLORS["bg_card"],
+                fg_color=COLORS["bg_elevated"],
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_muted"],
                 font=ctk.CTkFont(size=11),
-                corner_radius=4,
+                corner_radius=IOS_METRICS["control_radius_small"],
             )
             toggle_btn.pack(side="left", padx=(0, 8))
             self._action_widgets[rule.rule_id]["toggle_btn"] = toggle_btn
 
         # 썸네일
-        thumb = ctk.CTkFrame(content, fg_color=COLORS["bg_card"], width=60, height=60, corner_radius=8)
+        thumb = ctk.CTkFrame(
+            content,
+            fg_color=COLORS["bg_elevated"],
+            width=60,
+            height=60,
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         thumb.pack(side="left", padx=(0, 12))
         thumb.pack_propagate(False)
         self._display_thumbnail(thumb, rule)
@@ -2604,7 +2627,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=color,
             text_color="white",
-            corner_radius=4,
+            corner_radius=IOS_METRICS["control_radius_small"],
             width=28,
             height=24,
         ).pack(side="left", padx=(0, 10))
@@ -2705,7 +2728,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 height=height + 10,
                 fg_color="transparent",
                 hover_color=COLORS["bg_card_hover"],
-                corner_radius=4,
+                corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda p=path, r=rule: self._open_image_editor(p, r),
             )
             thumb_btn.pack(expand=True)

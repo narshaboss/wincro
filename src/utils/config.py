@@ -34,11 +34,11 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.228"
-AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v6"
-# 1.0.228에서만 기존 PC의 자동실행 그룹을 패키지 기본값으로 1회 재적용한다.
+APP_VERSION = "1.0.229"
+AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v7"
+# 1.0.229에서만 기존 PC의 자동실행 그룹을 패키지 기본값으로 1회 재적용한다.
 # 다음 버전에서 APP_VERSION만 올라가면 이 강제 적용은 자동으로 비활성화된다.
-AUTO_RUN_PROFILE_FORCE_APP_VERSION = "1.0.228"
+AUTO_RUN_PROFILE_FORCE_APP_VERSION = "1.0.229"
 AUTO_RUN_PROFILE_GROUP_ID = "packaged_auto_hunt_raid"
 AUTO_RUN_PROFILE_GROUP_NAME = "자동사냥+레이드"
 AUTO_RUN_PROFILE_GROUP_REPEAT = 4
@@ -217,9 +217,11 @@ class ConfigManager:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     self._config = self._dict_to_config(data)
-                    self._normalize_loaded_local_config(self._config)
+                    player_defaults_changed = self._normalize_loaded_local_config(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
+                    if player_defaults_changed:
+                        self._persist_loaded_player_config(self._config)
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
                     self._seed_packaged_defaults(self._config)
@@ -314,11 +316,14 @@ class ConfigManager:
         self._apply_packaged_player_defaults(config)
         self._apply_packaged_ui_branding(config)
 
-    def _normalize_loaded_local_config(self, config: AppConfig) -> None:
+    def _normalize_loaded_local_config(self, config: AppConfig) -> bool:
         """Keep existing PC-local settings intact while normalizing shape only."""
         normalize_plan_sequence_groups(config.player, mutate=True)
-        if not self._apply_release_player_profile_once(config):
+        if self._apply_release_player_profile_once(config):
+            return True
+        else:
             mirror_active_group_to_legacy(config.player)
+            return False
 
     def _apply_release_player_profile_once(self, config: AppConfig) -> bool:
         """Apply this release's playback defaults once without touching other settings."""
@@ -326,8 +331,7 @@ class ConfigManager:
             return False
         player = config.player
         if getattr(player, "auto_run_profile_version", "") == AUTO_RUN_PROFILE_VERSION:
-            self._repair_packaged_player_group_paths(player)
-            return False
+            return self._repair_packaged_player_group_paths(player)
         self._apply_packaged_player_defaults(config)
         return True
 
@@ -363,7 +367,7 @@ class ConfigManager:
         player.auto_run_profile_version = AUTO_RUN_PROFILE_VERSION
         mirror_active_group_to_legacy(player)
 
-    def _repair_packaged_player_group_paths(self, player: PlayerConfig) -> None:
+    def _repair_packaged_player_group_paths(self, player: PlayerConfig) -> bool:
         """Keep release-managed group paths tied to the current install data dir."""
         groups = normalize_plan_sequence_groups(player, mutate=True)
         expected_by_group = {
@@ -389,6 +393,23 @@ class ConfigManager:
         if changed:
             player.plan_sequence_groups = groups
             mirror_active_group_to_legacy(player)
+        return changed
+
+    def _persist_loaded_player_config(self, config: AppConfig) -> bool:
+        """Persist only player settings after a release migration, preserving PC-local settings."""
+        try:
+            raw_data: dict[str, Any] = {}
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    raw_data = loaded
+            raw_data["player"] = asdict(config.player)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(raw_data, f, ensure_ascii=False, indent=2)
+            return True
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
 
     def _apply_packaged_ui_branding(self, config: AppConfig) -> None:
         """Migrate legacy/random display names to the fixed Korean product brand."""
