@@ -484,7 +484,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 자식이 있는 규칙은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
         self._total_rule_count = self._count_rule_tree(self._plan.initial_rules)
-        self._compact_rule_rows = self._total_rule_count >= COMPACT_ACTION_ROW_THRESHOLD
+        # 플랜 액션 행은 크기와 무관하게 자동사냥과 같은 compact 디자인으로 통일한다.
+        # 기존 non-compact 경로는 일부 플랜에서 가상 스크롤 렌더링이 비어 보이는 회귀가 있었다.
+        self._compact_rule_rows = True
 
         # 드래그 앤 드롭 상태
         self._drag_data = {"rule": None, "widget": None, "start_y": 0}
@@ -816,8 +818,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
     def _count_rule_tree(self, rules) -> int:
         total = 0
-        for rule in rules or []:
-            total += 1 + self._count_rule_tree(getattr(rule, "children", []) or [])
+        stack = list(rules or [])
+        seen = set()
+        while stack:
+            rule = stack.pop()
+            rule_key = id(rule)
+            if rule_key in seen:
+                continue
+            seen.add(rule_key)
+            total += 1
+            stack.extend(getattr(rule, "children", []) or [])
         return total
 
     def _font(self, size, weight=None):
@@ -1070,8 +1080,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 동작 목록 (가상 스크롤)
         self._scrollable = VirtualScrollFrame(
             main,
-            item_height=76 if self._compact_rule_rows else 75,
-            buffer_count=2 if self._compact_rule_rows else 5,
+            item_height=76,
+            buffer_count=2,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
         )
@@ -1086,17 +1096,25 @@ class PlanDetailDialog(ctk.CTkToplevel):
     def _get_flat_rules(self) -> List[AutomationRule]:
         """계층 구조를 평탄화하여 모든 규칙 반환 (자식 포함)"""
         result = []
+        seen = set()
         for rule in self._plan.initial_rules:
             result.append(rule)
-            result.extend(self._get_children_recursive(rule))
+            seen.add(id(rule))
+            result.extend(self._get_children_recursive(rule, seen))
         return result
 
-    def _get_children_recursive(self, rule: AutomationRule) -> List[AutomationRule]:
+    def _get_children_recursive(self, rule: AutomationRule, seen=None) -> List[AutomationRule]:
         """재귀적으로 자식 규칙들 반환"""
+        if seen is None:
+            seen = {id(rule)}
         result = []
         for child in rule.children:
+            child_key = id(child)
+            if child_key in seen:
+                continue
+            seen.add(child_key)
             result.append(child)
-            result.extend(self._get_children_recursive(child))
+            result.extend(self._get_children_recursive(child, seen))
         return result
 
     def _get_flat_rules_with_depth(self) -> List[dict]:
@@ -1105,11 +1123,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
         펼쳐진 자식만 포함, depth와 index_str 정보 포함
         """
         result = []
+        seen = set()
         root_count = 0
         child_counters = {}  # {parent_id: 현재 자식 번호}
 
         def add_rule(rule, depth, parent_idx_str):
             nonlocal root_count
+            rule_key = id(rule)
+            if rule_key in seen:
+                return
+            seen.add(rule_key)
             if depth == 0:
                 root_count += 1
                 idx_str = str(root_count)
@@ -1212,9 +1235,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         depth = item_data["depth"]
         index_str = item_data["index_str"]
 
-        if self._compact_rule_rows:
-            return self._create_compact_rule_item(parent, rule, depth, index_str)
-        return self._create_action_item_virtual(parent, rule, depth, index_str)
+        return self._create_compact_rule_item(parent, rule, depth, index_str)
 
     def _on_rule_item_destroy(self, item_data: dict, index: int, widget) -> None:
         rule = item_data.get("rule") if isinstance(item_data, dict) else None
@@ -25038,6 +25059,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         self._collapsed_items = set()  # 접힌 액션 인덱스
         self._all_collapsed = True  # 전체 접기 상태 (기본값: 접힘)
 
+        self._repair_flat_action_hierarchy()
         # 자식이 있는 액션은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
         self._total_action_count = self._count_action_tree(self._sequence.actions)
@@ -25077,10 +25099,119 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             if action.children:
                 self._collapsed_items.add(action.action_id)
 
+    def _repair_flat_action_hierarchy(self) -> None:
+        """Recover legacy flat action lists that only stored parent_id links."""
+        actions = list(getattr(self._sequence, "actions", []) or [])
+        if not actions:
+            return
+
+        action_by_id = {
+            getattr(action, "action_id", None): action
+            for action in actions
+            if getattr(action, "action_id", None)
+        }
+        if not action_by_id:
+            return
+
+        nested_ids = set()
+        nested_object_ids = set()
+
+        def collect_nested(items) -> None:
+            stack = list(items or [])
+            seen = set()
+            while stack:
+                item = stack.pop()
+                item_key = id(item)
+                if item_key in seen:
+                    continue
+                seen.add(item_key)
+                for child in getattr(item, "children", []) or []:
+                    nested_object_ids.add(id(child))
+                    child_id = getattr(child, "action_id", None)
+                    if child_id:
+                        nested_ids.add(child_id)
+                    stack.append(child)
+
+        def has_descendant(root, target_id) -> bool:
+            stack = list(getattr(root, "children", []) or [])
+            seen = set()
+            while stack:
+                current = stack.pop()
+                current_key = id(current)
+                if current_key in seen:
+                    continue
+                seen.add(current_key)
+                current_id = getattr(current, "action_id", None)
+                if current_id == target_id:
+                    return True
+                stack.extend(getattr(current, "children", []) or [])
+            return False
+
+        def would_create_parent_cycle(action, parent) -> bool:
+            action_id = getattr(action, "action_id", None)
+            if not action_id:
+                return True
+            current = parent
+            seen_parent_ids = set()
+            for _ in range(len(action_by_id) + 1):
+                current_id = getattr(current, "action_id", None)
+                if current_id == action_id or current_id in seen_parent_ids:
+                    return True
+                if not current_id:
+                    return False
+                seen_parent_ids.add(current_id)
+                current = action_by_id.get(getattr(current, "parent_id", None))
+                if current is None:
+                    return False
+            return True
+
+        collect_nested(actions)
+        parent_child_object_ids = {
+            id(action): {id(child) for child in getattr(action, "children", []) or []}
+            for action in actions
+        }
+        roots = []
+        repaired = False
+
+        for action in actions:
+            action_id = getattr(action, "action_id", None)
+            parent_id = getattr(action, "parent_id", None)
+            parent = action_by_id.get(parent_id)
+
+            if parent_id and parent is not None and parent is not action:
+                if not would_create_parent_cycle(action, parent) and not has_descendant(action, parent_id):
+                    parent_children = parent_child_object_ids.setdefault(id(parent), set())
+                    is_already_nested = (
+                        action_id in nested_ids
+                        if action_id
+                        else id(action) in nested_object_ids or id(action) in parent_children
+                    )
+                    if not is_already_nested:
+                        parent.children.append(action)
+                        parent_children.add(id(action))
+                        nested_object_ids.add(id(action))
+                        if action_id:
+                            nested_ids.add(action_id)
+                    repaired = True
+                    continue
+
+            roots.append(action)
+
+        if repaired and roots:
+            self._sequence.actions = roots
+
     def _count_action_tree(self, actions) -> int:
         total = 0
-        for action in actions or []:
-            total += 1 + self._count_action_tree(getattr(action, "children", []) or [])
+        stack = list(actions or [])
+        seen = set()
+        while stack:
+            action = stack.pop()
+            action_key = id(action)
+            if action_key in seen:
+                continue
+            seen.add(action_key)
+            total += 1
+            stack.extend(getattr(action, "children", []) or [])
         return total
 
     def _font(self, size, weight=None):
@@ -25309,8 +25440,13 @@ class SequenceDetailDialog(ctk.CTkToplevel):
     def _get_flat_actions_with_depth(self) -> list:
         """접힘 상태를 반영한 표시용 액션 목록."""
         result = []
+        seen = set()
 
         def add_action(action: Action, depth: int, index_str: str):
+            action_key = id(action)
+            if action_key in seen:
+                return
+            seen.add(action_key)
             result.append({
                 "action": action,
                 "depth": depth,
@@ -25327,8 +25463,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 for child_idx, child in enumerate(action.children, 1):
                     add_action(child, depth + 1, f"{index_str}-{child_idx}")
 
-        top_level_actions = [action for action in self._sequence.actions if not action.parent_id]
-        for idx, action in enumerate(top_level_actions, 1):
+        for idx, action in enumerate(self._sequence.actions or [], 1):
             add_action(action, 0, str(idx))
         return result
 
@@ -27166,11 +27301,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
 
         if parent_action is None:
-            top_level_count = len([action for action in self._sequence.actions if not action.parent_id])
             item = {
                 "action": new_action,
                 "depth": 0,
-                "index_str": str(top_level_count),
+                "index_str": str(len(self._sequence.actions)),
             }
             self._scrollable.splice_items(len(items), 0, [item])
             return

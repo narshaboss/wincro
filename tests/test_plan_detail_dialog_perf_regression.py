@@ -1353,7 +1353,7 @@ def test_sequence_detail_uses_compact_rows_for_every_playlist_size():
     assert "return self._create_action_item(" not in render_method
 
 
-def test_plan_detail_compact_rows_cover_mid_sized_plans():
+def test_plan_detail_uses_compact_rows_for_every_plan_size():
     text = _read_text()
     init_method = _method_slice(
         text,
@@ -1372,13 +1372,27 @@ def test_plan_detail_compact_rows_cover_mid_sized_plans():
     )
 
     assert "self._total_rule_count = self._count_rule_tree(self._plan.initial_rules)" in init_method
-    assert "self._compact_rule_rows = self._total_rule_count >= COMPACT_ACTION_ROW_THRESHOLD" in init_method
-    assert "item_height=76 if self._compact_rule_rows else 75" in setup_method
-    assert "buffer_count=2 if self._compact_rule_rows else 5" in setup_method
-    assert "if self._compact_rule_rows:" in render_method
+    assert "self._compact_rule_rows = True" in init_method
+    assert "item_height=76" in setup_method
+    assert "buffer_count=2" in setup_method
     assert "return self._create_compact_rule_item(parent, rule, depth, index_str)" in render_method
+    assert "return self._create_action_item_virtual(" not in render_method
     assert "def _create_compact_rule_item(" in text
     assert "def _show_rule_context_menu(" in text
+
+
+def test_plan_detail_count_and_flatten_ignore_existing_child_cycles():
+    parent = AutomationRule(action_type="click", rule_id="parent")
+    child = AutomationRule(action_type="key_press", rule_id="child", parent_id="parent")
+    parent.children.append(child)
+    child.children.append(parent)
+    dialog = _make_plan_dialog_stub([parent], set())
+
+    assert dialog._count_rule_tree(dialog._plan.initial_rules) == 2
+    flat = dialog._get_flat_rules_with_depth()
+
+    assert [item["rule"].rule_id for item in flat] == ["parent", "child"]
+    assert [item["depth"] for item in flat] == [0, 1]
 
 
 def test_plan_compact_row_update_changes_labels_without_rebuild():
@@ -1849,6 +1863,97 @@ def test_sequence_detail_expanded_tree_flatten_keeps_stable_child_indices():
     assert [item["action"].action_id for item in flat] == ["parent", "child_0", "child_1", "child_2"]
     assert [item["depth"] for item in flat] == [0, 1, 1, 1]
     assert [item["index_str"] for item in flat] == ["1", "1-1", "1-2", "1-3"]
+
+
+def test_sequence_detail_repairs_legacy_flat_parent_links_before_flattening():
+    parent = Action(action_type="click", action_id="parent")
+    child = Action(action_type="key_press", action_id="child", parent_id="parent")
+    sibling = Action(action_type="type", action_id="sibling")
+    dialog = _make_sequence_dialog_stub(Sequence(name="legacy", actions=[parent, child, sibling]), set())
+
+    dialog._repair_flat_action_hierarchy()
+    flat = dialog._get_flat_actions_with_depth()
+
+    assert dialog._sequence.actions == [parent, sibling]
+    assert parent.children == [child]
+    assert [item["action"].action_id for item in flat] == ["parent", "child", "sibling"]
+    assert [item["depth"] for item in flat] == [0, 1, 0]
+    assert [item["index_str"] for item in flat] == ["1", "1-1", "2"]
+
+
+def test_sequence_detail_keeps_orphaned_legacy_parent_links_visible():
+    orphan = Action(action_type="click", action_id="orphan", parent_id="missing_parent")
+    sibling = Action(action_type="type", action_id="sibling")
+    dialog = _make_sequence_dialog_stub(Sequence(name="orphaned", actions=[orphan, sibling]), set())
+
+    dialog._repair_flat_action_hierarchy()
+    flat = dialog._get_flat_actions_with_depth()
+
+    assert [item["action"].action_id for item in flat] == ["orphan", "sibling"]
+    assert [item["depth"] for item in flat] == [0, 0]
+
+
+def test_sequence_detail_repaired_legacy_children_start_collapsed():
+    parent = Action(action_type="click", action_id="parent")
+    child = Action(action_type="key_press", action_id="child", parent_id="parent")
+    dialog = _make_sequence_dialog_stub(Sequence(name="legacy", actions=[parent, child]), set())
+
+    dialog._repair_flat_action_hierarchy()
+    dialog._init_collapsed_items()
+    flat = dialog._get_flat_actions_with_depth()
+
+    assert parent.action_id in dialog._collapsed_items
+    assert [item["action"].action_id for item in flat] == ["parent"]
+
+
+def test_sequence_detail_repair_handles_parent_id_cycles_without_hanging():
+    first = Action(action_type="click", action_id="first", parent_id="second")
+    second = Action(action_type="key_press", action_id="second", parent_id="first")
+    dialog = _make_sequence_dialog_stub(Sequence(name="cycle", actions=[first, second]), set())
+
+    started = perf_counter()
+    dialog._repair_flat_action_hierarchy()
+    flat = dialog._get_flat_actions_with_depth()
+    elapsed = perf_counter() - started
+
+    assert elapsed < 0.05
+    assert first.children == []
+    assert second.children == []
+    assert [item["action"].action_id for item in flat] == ["first", "second"]
+
+
+def test_sequence_detail_count_and_flatten_ignore_existing_child_cycles():
+    parent = Action(action_type="click", action_id="parent")
+    child = Action(action_type="key_press", action_id="child", parent_id="parent")
+    parent.children.append(child)
+    child.children.append(parent)
+    dialog = _make_sequence_dialog_stub(Sequence(name="child_cycle", actions=[parent]), set())
+
+    assert dialog._count_action_tree(dialog._sequence.actions) == 2
+    flat = dialog._get_flat_actions_with_depth()
+
+    assert [item["action"].action_id for item in flat] == ["parent", "child"]
+    assert [item["depth"] for item in flat] == [0, 1]
+
+
+def test_sequence_detail_repairs_large_legacy_flat_playlist_without_ui_block():
+    parent = Action(action_type="click", action_id="parent")
+    actions = [parent]
+    actions.extend(
+        Action(action_type="key_press", action_id=f"child_{idx}", parent_id="parent")
+        for idx in range(2500)
+    )
+    dialog = _make_sequence_dialog_stub(Sequence(name="large_legacy", actions=actions), {"parent"})
+
+    started = perf_counter()
+    dialog._repair_flat_action_hierarchy()
+    flat = dialog._get_flat_actions_with_depth()
+    elapsed = perf_counter() - started
+
+    assert elapsed < 0.25
+    assert len(parent.children) == 2500
+    assert dialog._sequence.actions == [parent]
+    assert [item["action"].action_id for item in flat] == ["parent"]
 
 
 def test_plan_child_attach_expands_target_parent_and_preserves_visible_child():
