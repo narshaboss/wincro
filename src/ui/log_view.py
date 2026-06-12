@@ -35,6 +35,7 @@ class LogView(BaseView):
         self._log_buffer: deque = deque(maxlen=1000)
         self._auto_scroll = True
         self._current_filter = "ALL"
+        self._last_count_label_text: Optional[str] = None
         self._lock = Lock()
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=25, max_callbacks_per_tick=48)
         self._log_pump = BufferedRecordPump(
@@ -76,7 +77,7 @@ class LogView(BaseView):
         filter_label = ctk.CTkLabel(
             control_frame,
             text="필터:",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
             text_color=COLORS["text_secondary"],
         )
         filter_label.pack(side="left", padx=(10, 5))
@@ -132,7 +133,7 @@ class LogView(BaseView):
         self._count_label = ctk.CTkLabel(
             control_frame,
             text="로그: 0개",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
             text_color=COLORS["text_muted"],
         )
         self._count_label.pack(side="right", padx=10)
@@ -301,17 +302,25 @@ class LogView(BaseView):
 
             self._log_text.configure(state="disabled")
 
-            # 카운트 업데이트 (안전한 파싱)
-            try:
-                index_str = self._log_text.index("end-1c")
-                parts = index_str.split(".")
-                line_count = int(parts[0]) if parts and parts[0].isdigit() else 0
-            except (ValueError, IndexError):
-                line_count = 0
-            self._count_label.configure(text=f"로그: {line_count}개")
+            self._set_count_label(self._get_visible_line_count())
 
         except tk.TclError:
             pass  # 위젯이 파괴된 경우 무시
+
+    def _get_visible_line_count(self) -> int:
+        try:
+            index_str = self._log_text.index("end-1c")
+            parts = index_str.split(".")
+            return int(parts[0]) if parts and parts[0].isdigit() else 0
+        except (tk.TclError, ValueError, IndexError):
+            return 0
+
+    def _set_count_label(self, line_count: int) -> None:
+        text = f"로그: {line_count}개"
+        if self._last_count_label_text == text:
+            return
+        self._last_count_label_text = text
+        self._count_label.configure(text=text)
 
     def _on_filter_change(self, value: str) -> None:
         """필터 변경 처리"""
@@ -331,7 +340,7 @@ class LogView(BaseView):
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
         self._log_text.configure(state="disabled")
-        self._count_label.configure(text="로그: 0개")
+        self._set_count_label(0)
 
     def _refresh_display(self) -> None:
         """필터에 따라 로그 다시 표시"""
@@ -356,14 +365,7 @@ class LogView(BaseView):
 
         self._log_text.configure(state="disabled")
 
-        # 카운트 업데이트 (안전한 파싱)
-        try:
-            index_str = self._log_text.index("end-1c")
-            parts = index_str.split(".")
-            line_count = int(parts[0]) if parts and parts[0].isdigit() else 0
-        except (ValueError, IndexError):
-            line_count = 0
-        self._count_label.configure(text=f"로그: {line_count}개")
+        self._set_count_label(self._get_visible_line_count())
 
     def cleanup(self) -> None:
         """리소스 정리"""

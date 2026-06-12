@@ -18,7 +18,7 @@ from ..i18n import RECORDER, BUTTONS
 from ..recorder import RecordingSession, get_screen_recorder
 from ..database import Recording, get_db
 from .main_window import BaseView, COLORS
-from .theme import IOS_METRICS
+from .theme import IOS_FONTS, IOS_METRICS
 from .ui_batcher import UiCallbackDispatcher
 from .virtual_scroll import VirtualScrollFrame
 
@@ -50,6 +50,8 @@ class RecorderView(BaseView):
         self._async_result_name = None
         self._recordings_load_generation = 0
         self._recording_items = []
+        self._label_text_cache = {}
+        self._label_color_cache = {}
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=48)
 
         self._setup_ui()
@@ -64,6 +66,18 @@ class RecorderView(BaseView):
             self.after(0, callback)
         except (tk.TclError, RuntimeError):
             pass
+
+    def _set_label_text(self, cache_key: str, label, text: str) -> None:
+        if self._label_text_cache.get(cache_key) == text:
+            return
+        self._label_text_cache[cache_key] = text
+        label.configure(text=text)
+
+    def _set_label_color(self, cache_key: str, label, text_color: str) -> None:
+        if self._label_color_cache.get(cache_key) == text_color:
+            return
+        self._label_color_cache[cache_key] = text_color
+        label.configure(text_color=text_color)
 
     def _setup_ui(self):
         # 스크롤 가능한 메인 컨테이너 (로그 패널 확장 시 축소 가능)
@@ -165,7 +179,7 @@ class RecorderView(BaseView):
         self._status_indicator = ctk.CTkLabel(
             status_row,
             text="●",
-            font=ctk.CTkFont(size=32),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=32),
             text_color=COLORS["text_muted"],
         )
         self._status_indicator.pack(side="left", padx=(0, 15))
@@ -176,7 +190,7 @@ class RecorderView(BaseView):
         self._status_label = ctk.CTkLabel(
             status_info,
             text="⏸ 대기 중",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=18, weight="bold"),
             text_color=COLORS["text_primary"],
         )
         self._status_label.pack(anchor="w")
@@ -184,7 +198,7 @@ class RecorderView(BaseView):
         self._status_hint = ctk.CTkLabel(
             status_info,
             text="F7 키를 눌러 녹화를 시작하세요",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
             text_color=COLORS["text_muted"],
         )
         self._status_hint.pack(anchor="w")
@@ -213,14 +227,14 @@ class RecorderView(BaseView):
             ctk.CTkLabel(
                 stat_col,
                 text=label,
-                font=ctk.CTkFont(size=11),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
                 text_color=COLORS["text_muted"],
             ).pack()
 
             self._stat_labels[key] = ctk.CTkLabel(
                 stat_col,
                 text=value,
-                font=ctk.CTkFont(size=16, weight="bold"),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
                 text_color=COLORS["text_primary"],
             )
             self._stat_labels[key].pack()
@@ -247,14 +261,14 @@ class RecorderView(BaseView):
         ctk.CTkLabel(
             fps_label_frame,
             text="녹화 FPS",
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13),
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w")
 
         ctk.CTkLabel(
             fps_label_frame,
             text="높을수록 부드럽지만 용량 증가",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
             text_color=COLORS["text_muted"],
         ).pack(anchor="w")
 
@@ -305,7 +319,7 @@ class RecorderView(BaseView):
         ctk.CTkLabel(
             input_log_frame,
             text="  ⚠️ 자동화 분석에 필수",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
             text_color=COLORS["warning"],
         ).pack(side="left")
 
@@ -329,7 +343,7 @@ class RecorderView(BaseView):
         self._recordings_empty_label = ctk.CTkLabel(
             card,
             text="저장된 녹화가 없습니다\n녹화를 시작해보세요",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
             text_color=COLORS["text_muted"],
             justify="center",
         )
@@ -400,7 +414,7 @@ class RecorderView(BaseView):
         ctk.CTkLabel(
             info,
             text=recording.name,
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
         ).pack(fill="x")
@@ -409,7 +423,7 @@ class RecorderView(BaseView):
         ctk.CTkLabel(
             info,
             text=date_str,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
             text_color=COLORS["text_muted"],
             anchor="w",
         ).pack(fill="x")
@@ -538,8 +552,8 @@ class RecorderView(BaseView):
 
             # UI 업데이트
             self._start_btn.configure(state="disabled")
-            self._status_label.configure(text="⏳ 녹화 준비 중...")
-            self._status_hint.configure(text="잠시만 기다려주세요")
+            self._set_label_text("status", self._status_label, "⏳ 녹화 준비 중...")
+            self._set_label_text("status_hint", self._status_hint, "잠시만 기다려주세요")
             self.update_idletasks()
 
             # 비동기 결과 저장용 변수 초기화 (락 사용)
@@ -648,9 +662,9 @@ class RecorderView(BaseView):
             capture_engine = self._recording_session.capture_engine
             engine_display = "DirectX" if capture_engine == "dxcam" else "GDI"
 
-            self._status_label.configure(text=f"🔴 녹화 중 ({engine_display})")
-            self._status_hint.configure(text="F7: 녹화 중지  |  F8: 트리거 이미지 캡쳐")
-            self._status_indicator.configure(text_color=COLORS["error"])
+            self._set_label_text("status", self._status_label, f"🔴 녹화 중 ({engine_display})")
+            self._set_label_text("status_hint", self._status_hint, "F7: 녹화 중지  |  F8: 트리거 이미지 캡쳐")
+            self._set_label_color("status_indicator", self._status_indicator, COLORS["error"])
             logger.info(f"녹화 시작: {name} (엔진: {capture_engine})")
 
             logger.debug("녹화 상태 업데이트 스케줄링")
@@ -680,9 +694,9 @@ class RecorderView(BaseView):
         """녹화 시작 실패 (메인 스레드에서 호출)"""
         self._starting = False  # 시작 실패 시 플래그 해제
         self._start_btn.configure(state="normal")
-        self._status_label.configure(text="❌ 녹화 시작 실패")
-        self._status_hint.configure(text="다시 시도해주세요")
-        self._status_indicator.configure(text_color=COLORS["error"])
+        self._set_label_text("status", self._status_label, "❌ 녹화 시작 실패")
+        self._set_label_text("status_hint", self._status_hint, "다시 시도해주세요")
+        self._set_label_color("status_indicator", self._status_indicator, COLORS["error"])
         # GlobalHotKeys 재시작 (녹화 시작 전에 중지했으므로)
         self._resume_global_hotkeys()
 
@@ -693,7 +707,7 @@ class RecorderView(BaseView):
         self._on_recording_start_failed()
 
         # 힌트를 오류 메시지로 변경
-        self._status_hint.configure(text="오류가 발생했습니다")
+        self._set_label_text("status_hint", self._status_hint, "오류가 발생했습니다")
 
         # 사용자에게 상세 오류 메시지 표시
         messagebox.showerror(
@@ -747,8 +761,8 @@ class RecorderView(BaseView):
 
         # UI 즉시 업데이트 (사용자에게 피드백) - 버튼 비활성화
         self._stop_btn.configure(state="disabled")
-        self._status_label.configure(text="⏳ 녹화 저장 중...")
-        self._status_hint.configure(text="잠시만 기다려주세요")
+        self._set_label_text("status", self._status_label, "⏳ 녹화 저장 중...")
+        self._set_label_text("status_hint", self._status_hint, "잠시만 기다려주세요")
 
         # 녹화 중지를 별도 스레드에서 실행 (UI 블로킹 방지)
         threading.Thread(target=self._stop_recording_async, daemon=True).start()
@@ -767,9 +781,9 @@ class RecorderView(BaseView):
         """녹화 중지 완료 (메인 스레드에서 호출)"""
         # _is_recording은 이미 락 블록에서 False로 설정됨
         self._update_ui_state()
-        self._status_label.configure(text="✅ 녹화 완료")
-        self._status_hint.configure(text="녹화가 저장되었습니다. 분석 탭에서 동작을 추출하세요.")
-        self._status_indicator.configure(text_color=COLORS["success"])
+        self._set_label_text("status", self._status_label, "✅ 녹화 완료")
+        self._set_label_text("status_hint", self._status_hint, "녹화가 저장되었습니다. 분석 탭에서 동작을 추출하세요.")
+        self._set_label_color("status_indicator", self._status_indicator, COLORS["success"])
 
         # 창 복원 (F7 핫키로 이미 복원된 경우 스킵)
         if not self._window_restored:
@@ -801,9 +815,9 @@ class RecorderView(BaseView):
     def _on_recording_stop_failed(self, error_msg: str):
         """녹화 중지 실패 (메인 스레드에서 호출)"""
         self._update_ui_state()
-        self._status_label.configure(text="❌ 녹화 저장 실패")
-        self._status_hint.configure(text=f"오류: {error_msg}")
-        self._status_indicator.configure(text_color=COLORS["error"])
+        self._set_label_text("status", self._status_label, "❌ 녹화 저장 실패")
+        self._set_label_text("status_hint", self._status_hint, f"오류: {error_msg}")
+        self._set_label_color("status_indicator", self._status_indicator, COLORS["error"])
         self._stopping = False
 
     def _restore_window(self):
@@ -899,10 +913,12 @@ class RecorderView(BaseView):
         """트리거 이미지 캡쳐 알림 표시"""
         from pathlib import Path
         filename = Path(filepath).name
-        self._status_hint.configure(text=f"📸 트리거 이미지 캡쳐됨: {filename}")
+        self._set_label_text("status_hint", self._status_hint, f"📸 트리거 이미지 캡쳐됨: {filename}")
         # 2초 후 원래 힌트로 복원
-        self.after(2000, lambda: self._status_hint.configure(
-            text="F7: 녹화 중지  |  F8: 트리거 이미지 캡쳐"
+        self.after(2000, lambda: self._set_label_text(
+            "status_hint",
+            self._status_hint,
+            "F7: 녹화 중지  |  F8: 트리거 이미지 캡쳐",
         ) if self._is_recording else None)
 
     def _update_recording_status(self):
@@ -921,9 +937,9 @@ class RecorderView(BaseView):
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
 
-            self._stat_labels["duration"].configure(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-            self._stat_labels["frame"].configure(text=str(frame_count))
-            self._stat_labels["event"].configure(text=str(event_count))
+            self._set_label_text("stat_duration", self._stat_labels["duration"], f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+            self._set_label_text("stat_frame", self._stat_labels["frame"], str(frame_count))
+            self._set_label_text("stat_event", self._stat_labels["event"], str(event_count))
 
             # after ID 저장하여 취소 가능하도록
             self._status_update_id = self.after(100, self._update_recording_status)

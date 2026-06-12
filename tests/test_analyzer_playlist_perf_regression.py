@@ -53,6 +53,8 @@ def test_playlist_dialog_uses_lazy_child_containers_for_fast_expand():
 
     assert "self._action_widgets = {}" in text
     assert "self._collapsible_rule_ids = set()" in text
+    assert "self._rule_descendant_count_cache = {}" in text
+    assert "def _count_rule_descendants(self, rule: AutomationRule) -> int:" in text
     assert '"children_rendered": False' in text
     assert '"children_container"' in text
     assert "def _ensure_children_rendered(self, rule_id: str) -> None:" in text
@@ -108,6 +110,32 @@ def test_playlist_dialog_uses_virtual_scroll_for_action_rows():
     assert "self._scrollable.set_items(items, preserve_scroll=preserve_scroll)" in refresh_method
     assert "manage_geometry=False" in render_method
     assert "render_inline_children=False" in render_method
+
+
+def test_playlist_dialog_caches_collapse_badges_and_skips_duplicate_button_configures():
+    text = _read_text()
+    count_method = _method_slice(
+        text,
+        "def _count_rule_descendants(self, rule: AutomationRule) -> int:",
+        "def _set_collapse_button_text(self, text: str) -> None:",
+    )
+    text_method = _method_slice(
+        text,
+        "def _set_collapse_button_text(self, text: str) -> None:",
+        "def _toggle_all_collapse(self):",
+    )
+    toggle_method = _method_slice(
+        text,
+        "def _update_rule_toggle_button(self, rule_id: str) -> None:",
+        "def _sync_all_collapsed_state(self) -> None:",
+    )
+
+    assert "self._rule_descendant_count_cache.get(rule.rule_id)" in count_method
+    assert "self._rule_descendant_count_cache[rule.rule_id] = count" in count_method
+    assert "if self._last_collapse_btn_text == text:" in text_method
+    assert "self._collapse_btn.configure(text=text)" in text_method
+    assert "widget_data.get(\"toggle_text\") == text" in toggle_method
+    assert "widget_data[\"toggle_text\"] = text" in toggle_method
 
 
 def test_playlist_dialog_virtual_items_flatten_only_visible_children():

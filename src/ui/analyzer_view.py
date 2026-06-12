@@ -2209,6 +2209,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         self._render_batch_after_ids = set()
         self._render_batch_generation = 0
         self._render_batch_size = 24
+        self._rule_descendant_count_cache = {}
+        self._last_collapse_btn_text = None
 
         # 자식이 있는 규칙은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
@@ -2286,7 +2288,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             header_row,
             text="녹화된 동작 목록",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=22, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(side="left")
 
@@ -2300,7 +2302,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         )
         self._collapse_btn.pack(side="right")
@@ -2310,7 +2312,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             main,
             text=f"총 {total_count}개의 동작이 감지되었습니다. 확인 후 승인하세요.",
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13),
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", pady=(5, 20))
 
@@ -2337,6 +2339,23 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 count += self._count_all_rules(rule.children)
         return count
 
+    def _count_rule_descendants(self, rule: AutomationRule) -> int:
+        """Collapse badge count is stable in this dialog, so cache recursive counts."""
+        if not rule or not rule.children:
+            return 0
+        cached = self._rule_descendant_count_cache.get(rule.rule_id)
+        if cached is not None:
+            return cached
+        count = self._count_all_rules(rule.children)
+        self._rule_descendant_count_cache[rule.rule_id] = count
+        return count
+
+    def _set_collapse_button_text(self, text: str) -> None:
+        if self._last_collapse_btn_text == text:
+            return
+        self._last_collapse_btn_text = text
+        self._collapse_btn.configure(text=text)
+
     def _toggle_all_collapse(self):
         """모든 액션 접기/펼치기"""
         if self._all_collapsed:
@@ -2345,12 +2364,12 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             for rule in self._iter_top_level_collapsible_rules():
                 self._collapsed_items.discard(rule.rule_id)
             self._all_collapsed = False
-            self._collapse_btn.configure(text="모두 접기")
+            self._set_collapse_button_text("모두 접기")
         else:
             # 모두 접기
             self._init_collapsed_items()
             self._all_collapsed = True
-            self._collapse_btn.configure(text="모두 펼치기")
+            self._set_collapse_button_text("모두 펼치기")
         self._apply_collapse_state()
 
     def _iter_top_level_collapsible_rules(self):
@@ -2621,16 +2640,20 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         toggle_btn = widget_data.get("toggle_btn") if widget_data else None
         if toggle_btn:
             rule = widget_data.get("rule")
-            child_count = self._count_all_rules(rule.children) if rule and rule.children else 0
+            child_count = self._count_rule_descendants(rule)
             icon = "▶" if rule_id in self._collapsed_items else "▼"
-            toggle_btn.configure(text=f"{icon} {child_count}")
+            text = f"{icon} {child_count}"
+            if widget_data.get("toggle_text") == text:
+                return
+            widget_data["toggle_text"] = text
+            toggle_btn.configure(text=text)
 
     def _sync_all_collapsed_state(self) -> None:
         if not self._collapsible_rule_ids:
             self._all_collapsed = False
         else:
             self._all_collapsed = self._collapsible_rule_ids.issubset(self._collapsed_items)
-        self._collapse_btn.configure(text="모두 펼치기" if self._all_collapsed else "모두 접기")
+        self._set_collapse_button_text("모두 펼치기" if self._all_collapsed else "모두 접기")
 
     def _drop_rule_widget_mappings(self, rule: AutomationRule) -> None:
         """Remove stale widget mappings for a rule subtree before row-level redraw."""
@@ -2713,21 +2736,23 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             self._collapsible_rule_ids.add(rule.rule_id)
             is_collapsed = rule.rule_id in self._collapsed_items
             toggle_text = "▶" if is_collapsed else "▼"
-            child_count = self._count_all_rules(rule.children)
+            child_count = self._count_rule_descendants(rule)
+            full_toggle_text = f"{toggle_text} {child_count}"
             toggle_btn = ctk.CTkButton(
                 content,
-                text=f"{toggle_text} {child_count}",
+                text=full_toggle_text,
                 command=lambda r=rule: self._toggle_item_collapse(r.rule_id),
                 width=45,
                 height=24,
                 fg_color=COLORS["bg_elevated"],
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_muted"],
-                font=ctk.CTkFont(size=11),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
                 corner_radius=IOS_METRICS["control_radius_small"],
             )
             toggle_btn.pack(side="left", padx=(0, 8))
             self._action_widgets[rule.rule_id]["toggle_btn"] = toggle_btn
+            self._action_widgets[rule.rule_id]["toggle_text"] = full_toggle_text
 
         # 썸네일
         thumb = ctk.CTkFrame(
@@ -2764,7 +2789,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             row1,
             text=f"{index}",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
             fg_color=color,
             text_color=COLORS["text_primary"],
             corner_radius=IOS_METRICS["control_radius_small"],
@@ -2785,7 +2810,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             row1,
             text=action_names.get(rule.action_type, rule.action_type or "동작"),
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
             text_color=color,
         ).pack(side="left")
 
@@ -2817,7 +2842,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row2,
                 text="  |  ".join(details),
-                font=ctk.CTkFont(size=12),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
 
@@ -2826,7 +2851,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row2,
                 text=f"대기 {rule.wait_after:.1f}초",
-                font=ctk.CTkFont(size=11),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
                 text_color=COLORS["warning"],
             ).pack(side="right")
 
@@ -2857,7 +2882,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 parent,
                 text=icons.get(rule.action_type, "A"),
-                font=ctk.CTkFont(size=24, weight="bold"),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=24, weight="bold"),
                 text_color=COLORS["text_muted"],
             ).pack(expand=True)
 

@@ -168,9 +168,12 @@ def test_settings_auto_run_group_editor_uses_ios_cards_and_keeps_selection_contr
 def test_recorder_view_uses_ios_surfaces_without_losing_virtualized_list():
     recorder_view = RECORDER_VIEW.read_text(encoding="utf-8")
 
-    assert "from .theme import IOS_METRICS" in recorder_view
+    assert "from .theme import IOS_FONTS, IOS_METRICS" in recorder_view
     assert "UiCallbackDispatcher" in recorder_view
     assert "VirtualScrollFrame(" in recorder_view
+    assert 'family=IOS_FONTS["family"]' in recorder_view
+    assert "self._label_text_cache" in recorder_view
+    assert "self._set_label_text" in recorder_view
     assert 'fg_color=COLORS["bg_glass"]' in recorder_view
     assert 'fg_color=COLORS["bg_elevated"]' in recorder_view
     assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in recorder_view
