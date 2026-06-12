@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
-from .theme import COLORS
+from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
 KEY_NAME_MAP = {
@@ -89,7 +89,7 @@ class KeyInputDialog(ctk.CTkToplevel):
         self.title("키 입력")
         self.geometry("430x290")
         self.resizable(False, False)
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.configure(fg_color=COLORS["bg_content"])
 
         self.transient(parent)
         self.grab_set()
@@ -102,14 +102,14 @@ class KeyInputDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             self,
             text="등록할 키를 실제로 눌렀다 떼세요",
-            font=ctk.CTkFont(size=15, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=15, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(pady=(20, 6))
 
         ctk.CTkLabel(
             self,
             text="Shift+방향키처럼 민감한 입력은 누른 순서, 누른 시간, 떼는 순서까지 같이 저장됩니다.",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=11),
             text_color=COLORS["text_secondary"],
             wraplength=360,
             justify="center",
@@ -118,7 +118,7 @@ class KeyInputDialog(ctk.CTkToplevel):
         self._key_label = ctk.CTkLabel(
             self,
             text="대기 중",
-            font=ctk.CTkFont(size=20, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=20, weight="bold"),
             text_color=COLORS["accent"],
         )
         self._key_label.pack(pady=(4, 8))
@@ -126,19 +126,25 @@ class KeyInputDialog(ctk.CTkToplevel):
         self._event_label = ctk.CTkLabel(
             self,
             text="기록 대기 중",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=11),
             text_color=COLORS["text_secondary"],
             wraplength=380,
             justify="center",
         )
         self._event_label.pack(pady=(0, 8))
 
-        helper = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=10)
+        helper = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=IOS_METRICS["hairline"],
+            border_color=COLORS["separator"],
+        )
         helper.pack(fill="x", padx=24, pady=(0, 8))
         ctk.CTkLabel(
             helper,
             text="예: Shift 누름 → Up 누름 → Up 뗌 → Shift 뗌 → 확인",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=11),
             text_color=COLORS["text_primary"],
         ).pack(pady=8)
 
@@ -150,11 +156,11 @@ class KeyInputDialog(ctk.CTkToplevel):
             text="확인",
             width=120,
             height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
             fg_color=COLORS["success"],
-            hover_color="#2ea44f",
-            text_color="white",
-            corner_radius=8,
+            hover_color=COLORS["green_hover"],
+            text_color=COLORS["bg_content"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._on_ok,
         ).pack(side="left", padx=10)
 
@@ -163,11 +169,11 @@ class KeyInputDialog(ctk.CTkToplevel):
             text="취소",
             width=120,
             height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
             fg_color=COLORS["error"],
-            hover_color="#c0392b",
-            text_color="white",
-            corner_radius=8,
+            hover_color=COLORS["danger_hover"],
+            text_color=COLORS["text_primary"],
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._on_cancel,
         ).pack(side="left", padx=10)
 

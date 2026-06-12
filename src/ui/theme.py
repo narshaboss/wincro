@@ -48,6 +48,7 @@ COLORS = {
     "accent_orange": "#FF9F0A",
     "accent_red": "#FF453A",
     "accent_pink": "#FF2D55",
+    "accent_pink_hover": "#FF5C7A",
 
     # 텍스트
     "text_primary": "#F5F5F7",

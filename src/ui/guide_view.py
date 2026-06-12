@@ -13,14 +13,14 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 # 컬러 팔레트 (theme.py에서 통합 관리)
-from .theme import COLORS
+from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
 class GuideView(ctk.CTkFrame):
     """가이드 뷰"""
 
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, fg_color=COLORS["bg_dark"], **kwargs)
+        super().__init__(parent, fg_color=COLORS["bg_content"], **kwargs)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -28,17 +28,17 @@ class GuideView(ctk.CTkFrame):
         # 스크롤 가능한 프레임
         scroll_frame = ctk.CTkScrollableFrame(
             self,
-            fg_color=COLORS["bg_dark"],
+            fg_color=COLORS["bg_content"],
             scrollbar_button_color=COLORS["border"],
             scrollbar_button_hover_color=COLORS["accent"],
         )
-        scroll_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        scroll_frame.pack(fill="both", expand=True, padx=IOS_METRICS["window_padding"], pady=IOS_METRICS["window_padding"])
 
         # 제목
         ctk.CTkLabel(
             scroll_frame,
             text="📖 업무지원도구 설치 가이드",
-            font=ctk.CTkFont(size=24, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=24, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w", pady=(0, 20))
 
@@ -84,14 +84,20 @@ class GuideView(ctk.CTkFrame):
     def _create_section(self, parent, title: str, items: list):
         """섹션 생성"""
         # 섹션 카드
-        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=10)
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius"],
+            border_width=IOS_METRICS["hairline"],
+            border_color=COLORS["separator"],
+        )
         card.pack(fill="x", pady=(0, 15))
 
         # 섹션 제목
         ctk.CTkLabel(
             card,
             text=title,
-            font=ctk.CTkFont(size=16, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
             text_color=COLORS["accent_blue"],
         ).pack(anchor="w", padx=15, pady=(15, 10))
 
@@ -104,7 +110,7 @@ class GuideView(ctk.CTkFrame):
             ctk.CTkLabel(
                 item_frame,
                 text=item["name"],
-                font=ctk.CTkFont(size=14, weight="bold"),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
                 text_color=COLORS["text_primary"],
             ).pack(anchor="w")
 
@@ -112,7 +118,7 @@ class GuideView(ctk.CTkFrame):
             ctk.CTkLabel(
                 item_frame,
                 text=item["desc"],
-                font=ctk.CTkFont(size=12),
+                font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(anchor="w")
 
@@ -125,10 +131,11 @@ class GuideView(ctk.CTkFrame):
                 link_frame,
                 width=400,
                 height=30,
-                fg_color=COLORS["bg_dark"],
+                fg_color=COLORS["bg_log"],
                 border_color=COLORS["border"],
                 text_color=COLORS["text_secondary"],
-                font=ctk.CTkFont(size=11),
+                font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=11),
+                corner_radius=IOS_METRICS["control_radius_small"],
             )
             url_entry.pack(side="left", padx=(0, 5))
             url_entry.insert(0, item["url"])
@@ -142,7 +149,8 @@ class GuideView(ctk.CTkFrame):
                 height=30,
                 fg_color=COLORS["accent"],
                 hover_color=COLORS["accent_hover"],
-                font=ctk.CTkFont(size=12),
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
                 command=lambda u=item["url"]: self._copy_to_clipboard(u),
             ).pack(side="left")
 
@@ -151,13 +159,19 @@ class GuideView(ctk.CTkFrame):
 
     def _create_usage_section(self, parent):
         """사용법 섹션"""
-        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=10)
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius"],
+            border_width=IOS_METRICS["hairline"],
+            border_color=COLORS["separator"],
+        )
         card.pack(fill="x", pady=(0, 15))
 
         ctk.CTkLabel(
             card,
             text="기본 사용법",
-            font=ctk.CTkFont(size=16, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
             text_color=COLORS["accent_blue"],
         ).pack(anchor="w", padx=15, pady=(15, 10))
 
@@ -178,7 +192,7 @@ class GuideView(ctk.CTkFrame):
         ctk.CTkLabel(
             card,
             text=usage_text,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(family=IOS_FONTS["fallback"], size=12),
             text_color=COLORS["text_secondary"],
             justify="left",
         ).pack(anchor="w", padx=15, pady=(0, 15))

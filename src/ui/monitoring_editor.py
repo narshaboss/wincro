@@ -18,12 +18,12 @@ from PIL import Image
 
 from ..utils.logger import get_logger
 from ..utils.config import DATA_DIR
-from .theme import COLORS
+from .theme import COLORS, IOS_METRICS
 from .constants import (
     ACTION_NAMES_SHORT,
     get_action_clipboard, collect_all_actions,
 )
-from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail
+from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail, submit_thumbnail_task
 
 logger = get_logger(__name__)
 
@@ -56,10 +56,19 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._watch_scroll = None
         self._is_monitoring_var = None
         self._monitor_action_clipboard = None
+        self._watch_action_card_widgets = {}
+        self._watch_action_count_labels = {}
+        self._watch_render_after_id = None
+        self._watch_render_generation = 0
+        self._watch_render_batch_size = 12
 
         self._setup_dialog()
         self._init_data()
         self._build_ui()
+
+    def destroy(self):
+        self._cancel_watch_list_render_batch()
+        super().destroy()
 
     # ------------------------------------------------------------------
     # Initialization
@@ -133,9 +142,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text="모니터링 모드 활성화",
             variable=self._is_monitoring_var,
             font=ctk.CTkFont(size=14, weight="bold"),
-            text_color="#2ecc71",
-            fg_color="#2ecc71",
-            hover_color="#27ae60",
+            text_color=COLORS["success"],
+            fg_color=COLORS["success"],
+            hover_color=COLORS["green_hover"],
         ).pack(side="left")
 
         # 설명
@@ -148,7 +157,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(0, 15))
 
         # === 감시 목록 ===
-        watch_frame = ctk.CTkFrame(main_frame, fg_color=COLORS["bg_card"], corner_radius=8)
+        watch_frame = ctk.CTkFrame(main_frame, fg_color=COLORS["bg_card"], corner_radius=IOS_METRICS["control_radius"])
         watch_frame.pack(fill="both", expand=True, pady=10)
 
         ctk.CTkLabel(
@@ -166,7 +175,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         # 감시 추가 버튼
         ctk.CTkButton(
             watch_frame, text="+ 감시 추가", width=100, height=30,
-            fg_color=COLORS["success"], hover_color="#2ea44f",
+            fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
             command=self._add_watch,
         ).pack(pady=(0, 10))
 
@@ -185,7 +194,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             bottom_frame, text="저장", width=120, height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=COLORS["success"], hover_color="#2ea44f",
+            fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
             command=self._save,
         ).pack(side="left", padx=10)
 
@@ -217,7 +226,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return f"클릭:({action.get('x')},{action.get('y')})", COLORS["accent_blue"]
         elif t == "이미지 클릭":
             img = Path(action.get("image", "")).name[:8] if action.get("image") else ""
-            return f"이미지:{img}", "#b48ead"
+            return f"이미지:{img}", COLORS["scroll_purple"]
         return "?", COLORS["text_muted"]
 
     @staticmethod
@@ -245,6 +254,63 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             except Exception:
                 pass
         return None
+
+    def _schedule_watch_thumbnail(self, label, path, size=(28, 28)):
+        """감시 목록 썸네일을 UI 스레드 밖에서 디코딩한다."""
+        source = str(path or "")
+        label._thumb_source = (source, size)
+        if not source or not Path(source).exists():
+            label.configure(image=None, text="?", font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"])
+            return
+
+        cached = get_cached_thumbnail(source, size)
+        if cached is not None:
+            label.configure(image=cached, text="")
+            label._thumb_img = cached
+            return
+
+        label.configure(image=None, text="IMG", font=ctk.CTkFont(size=10), text_color=COLORS["text_muted"])
+
+        def load_thumbnail(path=source, target_size=size, target_label=label):
+            try:
+                img_arr = np.fromfile(path, np.uint8)
+                img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    raise ValueError("image decode failed")
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                h, w = img_rgb.shape[:2]
+                scale = min(target_size[0] / w, target_size[1] / h)
+                new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+                resized = cv2.resize(img_rgb, (new_w, new_h))
+                pil_img = Image.fromarray(resized)
+
+                def apply_thumbnail():
+                    try:
+                        if not target_label.winfo_exists():
+                            return
+                        if getattr(target_label, "_thumb_source", None) != (path, target_size):
+                            return
+                        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(new_w, new_h))
+                        set_cached_thumbnail(path, target_size, ctk_img)
+                        target_label.configure(image=ctk_img, text="")
+                        target_label._thumb_img = ctk_img
+                    except (tk.TclError, RuntimeError):
+                        pass
+
+                self.after(0, apply_thumbnail)
+            except Exception as exc:
+                logger.warning(f"watch thumbnail load failed: {path} - {exc}")
+
+                def show_error():
+                    try:
+                        if target_label.winfo_exists() and getattr(target_label, "_thumb_source", None) == (path, target_size):
+                            target_label.configure(image=None, text="?", text_color=COLORS["text_muted"])
+                    except (tk.TclError, RuntimeError):
+                        pass
+
+                self.after(0, show_error)
+
+        submit_thumbnail_task(load_thumbnail)
 
     @staticmethod
     def _convert_rule_to_monitor_action(act):
@@ -304,22 +370,27 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return
 
         row3 = self._watch_row3_containers[watch_idx]
+        self._watch_action_card_widgets.pop(watch_idx, None)
+        self._watch_action_count_labels.pop(watch_idx, None)
         for child in row3.winfo_children():
             child.destroy()
 
         current_actions = self._watches_data[watch_idx].get("monitor_actions", [])
         if not current_actions:
             return
+        self._watch_action_card_widgets[watch_idx] = []
 
         # 헤더
         header_frame = ctk.CTkFrame(row3, fg_color="transparent")
         header_frame.pack(fill="x", padx=(30, 0), pady=(5, 5))
 
-        ctk.CTkLabel(
+        count_label = ctk.CTkLabel(
             header_frame, text=f"모니터링 액션 ({len(current_actions)}개)",
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#2ecc71",
-        ).pack(side="left")
+            text_color=COLORS["success"],
+        )
+        count_label.pack(side="left")
+        self._watch_action_count_labels[watch_idx] = count_label
 
         # 붙여넣기 버튼
         import copy
@@ -333,21 +404,73 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     self._watches_data[i]["monitor_actions"] = []
                 self._watches_data[i]["monitor_actions"].append(copy.deepcopy(clipboard))
                 logger.info(f"[모니터링] 액션 붙여넣기: {clipboard.get('type', '알수없음')}")
-                self._refresh_monitor_actions(i)
+                if not self._append_monitor_action_card(i):
+                    self._refresh_monitor_actions(i)
 
         ctk.CTkButton(
             header_frame, text="붙여넣기", width=60, height=20,
             font=ctk.CTkFont(size=10),
-            fg_color="#7c3aed", hover_color="#8b5cf6",
-            text_color="white", corner_radius=4,
+            fg_color=COLORS["scroll_purple"], hover_color=COLORS["search_radius_purple_hover"],
+            text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=paste_action,
         ).pack(side="left", padx=(8, 0))
 
         # 각 모니터링 액션을 카드 형태로 표시
         for ai, action in enumerate(current_actions):
-            self._build_action_card(row3, watch_idx, ai, action)
+            card = self._build_action_card(row3, watch_idx, ai, action)
+            self._watch_action_card_widgets[watch_idx].append(card)
 
-    def _build_action_card(self, parent, watch_idx, ai, action):
+    def _append_monitor_action_card(self, watch_idx):
+        """Append one monitor action card without rebuilding the whole expanded watch."""
+        if watch_idx not in self._watch_row3_containers or watch_idx >= len(self._watches_data):
+            return False
+
+        actions = self._watches_data[watch_idx].get("monitor_actions", [])
+        if not actions:
+            return False
+
+        # When the first action is added the header/paste controls do not exist yet.
+        if len(actions) == 1 or watch_idx not in self._watch_action_card_widgets:
+            return False
+
+        row3 = self._watch_row3_containers[watch_idx]
+        card = self._build_action_card(row3, watch_idx, len(actions) - 1, actions[-1])
+        self._watch_action_card_widgets[watch_idx].append(card)
+
+        count_label = self._watch_action_count_labels.get(watch_idx)
+        if count_label is not None:
+            count_label.configure(text=f"모니터링 액션 ({len(actions)}개)")
+        return True
+
+    def _refresh_monitor_action_card(self, watch_idx, action_idx):
+        """Replace one monitor action card when the action count/order is unchanged."""
+        if watch_idx not in self._watch_row3_containers or watch_idx >= len(self._watches_data):
+            return False
+
+        actions = self._watches_data[watch_idx].get("monitor_actions", [])
+        cards = self._watch_action_card_widgets.get(watch_idx)
+        if not cards or action_idx < 0 or action_idx >= len(actions) or action_idx >= len(cards):
+            return False
+
+        before_widget = cards[action_idx + 1] if action_idx + 1 < len(cards) else None
+        try:
+            if before_widget is not None and not before_widget.winfo_exists():
+                before_widget = None
+            cards[action_idx].destroy()
+        except (tk.TclError, RuntimeError):
+            return False
+
+        row3 = self._watch_row3_containers[watch_idx]
+        cards[action_idx] = self._build_action_card(
+            row3,
+            watch_idx,
+            action_idx,
+            actions[action_idx],
+            before_widget=before_widget,
+        )
+        return True
+
+    def _build_action_card(self, parent, watch_idx, ai, action, before_widget=None):
         """단일 모니터링 액션 카드 UI 생성"""
         ma_type = action.get("type", "알 수 없음")
         ma_detail = ""
@@ -356,8 +479,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             "텍스트 입력": COLORS["success"],
             "키 입력": COLORS["accent_orange"],
             "마우스 클릭": COLORS["accent_blue"],
-            "이미지 클릭": "#b48ead",
-            "스크롤": "#b48ead",
+            "이미지 클릭": COLORS["scroll_purple"],
+            "스크롤": COLORS["scroll_purple"],
             "드래그": COLORS["warning"],
         }
         ma_color = type_colors.get(ma_type, COLORS["text_muted"])
@@ -382,8 +505,11 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ma_detail = f"({action.get('from_x', 0)},{action.get('from_y', 0)})→({action.get('to_x', 0)},{action.get('to_y', 0)})"
 
         # 액션 카드
-        action_card = ctk.CTkFrame(parent, fg_color="#1a3d2e", corner_radius=6)
-        action_card.pack(fill="x", padx=(30, 0), pady=2)
+        action_card = ctk.CTkFrame(parent, fg_color=COLORS["bg_glass"], corner_radius=IOS_METRICS["control_radius_small"])
+        if before_widget is not None:
+            action_card.pack(fill="x", padx=(30, 0), pady=2, before=before_widget)
+        else:
+            action_card.pack(fill="x", padx=(30, 0), pady=2)
 
         card_inner = ctk.CTkFrame(action_card, fg_color="transparent")
         card_inner.pack(fill="x", padx=10, pady=6)
@@ -392,7 +518,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkLabel(
             card_inner, text=f"{ai + 1}.",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#2ecc71", width=24,
+            text_color=COLORS["success"], width=24,
         ).pack(side="left")
 
         # 타입
@@ -410,6 +536,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         # === 버튼 영역 (오른쪽) ===
         self._build_action_card_buttons(card_inner, watch_idx, ai, action)
+        return action_card
 
     def _build_action_card_buttons(self, card_inner, watch_idx, ai, action):
         """액션 카드의 버튼들 생성"""
@@ -426,8 +553,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             card_inner, text="✕", width=26, height=22,
             font=ctk.CTkFont(size=10),
-            fg_color="#c0392b", hover_color="#e74c3c",
-            text_color="white", corner_radius=4,
+            fg_color=COLORS["danger"], hover_color=COLORS["danger_hover"],
+            text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=delete_action,
         ).pack(side="right", padx=(2, 0))
 
@@ -443,8 +570,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             card_inner, text="CP", width=26, height=22,
             font=ctk.CTkFont(size=10),
-            fg_color="#7c3aed", hover_color="#8b5cf6",
-            text_color="white", corner_radius=4,
+            fg_color=COLORS["scroll_purple"], hover_color=COLORS["search_radius_purple_hover"],
+            text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=copy_action,
         ).pack(side="right", padx=(2, 0))
 
@@ -495,7 +622,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             running_ref[0] = True
             stop_flag_ref[0] = False
             if play_btn_ref[0]:
-                play_btn_ref[0].configure(text="■", fg_color="#27ae60", hover_color="#2ecc71")
+                play_btn_ref[0].configure(text="■", fg_color=COLORS["success"], hover_color=COLORS["green_hover"])
 
             def run_actions():
                 total = len(all_actions_to_run)
@@ -561,7 +688,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     stop_flag_ref[0] = False
                     try:
                         if play_btn_ref[0]:
-                            self.after(0, lambda: play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400"))
+                            self.after(0, lambda: play_btn_ref[0].configure(text="▶", fg_color=COLORS["accent_orange"], hover_color=COLORS["confidence_amber_hover"]))
                     except (tk.TclError, RuntimeError, AttributeError) as e:
                         logger.debug(f"[모니터링 테스트] 버튼 복원 실패: {e}")
 
@@ -570,15 +697,15 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         play_btn = ctk.CTkButton(
             card_inner, text="▶", width=26, height=22,
             font=ctk.CTkFont(size=10),
-            fg_color="#e67e22", hover_color="#d35400",
-            text_color="white", corner_radius=4,
+            fg_color=COLORS["accent_orange"], hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=toggle_play,
         )
         play_btn.pack(side="right", padx=(2, 0))
         play_btn_ref[0] = play_btn
 
         # 위/아래 이동 버튼
-        move_frame = ctk.CTkFrame(card_inner, fg_color="#0d1f17", corner_radius=4)
+        move_frame = ctk.CTkFrame(card_inner, fg_color=COLORS["bg_elevated"], corner_radius=IOS_METRICS["control_radius_small"])
         move_frame.pack(side="right", padx=(2, 0))
 
         def move_up(i=watch_idx, a=ai):
@@ -599,7 +726,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             move_frame, text="▲", width=22, height=18,
             font=ctk.CTkFont(size=10),
             fg_color="transparent", hover_color=COLORS["accent_blue"],
-            text_color=COLORS["text_secondary"], corner_radius=2,
+            text_color=COLORS["text_secondary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=move_up,
         ).pack(side="top")
 
@@ -607,7 +734,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             move_frame, text="▼", width=22, height=18,
             font=ctk.CTkFont(size=10),
             fg_color="transparent", hover_color=COLORS["accent_blue"],
-            text_color=COLORS["text_secondary"], corner_radius=2,
+            text_color=COLORS["text_secondary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=move_down,
         ).pack(side="top")
 
@@ -696,7 +823,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     act["repeat_delay"] = delay
                     act["repeat_delay_random"] = delay_random_var.get()
                     act["repeat_delay_random_range"] = delay_range
-                    self._refresh_monitor_actions(i)
+                    if not self._refresh_monitor_action_card(i, a):
+                        self._refresh_monitor_actions(i)
                     dlg.destroy()
                 except ValueError:
                     from tkinter import messagebox
@@ -713,10 +841,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             card_inner, text=f"x{repeat_count}", width=32, height=22,
             font=ctk.CTkFont(size=10),
-            fg_color=COLORS["accent_blue"] if repeat_count > 1 else "#0d1f17",
-            hover_color="#2563eb",
-            text_color="white" if repeat_count > 1 else COLORS["text_secondary"],
-            corner_radius=4,
+            fg_color=COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_elevated"],
+            hover_color=COLORS["hover_blue"],
+            text_color=COLORS["text_primary"] if repeat_count > 1 else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=edit_repeat,
         ).pack(side="right", padx=(2, 0))
 
@@ -761,7 +889,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     act["wait_after"] = float(wait_entry.get())
                     act["wait_random"] = random_var.get()
                     act["wait_random_range"] = float(range_entry.get())
-                    self._refresh_monitor_actions(i)
+                    if not self._refresh_monitor_action_card(i, a):
+                        self._refresh_monitor_actions(i)
                     wait_dlg.destroy()
                 except ValueError:
                     pass
@@ -772,7 +901,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ctk.CTkButton(
                 btn_frame, text="저장", width=100, height=36,
                 font=ctk.CTkFont(size=13, weight="bold"),
-                fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+                fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
                 command=save_wait
             ).pack(side="left", padx=10)
 
@@ -787,10 +916,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             card_inner, text=f"{wait_after:.1f}s{'*' if wait_random else ''}", width=42, height=22,
             font=ctk.CTkFont(size=10),
-            fg_color=COLORS["success"] if wait_random else "#0d1f17",
-            hover_color="#27ae60",
-            text_color="white" if wait_random else COLORS["text_secondary"],
-            corner_radius=4,
+            fg_color=COLORS["success"] if wait_random else COLORS["bg_elevated"],
+            hover_color=COLORS["green_hover"],
+            text_color=COLORS["text_primary"] if wait_random else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=edit_wait,
         ).pack(side="right", padx=(2, 0))
 
@@ -832,7 +961,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
                 def on_region_select(x1, y1, x2, y2):
                     act["search_region"] = [x1, y1, x2, y2]
-                    self._refresh_monitor_actions(i)
+                    if not self._refresh_monitor_action_card(i, a):
+                        self._refresh_monitor_actions(i)
                     self.deiconify()
                     self.grab_set()
                     region_dlg.destroy()
@@ -850,13 +980,14 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
             ctk.CTkButton(
                 btn_frame, text="드래그로 지정", width=100, height=32,
-                fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+                fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
                 command=select_region_drag,
             ).pack(side="left", padx=5)
 
             def clear_region():
                 act["search_region"] = None
-                self._refresh_monitor_actions(i)
+                if not self._refresh_monitor_action_card(i, a):
+                    self._refresh_monitor_actions(i)
                 region_dlg.destroy()
 
             ctk.CTkButton(
@@ -876,10 +1007,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             card_inner, text="범위" if not has_region else "범위✓", width=38, height=22,
             font=ctk.CTkFont(size=9),
-            fg_color="#b48ead" if has_region else "#0d1f17",
-            hover_color="#c9a0c9",
-            text_color="white" if has_region else COLORS["text_secondary"],
-            corner_radius=4,
+            fg_color=COLORS["scroll_purple"] if has_region else COLORS["bg_elevated"],
+            hover_color=COLORS["search_radius_purple_hover"],
+            text_color=COLORS["text_primary"] if has_region else COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=edit_region,
         ).pack(side="right", padx=(2, 0))
 
@@ -915,17 +1046,18 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 except Exception:
                     pass
 
-                self._refresh_monitor_actions(i)
+                if not self._refresh_monitor_action_card(i, a):
+                    self._refresh_monitor_actions(i)
                 logger.info(f"[모니터링 액션] 이미지 변경: {Path(new_path).name}")
 
         has_image = bool(action.get("image"))
         ctk.CTkButton(
             card_inner, text="IMG" if has_image else "IMG?", width=36, height=22,
             font=ctk.CTkFont(size=9),
-            fg_color="#9b59b6" if has_image else "#c0392b",
-            hover_color="#8e44ad" if has_image else "#e74c3c",
-            text_color="white",
-            corner_radius=4,
+            fg_color=COLORS["scroll_purple"] if has_image else COLORS["danger"],
+            hover_color=COLORS["search_radius_purple_hover"] if has_image else COLORS["danger_hover"],
+            text_color=COLORS["text_primary"],
+            corner_radius=IOS_METRICS["control_radius_small"],
             command=change_image,
         ).pack(side="right", padx=(2, 0))
 
@@ -935,28 +1067,117 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
     def _refresh_watch_list(self):
         """감시 목록 UI 갱신"""
+        self._cancel_watch_list_render_batch()
         for w in self._watch_widgets:
-            w.destroy()
-        self._watch_widgets.clear()
+            if w is None:
+                continue
+            try:
+                w.destroy()
+            except (tk.TclError, RuntimeError):
+                pass
+        self._watch_widgets = [None] * len(self._watches_data)
         self._watch_row3_containers.clear()
+        self._watch_action_card_widgets.clear()
+        self._watch_action_count_labels.clear()
 
-        for idx, watch in enumerate(self._watches_data):
-            if idx not in self._watch_collapsed:
-                self._watch_collapsed[idx] = True if watch.get("image") else False
+        self._render_watch_list_batch(0, self._watch_render_generation)
 
-            is_collapsed = self._watch_collapsed.get(idx, True)
+    def _cancel_watch_list_render_batch(self):
+        self._watch_render_generation += 1
+        after_id = getattr(self, "_watch_render_after_id", None)
+        self._watch_render_after_id = None
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError):
+                pass
 
-            item_frame = ctk.CTkFrame(self._watch_scroll, fg_color=COLORS["bg_dark"], corner_radius=8)
+    def _schedule_watch_list_render_batch(self, callback):
+        after_id = None
+
+        def run_callback():
+            if self._watch_render_after_id == after_id:
+                self._watch_render_after_id = None
+            callback()
+
+        after_id = self.after(1, run_callback)
+        self._watch_render_after_id = after_id
+
+    def _render_watch_list_batch(self, start: int, generation: int):
+        if generation != self._watch_render_generation:
+            return
+        if self._watch_scroll is None:
+            return
+        end = min(len(self._watches_data), start + self._watch_render_batch_size)
+        for idx in range(start, end):
+            self._watch_widgets[idx] = self._create_watch_item(idx, self._watches_data[idx])
+
+        if end >= len(self._watches_data):
+            self._watch_render_after_id = None
+            return
+
+        try:
+            self._schedule_watch_list_render_batch(
+                lambda: self._render_watch_list_batch(end, generation)
+            )
+        except (tk.TclError, RuntimeError):
+            self._watch_render_after_id = None
+
+    def _create_watch_item(self, idx: int, watch: dict, before_widget=None):
+        """감시 항목 1개를 생성한다. 단일 행 갱신에서도 재사용한다."""
+        if idx not in self._watch_collapsed:
+            self._watch_collapsed[idx] = True if watch.get("image") else False
+
+        is_collapsed = self._watch_collapsed.get(idx, True)
+
+        item_frame = ctk.CTkFrame(
+            self._watch_scroll,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
+        )
+        if before_widget is not None:
+            item_frame.pack(fill="x", pady=3, before=before_widget)
+        else:
             item_frame.pack(fill="x", pady=3)
-            self._watch_widgets.append(item_frame)
 
-            self._build_watch_header(item_frame, idx, watch, is_collapsed)
+        self._build_watch_header(item_frame, idx, watch, is_collapsed)
 
-            if not is_collapsed:
-                self._build_watch_detail(item_frame, idx, watch)
+        if not is_collapsed:
+            self._build_watch_detail(item_frame, idx, watch)
 
-            # 우클릭 메뉴
-            self._bind_context_menu(item_frame, idx)
+        # 우클릭 메뉴
+        self._bind_context_menu(item_frame, idx)
+        return item_frame
+
+    def _refresh_watch_item(self, idx: int) -> None:
+        """목록 전체를 다시 그리지 않고 특정 감시 항목만 교체한다."""
+        if idx < 0 or idx >= len(self._watches_data):
+            return
+        if idx >= len(self._watch_widgets):
+            self._refresh_watch_list()
+            return
+
+        old_widget = self._watch_widgets[idx]
+        if old_widget is None:
+            return
+        before_widget = self._watch_widgets[idx + 1] if idx + 1 < len(self._watch_widgets) else None
+        self._watch_row3_containers.pop(idx, None)
+        self._watch_action_card_widgets.pop(idx, None)
+        self._watch_action_count_labels.pop(idx, None)
+
+        try:
+            old_widget.destroy()
+        except (tk.TclError, RuntimeError):
+            self._refresh_watch_list()
+            return
+
+        try:
+            if before_widget is not None and not before_widget.winfo_exists():
+                before_widget = None
+        except (tk.TclError, RuntimeError):
+            before_widget = None
+
+        self._watch_widgets[idx] = self._create_watch_item(idx, self._watches_data[idx], before_widget=before_widget)
 
     def _build_watch_header(self, item_frame, idx, watch, is_collapsed):
         """감시 항목 헤더 줄 생성"""
@@ -966,7 +1187,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         # 접기/펼치기
         def toggle_collapse(i=idx):
             self._watch_collapsed[i] = not self._watch_collapsed.get(i, True)
-            self._refresh_watch_list()
+            self._refresh_watch_item(i)
 
         ctk.CTkButton(
             header_row, text="▶" if is_collapsed else "▼", width=24, height=24,
@@ -985,19 +1206,20 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="left")
 
         # 썸네일
-        thumb_frame = ctk.CTkFrame(header_row, fg_color=COLORS["bg_card"], width=32, height=32, corner_radius=4)
+        thumb_frame = ctk.CTkFrame(
+            header_row,
+            fg_color=COLORS["bg_card"],
+            width=32,
+            height=32,
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         thumb_frame.pack(side="left", padx=(4, 8))
         thumb_frame.pack_propagate(False)
 
         thumb_label = ctk.CTkLabel(thumb_frame, text="", width=28, height=28)
         thumb_label.pack(expand=True)
 
-        thumb_img = self._load_thumbnail(watch["image"], size=(28, 28))
-        if thumb_img:
-            thumb_label.configure(image=thumb_img)
-            thumb_label._thumb_img = thumb_img
-        else:
-            thumb_label.configure(text="?", font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"])
+        self._schedule_watch_thumbnail(thumb_label, watch.get("image"), size=(28, 28))
 
         # 요약 정보
         monitor_actions = watch.get("monitor_actions", [])
@@ -1038,7 +1260,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             header_row, text="✕", width=28, height=24,
             font=ctk.CTkFont(size=11),
-            fg_color=COLORS["error"], hover_color="#c0392b",
+            fg_color=COLORS["error"], hover_color=COLORS["danger_hover"],
             command=delete_watch,
         ).pack(side="right")
 
@@ -1072,7 +1294,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             watch_running_ref[0] = True
             watch_stop_flag_ref[0] = False
             if watch_play_btn_ref[0]:
-                watch_play_btn_ref[0].configure(text="■", fg_color="#27ae60", hover_color="#2ecc71")
+                watch_play_btn_ref[0].configure(text="■", fg_color=COLORS["success"], hover_color=COLORS["green_hover"])
 
             def run_watch():
                 try:
@@ -1134,7 +1356,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     watch_stop_flag_ref[0] = False
                     try:
                         if watch_play_btn_ref[0]:
-                            self.after(0, lambda: watch_play_btn_ref[0].configure(text="▶", fg_color="#e67e22", hover_color="#d35400"))
+                            self.after(0, lambda: watch_play_btn_ref[0].configure(text="▶", fg_color=COLORS["accent_orange"], hover_color=COLORS["confidence_amber_hover"]))
                     except (tk.TclError, RuntimeError, AttributeError) as e:
                         logger.debug(f"[감시 테스트] 버튼 복원 실패: {e}")
 
@@ -1143,8 +1365,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         watch_play_btn = ctk.CTkButton(
             header_row, text="▶", width=26, height=24,
             font=ctk.CTkFont(size=10),
-            fg_color="#e67e22", hover_color="#d35400",
-            text_color="white", corner_radius=4,
+            fg_color=COLORS["accent_orange"], hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"],
             command=toggle_watch_play,
         )
         watch_play_btn.pack(side="right", padx=(0, 5))
@@ -1169,7 +1391,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             )
             if path:
                 self._watches_data[i]["image"] = path
-                self._refresh_watch_list()
+                self._refresh_watch_item(i)
 
         ctk.CTkLabel(
             row1, text="이미지:",
@@ -1187,20 +1409,20 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             row1, text="선택", width=45, height=24,
             font=ctk.CTkFont(size=11),
-            fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+            fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             command=select_watch_image,
         ).pack(side="left", padx=(0, 10))
 
         # 점프 조건 버튼
         condition_image = watch.get("condition_image")
         condition_text = "조건" if not condition_image else "조건✓"
-        condition_color = COLORS["bg_card_hover"] if not condition_image else "#f59e0b"
+        condition_color = COLORS["bg_card_hover"] if not condition_image else COLORS["confidence_amber"]
 
         condition_btn = ctk.CTkButton(
             row1, text=condition_text, width=50, height=24,
             font=ctk.CTkFont(size=11),
             fg_color=condition_color,
-            hover_color="#d97706" if condition_image else COLORS["bg_card"],
+            hover_color=COLORS["confidence_amber_hover"] if condition_image else COLORS["bg_card"],
             command=lambda i=idx: self._edit_condition(i),
         )
         condition_btn.pack(side="left", padx=(0, 10))
@@ -1272,7 +1494,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             row2, text="범위 지정", width=65, height=24,
             font=ctk.CTkFont(size=10),
-            fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+            fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             command=select_region,
         ).pack(side="left", padx=(0, 5))
 
@@ -1369,7 +1591,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     self._watches_data[i]["monitor_actions"].extend(monitor_actions)
                     if self._watch_collapsed.get(i, True):
                         self._watch_collapsed[i] = False
-                        self._refresh_watch_list()
+                        self._refresh_watch_item(i)
+                    elif len(monitor_actions) == 1 and self._append_monitor_action_card(i):
+                        pass
                     else:
                         self._refresh_monitor_actions(i)
                 else:
@@ -1377,7 +1601,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
             def clear_all_actions():
                 self._watches_data[i]["monitor_actions"] = []
-                self._refresh_watch_list()
+                self._refresh_watch_item(i)
 
             menu.add_command(label="모니터링 액션 붙여넣기", command=paste_monitor_action)
             if self._watches_data[i].get("monitor_actions"):
@@ -1468,7 +1692,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(5, 15))
 
         # 현재 조건 이미지 표시
-        preview_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=8)
+        preview_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=IOS_METRICS["control_radius"])
         preview_frame.pack(fill="x", pady=(0, 15))
 
         preview_inner = ctk.CTkFrame(preview_frame, fg_color="transparent")
@@ -1477,7 +1701,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         # 이미지 미리보기
         preview_label = ctk.CTkLabel(
             preview_inner, text="없음", width=60, height=60,
-            fg_color=COLORS["bg_card_hover"], corner_radius=6,
+            fg_color=COLORS["bg_card_hover"], corner_radius=IOS_METRICS["control_radius_small"],
         )
         preview_label.pack(side="left")
 
@@ -1525,7 +1749,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             btn_frame, text="이미지 선택", width=100, height=30,
-            fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+            fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             command=select_image,
         ).pack(side="left", padx=(0, 10))
 
@@ -1537,7 +1761,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="left")
 
         # 검색 범위 설정
-        region_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=8)
+        region_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=IOS_METRICS["control_radius"])
         region_frame.pack(fill="x", pady=(10, 0))
 
         region_inner = ctk.CTkFrame(region_frame, fg_color="transparent")
@@ -1595,7 +1819,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkButton(
             region_inner, text="범위 지정", width=70, height=24,
             font=ctk.CTkFont(size=10),
-            fg_color=COLORS["accent_blue"], hover_color="#2563eb",
+            fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             command=select_region,
         ).pack(side="left", padx=(0, 5))
 
@@ -1608,7 +1832,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="left")
 
         # 인식률 설정
-        conf_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=8)
+        conf_frame = ctk.CTkFrame(main, fg_color=COLORS["bg_card"], corner_radius=IOS_METRICS["control_radius"])
         conf_frame.pack(fill="x", pady=(10, 0))
 
         conf_inner = ctk.CTkFrame(conf_frame, fg_color="transparent")
@@ -1662,7 +1886,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             btn = watch.get("_condition_btn")
             if btn:
                 if selected_path[0]:
-                    btn.configure(text="조건✓", fg_color="#f59e0b", hover_color="#d97706")
+                    btn.configure(text="조건✓", fg_color=COLORS["confidence_amber"], hover_color=COLORS["confidence_amber_hover"])
                 else:
                     btn.configure(text="조건", fg_color=COLORS["bg_card_hover"], hover_color=COLORS["bg_card"])
             logger.info(f"[모니터링] 점프 조건 설정: {selected_path[0]}, 범위: {selected_region[0]}, 인식률: {conf_var.get():.0f}%")
@@ -1670,7 +1894,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             bottom_frame, text="저장", width=80, height=32,
-            fg_color=COLORS["success"], hover_color="#2ea44f",
+            fg_color=COLORS["success"], hover_color=COLORS["green_hover"],
             command=save_condition,
         ).pack(side="left", padx=(0, 10))
 

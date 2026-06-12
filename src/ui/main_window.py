@@ -479,6 +479,7 @@ class MainWindow(ctk.CTk):
 
         self.configure(fg_color=COLORS["bg_content"])
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
+        self._mini_active_bar_snapshot = None
 
         # 테마 설정
         ctk.set_appearance_mode("dark")
@@ -731,8 +732,8 @@ class MainWindow(ctk.CTk):
             width=78,
             height=IOS_METRICS["button_height_small"],
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
-            fg_color="#ff79c6",
-            hover_color="#db61aa",
+            fg_color=COLORS["accent_pink"],
+            hover_color=COLORS["accent_pink_hover"],
             text_color=COLORS["text_primary"],
             corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._change_window_mode("editor"),
@@ -1044,6 +1045,26 @@ class MainWindow(ctk.CTk):
         except Exception:
             return path.stem
 
+    def _mini_set_status(self, text: str, text_color=None) -> None:
+        """Avoid repainting the hidden mini status label when the value did not change."""
+        if not hasattr(self, "_mini_status"):
+            return
+        text = str(text)
+        try:
+            current_text = self._mini_status.cget("text")
+            if text_color is None:
+                if current_text == text:
+                    return
+                self._mini_status.configure(text=text)
+                return
+
+            current_color = self._mini_status.cget("text_color")
+            if current_text == text and current_color == text_color:
+                return
+            self._mini_status.configure(text=text, text_color=text_color)
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
+
     def _mini_update_active_bar(
         self,
         state: str,
@@ -1086,6 +1107,10 @@ class MainWindow(ctk.CTk):
             color = COLORS["error"]
         elif state == "완료":
             color = COLORS["warning"]
+        snapshot = (title, color, detail, detail_color)
+        if snapshot == getattr(self, "_mini_active_bar_snapshot", None):
+            return
+        self._mini_active_bar_snapshot = snapshot
         self._mini_active_title.configure(text=title, text_color=color)
         self._mini_active_detail.configure(text=detail, text_color=detail_color)
 
@@ -1305,9 +1330,9 @@ class MainWindow(ctk.CTk):
 
                 # 상태 UI 업데이트 (마지막 것만)
                 if status_update[0] and hasattr(self, '_mini_status'):
-                    self._mini_status.configure(
-                        text=f"▶ [{status_update[0]}] {status_update[1][:20]}",
-                        text_color=COLORS["accent"]
+                    self._mini_set_status(
+                        f"▶ [{status_update[0]}] {status_update[1][:20]}",
+                        text_color=COLORS["accent"],
                     )
 
                 # 로그 UI 일괄 업데이트
@@ -2299,7 +2324,7 @@ class MainWindow(ctk.CTk):
             def update_status():
                 try:
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
-                        self._mini_status.configure(text=f"▶ {seq_info}{current}/{total} {repeat_info} - {message}")
+                        self._mini_set_status(f"▶ {seq_info}{current}/{total} {repeat_info} - {message}")
                         plan_name = getattr(getattr(self, "_mini_active_plan", None), "name", "")
                         self._mini_update_active_bar(
                             "실행 중",
@@ -2364,8 +2389,8 @@ class MainWindow(ctk.CTk):
                             seq_info = f"시퀀스 {self._sequence_index + 1}/{len(self._sequence_plans)} - "
                         else:
                             seq_info = ""
-                        self._mini_status.configure(
-                            text=f"진행 중 {seq_info}({self._mini_current_repeat + 1}/{self._mini_total_repeat})"
+                        self._mini_set_status(
+                            f"진행 중 {seq_info}({self._mini_current_repeat + 1}/{self._mini_total_repeat})"
                         )
                         self._mini_update_active_bar(
                             "실행 중",
@@ -2757,9 +2782,9 @@ class MainWindow(ctk.CTk):
             self,
             text=f"📸 화면 캡쳐 완료: {filename}",
             fg_color=COLORS["accent"],
-            corner_radius=8,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color="white",
+            corner_radius=IOS_METRICS["pill_radius"],
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
+            text_color=COLORS["text_primary"],
         )
         self._capture_notification_label.place(relx=0.5, rely=0.05, anchor="center")
 
@@ -2803,7 +2828,7 @@ class MainWindow(ctk.CTk):
     def _set_nav_button_state(self, active_view_id: Optional[str]):
         for btn_id, btn in self._nav_buttons.items():
             if btn_id == active_view_id:
-                btn.configure(fg_color=COLORS["accent"], text_color="white")
+                btn.configure(fg_color=COLORS["accent"], text_color=COLORS["text_primary"])
             else:
                 btn.configure(fg_color="transparent", text_color=COLORS["text_secondary"])
 

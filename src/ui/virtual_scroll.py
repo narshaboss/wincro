@@ -29,6 +29,8 @@ class VirtualScrollFrame(ctk.CTkFrame):
         self._destroy_callback = None
         self._update_callback = None
         self._scroll_scheduled = False
+        self._scroll_after_id = None
+        self._last_render_range = None
 
         self._canvas = tk.Canvas(
             self,
@@ -96,6 +98,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         self._item_index_by_identity = {}
         self._item_index_dirty = True
         self._visible_widgets = {}
+        self._last_render_range = None
         self._update_scroll_region()
 
         if preserve_scroll:
@@ -136,11 +139,13 @@ class VirtualScrollFrame(ctk.CTkFrame):
 
     def refresh(self):
         self._clear_all_widgets()
+        self._last_render_range = None
         self._update_scroll_region()
         self._render_visible_items()
 
     def refresh_item(self, index: int):
         if index in self._visible_widgets:
+            self._last_render_range = None
             widget = self._visible_widgets.pop(index)
             self._destroy_visible_widget(index, widget)
             self._render_single_item(index)
@@ -164,6 +169,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         self._items[start:end] = new_items
         self._patch_item_index_for_splice(None, start, delete_count, new_items)
         self._visible_widgets = {}
+        self._last_render_range = None
         self._update_scroll_region()
 
         visible_start, visible_end = self._get_visible_range()
@@ -230,6 +236,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         self._items[start:end] = new_items
         self._patch_item_index_for_replace(start, delete_count, new_items, old_identities)
         self._visible_widgets = {}
+        self._last_render_range = None
         self._update_scroll_region()
 
         used_old_indices = set()
@@ -308,6 +315,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         return True
 
     def _clear_all_widgets(self):
+        self._last_render_range = None
         for index, widget in list(self._visible_widgets.items()):
             self._destroy_visible_widget(index, widget)
         self._visible_widgets.clear()
@@ -320,6 +328,21 @@ class VirtualScrollFrame(ctk.CTkFrame):
                 return (type(obj).__name__, obj_id)
             if obj is not None:
                 return ("object", id(obj))
+        if isinstance(item, tuple) and item:
+            kind = str(item[0])
+            obj = item[1] if len(item) > 1 else None
+            obj_id = (
+                getattr(obj, "plan_id", None)
+                or getattr(obj, "id", None)
+                or getattr(obj, "rule_id", None)
+                or getattr(obj, "action_id", None)
+            )
+            if obj_id:
+                return (kind, obj_id)
+            if kind in {"header", "empty"}:
+                return (kind, str(obj))
+            if obj is not None:
+                return (kind, id(obj))
         return ("item", id(item))
 
     def _object_identity(self, obj):
@@ -401,6 +424,8 @@ class VirtualScrollFrame(ctk.CTkFrame):
                 item.get("depth"),
                 item.get("parent_id"),
             )
+        if isinstance(item, tuple):
+            return (self._item_identity(item),)
         return (self._item_identity(item),)
 
     def _update_visible_widget(self, index, widget, item_data, old_item_data=None):
@@ -453,10 +478,11 @@ class VirtualScrollFrame(ctk.CTkFrame):
     def _schedule_render(self):
         if not self._scroll_scheduled:
             self._scroll_scheduled = True
-            self.after(10, self._do_scheduled_render)
+            self._scroll_after_id = self.after(10, self._do_scheduled_render)
 
     def _do_scheduled_render(self):
         self._scroll_scheduled = False
+        self._scroll_after_id = None
         self._render_visible_items()
 
     def _get_visible_range(self):
@@ -485,6 +511,13 @@ class VirtualScrollFrame(ctk.CTkFrame):
             return
 
         start_idx, end_idx = self._get_visible_range()
+        current_range = (start_idx, end_idx)
+        if (
+            current_range == self._last_render_range
+            and all(idx in self._visible_widgets for idx in range(start_idx, end_idx))
+        ):
+            return
+        self._last_render_range = current_range
 
         to_remove = [idx for idx in self._visible_widgets if idx < start_idx or idx >= end_idx]
         for idx in to_remove:
@@ -526,3 +559,15 @@ class VirtualScrollFrame(ctk.CTkFrame):
         y_pos = index * self._item_height
         self._canvas.yview_moveto(y_pos / total_height)
         self._schedule_render()
+
+    def destroy(self):
+        after_id = getattr(self, "_scroll_after_id", None)
+        self._scroll_after_id = None
+        self._scroll_scheduled = False
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError):
+                pass
+        self._clear_all_widgets()
+        super().destroy()

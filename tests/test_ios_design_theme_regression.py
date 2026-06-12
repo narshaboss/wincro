@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -10,6 +11,21 @@ SETTINGS_VIEW = ROOT / "src" / "ui" / "settings_view.py"
 RECORDER_VIEW = ROOT / "src" / "ui" / "recorder_view.py"
 LOG_VIEW = ROOT / "src" / "ui" / "log_view.py"
 VIRTUAL_SCROLL = ROOT / "src" / "ui" / "virtual_scroll.py"
+GUIDE_VIEW = ROOT / "src" / "ui" / "guide_view.py"
+KEY_INPUT_DIALOG = ROOT / "src" / "ui" / "key_input_dialog.py"
+MONITORING_EDITOR = ROOT / "src" / "ui" / "monitoring_editor.py"
+HELP_DIALOG = ROOT / "src" / "ui" / "help_dialog.py"
+UI_DIR = ROOT / "src" / "ui"
+
+
+def test_ui_source_tree_does_not_ship_stale_python_backups():
+    stale_backups = [
+        path.relative_to(ROOT).as_posix()
+        for path in UI_DIR.iterdir()
+        if path.name.endswith(".bak") or ".bak_" in path.name or ".pre_sanitize_" in path.name
+    ]
+
+    assert stale_backups == []
 
 
 def test_ios_theme_tokens_drive_shared_ui_style():
@@ -30,12 +46,24 @@ def test_ios_theme_tokens_drive_shared_ui_style():
 def test_player_core_controls_use_ios_rounding_and_elevated_surfaces():
     player_view = PLAYER_VIEW.read_text(encoding="utf-8")
 
+    assert "def _ios_state_button_style" in player_view
+    assert "def _ios_repeat_button_style" in player_view
+    assert "def _ios_run_button_style" in player_view
     assert 'fg_color=COLORS["bg_glass"]' in player_view
     assert 'fg_color=COLORS["bg_elevated"]' in player_view
     assert 'corner_radius=999' in player_view
     assert 'hover_color=COLORS["green_hover"]' in player_view
     assert 'hover_color=COLORS["danger_hover"]' in player_view
     assert 'widget.configure(fg_color=COLORS["selection_green"])' in player_view
+    assert 'text_color=COLORS["warning"] if active else COLORS["text_secondary"]' in player_view
+    assert 'border_color=COLORS["warning"] if is_active else COLORS["border"]' in player_view
+    assert not re.search(r"#[0-9A-Fa-f]{6}", player_view)
+    assert '"#facc15"' not in player_view
+    assert '"#2e7d32"' not in player_view
+    assert 'text_color="white"' not in player_view
+    assert "corner_radius=4" not in player_view
+    assert "corner_radius=8" not in player_view
+    assert "corner_radius=6" not in player_view
 
 
 def test_editor_action_rows_use_ios_cards_without_changing_virtual_scroll_contract():
@@ -46,6 +74,9 @@ def test_editor_action_rows_use_ios_cards_without_changing_virtual_scroll_contra
     assert 'corner_radius=IOS_METRICS["control_radius"]' in player_view
     assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in player_view
     assert 'fg_color=COLORS["bg_elevated"]' in player_view
+    assert "**_ios_state_button_style(is_skip)" in player_view
+    assert "**_ios_repeat_button_style(repeat_count, until_disappears)" in player_view
+    assert "**_ios_run_button_style(is_enabled)" in player_view
     assert "item_height=76" in player_view
 
 
@@ -69,7 +100,13 @@ def test_analyzer_action_rows_use_ios_tokens_while_preserving_batch_rendering():
     assert 'bg_color = COLORS["bg_glass"] if depth == 0 else COLORS["child_bg"]' in analyzer_view
     assert 'corner_radius=IOS_METRICS["control_radius"]' in analyzer_view
     assert 'fg_color=COLORS["bg_elevated"]' in analyzer_view
+    assert 'outline=COLORS["info"]' in analyzer_view
+    assert '"scroll": COLORS["scroll_purple"]' in analyzer_view
     assert "self._schedule_action_list_render_batch" in analyzer_view
+    assert not re.search(r"#[0-9A-Fa-f]{6}", analyzer_view)
+    assert 'text_color="white"' not in analyzer_view
+    assert "corner_radius=6" not in analyzer_view
+    assert "corner_radius=8" not in analyzer_view
 
 
 def test_image_crop_dialog_uses_ios_editor_surfaces():
@@ -123,6 +160,9 @@ def test_settings_auto_run_group_editor_uses_ios_cards_and_keeps_selection_contr
     assert 'font=(IOS_FONTS["fallback"], 11)' in player_slice
     assert 'exportselection=False' in player_slice
     assert '"#2563eb"' not in player_slice
+    assert not re.search(r"#[0-9A-Fa-f]{6}", settings_view)
+    assert "corner_radius=6" not in settings_view
+    assert "corner_radius=8" not in settings_view
 
 
 def test_recorder_view_uses_ios_surfaces_without_losing_virtualized_list():
@@ -160,3 +200,50 @@ def test_virtual_scroll_canvas_uses_configured_surface_color():
     assert 'self._surface_color = kwargs["fg_color"]' in virtual_scroll
     assert "bg=self._apply_appearance_mode(self._surface_color)" in virtual_scroll
     assert "bg=self._apply_appearance_mode(COLORS[\"bg_card\"])" not in virtual_scroll
+    assert "self._last_render_range = None" in virtual_scroll
+    assert "current_range == self._last_render_range" in virtual_scroll
+
+
+def test_guide_and_key_capture_dialogs_use_ios_tokens():
+    guide_view = GUIDE_VIEW.read_text(encoding="utf-8")
+    key_dialog = KEY_INPUT_DIALOG.read_text(encoding="utf-8")
+
+    assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in guide_view
+    assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in key_dialog
+    assert 'fg_color=COLORS["bg_content"]' in guide_view
+    assert 'fg_color=COLORS["bg_glass"]' in guide_view
+    assert 'fg_color=COLORS["bg_log"]' in guide_view
+    assert 'corner_radius=IOS_METRICS["card_radius"]' in guide_view
+    assert 'corner_radius=IOS_METRICS["pill_radius"]' in guide_view
+    assert 'fg_color=COLORS["bg_content"]' in key_dialog
+    assert 'fg_color=COLORS["bg_glass"]' in key_dialog
+    assert 'corner_radius=IOS_METRICS["pill_radius"]' in key_dialog
+    assert 'hover_color=COLORS["green_hover"]' in key_dialog
+    assert 'hover_color=COLORS["danger_hover"]' in key_dialog
+    assert 'fg_color=COLORS["bg_dark"]' not in guide_view
+    assert 'fg_color=COLORS["bg_dark"]' not in key_dialog
+
+
+def test_monitoring_editor_and_help_dialog_use_ios_tokens():
+    monitoring_editor = MONITORING_EDITOR.read_text(encoding="utf-8")
+    help_dialog = HELP_DIALOG.read_text(encoding="utf-8")
+
+    assert "from .theme import COLORS, IOS_METRICS" in monitoring_editor
+    assert "from .theme import COLORS, IOS_METRICS" in help_dialog
+    assert 'hover_color=COLORS["green_hover"]' in monitoring_editor
+    assert 'hover_color=COLORS["danger_hover"]' in monitoring_editor
+    assert 'hover_color=COLORS["hover_blue"]' in monitoring_editor
+    assert 'fg_color=COLORS["scroll_purple"]' in monitoring_editor
+    assert 'fg_color=COLORS["bg_glass"]' in help_dialog
+    assert 'fg_color=COLORS["bg_log"]' in help_dialog
+    assert 'corner_radius=IOS_METRICS["card_radius"]' in help_dialog
+    assert 'corner_radius=IOS_METRICS["control_radius"]' in monitoring_editor
+    assert not re.search(r"#[0-9A-Fa-f]{6}", monitoring_editor)
+    assert not re.search(r"#[0-9A-Fa-f]{6}", help_dialog)
+    for source in (monitoring_editor, help_dialog):
+        assert "corner_radius=4" not in source
+        assert "corner_radius=6" not in source
+        assert "corner_radius=8" not in source
+        assert "corner_radius=2" not in source
+        assert 'text_color="gray"' not in source
+        assert 'text_color="white"' not in source

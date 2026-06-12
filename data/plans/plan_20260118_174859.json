@@ -4559,7 +4559,7 @@
               "trigger_missing_key_repeat_delay": 0.5,
               "trigger_missing_key_repeat_delay_random": false,
               "trigger_missing_key_repeat_delay_random_range": 0.3,
-              "repeat_count": 2,
+              "repeat_count": 1,
               "repeat_delay": 0.5,
               "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,

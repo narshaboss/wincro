@@ -10,6 +10,7 @@ from typing import Optional
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config
 from ..utils.window_position import setup_window_position
+from .theme import COLORS, IOS_METRICS
 
 logger = get_logger(__name__)
 
@@ -38,6 +39,7 @@ class HelpDialog(ctk.CTkToplevel):
         self.title("사용법 가이드")
         self.geometry("700x600")
         self.resizable(False, False)
+        self.configure(fg_color=COLORS["bg_content"])
 
         # 모달 설정
         self.transient(parent)
@@ -55,7 +57,13 @@ class HelpDialog(ctk.CTkToplevel):
     def _setup_ui(self) -> None:
         """UI 구성"""
         # 메인 프레임
-        main_frame = ctk.CTkFrame(self)
+        main_frame = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius"],
+            border_width=1,
+            border_color=COLORS["separator"],
+        )
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # 제목
@@ -63,6 +71,7 @@ class HelpDialog(ctk.CTkToplevel):
             main_frame,
             text="사용법 가이드",
             font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=COLORS["text_primary"],
         )
         title_label.pack(pady=(0, 10))
 
@@ -70,7 +79,7 @@ class HelpDialog(ctk.CTkToplevel):
             main_frame,
             text="화면 녹화 기반 자동화 프로그램",
             font=ctk.CTkFont(size=14),
-            text_color="gray",
+            text_color=COLORS["text_secondary"],
         )
         subtitle_label.pack(pady=(0, 20))
 
@@ -79,6 +88,10 @@ class HelpDialog(ctk.CTkToplevel):
             main_frame,
             width=640,
             height=400,
+            fg_color=COLORS["bg_log"],
+            scrollbar_button_color=COLORS["bg_card_hover"],
+            scrollbar_button_hover_color=COLORS["accent"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
         )
         content_frame.pack(fill="both", expand=True, pady=10)
 
@@ -97,6 +110,9 @@ class HelpDialog(ctk.CTkToplevel):
                 text="프로그램 시작 시 이 창 표시",
                 variable=self._show_startup_var,
                 command=self._on_startup_toggle,
+                text_color=COLORS["text_primary"],
+                fg_color=COLORS["accent"],
+                hover_color=COLORS["accent_hover"],
             )
             startup_check.pack(side="left")
 
@@ -106,6 +122,10 @@ class HelpDialog(ctk.CTkToplevel):
             text="확인",
             command=self.destroy,
             width=100,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         close_btn.pack(side="right")
 
@@ -218,6 +238,7 @@ class HelpDialog(ctk.CTkToplevel):
             parent,
             text=f"■ {title}",
             font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=COLORS["text_primary"],
             anchor="w",
         )
         label.pack(fill="x", pady=(15, 5))
@@ -228,6 +249,7 @@ class HelpDialog(ctk.CTkToplevel):
             parent,
             text=f"▸ {title}",
             font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=COLORS["accent_blue"],
             anchor="w",
         )
         label.pack(fill="x", pady=(10, 3), padx=10)
@@ -238,6 +260,7 @@ class HelpDialog(ctk.CTkToplevel):
             parent,
             text=text,
             font=ctk.CTkFont(size=13),
+            text_color=COLORS["text_secondary"],
             anchor="w",
             justify="left",
         )
@@ -245,7 +268,13 @@ class HelpDialog(ctk.CTkToplevel):
 
     def _add_step(self, parent, number: str, title: str, description: str) -> None:
         """단계 추가"""
-        step_frame = ctk.CTkFrame(parent, fg_color=("gray90", "gray20"))
+        step_frame = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
+            border_width=1,
+            border_color=COLORS["separator"],
+        )
         step_frame.pack(fill="x", pady=5, padx=10)
 
         # 번호
@@ -254,7 +283,7 @@ class HelpDialog(ctk.CTkToplevel):
             text=number,
             font=ctk.CTkFont(size=20, weight="bold"),
             width=40,
-            text_color=("blue", "lightblue"),
+            text_color=COLORS["accent_blue"],
         )
         num_label.pack(side="left", padx=10, pady=10)
 
@@ -266,6 +295,7 @@ class HelpDialog(ctk.CTkToplevel):
             content_frame,
             text=title,
             font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=COLORS["text_primary"],
             anchor="w",
         )
         title_label.pack(fill="x")
@@ -274,6 +304,7 @@ class HelpDialog(ctk.CTkToplevel):
             content_frame,
             text=description,
             font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
             anchor="w",
             justify="left",
         )
@@ -281,14 +312,18 @@ class HelpDialog(ctk.CTkToplevel):
 
     def _add_warning(self, parent, text: str) -> None:
         """경고 텍스트 추가"""
-        warning_frame = ctk.CTkFrame(parent, fg_color=("orange", "darkorange"))
+        warning_frame = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["warning"],
+            corner_radius=IOS_METRICS["control_radius"],
+        )
         warning_frame.pack(fill="x", pady=5, padx=10)
 
         label = ctk.CTkLabel(
             warning_frame,
             text=text,
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="white",
+            text_color=COLORS["bg_content"],
             anchor="w",
             justify="left",
         )
@@ -296,7 +331,7 @@ class HelpDialog(ctk.CTkToplevel):
 
     def _add_divider(self, parent) -> None:
         """구분선 추가"""
-        divider = ctk.CTkFrame(parent, height=2, fg_color="gray50")
+        divider = ctk.CTkFrame(parent, height=2, fg_color=COLORS["separator"])
         divider.pack(fill="x", pady=15, padx=20)
 
     def _on_startup_toggle(self) -> None:

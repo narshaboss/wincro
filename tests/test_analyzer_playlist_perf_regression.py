@@ -18,12 +18,34 @@ def test_playlist_dialog_item_collapse_does_not_rebuild_full_action_list():
     method = _method_slice(
         text,
         "def _toggle_item_collapse(self, rule_id: str):",
-        "def _refresh_action_list(self):",
+        "def _refresh_action_list(self",
     )
 
     assert "self._refresh_action_list()" not in method
-    assert "self._apply_rule_collapse_state(rule_id)" in method
-    assert "self._action_widgets.get(rule_id)" in method
+    assert "self._refresh_action_list(preserve_scroll=True)" in method
+    assert "self._apply_rule_collapse_state(rule_id)" not in method
+    assert "self._action_widgets.get(rule_id)" not in method
+
+
+def test_playlist_dialog_expand_all_keeps_nested_children_lazy():
+    text = _read_text()
+    method = _method_slice(
+        text,
+        "def _toggle_all_collapse(self):",
+        "def _iter_top_level_collapsible_rules(self):",
+    )
+    helper = _method_slice(
+        text,
+        "def _iter_top_level_collapsible_rules(self):",
+        "def _toggle_item_collapse(self, rule_id: str):",
+    )
+
+    assert "self._collapsed_items.clear()" not in method
+    assert "for rule in self._iter_top_level_collapsible_rules():" in method
+    assert "self._collapsed_items.discard(rule.rule_id)" in method
+    assert "self._plan.initial_rules" in helper
+    assert "self._plan.monitoring_rules" in helper
+    assert "yield rule" in helper
 
 
 def test_playlist_dialog_uses_lazy_child_containers_for_fast_expand():
@@ -43,7 +65,7 @@ def test_playlist_dialog_uses_lazy_child_containers_for_fast_expand():
     )
     create_method = _method_slice(
         text,
-        "def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0, before_widget=None):",
+        "def _create_action_item(",
         "def _display_thumbnail(self, parent, rule: AutomationRule):",
     )
 
@@ -53,34 +75,56 @@ def test_playlist_dialog_uses_lazy_child_containers_for_fast_expand():
     assert "self._render_rules(children_container" not in create_method
 
 
-def test_playlist_dialog_refresh_batches_root_rendering():
+def test_playlist_dialog_uses_virtual_scroll_for_action_rows():
     text = _read_text()
+    setup_method = _method_slice(
+        text,
+        "def _setup_ui(self):",
+        "def _count_all_rules(self, rules) -> int:",
+    )
     refresh_method = _method_slice(
         text,
-        "def _refresh_action_list(self):",
+        "def _refresh_action_list(self",
         "def _cancel_action_list_render_batch(self):",
     )
-    batch_method = _method_slice(
+    render_method = _method_slice(
         text,
-        "def _render_action_list_batch(self, items, start: int, generation: int, batch_size: Optional[int] = None):",
-        "def _render_rules(self, parent, rules, depth=0, prefix: str = \"\"):",
-    )
-    schedule_method = _method_slice(
-        text,
-        "def _schedule_action_list_render_batch(self, callback):",
-        "def _build_root_rule_render_items(self):",
+        "def _render_virtual_action_item(self, parent, item_data, _index: int):",
+        "def _on_virtual_action_item_destroyed(self, item_data, _index: int, widget) -> None:",
     )
 
+    assert "self._scrollable = VirtualScrollFrame(" in setup_method
+    assert "self._scrollable.set_render_callback(self._render_virtual_action_item)" in setup_method
+    assert "self._scrollable.set_destroy_callback(self._on_virtual_action_item_destroyed)" in setup_method
     assert "self._cancel_action_list_render_batch()" in refresh_method
+    assert "is_virtual = isinstance(self._scrollable, VirtualScrollFrame)" in refresh_method
+    assert "if is_virtual and not preserve_scroll:" in refresh_method
+    assert "self._scrollable.set_items([], preserve_scroll=False)" in refresh_method
+    assert "if not is_virtual or not preserve_scroll:" in refresh_method
     assert "self._action_widgets = {}" in refresh_method
     assert "self._collapsible_rule_ids.clear()" in refresh_method
     assert "self._render_rules(" not in refresh_method
-    assert "items = self._build_root_rule_render_items()" in refresh_method
-    assert "self._render_action_list_batch(items, start=0, generation=self._render_batch_generation)" in refresh_method
-    assert "self.after(" in schedule_method
-    assert "self._schedule_action_list_render_batch(" in batch_method
-    assert "generation != self._render_batch_generation" in batch_method
-    assert "self._sync_all_collapsed_state()" in batch_method
+    assert "items = self._build_visible_rule_render_items()" in refresh_method
+    assert "self._scrollable.set_items(items, preserve_scroll=preserve_scroll)" in refresh_method
+    assert "manage_geometry=False" in render_method
+    assert "render_inline_children=False" in render_method
+
+
+def test_playlist_dialog_virtual_items_flatten_only_visible_children():
+    text = _read_text()
+    collect_method = _method_slice(
+        text,
+        "def _collect_visible_rule_items(",
+        "def _render_virtual_action_item(self, parent, item_data, _index: int):",
+    )
+
+    assert '"rule": rule' in collect_method
+    assert '"depth": depth' in collect_method
+    assert '"index_label": label' in collect_method
+    assert '"parent_id": parent_id' in collect_method
+    assert "self._collapsible_rule_ids.add(rule.rule_id)" in collect_method
+    assert "if rule.rule_id not in self._collapsed_items:" in collect_method
+    assert "self._collect_visible_rule_items(" in collect_method
 
 
 def test_playlist_dialog_render_batch_is_cancelled_on_cleanup():
@@ -236,18 +280,22 @@ def test_analyzer_playlist_dialog_can_refresh_single_rule_row():
     helper_method = _method_slice(
         text,
         "def _refresh_rule_row(self, rule_id: str) -> bool:",
-        "def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0, before_widget=None):",
+        "def _create_action_item(",
     )
     create_method = _method_slice(
         text,
-        "def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0, before_widget=None):",
+        "def _create_action_item(",
         "def _display_thumbnail(self, parent, rule: AutomationRule):",
     )
 
+    assert "self._scrollable.find_item_index_by_object_id(rule_id, \"AutomationRule\")" in helper_method
+    assert "self._scrollable.refresh_item(index)" in helper_method
     assert "self._drop_rule_widget_mappings(rule)" in helper_method
     assert "wrapper.destroy()" in helper_method
     assert "before_widget=before_widget" in helper_method
     assert 'item_wrapper.pack(fill="x", before=before_widget)' in create_method
+    assert "manage_geometry: bool = True" in create_method
+    assert "render_inline_children: bool = True" in create_method
 
 
 def test_analyzer_playlist_thumbnails_load_off_ui_thread():

@@ -167,7 +167,8 @@ def test_arrival_key_dialog_is_reduced_to_add_and_delete_controls():
     assert "upsert_arrival_key_preset" in dialog_slice
     assert "remove_arrival_key_preset" in dialog_slice
     assert "저장된 키가 없습니다. 아래에서 추가하세요." in dialog_slice
-    assert dialog_slice.count("CTkScrollableFrame(dlg") == 1
+    assert "VirtualScrollFrame(" in dialog_slice
+    assert "CTkScrollableFrame(dlg" not in dialog_slice
     assert "_key_preset_name" in dialog_slice
     assert "save_all" not in dialog_slice
 

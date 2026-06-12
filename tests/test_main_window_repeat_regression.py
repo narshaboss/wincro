@@ -114,7 +114,7 @@ def test_play_mode_top_controls_are_simplified_and_korean_labeled():
     assert 'text="에디터"' in mini_slice
     assert 'text="✎ 에디터"' not in mini_slice
     assert 'text="플레이 모드"' not in mini_slice
-    assert "fg_color=\"#ff79c6\"" in mini_slice
+    assert 'fg_color=COLORS["accent_pink"]' in mini_slice
     assert 'text="▶ 실행"' in control_slice
     assert 'text="⏸ 일시정지"' in control_slice
     assert 'text="⏹ 정지"' in control_slice
@@ -214,3 +214,40 @@ def test_settings_group_repeat_apply_keeps_list_selection_when_entry_has_focus()
     assert "def _seq_current_entry_index(self, group: Optional[dict]) -> Optional[int]:" in settings_slice
     assert "idx = self._seq_current_entry_index(group)" in settings_slice
     assert "if not group or idx is None:" in settings_slice
+
+
+def test_play_mode_high_frequency_status_updates_skip_duplicate_configures():
+    text = _read_text()
+    status_helper = text[
+        text.index("def _mini_set_status(self, text: str, text_color=None) -> None:"):
+        text.index("def _mini_update_active_bar(", text.index("def _mini_set_status"))
+    ]
+    active_method = text[
+        text.index("def _mini_update_active_bar("):
+        text.index("def _toggle_mini_auto_update_from_indicator(", text.index("def _mini_update_active_bar("))
+    ]
+    progress_method = text[
+        text.index("def _mini_on_progress(self, progress):"):
+        text.index("def _mini_on_repeat_complete(self, success, message):")
+    ]
+    repeat_method = text[
+        text.index("def _mini_on_repeat_complete(self, success, message):"):
+        text.index(
+            "if self._sequence_mode and self._sequence_index < len(self._sequence_plans):",
+            text.index("def _mini_on_repeat_complete"),
+        )
+    ]
+    log_flush = text[
+        text.index("def _flush_log_buffer():"):
+        text.index("def add_log(msg: str, level: str):")
+    ]
+
+    assert "current_text = self._mini_status.cget(\"text\")" in status_helper
+    assert "if current_text == text:" in status_helper
+    assert "self._mini_status.configure(text=text, text_color=text_color)" in status_helper
+    assert "self._mini_active_bar_snapshot = None" in text
+    assert "if snapshot == getattr(self, \"_mini_active_bar_snapshot\", None):" in active_method
+    assert "self._mini_active_bar_snapshot = snapshot" in active_method
+    assert "self._mini_set_status(" in progress_method
+    assert "self._mini_set_status(" in repeat_method
+    assert "self._mini_set_status(" in log_flush

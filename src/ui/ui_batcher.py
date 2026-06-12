@@ -1,5 +1,6 @@
 import threading
 import tkinter as tk
+import time
 from collections import deque
 from typing import Callable, Deque, Generic, List, Optional, TypeVar
 
@@ -29,10 +30,17 @@ def dispatch_widget_after(widget, dispatcher, direct_after: Callable, ms, func=N
 class UiCallbackDispatcher:
     """Batch UI callbacks onto the Tk main thread at a steady cadence."""
 
-    def __init__(self, widget, tick_ms: int = 25, max_callbacks_per_tick: int = 64):
+    def __init__(
+        self,
+        widget,
+        tick_ms: int = 25,
+        max_callbacks_per_tick: int = 64,
+        max_millis_per_tick: float = 8.0,
+    ):
         self._widget = widget
         self._tick_ms = max(10, int(tick_ms))
         self._max_callbacks_per_tick = max(1, int(max_callbacks_per_tick))
+        self._max_millis_per_tick = max(1.0, float(max_millis_per_tick))
         self._queue: Deque[Callable[[], None]] = deque()
         self._lock = threading.Lock()
         self._after_id: Optional[str] = None
@@ -79,16 +87,22 @@ class UiCallbackDispatcher:
             self._after_id = None
 
     def _drain(self) -> None:
-        pending: List[Callable[[], None]] = []
+        processed = 0
+        started_at = time.perf_counter()
         try:
-            with self._lock:
-                while self._queue and len(pending) < self._max_callbacks_per_tick:
-                    pending.append(self._queue.popleft())
-            for callback in pending:
+            while processed < self._max_callbacks_per_tick and not self._closed:
+                with self._lock:
+                    if not self._queue:
+                        break
+                    callback = self._queue.popleft()
                 try:
                     callback()
                 except (tk.TclError, RuntimeError):
                     pass
+                processed += 1
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                if processed >= 1 and elapsed_ms >= self._max_millis_per_tick:
+                    break
         finally:
             self._after_id = None
             self._schedule_tick()

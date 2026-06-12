@@ -320,8 +320,8 @@ class SettingsView(BaseView):
                 width=100,
                 height=26,
                 fg_color=COLORS["warning"],
-                hover_color="#c9a227",
-                text_color="#000000",
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["bg_content"],
                 font=ctk.CTkFont(size=11),
             )
             self._restart_admin_btn.pack(side="right")
@@ -449,13 +449,17 @@ class SettingsView(BaseView):
             height=28,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
         )
         self._arduino_test_btn.grid(row=1, column=2, padx=(5, 0), pady=4)
 
         # 연결 상태 표시 프레임
-        status_frame = ctk.CTkFrame(scroll_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
+        status_frame = ctk.CTkFrame(
+            scroll_frame,
+            fg_color=COLORS["bg_dark"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         status_frame.pack(fill="x", padx=10, pady=(5, 10))
 
         status_inner = ctk.CTkFrame(status_frame, fg_color="transparent")
@@ -488,8 +492,8 @@ class SettingsView(BaseView):
             width=60,
             height=26,
             fg_color=COLORS["success"],
-            hover_color="#45a049",
-            text_color="#ffffff",
+            hover_color=COLORS["green_hover"],
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
         )
         self._arduino_connect_btn.pack(side="right")
@@ -502,8 +506,8 @@ class SettingsView(BaseView):
             width=90,
             height=26,
             fg_color=COLORS["accent"],
-            hover_color="#1a5fb4",
-            text_color="#ffffff",
+            hover_color=COLORS["hover_blue"],
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
         )
         self._arduino_upload_btn.pack(side="right", padx=(0, 5))
@@ -698,7 +702,7 @@ class SettingsView(BaseView):
             bg=COLORS["bg_log"],
             fg=COLORS["text_primary"],
             selectbackground=COLORS["accent"],
-            selectforeground="#ffffff",
+            selectforeground=COLORS["text_primary"],
             relief="flat",
             borderwidth=0,
             highlightthickness=0,
@@ -736,7 +740,7 @@ class SettingsView(BaseView):
             height=26,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left")
@@ -768,7 +772,7 @@ class SettingsView(BaseView):
             height=28,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(fill="x", padx=10, pady=(0, 10))
@@ -818,7 +822,7 @@ class SettingsView(BaseView):
             height=28,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=(5, 0))
@@ -839,7 +843,7 @@ class SettingsView(BaseView):
             bg=COLORS["bg_log"],
             fg=COLORS["text_primary"],
             selectbackground=COLORS["accent"],
-            selectforeground="#ffffff",
+            selectforeground=COLORS["text_primary"],
             relief="flat",
             borderwidth=0,
             highlightthickness=0,
@@ -902,7 +906,7 @@ class SettingsView(BaseView):
             height=26,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left")
@@ -1312,14 +1316,18 @@ class SettingsView(BaseView):
         row1.pack(fill="x", pady=(0, 8))
 
         # 버전 표시
-        self._version_frame = ctk.CTkFrame(row1, fg_color=COLORS["accent"], corner_radius=6)
+        self._version_frame = ctk.CTkFrame(
+            row1,
+            fg_color=COLORS["accent"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         self._version_frame.pack(side="left", padx=(0, 15))
 
         self._current_version_label = ctk.CTkLabel(
             self._version_frame,
             text=f"v{APP_VERSION}",
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
         )
         self._current_version_label.pack(padx=12, pady=6)
 
@@ -1361,7 +1369,7 @@ class SettingsView(BaseView):
             height=40,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color="#ffffff",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=13, weight="bold"),
         )
         self._check_update_btn.pack(side="left", padx=(0, 10))
@@ -1373,9 +1381,9 @@ class SettingsView(BaseView):
             command=self._perform_update,
             width=120,
             height=40,
-            fg_color="#2ecc71",
-            hover_color="#27ae60",
-            text_color="#ffffff",
+            fg_color=COLORS["success"],
+            hover_color=COLORS["green_hover"],
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=13, weight="bold"),
         )
         self._do_update_btn.pack(side="left", padx=(0, 10))
@@ -1395,7 +1403,11 @@ class SettingsView(BaseView):
         self._auto_update_checkbox.pack(side="left")
 
         # 3행: 상태 표시
-        row3 = ctk.CTkFrame(content_frame, fg_color=COLORS["bg_dark"], corner_radius=6)
+        row3 = ctk.CTkFrame(
+            content_frame,
+            fg_color=COLORS["bg_dark"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
         row3.pack(fill="x")
 
         self._update_status_icon = ctk.CTkLabel(
@@ -1439,8 +1451,8 @@ class SettingsView(BaseView):
             width=120,
             height=45,
             fg_color=COLORS["warning"],
-            hover_color="#c9a227",
-            text_color="#000000",
+            hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["bg_content"],
             font=ctk.CTkFont(size=13, weight="bold"),
         )
         self._reset_btn.pack(side="left", padx=(0, 10))
@@ -1453,8 +1465,8 @@ class SettingsView(BaseView):
             width=150,
             height=45,
             fg_color=COLORS["success"],
-            hover_color="#45a049",
-            text_color="#ffffff",
+            hover_color=COLORS["green_hover"],
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=13, weight="bold"),
         )
         self._save_all_btn.pack(side="left")
@@ -2886,10 +2898,10 @@ del "%~f0"
                     }.get(result.status, "?")
 
                     color = {
-                        TestStatus.PASSED: "#00ff00",
-                        TestStatus.FAILED: "#ff4444",
-                        TestStatus.SKIPPED: "#888888",
-                    }.get(result.status, "#ffffff")
+                        TestStatus.PASSED: COLORS["success"],
+                        TestStatus.FAILED: COLORS["error"],
+                        TestStatus.SKIPPED: COLORS["text_muted"],
+                    }.get(result.status, COLORS["text_primary"])
 
                     line = f"{status_icon} {result.name}"
                     if result.duration_ms > 0:
@@ -3281,7 +3293,7 @@ del "%~f0"
             self._arduino_connect_btn.configure(
                 text="해제",
                 fg_color=COLORS["error"],
-                hover_color="#c0392b"
+                hover_color=COLORS["danger_hover"]
             )
         else:
             self._arduino_status_dot.configure(text_color=COLORS["text_muted"])
@@ -3292,7 +3304,7 @@ del "%~f0"
             self._arduino_connect_btn.configure(
                 text="연결",
                 fg_color=COLORS["success"],
-                hover_color="#45a049"
+                hover_color=COLORS["green_hover"]
             )
 
     def _upload_arduino_firmware(self) -> None:

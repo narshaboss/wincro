@@ -210,14 +210,14 @@ class ScreenRegionSelector(tk.Toplevel):
             # 빨간색 테두리 (기존 범위) - 단일 사각형
             self._canvas.create_rectangle(
                 ex1, ey1, ex2, ey2,
-                outline="#ff0000", width=3, fill="", dash=(8, 4)
+                outline=COLORS["error"], width=3, fill="", dash=(8, 4)
             )
             # 기존 범위 라벨
             self._canvas.create_text(
                 ex1, ey1 - 20,
                 text=f"기존 범위: ({ex1}, {ey1}) ~ ({ex2}, {ey2})",
                 font=("맑은 고딕", 13, "bold"),
-                fill="#ff0000",
+                fill=COLORS["error"],
                 anchor="sw"
             )
             # 안내 텍스트 (기존 범위가 있을 때)
@@ -231,7 +231,7 @@ class ScreenRegionSelector(tk.Toplevel):
                 screen_w // 2, 80,
                 text="빨간색 점선 = 기존 범위  |  파란색 실선 = 새 범위",
                 font=("맑은 고딕", 12),
-                fill="#aaaaaa"
+                fill=COLORS["text_secondary"]
             )
         else:
             # 안내 텍스트
@@ -285,7 +285,7 @@ class ScreenRegionSelector(tk.Toplevel):
             self._canvas.delete(self._rect_id)
         self._rect_id = self._canvas.create_rectangle(
             self._start_x, self._start_y, event.x_root, event.y_root,
-            outline="#58a6ff", width=3, fill=""
+            outline=COLORS["info"], width=3, fill=""
         )
 
     def _on_mouse_up(self, event):
@@ -740,7 +740,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             state="disabled" if self._crop_coords is None else "normal",
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
-            text_color="white",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         )
@@ -755,7 +755,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             height=40,
             fg_color=COLORS["accent_blue"],
             hover_color=COLORS["hover_blue"],
-            text_color="white",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
@@ -769,7 +769,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             height=40,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color="white",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
@@ -786,7 +786,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 height=40,
                 fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
                 hover_color=COLORS["confidence_amber_hover"] if alt_count > 0 else COLORS["bg_card_hover"],
-                text_color="white" if alt_count > 0 else COLORS["text_secondary"],
+                text_color=COLORS["text_primary"] if alt_count > 0 else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -812,7 +812,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 height=40,
                 fg_color=COLORS["search_radius_purple"] if has_region else COLORS["bg_card"],
                 hover_color=COLORS["search_radius_purple_hover"] if has_region else COLORS["bg_card_hover"],
-                text_color="white" if has_region else COLORS["text_secondary"],
+                text_color=COLORS["text_primary"] if has_region else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -829,7 +829,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 height=40,
                 fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
                 hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
+                text_color=COLORS["text_primary"] if conf_pct != 65 else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -999,7 +999,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 rect_y1,
                 rect_x2,
                 rect_y2,
-                outline="#58a6ff",
+                outline=COLORS["info"],
                 width=2,
                 dash=(6, 4),
             )
@@ -1031,7 +1031,7 @@ class ImageCropDialog(ctk.CTkToplevel):
     def _set_edit_mode(self, mode: str):
         self._edit_mode = "select"
         if hasattr(self, "_select_mode_btn"):
-            self._select_mode_btn.configure(fg_color=COLORS["accent_blue"], text_color="white")
+            self._select_mode_btn.configure(fg_color=COLORS["accent_blue"], text_color=COLORS["text_primary"])
         if hasattr(self, "_guide_label"):
             self._guide_label.configure(text="좌클릭 드래그: 영역 선택  |  우클릭 드래그: 이동  |  휠: 확대/축소")
 
@@ -1242,7 +1242,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 새 사각형 그리기
         self._rect_id = self._canvas.create_rectangle(
             self._start_x, self._start_y, event.x, event.y,
-            outline="#58a6ff", width=2
+            outline=COLORS["info"], width=2
         )
 
         # 실시간 미리보기 업데이트
@@ -1530,7 +1530,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                     state="normal",
                     fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
                     hover_color=COLORS["confidence_amber_hover"] if alt_count > 0 else COLORS["bg_card_hover"],
-                    text_color="white" if alt_count > 0 else COLORS["text_secondary"],
+                    text_color=COLORS["text_primary"] if alt_count > 0 else COLORS["text_secondary"],
                 )
             else:
                 self._alt_image_btn.configure(
@@ -1548,7 +1548,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 state="normal" if self._rule is not None else "disabled",
                 fg_color=COLORS["search_radius_purple"] if has_region else COLORS["bg_card"],
                 hover_color=COLORS["search_radius_purple_hover"] if has_region else COLORS["bg_card_hover"],
-                text_color="white" if has_region else COLORS["text_secondary"],
+                text_color=COLORS["text_primary"] if has_region else COLORS["text_secondary"],
             )
 
         if hasattr(self, '_confidence_btn'):
@@ -1558,7 +1558,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 state="normal" if self._rule is not None else "disabled",
                 fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
                 hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
+                text_color=COLORS["text_primary"] if conf_pct != 65 else COLORS["text_secondary"],
             )
 
         if hasattr(self, '_move_mouse_var'):
@@ -1736,7 +1736,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                     text=f"인식률: {conf_pct}%",
                     fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
                     hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                    text_color="white" if conf_pct != 65 else COLORS["text_secondary"],
+                    text_color=COLORS["text_primary"] if conf_pct != 65 else COLORS["text_secondary"],
                 )
 
             self._invoke_image_callback(self._on_search_radius_change, self._rule)
@@ -2079,7 +2079,7 @@ class AltImageDialog(ctk.CTkToplevel):
             height=28,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color="white",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=10, pady=8)
@@ -2204,6 +2204,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         self._scrollable = None
         self._action_widgets = {}
         self._collapsible_rule_ids = set()
+        self._visible_rule_items = []
         self._render_batch_after_id = None
         self._render_batch_after_ids = set()
         self._render_batch_generation = 0
@@ -2300,7 +2301,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
             font=ctk.CTkFont(size=11),
-            corner_radius=6,
+            corner_radius=IOS_METRICS["pill_radius"],
         )
         self._collapse_btn.pack(side="right")
 
@@ -2314,12 +2315,15 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(5, 20))
 
         # 동작 목록
-        self._scrollable = ctk.CTkScrollableFrame(
+        self._scrollable = VirtualScrollFrame(
             main,
+            item_height=92,
+            buffer_count=5,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            scrollbar_button_color=COLORS["bg_card_hover"],
         )
+        self._scrollable.set_render_callback(self._render_virtual_action_item)
+        self._scrollable.set_destroy_callback(self._on_virtual_action_item_destroyed)
         self._scrollable.pack(fill="both", expand=True)
 
         self._refresh_action_list()
@@ -2336,8 +2340,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
     def _toggle_all_collapse(self):
         """모든 액션 접기/펼치기"""
         if self._all_collapsed:
-            # 모두 펼치기
-            self._collapsed_items.clear()
+            # 모두 펼치기는 루트만 즉시 열고, 중첩 자식은 기존 lazy-collapse를 유지한다.
+            # 깊은 트리를 한 번에 렌더링하면 대형 재생목록에서 UI가 멈춘다.
+            for rule in self._iter_top_level_collapsible_rules():
+                self._collapsed_items.discard(rule.rule_id)
             self._all_collapsed = False
             self._collapse_btn.configure(text="모두 접기")
         else:
@@ -2347,41 +2353,103 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             self._collapse_btn.configure(text="모두 펼치기")
         self._apply_collapse_state()
 
+    def _iter_top_level_collapsible_rules(self):
+        """Yield only top-level rules that have children."""
+        for rules in (self._plan.initial_rules, self._plan.monitoring_rules):
+            for rule in rules:
+                if rule.children:
+                    yield rule
+
     def _toggle_item_collapse(self, rule_id: str):
         """개별 액션 접기/펼치기.
 
-        기존 구현은 클릭할 때마다 전체 액션 목록을 destroy/recreate했다.
-        액션 수가 많으면 이 구조가 곧 렉이므로, 해당 부모의 하위 컨테이너만
-        pack/pack_forget으로 전환한다.
+        보이는 행만 다시 계산해서 가상 리스트에 넘긴다. 실제 위젯은 현재 화면
+        범위만 유지되므로 대형 재생목록에서도 접기/펼치기 반응이 일정하다.
         """
-        widget_data = self._action_widgets.get(rule_id)
-        if not widget_data:
-            logger.debug(f"collapse toggle skipped; widget not rendered: {rule_id}")
-            return
-
         if rule_id in self._collapsed_items:
             self._collapsed_items.discard(rule_id)
         else:
             self._collapsed_items.add(rule_id)
-        self._apply_rule_collapse_state(rule_id)
+        self._refresh_action_list(preserve_scroll=True)
         self._sync_all_collapsed_state()
 
-    def _refresh_action_list(self):
+    def _refresh_action_list(self, preserve_scroll: bool = False):
         """액션 목록 새로고침"""
         self._cancel_action_list_render_batch()
-        # 썸네일 참조 정리
-        self._thumbnail_refs.clear()
-        self._action_widgets = {}
+        is_virtual = isinstance(self._scrollable, VirtualScrollFrame)
+        if is_virtual and not preserve_scroll:
+            self._scrollable.set_items([], preserve_scroll=False)
+        if not is_virtual or not preserve_scroll:
+            # 보존 갱신에서는 VirtualScrollFrame이 기존 visible 위젯을 재사용할 수 있다.
+            # 이때 매핑을 먼저 비우면 재사용된 행의 토글/썸네일 상태 연결이 끊긴다.
+            self._thumbnail_refs.clear()
+            self._action_widgets = {}
         self._collapsible_rule_ids.clear()
 
-        # 기존 위젯 삭제
-        for widget in self._scrollable.winfo_children():
-            widget.destroy()
+        items = self._build_visible_rule_render_items()
+        self._visible_rule_items = items
+        if is_virtual:
+            self._scrollable.set_items(items, preserve_scroll=preserve_scroll)
+        else:
+            for widget in self._scrollable.winfo_children():
+                widget.destroy()
+            self._render_action_list_batch(items, start=0, generation=self._render_batch_generation)
+        self._sync_all_collapsed_state()
 
-        # Large analyzed playlists can contain hundreds of rows. Render top-level
-        # rows in short UI-thread batches so the dialog opens and returns smoothly.
-        items = self._build_root_rule_render_items()
-        self._render_action_list_batch(items, start=0, generation=self._render_batch_generation)
+    def _build_visible_rule_render_items(self):
+        items = []
+        for rules in (self._plan.initial_rules, self._plan.monitoring_rules):
+            self._collect_visible_rule_items(rules, items, depth=0, prefix="", parent_id=None)
+        return items
+
+    def _collect_visible_rule_items(
+        self,
+        rules,
+        items,
+        depth: int = 0,
+        prefix: str = "",
+        parent_id: Optional[str] = None,
+    ) -> None:
+        for index, rule in enumerate(rules, start=1):
+            label = f"{prefix}-{index}" if prefix else str(index)
+            items.append({
+                "rule": rule,
+                "depth": depth,
+                "index_label": label,
+                "parent_id": parent_id,
+            })
+            if rule.children:
+                self._collapsible_rule_ids.add(rule.rule_id)
+                if rule.rule_id not in self._collapsed_items:
+                    self._collect_visible_rule_items(
+                        rule.children,
+                        items,
+                        depth=depth + 1,
+                        prefix=label,
+                        parent_id=rule.rule_id,
+                    )
+
+    def _render_virtual_action_item(self, parent, item_data, _index: int):
+        rule = item_data.get("rule")
+        if rule is None:
+            return None
+        return self._create_action_item(
+            parent,
+            str(item_data.get("index_label") or ""),
+            rule,
+            int(item_data.get("depth") or 0),
+            manage_geometry=False,
+            render_inline_children=False,
+        )
+
+    def _on_virtual_action_item_destroyed(self, item_data, _index: int, widget) -> None:
+        rule = item_data.get("rule") if isinstance(item_data, dict) else None
+        rule_id = getattr(rule, "rule_id", None)
+        if not rule_id:
+            return
+        widget_data = self._action_widgets.get(rule_id)
+        if widget_data and widget_data.get("wrapper") is widget:
+            self._action_widgets.pop(rule_id, None)
 
     def _cancel_action_list_render_batch(self):
         self._render_batch_generation += 1
@@ -2424,6 +2492,15 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             items.append((rule, depth, label))
         return items
 
+    def _unpack_rule_render_item(self, item):
+        if isinstance(item, dict):
+            return (
+                item.get("rule"),
+                int(item.get("depth") or 0),
+                str(item.get("index_label") or ""),
+            )
+        return item
+
     def _render_action_list_batch(self, items, start: int, generation: int, batch_size: Optional[int] = None):
         if generation != self._render_batch_generation:
             return
@@ -2431,7 +2508,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             return
         batch_size = batch_size or self._render_batch_size
         end = min(len(items), start + batch_size)
-        for rule, depth, label in items[start:end]:
+        for item in items[start:end]:
+            rule, depth, label = self._unpack_rule_render_item(item)
+            if rule is None:
+                continue
             self._create_action_item(self._scrollable, label, rule, depth)
 
         if end >= len(items):
@@ -2454,7 +2534,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             return
         batch_size = batch_size or self._render_batch_size
         end = min(len(items), start + batch_size)
-        for rule, depth, label in items[start:end]:
+        for item in items[start:end]:
+            rule, depth, label = self._unpack_rule_render_item(item)
+            if rule is None:
+                continue
             self._create_action_item(parent, label, rule, depth)
 
         if end >= len(items):
@@ -2506,6 +2589,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             return
         container = widget_data.get("children_container")
         if container is None:
+            if isinstance(self._scrollable, VirtualScrollFrame):
+                self._refresh_action_list(preserve_scroll=True)
             return
 
         is_collapsed = rule_id in self._collapsed_items
@@ -2519,6 +2604,9 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             container.pack(fill="x")
 
     def _apply_collapse_state(self) -> None:
+        if isinstance(self._scrollable, VirtualScrollFrame):
+            self._refresh_action_list(preserve_scroll=True)
+            return
         processed = set()
         while True:
             pending = [rule_id for rule_id in self._action_widgets.keys() if rule_id not in processed]
@@ -2552,6 +2640,12 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _refresh_rule_row(self, rule_id: str) -> bool:
         """Rebuild one visible rule row/subtree without refreshing the full action list."""
+        if isinstance(self._scrollable, VirtualScrollFrame):
+            index = self._scrollable.find_item_index_by_object_id(rule_id, "AutomationRule")
+            if index < 0:
+                return False
+            self._scrollable.refresh_item(index)
+            return True
         widget_data = self._action_widgets.get(rule_id)
         if not widget_data:
             return False
@@ -2573,7 +2667,16 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         except (tk.TclError, RuntimeError, ValueError, AttributeError):
             return False
 
-    def _create_action_item(self, parent, index: str, rule: AutomationRule, depth: int = 0, before_widget=None):
+    def _create_action_item(
+        self,
+        parent,
+        index: str,
+        rule: AutomationRule,
+        depth: int = 0,
+        before_widget=None,
+        manage_geometry: bool = True,
+        render_inline_children: bool = True,
+    ):
         """동작 항목 생성"""
         # 깊이에 따른 들여쓰기 계산
         indent = depth * 25
@@ -2583,10 +2686,11 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         bg_color = COLORS["bg_glass"] if depth == 0 else COLORS["child_bg"]
 
         item_wrapper = ctk.CTkFrame(parent, fg_color="transparent")
-        if before_widget is not None:
-            item_wrapper.pack(fill="x", before=before_widget)
-        else:
-            item_wrapper.pack(fill="x")
+        if manage_geometry:
+            if before_widget is not None:
+                item_wrapper.pack(fill="x", before=before_widget)
+            else:
+                item_wrapper.pack(fill="x")
 
         item = ctk.CTkFrame(item_wrapper, fg_color=bg_color, corner_radius=IOS_METRICS["control_radius"])
         item.pack(fill="x", pady=3, padx=(left_pad, 10))
@@ -2652,7 +2756,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             "type": COLORS["success"],
             "hotkey": COLORS["accent_orange"],
             "key_press": COLORS["accent_orange"],
-            "scroll": "#b48ead",
+            "scroll": COLORS["scroll_purple"],
             "drag": COLORS["warning"],
         }
         color = action_colors.get(rule.action_type, COLORS["text_muted"])
@@ -2662,7 +2766,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             text=f"{index}",
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=color,
-            text_color="white",
+            text_color=COLORS["text_primary"],
             corner_radius=IOS_METRICS["control_radius_small"],
             width=28,
             height=24,
@@ -2726,12 +2830,14 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 text_color=COLORS["warning"],
             ).pack(side="right")
 
-        if rule.children:
+        if render_inline_children and rule.children:
             children_container = ctk.CTkFrame(item_wrapper, fg_color="transparent")
             self._action_widgets[rule.rule_id]["children_container"] = children_container
             if rule.rule_id not in self._collapsed_items:
                 children_container.pack(fill="x")
                 self._ensure_children_rendered(rule.rule_id)
+
+        return item_wrapper
 
     def _display_thumbnail(self, parent, rule: AutomationRule):
         """Display an action thumbnail without blocking the UI thread."""
@@ -3292,7 +3398,7 @@ class AnalyzerView(BaseView):
             text_color=COLORS["text_primary"],
             width=140,
             height=26,
-            corner_radius=6,
+            corner_radius=IOS_METRICS["pill_radius"],
             command=self._cleanup_unused_images,
         ).pack(side="right", padx=(0, 8))
 
@@ -3376,7 +3482,7 @@ class AnalyzerView(BaseView):
             height=20,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color="white",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right")
@@ -3390,7 +3496,7 @@ class AnalyzerView(BaseView):
             height=20,
             fg_color=COLORS["accent_blue"],
             hover_color=COLORS["hover_blue"],
-            text_color="white",
+            text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 3))
@@ -3632,7 +3738,7 @@ class AnalyzerView(BaseView):
             height=28,
             fg_color=lock_color,
             hover_color=COLORS["danger_hover"] if recording.locked else COLORS["bg_card_hover"],
-            text_color="white" if recording.locked else COLORS["text_secondary"],
+            text_color=COLORS["text_primary"] if recording.locked else COLORS["text_secondary"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 5))
