@@ -186,6 +186,61 @@ def test_virtual_scroll_destroy_callbacks_prune_stale_widget_maps():
     assert "self._action_widgets.pop(action_id, None)" in sequence_destroy
 
 
+def test_plan_and_sequence_detail_reuse_fonts_in_rebuilt_rows():
+    text = _read_text()
+    plan_text = text[
+        text.index("class PlanDetailDialog"):
+        text.index("class SequenceDetailDialog")
+    ]
+    sequence_text = text[
+        text.index("class SequenceDetailDialog"):
+        text.index("class PlayerView")
+    ]
+
+    for class_text, compact_marker, compact_end_marker, row_marker, row_end_marker in (
+        (
+            plan_text,
+            "def _create_compact_rule_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = \"1\"):",
+            "def _create_action_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = \"1\", use_pack: bool = True):",
+            "def _create_action_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = \"1\", use_pack: bool = True):",
+            "def _on_drag_start(self, event, rule: AutomationRule, widget):",
+        ),
+        (
+            sequence_text,
+            "def _create_compact_action_item(self, parent, action: Action, depth: int = 0, index_str: str = \"1\", before_widget=None, use_pack: bool = True):",
+            "def _create_action_item(self, parent, action: Action, depth: int = 0, index_str: str = \"1\", before_widget=None, use_pack: bool = True):",
+            "def _create_action_item(self, parent, action: Action, depth: int = 0, index_str: str = \"1\", before_widget=None, use_pack: bool = True):",
+            "def _ensure_action_children_rendered(self, action_id) -> bool:",
+        ),
+    ):
+        init_method = class_text[
+            class_text.index("def __init__("):
+            class_text.index("def _notify_player_partial_run_started")
+            if "def _notify_player_partial_run_started" in class_text
+            else class_text.index("def _init_collapsed_items")
+        ]
+        font_method = class_text[
+            class_text.index("def _font(self, size, weight=None):"):
+            class_text.index("def _setup_ui(self):")
+        ]
+        compact_method = class_text[
+            class_text.index(compact_marker):
+            class_text.index(compact_end_marker, class_text.index(compact_marker))
+        ]
+        row_method = class_text[
+            class_text.index(row_marker):
+            class_text.index(row_end_marker, class_text.index(row_marker))
+        ]
+
+        assert "self._font_cache = {}" in init_method
+        assert 'kwargs = {"family": IOS_FONTS["family"], "size": size}' in font_method
+        assert "self._font_cache[key] = cached" in font_method
+        assert "font=self._font(10)" in compact_method
+        assert "font=self._font(12, \"bold\")" in compact_method
+        assert "font=self._font(13, \"bold\")" in row_method
+        assert "font=self._font(12)" in row_method
+
+
 def test_virtual_scroll_set_items_reuses_visible_rows_instead_of_full_destroy():
     virtual_text = (ROOT / "src" / "ui" / "virtual_scroll.py").read_text(encoding="utf-8")
     method = _method_slice(

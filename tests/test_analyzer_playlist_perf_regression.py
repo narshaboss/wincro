@@ -138,6 +138,44 @@ def test_playlist_dialog_caches_collapse_badges_and_skips_duplicate_button_confi
     assert "widget_data[\"toggle_text\"] = text" in toggle_method
 
 
+def test_playlist_dialog_reuses_fonts_in_frequently_rebuilt_action_rows():
+    text = _read_text()
+    dialog_slice = text[
+        text.index("class AutomationPlanDialog(ctk.CTkToplevel):"):
+        text.index("class AnalyzerView")
+    ]
+    init_method = _method_slice(
+        dialog_slice,
+        "def __init__(self, parent, plan: AutomationPlan):",
+        "def _init_collapsed_items(self):",
+    )
+    font_method = _method_slice(
+        dialog_slice,
+        "def _font(self, size, weight=None):",
+        "def _count_rule_descendants(self, rule: AutomationRule) -> int:",
+    )
+    create_method = _method_slice(
+        dialog_slice,
+        "def _create_action_item(",
+        "def _display_thumbnail(self, parent, rule: AutomationRule):",
+    )
+    thumbnail_method = _method_slice(
+        dialog_slice,
+        "def _display_thumbnail(self, parent, rule: AutomationRule):",
+        "def _display_thumbnail_sync_legacy(self, parent, rule: AutomationRule):",
+    )
+
+    assert "self._font_cache = {}" in init_method
+    assert 'kwargs = {"family": IOS_FONTS["family"], "size": size}' in font_method
+    assert "self._font_cache[key] = cached" in font_method
+    assert "font=self._font(13, \"bold\")" in create_method
+    assert "font=self._font(14, \"bold\")" in create_method
+    assert "font=self._font(12)" in create_method
+    assert "font=self._font(24, \"bold\")" in thumbnail_method
+    assert "font=self._font(12, \"bold\")" in thumbnail_method
+    assert "CTkFont(family=IOS_FONTS" not in dialog_slice
+
+
 def test_playlist_dialog_virtual_items_flatten_only_visible_children():
     text = _read_text()
     collect_method = _method_slice(

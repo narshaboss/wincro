@@ -163,6 +163,35 @@ def test_monitoring_editor_watch_list_thumbnails_do_not_decode_on_ui_thread():
     assert "self._load_thumbnail(watch" not in header
 
 
+def test_monitoring_editor_reuses_fonts_in_frequently_rebuilt_watch_rows():
+    text = _read_text(MONITORING_EDITOR)
+    init_method = text[
+        text.index("def __init__(self, owner, rule, plan_rules):"):
+        text.index("def destroy(self):")
+    ]
+    font_method = text[
+        text.index("def _font(self, size, weight=None):"):
+        text.index("# ------------------------------------------------------------------", text.index("def _font(self, size, weight=None):"))
+    ]
+    header = text[
+        text.index("def _build_watch_header(self, item_frame, idx, watch, is_collapsed):"):
+        text.index("def _build_watch_play_button(self, header_row, idx):")
+    ]
+    detail = text[
+        text.index("def _build_watch_detail(self, item_frame, idx, watch):"):
+        text.index("def _bind_context_menu(self, item_frame, idx):")
+    ]
+
+    assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in text
+    assert "self._font_cache = {}" in init_method
+    assert 'kwargs = {"family": IOS_FONTS["family"], "size": size}' in font_method
+    assert "self._font_cache[key] = cached" in font_method
+    assert "font=self._font(13, \"bold\")" in header
+    assert "font=self._font(11)" in header
+    assert "font=self._font(11)" in detail
+    assert "dropdown_font=self._font(10)" in detail
+
+
 def test_player_sequence_picker_uses_virtual_scroll_instead_of_full_rebuild():
     text = _read_text(PLAYER_VIEW)
     start = text.index("def _render_sequence_list(self):")
@@ -174,6 +203,41 @@ def test_player_sequence_picker_uses_virtual_scroll_instead_of_full_rebuild():
     assert "self._sequence_frame.set_items(items, preserve_scroll=True)" in sequence_render
     assert "winfo_children()" not in sequence_render
     assert "widget.destroy()" not in sequence_render
+
+
+def test_player_sequence_picker_reuses_fonts_for_virtual_rows():
+    text = _read_text(PLAYER_VIEW)
+    player_text = text[text.index("class PlayerView(BaseView):"):]
+    init_method = text[
+        text.index("def __init__(self, parent, **kwargs):", text.index("class PlayerView(BaseView):")):
+        text.index("def after(self, ms, func=None, *args):", text.index("class PlayerView(BaseView):"))
+    ]
+    font_method = player_text[
+        player_text.index("def _font(self, size, weight=None):"):
+        player_text.index("def _begin_external_execution", player_text.index("def _font(self, size, weight=None):"))
+    ]
+    render_method = player_text[
+        player_text.index("def _render_sequence_list_item(self, parent, item_data, _index: int):"):
+        player_text.index("def _setup_ui(self) -> None:")
+    ]
+    plan_method = player_text[
+        player_text.index("def _create_plan_item(self, plan: AutomationPlan, parent=None):"):
+        player_text.index("def _rename_plan(self, plan: AutomationPlan) -> None:")
+    ]
+    sequence_method = player_text[
+        player_text.index("def _create_sequence_item(self, sequence: Sequence, parent=None):"):
+        player_text.index("def _delete_sequence(self, sequence: Sequence) -> None:")
+    ]
+
+    assert "self._font_cache = {}" in init_method
+    assert 'kwargs = {"family": IOS_FONTS["family"], "size": size}' in font_method
+    assert "self._font_cache[key] = cached" in font_method
+    assert "font=self._font(12, \"bold\")" in render_method
+    assert "font=self._font(12)" in render_method
+    assert "font=self._font(13, \"bold\")" in plan_method
+    assert "font=self._font(11)" in plan_method
+    assert "font=self._font(13, \"bold\")" in sequence_method
+    assert "font=self._font(11)" in sequence_method
 
 
 def test_player_view_avoids_reentrant_tk_update_calls():

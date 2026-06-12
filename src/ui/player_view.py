@@ -508,6 +508,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._action_list_refresh_job = None
         self._rule_metadata_refresh_job = None
         self._rule_metadata_refresh_generation = 0
+        self._font_cache = {}
 
         self.title(f"계획 수정 - {plan.name}")
         self.geometry("950x700")
@@ -819,6 +820,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
             total += 1 + self._count_rule_tree(getattr(rule, "children", []) or [])
         return total
 
+    def _font(self, size, weight=None):
+        """Reuse CTkFont objects while rebuilding large rule lists."""
+        key = (size, weight or "")
+        cached = self._font_cache.get(key)
+        if cached is None:
+            kwargs = {"family": IOS_FONTS["family"], "size": size}
+            if weight:
+                kwargs["weight"] = weight
+            cached = ctk.CTkFont(**kwargs)
+            self._font_cache[key] = cached
+        return cached
+
     def _setup_ui(self):
         """UI 구성"""
         # 하단 버튼
@@ -1048,7 +1061,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._partial_status_label = ctk.CTkLabel(
             run_status_frame,
             text="현재 실행: 대기 중",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
+            font=self._font(13, "bold"),
             text_color=COLORS["text_secondary"],
             anchor="w",
         )
@@ -1500,7 +1513,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             toggle_btn = ctk.CTkButton(
                 row,
                 text="▶" if is_collapsed else "▼",
-                font=ctk.CTkFont(size=10),
+                font=self._font(10),
                 fg_color="transparent",
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_secondary"],
@@ -1518,7 +1531,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             row,
             text=index_str,
             width=38,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=self._font(12, "bold"),
             text_color=COLORS["text_secondary"],
         )
         number.pack(side="left", padx=(0, 6), pady=8)
@@ -1543,7 +1556,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             row,
             text=self._compact_rule_label_text(rule),
             anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=self._font(12, "bold"),
             text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
         )
         name_label.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
@@ -1816,7 +1829,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 숫자 배지 (맨 앞에 위치)
         num_lbl = ctk.CTkLabel(
-            content, text=f"{index}", font=ctk.CTkFont(size=12, weight="bold"),
+            content, text=f"{index}", font=self._font(12, "bold"),
             fg_color=badge_color, text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"], width=26, height=22,
         )
         num_lbl.pack(side="left", padx=(0, 8))
@@ -1828,7 +1841,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             toggle_btn = ctk.CTkButton(
                 content,
                 text="▶" if is_collapsed else "▼",
-                font=ctk.CTkFont(size=10),
+                font=self._font(10),
                 fg_color="transparent",
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_secondary"],
@@ -1865,13 +1878,13 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 깊이 표시 (자식인 경우)
         if depth > 0:
-            lbl = ctk.CTkLabel(row1, text="└", font=ctk.CTkFont(size=14), text_color=COLORS["text_muted"])
+            lbl = ctk.CTkLabel(row1, text="└", font=self._font(14), text_color=COLORS["text_muted"])
             lbl.pack(side="left", padx=(0, 4))
             bind_drag(lbl)
 
         type_lbl = ctk.CTkLabel(
             row1, text=action_names.get(rule.action_type, rule.action_type or "동작"),
-            font=ctk.CTkFont(size=13, weight="bold"), text_color=type_color,
+            font=self._font(13, "bold"), text_color=type_color,
         )
         type_lbl.pack(side="left")
         bind_drag(type_lbl)
@@ -1881,7 +1894,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         name_lbl = ctk.CTkLabel(
             row1,
             text=f" - {rule.description}" if rule.description else "",
-            font=ctk.CTkFont(size=12),
+            font=self._font(12),
             text_color=primary_text_color,
         )
         name_lbl.pack(side="left")
@@ -25041,6 +25054,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         self._action_list_refresh_job = None
         self._action_metadata_refresh_job = None
         self._action_metadata_refresh_generation = 0
+        self._font_cache = {}
 
         self.title(f"재생 수정 - {sequence.name}")
         self.geometry("950x700")
@@ -25069,6 +25083,18 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             total += 1 + self._count_action_tree(getattr(action, "children", []) or [])
         return total
 
+    def _font(self, size, weight=None):
+        """Reuse CTkFont objects while rebuilding large action lists."""
+        key = (size, weight or "")
+        cached = self._font_cache.get(key)
+        if cached is None:
+            kwargs = {"family": IOS_FONTS["family"], "size": size}
+            if weight:
+                kwargs["weight"] = weight
+            cached = ctk.CTkFont(**kwargs)
+            self._font_cache[key] = cached
+        return cached
+
     def _setup_ui(self):
         """UI 구성"""
         # 하단 버튼
@@ -25086,7 +25112,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             height=38,
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
+            font=self._font(13, "bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         )
         self._save_btn.pack(side="left", padx=8)
@@ -25686,7 +25712,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             toggle_btn = ctk.CTkButton(
                 row,
                 text="▶" if is_collapsed else "▼",
-                font=ctk.CTkFont(size=10),
+                font=self._font(10),
                 fg_color="transparent",
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_secondary"],
@@ -25703,7 +25729,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             row,
             text=index_str,
             width=38,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=self._font(12, "bold"),
             text_color=COLORS["text_secondary"],
         )
         number.pack(side="left", padx=(0, 6), pady=8)
@@ -25728,7 +25754,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             row,
             text=self._compact_action_label_text(action),
             anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=self._font(12, "bold"),
             text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
         )
         name_label.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
@@ -25924,7 +25950,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 숫자 배지 (맨 앞에 위치)
         num_lbl = ctk.CTkLabel(
-            content, text=f"{index}", font=ctk.CTkFont(size=12, weight="bold"),
+            content, text=f"{index}", font=self._font(12, "bold"),
             fg_color=badge_color, text_color=COLORS["text_primary"], corner_radius=IOS_METRICS["control_radius_small"], width=26, height=22,
         )
         num_lbl.pack(side="left", padx=(0, 8))
@@ -25936,7 +25962,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             toggle_btn = ctk.CTkButton(
                 content,
                 text="▶" if is_collapsed else "▼",
-                font=ctk.CTkFont(size=10),
+                font=self._font(10),
                 fg_color="transparent",
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_secondary"],
@@ -25973,7 +25999,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 깊이 표시 (자식인 경우)
         if depth > 0:
-            lbl = ctk.CTkLabel(row1, text="└", font=ctk.CTkFont(size=14), text_color=COLORS["text_muted"])
+            lbl = ctk.CTkLabel(row1, text="└", font=self._font(14), text_color=COLORS["text_muted"])
             lbl.pack(side="left", padx=(0, 4))
             bind_drag(lbl)
 
@@ -25982,7 +26008,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             type_text = f"[비활성] {type_text}"
         type_lbl = ctk.CTkLabel(
             row1, text=type_text,
-            font=ctk.CTkFont(size=13, weight="bold"), text_color=type_color,
+            font=self._font(13, "bold"), text_color=type_color,
         )
         type_lbl.pack(side="left")
         bind_drag(type_lbl)
@@ -25992,7 +26018,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         name_lbl = ctk.CTkLabel(
             row1,
             text=f" - {action.description}" if action.description else "",
-            font=ctk.CTkFont(size=12),
+            font=self._font(12),
             text_color=primary_text_color,
         )
         name_lbl.pack(side="left")
@@ -26003,7 +26029,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if has_children:
             child_lbl = ctk.CTkLabel(
                 row1, text=f"  ({len(action.children)}개 하위)",
-                font=ctk.CTkFont(size=11), text_color=secondary_text_color,
+                font=self._font(11), text_color=secondary_text_color,
             )
             child_lbl.pack(side="left")
             bind_drag(child_lbl)
@@ -26021,7 +26047,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         detail_lbl = ctk.CTkLabel(
             row2,
             text=self._action_detail_text(action, compact=False),
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=secondary_text_color,
         )
         detail_lbl.pack(side="left")
@@ -26048,7 +26074,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         ctk.CTkButton(
             move_frame,
             text="▲",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=self._font(14, "bold"),
             fg_color="transparent",
             hover_color=COLORS["accent_blue"],
             text_color=COLORS["text_secondary"],
@@ -26062,7 +26088,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         ctk.CTkButton(
             move_frame,
             text="▼",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=self._font(14, "bold"),
             fg_color="transparent",
             hover_color=COLORS["accent_blue"],
             text_color=COLORS["text_secondary"],
@@ -26077,7 +26103,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         ctk.CTkButton(
             btn_frame,
             text="✕",
-            font=ctk.CTkFont(size=12),
+            font=self._font(12),
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
             text_color=COLORS["text_primary"],
@@ -26092,7 +26118,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         skip_btn_action = ctk.CTkButton(
             btn_frame,
             text="S",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=self._font(11, "bold"),
             **_ios_state_button_style(is_skip_action),
             width=30,
             height=26,
@@ -26108,7 +26134,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         repeat_btn = ctk.CTkButton(
             btn_frame,
             text=f"x{repeat_count}",
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             **_ios_repeat_button_style(repeat_count, until_disappears),
             width=40,
             height=26,
@@ -26125,7 +26151,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         delay_btn = ctk.CTkButton(
             btn_frame,
             text=f"{wait_time:.1f}초" + ("*" if has_random else ""),
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             **_ios_state_button_style(has_random),
             width=55,
             height=26,
@@ -26253,7 +26279,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
                 # 캐시 미스 — 플레이스홀더 표시 후 백그라운드 로딩
                 placeholder = ctk.CTkLabel(
-                    parent, text="📷", font=ctk.CTkFont(size=max(12, min(18, size // 2))),
+                    parent, text="📷", font=self._font(max(12, min(18, size // 2))),
                     text_color=COLORS["text_muted"],
                 )
                 placeholder.pack(expand=True)
@@ -26302,7 +26328,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             parent,
             text=icons.get(action.action_type, "📋"),
-            font=ctk.CTkFont(size=max(14, min(20, size // 2))),
+            font=self._font(max(14, min(20, size // 2))),
             text_color=COLORS["text_muted"],
         ).pack(expand=True)
 
@@ -28222,6 +28248,7 @@ class PlayerView(BaseView):
         self._last_plan_progress_snapshot = None
         self._last_playback_progress_snapshot = None
         self._last_action_text = None
+        self._font_cache = {}
 
         self._setup_ui()
         self._setup_callbacks()
@@ -28237,6 +28264,18 @@ class PlayerView(BaseView):
             func,
             *args,
         )
+
+    def _font(self, size, weight=None):
+        """Reuse CTkFont objects in virtualized player rows."""
+        key = (size, weight or "")
+        cached = self._font_cache.get(key)
+        if cached is None:
+            kwargs = {"family": IOS_FONTS["family"], "size": size}
+            if weight:
+                kwargs["weight"] = weight
+            cached = ctk.CTkFont(**kwargs)
+            self._font_cache[key] = cached
+        return cached
 
     def _begin_external_execution(self, owner, mode: str = "부분실행") -> None:
         """PlanDetailDialog 같은 외부 실행원을 메인 재생 UI에 연결."""
@@ -28413,7 +28452,7 @@ class PlayerView(BaseView):
             ctk.CTkLabel(
                 row,
                 text=text,
-                font=ctk.CTkFont(size=12, weight="bold"),
+                font=self._font(12, "bold"),
                 text_color=color,
             ).pack(anchor="w", padx=10, pady=(10, 4))
             return row
@@ -28427,7 +28466,7 @@ class PlayerView(BaseView):
             row,
             text="📋 실행할 재생가 없습니다\n\n사용 방법:\n1. 녹화 탭에서 화면 녹화\n2. 분석 탭에서 동작 분석\n3. 여기서 실행",
             text_color=COLORS["text_secondary"],
-            font=ctk.CTkFont(size=12),
+            font=self._font(12),
             justify="center",
         ).pack(expand=True, pady=12)
         return row
@@ -28847,7 +28886,7 @@ class PlayerView(BaseView):
             lock_label = ctk.CTkLabel(
                 top_row,
                 text="🔒",
-                font=ctk.CTkFont(size=14, weight="bold"),
+                font=self._font(14, "bold"),
                 text_color=COLORS["error"],
                 cursor="hand2",
             )
@@ -28858,7 +28897,7 @@ class PlayerView(BaseView):
         name_label = ctk.CTkLabel(
             top_row,
             text=plan.name,
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=self._font(13, "bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
             cursor="hand2",
@@ -28871,7 +28910,7 @@ class PlayerView(BaseView):
         rule_label = ctk.CTkLabel(
             top_row,
             text=f"{rule_count}개 동작",
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["text_muted"],
             cursor="hand2",
         )
@@ -28982,7 +29021,7 @@ class PlayerView(BaseView):
         name_label = ctk.CTkLabel(
             top_row,
             text=sequence.name,
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=self._font(13, "bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
             cursor="hand2",
@@ -28998,7 +29037,7 @@ class PlayerView(BaseView):
         info_label = ctk.CTkLabel(
             top_row,
             text=info_text,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["text_muted"],
             cursor="hand2",
         )
@@ -29020,7 +29059,7 @@ class PlayerView(BaseView):
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             corner_radius=999,
         ).pack(side="right")
         return item_frame

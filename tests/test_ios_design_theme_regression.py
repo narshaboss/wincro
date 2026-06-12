@@ -231,7 +231,7 @@ def test_monitoring_editor_and_help_dialog_use_ios_tokens():
     monitoring_editor = MONITORING_EDITOR.read_text(encoding="utf-8")
     help_dialog = HELP_DIALOG.read_text(encoding="utf-8")
 
-    assert "from .theme import COLORS, IOS_METRICS" in monitoring_editor
+    assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in monitoring_editor
     assert "from .theme import COLORS, IOS_METRICS" in help_dialog
     assert 'hover_color=COLORS["green_hover"]' in monitoring_editor
     assert 'hover_color=COLORS["danger_hover"]' in monitoring_editor

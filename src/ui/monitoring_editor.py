@@ -18,7 +18,7 @@ from PIL import Image
 
 from ..utils.logger import get_logger
 from ..utils.config import DATA_DIR
-from .theme import COLORS, IOS_METRICS
+from .theme import COLORS, IOS_FONTS, IOS_METRICS
 from .constants import (
     ACTION_NAMES_SHORT,
     get_action_clipboard, collect_all_actions,
@@ -61,6 +61,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._watch_render_after_id = None
         self._watch_render_generation = 0
         self._watch_render_batch_size = 12
+        self._font_cache = {}
 
         self._setup_dialog()
         self._init_data()
@@ -69,6 +70,18 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def destroy(self):
         self._cancel_watch_list_render_batch()
         super().destroy()
+
+    def _font(self, size, weight=None):
+        """Reuse CTkFont objects in frequently rebuilt watch rows."""
+        key = (size, weight or "")
+        cached = self._font_cache.get(key)
+        if cached is None:
+            kwargs = {"family": IOS_FONTS["family"], "size": size}
+            if weight:
+                kwargs["weight"] = weight
+            cached = ctk.CTkFont(**kwargs)
+            self._font_cache[key] = cached
+        return cached
 
     # ------------------------------------------------------------------
     # Initialization
@@ -183,7 +196,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkLabel(
             main_frame,
             text="※ 선택한 액션에 하위 액션이 있으면 함께 실행됩니다",
-            font=ctk.CTkFont(size=10),
+            font=self._font(10),
             text_color=COLORS["text_muted"],
         ).pack(anchor="w", pady=(5, 0))
 
@@ -260,7 +273,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         source = str(path or "")
         label._thumb_source = (source, size)
         if not source or not Path(source).exists():
-            label.configure(image=None, text="?", font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"])
+            label.configure(image=None, text="?", font=self._font(12), text_color=COLORS["text_muted"])
             return
 
         cached = get_cached_thumbnail(source, size)
@@ -269,7 +282,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             label._thumb_img = cached
             return
 
-        label.configure(image=None, text="IMG", font=ctk.CTkFont(size=10), text_color=COLORS["text_muted"])
+        label.configure(image=None, text="IMG", font=self._font(10), text_color=COLORS["text_muted"])
 
         def load_thumbnail(path=source, target_size=size, target_label=label):
             try:
@@ -1191,7 +1204,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             header_row, text="▶" if is_collapsed else "▼", width=24, height=24,
-            font=ctk.CTkFont(size=10),
+            font=self._font(10),
             fg_color="transparent", hover_color=COLORS["bg_card"],
             text_color=COLORS["text_muted"],
             command=toggle_collapse,
@@ -1200,7 +1213,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         # 번호
         ctk.CTkLabel(
             header_row, text=f"{idx + 1}.",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=self._font(13, "bold"),
             text_color=COLORS["text_primary"],
             width=22,
         ).pack(side="left")
@@ -1236,7 +1249,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             header_row, text=summary_text,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["text_secondary"],
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
@@ -1259,7 +1272,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             header_row, text="✕", width=28, height=24,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             fg_color=COLORS["error"], hover_color=COLORS["danger_hover"],
             command=delete_watch,
         ).pack(side="right")
@@ -1395,20 +1408,20 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             row1, text="이미지:",
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["text_muted"],
         ).pack(side="left", padx=(0, 5))
 
         img_name = Path(watch["image"]).name[:20] + "..." if watch.get("image") and len(Path(watch["image"]).name) > 20 else (Path(watch["image"]).name if watch.get("image") else "없음")
         ctk.CTkLabel(
             row1, text=img_name,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["accent"] if watch.get("image") else COLORS["text_muted"],
         ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
             row1, text="선택", width=45, height=24,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             command=select_watch_image,
         ).pack(side="left", padx=(0, 10))
@@ -1420,7 +1433,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         condition_btn = ctk.CTkButton(
             row1, text=condition_text, width=50, height=24,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             fg_color=condition_color,
             hover_color=COLORS["confidence_amber_hover"] if condition_image else COLORS["bg_card"],
             command=lambda i=idx: self._edit_condition(i),
@@ -1432,7 +1445,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         # 점프할 액션 선택 (드롭다운)
         ctk.CTkLabel(
             row1, text="→",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=self._font(12, "bold"),
             text_color=COLORS["text_secondary"],
         ).pack(side="left", padx=(0, 5))
 
@@ -1449,8 +1462,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             values=option_texts,
             width=180,
             height=26,
-            font=ctk.CTkFont(size=11),
-            dropdown_font=ctk.CTkFont(size=10),
+            font=self._font(11),
+            dropdown_font=self._font(10),
             state="readonly",
         )
         goto_combo.pack(side="left")
@@ -1471,7 +1484,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             row2, text="검색범위:",
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["text_muted"],
         ).pack(side="left", padx=(0, 5))
 
@@ -1480,7 +1493,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         region_label = ctk.CTkLabel(
             row2, text=region_text,
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["accent"] if region else COLORS["text_secondary"],
             width=150,
             anchor="w",
@@ -1493,7 +1506,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             row2, text="범위 지정", width=65, height=24,
-            font=ctk.CTkFont(size=10),
+            font=self._font(10),
             fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             command=select_region,
         ).pack(side="left", padx=(0, 5))
@@ -1504,7 +1517,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             row2, text="초기화", width=45, height=24,
-            font=ctk.CTkFont(size=10),
+            font=self._font(10),
             fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
             command=clear_region,
@@ -1516,14 +1529,14 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             row_conf, text="인식률:",
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["text_muted"],
         ).pack(side="left", padx=(0, 5))
 
         watch_conf = watch.get("confidence", 0.65)
         conf_label = ctk.CTkLabel(
             row_conf, text=f"{int(watch_conf * 100)}%",
-            font=ctk.CTkFont(size=11),
+            font=self._font(11),
             text_color=COLORS["accent"],
             width=35,
         )

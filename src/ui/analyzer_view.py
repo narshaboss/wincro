@@ -2211,6 +2211,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         self._render_batch_size = 24
         self._rule_descendant_count_cache = {}
         self._last_collapse_btn_text = None
+        self._font_cache = {}
 
         # 자식이 있는 규칙은 기본적으로 접힌 상태로 시작
         self._init_collapsed_items()
@@ -2261,7 +2262,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             height=45,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
+            font=self._font(14, "bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=15)
 
@@ -2288,7 +2289,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             header_row,
             text="녹화된 동작 목록",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=22, weight="bold"),
+            font=self._font(22, "bold"),
             text_color=COLORS["text_primary"],
         ).pack(side="left")
 
@@ -2302,7 +2303,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
+            font=self._font(11),
             corner_radius=IOS_METRICS["pill_radius"],
         )
         self._collapse_btn.pack(side="right")
@@ -2312,7 +2313,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             main,
             text=f"총 {total_count}개의 동작이 감지되었습니다. 확인 후 승인하세요.",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13),
+            font=self._font(13),
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", pady=(5, 20))
 
@@ -2338,6 +2339,18 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             if rule.children:
                 count += self._count_all_rules(rule.children)
         return count
+
+    def _font(self, size, weight=None):
+        """Reuse CTkFont objects while rebuilding virtualized action rows."""
+        key = (size, weight or "")
+        cached = self._font_cache.get(key)
+        if cached is None:
+            kwargs = {"family": IOS_FONTS["family"], "size": size}
+            if weight:
+                kwargs["weight"] = weight
+            cached = ctk.CTkFont(**kwargs)
+            self._font_cache[key] = cached
+        return cached
 
     def _count_rule_descendants(self, rule: AutomationRule) -> int:
         """Collapse badge count is stable in this dialog, so cache recursive counts."""
@@ -2747,7 +2760,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 fg_color=COLORS["bg_elevated"],
                 hover_color=COLORS["bg_card_hover"],
                 text_color=COLORS["text_muted"],
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
+                font=self._font(11),
                 corner_radius=IOS_METRICS["control_radius_small"],
             )
             toggle_btn.pack(side="left", padx=(0, 8))
@@ -2789,7 +2802,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             row1,
             text=f"{index}",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
+            font=self._font(13, "bold"),
             fg_color=color,
             text_color=COLORS["text_primary"],
             corner_radius=IOS_METRICS["control_radius_small"],
@@ -2810,7 +2823,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             row1,
             text=action_names.get(rule.action_type, rule.action_type or "동작"),
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
+            font=self._font(14, "bold"),
             text_color=color,
         ).pack(side="left")
 
@@ -2842,7 +2855,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row2,
                 text="  |  ".join(details),
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
+                font=self._font(12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
 
@@ -2851,7 +2864,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row2,
                 text=f"대기 {rule.wait_after:.1f}초",
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
+                font=self._font(11),
                 text_color=COLORS["warning"],
             ).pack(side="right")
 
@@ -2882,7 +2895,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 parent,
                 text=icons.get(rule.action_type, "A"),
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=24, weight="bold"),
+                font=self._font(24, "bold"),
                 text_color=COLORS["text_muted"],
             ).pack(expand=True)
 
@@ -2913,7 +2926,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         placeholder = ctk.CTkLabel(
             parent,
             text="IMG",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=self._font(12, "bold"),
             text_color=COLORS["text_muted"],
         )
         placeholder.pack(expand=True)
