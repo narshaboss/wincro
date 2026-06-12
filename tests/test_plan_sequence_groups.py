@@ -385,7 +385,7 @@ def test_existing_config_load_preserves_pc_local_player_and_ui_settings(monkeypa
     assert loaded.ui.branding_profile_version == "older_brand_marker"
 
 
-def test_current_release_forces_only_player_auto_run_group_once(monkeypatch, tmp_path):
+def test_next_release_preserves_pc_local_auto_run_group_after_force_window(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -426,32 +426,19 @@ def test_current_release_forces_only_player_auto_run_group_once(monkeypatch, tmp
     assert loaded.ui.window_mode == "editor"
     assert loaded.arduino.com_port == "COM9"
     assert loaded.arduino.enabled is True
-    assert loaded.player.auto_run_enabled is True
-    assert loaded.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
-    assert loaded.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
-    assert len(loaded.player.plan_sequence_groups) == len(AUTO_RUN_PROFILE_GROUPS)
+    assert loaded.player.auto_run_enabled is False
+    assert loaded.player.auto_run_profile_version == "auto_hunt_raid_factory_v4"
+    assert loaded.player.active_plan_sequence_group_id == "custom"
+    assert len(loaded.player.plan_sequence_groups) == 1
     auto_group = loaded.player.plan_sequence_groups[0]
-    assert auto_group["group_id"] == AUTO_RUN_PROFILE_GROUP_ID
-    assert auto_group["repeat_count"] == AUTO_RUN_PROFILE_GROUP_REPEAT
-    assert [Path(entry["plan_path"]).name for entry in auto_group["entries"]] == [
-        file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
-    ]
-    assert [entry["repeat_count"] for entry in auto_group["entries"]] == [
-        repeat for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
-    ]
-    assert [Path(path).name for path in loaded.player.plan_sequence] == [
-        file_name
-        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
-        for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
-    ]
-    assert loaded.player.plan_sequence_repeats == [
-        repeat
-        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
-        for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
-    ]
+    assert auto_group["group_id"] == "custom"
+    assert auto_group["repeat_count"] == 2
+    assert auto_group["entries"] == [{"plan_path": r"C:\plans\custom.json", "repeat_count": 7}]
+    assert loaded.player.plan_sequence == [r"C:\plans\custom.json", r"C:\plans\custom.json"]
+    assert loaded.player.plan_sequence_repeats == [7, 7]
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
-    assert persisted["player"]["auto_run_profile_version"] == AUTO_RUN_PROFILE_VERSION
-    assert persisted["player"]["plan_sequence_groups"][0]["entries"][1]["repeat_count"] == 5
+    assert persisted["player"]["auto_run_profile_version"] == "auto_hunt_raid_factory_v4"
+    assert persisted["player"]["plan_sequence_groups"][0]["entries"][0]["repeat_count"] == 7
     assert persisted["ui"]["app_name"] == "PC Local"
     assert persisted["ui"]["local_unknown"] == "keep-ui"
     assert persisted["arduino"]["com_port"] == "COM9"
