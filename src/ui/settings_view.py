@@ -54,7 +54,7 @@ class SettingsView(BaseView):
         self._stop_flag = threading.Event()
         self._active_threads: list = []
         config = get_config()
-        # 업데이트 UI는 숨겼지만 기존 내부 핸들러가 참조할 수 있어 기본 변수는 유지한다.
+        # 업데이트 위젯 생성 전에도 핸들러가 안전하게 참조할 수 있도록 기본 변수는 먼저 만든다.
         self._github_repo_var = ctk.StringVar(value=getattr(config.update, "github_repo", ""))
         self._auto_update_var = ctk.BooleanVar(value=bool(getattr(config.update, "auto_check", False)))
 
@@ -83,11 +83,12 @@ class SettingsView(BaseView):
         main_frame = ctk.CTkFrame(self, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # 그리드 설정: 일반/재생만 크게 표시
+        # 그리드 설정: 일반/재생은 크게 유지하고, 하단 업데이트 영역은 작게 고정한다.
         main_frame.grid_columnconfigure(0, weight=1, uniform="col")
         main_frame.grid_rowconfigure(0, weight=2)
         main_frame.grid_rowconfigure(1, weight=5)
-        main_frame.grid_rowconfigure(2, weight=0)  # 저장 버튼 행 (고정)
+        main_frame.grid_rowconfigure(2, weight=0, minsize=96)  # 업데이트 설정 행
+        main_frame.grid_rowconfigure(3, weight=0)  # 저장 버튼 행 (고정)
 
         # 상단: 일반 설정
         general_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -99,9 +100,14 @@ class SettingsView(BaseView):
         player_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 6))
         self._setup_player_settings(player_frame)
 
+        # 업데이트 설정
+        update_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        update_frame.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 6))
+        self._setup_update_settings(update_frame)
+
         # 저장 버튼
         save_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        save_frame.grid(row=2, column=0, sticky="nsew", padx=0, pady=(4, 0))
+        save_frame.grid(row=3, column=0, sticky="nsew", padx=0, pady=(4, 0))
         self._setup_save_button(save_frame)
 
     def _setup_general_settings(self, parent) -> None:
@@ -1297,26 +1303,28 @@ class SettingsView(BaseView):
         """업데이트 설정 섹션 (GitHub 기반)"""
         from ..utils.config import APP_VERSION
 
-        card = self.create_card(parent, title="업데이트 설정")
-        card.pack(fill="both", expand=True)
-
-        # 스크롤 가능한 프레임
-        scroll_frame = ctk.CTkScrollableFrame(
-            card,
-            fg_color="transparent",
-            scrollbar_button_color=COLORS["border"],
-            scrollbar_button_hover_color=COLORS["accent"],
-            orientation="horizontal",
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["border"],
         )
-        scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        card.pack(fill="x", expand=False)
 
-        # 내용 프레임
-        content_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-        content_frame.pack(fill="both", expand=True)
+        content_frame = ctk.CTkFrame(card, fg_color="transparent")
+        content_frame.pack(fill="x", padx=14, pady=8)
 
         # 1행: 버전 + 저장소
         row1 = ctk.CTkFrame(content_frame, fg_color="transparent")
-        row1.pack(fill="x", pady=(0, 8))
+        row1.pack(fill="x", pady=(0, 6))
+
+        ctk.CTkLabel(
+            row1,
+            text="업데이트 설정",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left", padx=(0, 10))
 
         # 버전 표시
         self._version_frame = ctk.CTkFrame(
@@ -1324,15 +1332,15 @@ class SettingsView(BaseView):
             fg_color=COLORS["accent"],
             corner_radius=IOS_METRICS["control_radius_small"],
         )
-        self._version_frame.pack(side="left", padx=(0, 15))
+        self._version_frame.pack(side="left", padx=(0, 10))
 
         self._current_version_label = ctk.CTkLabel(
             self._version_frame,
             text=f"v{APP_VERSION}",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_primary"],
         )
-        self._current_version_label.pack(padx=12, pady=6)
+        self._current_version_label.pack(padx=10, pady=4)
 
         # 최신 버전 여부 플래그
         self._is_latest_version = False
@@ -1341,84 +1349,85 @@ class SettingsView(BaseView):
         ctk.CTkLabel(
             row1,
             text="저장소:",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             text_color=COLORS["text_secondary"],
         ).pack(side="left", padx=(0, 5))
 
-        self._github_repo_var = ctk.StringVar()
+        config = get_config()
+        self._github_repo_var = ctk.StringVar(value=getattr(config.update, "github_repo", ""))
         self._github_repo_entry = ctk.CTkEntry(
             row1,
             textvariable=self._github_repo_var,
             placeholder_text="username/repo",
-            width=200,
-            height=32,
+            width=210,
+            height=28,
             fg_color=COLORS["bg_dark"],
             border_color=COLORS["border"],
             text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=11),
         )
-        self._github_repo_entry.pack(side="left")
+        self._github_repo_entry.pack(side="left", fill="x", expand=True)
+
+        # 자동 업데이트 체크박스
+        self._auto_update_var = ctk.BooleanVar(value=bool(getattr(config.update, "auto_check", False)))
+        self._auto_update_checkbox = ctk.CTkCheckBox(
+            row1,
+            text="자동 업데이트 확인",
+            variable=self._auto_update_var,
+            command=self._toggle_auto_update,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_primary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+        )
+        self._auto_update_checkbox.pack(side="left", padx=(12, 0))
 
         # 2행: 버튼들
         row2 = ctk.CTkFrame(content_frame, fg_color="transparent")
-        row2.pack(fill="x", pady=(0, 8))
+        row2.pack(fill="x")
 
         # 버전 확인 버튼
         self._check_update_btn = ctk.CTkButton(
             row2,
             text="🔍 버전 확인",
             command=self._check_for_updates,
-            width=120,
-            height=40,
+            width=110,
+            height=30,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        self._check_update_btn.pack(side="left", padx=(0, 10))
+        self._check_update_btn.pack(side="left", padx=(0, 8))
 
         # 업데이트 다운로드 버튼
         self._do_update_btn = ctk.CTkButton(
             row2,
             text="⬇️ 업데이트",
             command=self._perform_update,
-            width=120,
-            height=40,
+            width=110,
+            height=30,
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
             text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        self._do_update_btn.pack(side="left", padx=(0, 10))
+        self._do_update_btn.pack(side="left", padx=(0, 8))
 
-        # 자동 업데이트 체크박스
-        self._auto_update_var = ctk.BooleanVar(value=get_config().update.auto_check)
-        self._auto_update_checkbox = ctk.CTkCheckBox(
-            row2,
-            text="자동 확인",
-            variable=self._auto_update_var,
-            command=self._toggle_auto_update,
-            font=ctk.CTkFont(size=11),
-            text_color=COLORS["text_primary"],
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-        )
-        self._auto_update_checkbox.pack(side="left")
-
-        # 3행: 상태 표시
+        # 상태 표시
         row3 = ctk.CTkFrame(
-            content_frame,
+            row2,
             fg_color=COLORS["bg_dark"],
             corner_radius=IOS_METRICS["control_radius_small"],
         )
-        row3.pack(fill="x")
+        row3.pack(side="left", fill="x", expand=True)
 
         self._update_status_icon = ctk.CTkLabel(
             row3,
             text="ℹ️",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
         )
-        self._update_status_icon.pack(side="left", padx=(8, 4), pady=6)
+        self._update_status_icon.pack(side="left", padx=(8, 4), pady=4)
 
         self._update_status_label = ctk.CTkLabel(
             row3,
@@ -1426,7 +1435,7 @@ class SettingsView(BaseView):
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_muted"],
         )
-        self._update_status_label.pack(side="left", padx=(0, 8), pady=6)
+        self._update_status_label.pack(side="left", padx=(0, 8), pady=4)
 
         # 마지막 업데이트 시간 (우측)
         self._last_update_label = ctk.CTkLabel(
@@ -1435,7 +1444,7 @@ class SettingsView(BaseView):
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
         )
-        self._last_update_label.pack(side="right", padx=8, pady=6)
+        self._last_update_label.pack(side="right", padx=8, pady=4)
 
         # 릴리즈 데이터 초기화
         self._latest_release = None
@@ -2462,6 +2471,26 @@ del "%~f0"
         # 일반 설정 - 프로그램 이름
         self._app_name_var.set(config.ui.app_name)
 
+        # 업데이트 설정
+        self._github_repo_var.set(getattr(config.update, "github_repo", "") or "")
+        self._auto_update_var.set(bool(getattr(config.update, "auto_check", False)))
+        if hasattr(self, "_last_update_label") and config.update.last_update:
+            self._last_update_label.configure(text=f"마지막 업데이트: {config.update.last_update}")
+        if hasattr(self, "_update_status_icon") and hasattr(self, "_update_status_label"):
+            repo = getattr(config.update, "github_repo", "") or ""
+            if repo:
+                self._update_status_icon.configure(text="✅")
+                self._update_status_label.configure(
+                    text=f"저장소: {repo}",
+                    text_color=COLORS["text_secondary"],
+                )
+            else:
+                self._update_status_icon.configure(text="ℹ️")
+                self._update_status_label.configure(
+                    text="저장소를 입력하세요",
+                    text_color=COLORS["text_muted"],
+                )
+
         logger.debug("설정 로드 완료")
 
     def _save_settings(self) -> bool:
@@ -2534,6 +2563,14 @@ del "%~f0"
             config.ui.app_name = app_name
         config.ui.random_name_mode = False
         config.ui.random_name_alias = ""
+
+        # 업데이트 설정
+        repo = self._github_repo_var.get().strip()
+        if repo and ("/" not in repo or repo.count("/") != 1):
+            validation_errors.append("GitHub 저장소 형식은 username/repository 여야 합니다")
+        else:
+            config.update.github_repo = repo
+        config.update.auto_check = bool(self._auto_update_var.get())
 
         # 검증 오류가 있으면 표시
         if validation_errors:
