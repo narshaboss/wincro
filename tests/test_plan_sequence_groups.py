@@ -400,6 +400,77 @@ def test_existing_config_load_preserves_pc_local_player_and_ui_settings(monkeypa
     assert loaded.ui.branding_profile_version == "older_brand_marker"
 
 
+def test_empty_legacy_config_load_seeds_packaged_auto_run_defaults_without_force(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "plans").mkdir()
+    existing = AppConfig(player=PlayerConfig())
+    manager = ConfigManager()
+    config_path.write_text(
+        json.dumps(manager._config_to_dict(existing), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config_module, "AUTO_RUN_PROFILE_FORCE_APP_VERSION", "0.0.0")
+    manager._config = None
+
+    loaded = manager.load()
+
+    assert loaded.player.auto_run_enabled is True
+    assert loaded.player.auto_run_profile_version == AUTO_RUN_PROFILE_VERSION
+    assert loaded.player.active_plan_sequence_group_id == AUTO_RUN_PROFILE_GROUP_ID
+    assert len(loaded.player.plan_sequence_groups) == len(AUTO_RUN_PROFILE_GROUPS)
+    assert [Path(entry["plan_path"]).name for entry in loaded.player.plan_sequence_groups[0]["entries"]] == [
+        file_name for file_name, _repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    assert loaded.player.plan_sequence_repeats == [
+        repeat
+        for _ in range(AUTO_RUN_PROFILE_GROUP_REPEAT)
+        for _file_name, repeat in AUTO_RUN_PROFILE_PLANS
+    ]
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["player"]["auto_run_profile_version"] == AUTO_RUN_PROFILE_VERSION
+
+
+def test_legacy_flat_auto_run_sequence_is_preserved_without_force(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "plans").mkdir()
+    existing = AppConfig(
+        player=PlayerConfig(
+            auto_run_enabled=True,
+            plan_sequence=[r"C:\pc-local\custom.json"],
+            plan_sequence_repeats=[7],
+            auto_run_profile_version="",
+        )
+    )
+    manager = ConfigManager()
+    config_path.write_text(
+        json.dumps(manager._config_to_dict(existing), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config_module, "AUTO_RUN_PROFILE_FORCE_APP_VERSION", "0.0.0")
+    manager._config = None
+
+    loaded = manager.load()
+
+    assert loaded.player.auto_run_profile_version == ""
+    assert loaded.player.auto_run_enabled is True
+    assert loaded.player.plan_sequence == [r"C:\pc-local\custom.json"]
+    assert loaded.player.plan_sequence_repeats == [7]
+    assert len(loaded.player.plan_sequence_groups) == 1
+    assert loaded.player.plan_sequence_groups[0]["entries"] == [
+        {"plan_path": r"C:\pc-local\custom.json", "repeat_count": 7}
+    ]
+
+
 def test_next_release_preserves_pc_local_auto_run_group_after_force_window(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     data_dir = tmp_path / "data"

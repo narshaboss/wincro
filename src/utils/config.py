@@ -34,7 +34,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.238"
+APP_VERSION = "1.0.239"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
 # When APP_VERSION changes on the next release, this guard stops touching PC-local settings.
@@ -329,12 +329,33 @@ class ConfigManager:
 
     def _apply_release_player_profile_once(self, config: AppConfig) -> bool:
         """Apply this release's playback defaults once without touching other settings."""
-        if APP_VERSION != AUTO_RUN_PROFILE_FORCE_APP_VERSION:
-            return False
         player = config.player
         if getattr(player, "auto_run_profile_version", "") == AUTO_RUN_PROFILE_VERSION:
             return self._repair_packaged_player_group_paths(player)
+        if self._should_seed_missing_player_profile(player):
+            self._apply_packaged_player_defaults(config)
+            return True
+        if APP_VERSION != AUTO_RUN_PROFILE_FORCE_APP_VERSION:
+            return False
         self._apply_packaged_player_defaults(config)
+        return True
+
+    def _should_seed_missing_player_profile(self, player: PlayerConfig) -> bool:
+        """Seed packaged playback only when an old config has no playback setup at all."""
+        if getattr(player, "auto_run_profile_version", ""):
+            return False
+
+        for path in getattr(player, "plan_sequence", []) or []:
+            if str(path or "").strip():
+                return False
+
+        for group in getattr(player, "plan_sequence_groups", []) or []:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("entries", []) or []:
+                if isinstance(entry, dict) and str(entry.get("plan_path", "") or "").strip():
+                    return False
+
         return True
 
     def _apply_packaged_player_defaults(self, config: AppConfig) -> None:
