@@ -34,6 +34,17 @@ def test_packaged_config_defaults_to_fixed_korean_branding():
     assert config["ui"]["random_name_alias"] == ""
 
 
+def test_packaged_custom_ctk_theme_is_bundled_and_has_startup_fallback():
+    spec = (ROOT / "WinCro.spec").read_text(encoding="utf-8")
+    main_window = (ROOT / "src" / "ui" / "main_window.py").read_text(encoding="utf-8")
+
+    assert "src/ui/ctk_white_gold_theme.json" in spec
+    assert "def _apply_ctk_theme() -> None:" in main_window
+    assert "WHITE_GOLD_CTK_THEME.exists()" in main_window
+    assert 'ctk.set_default_color_theme("blue")' in main_window
+    assert "_apply_ctk_theme()" in main_window
+
+
 def test_database_keeps_legacy_korean_name_as_fallback():
     db_manager = (ROOT / "src" / "database" / "db_manager.py").read_text(encoding="utf-8")
 

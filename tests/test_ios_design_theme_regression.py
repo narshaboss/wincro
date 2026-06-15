@@ -170,7 +170,8 @@ def test_ios_theme_tokens_drive_shared_ui_style():
     assert '"text_color": ["#FFF7E6", "#FFF7E6"]' in ctk_theme
     assert '"text_color_disabled": ["#8C7855", "#8C7855"]' in ctk_theme
     assert '"DropdownMenu": {' in ctk_theme
-    assert 'ctk.set_default_color_theme("blue")' not in main_window
+    assert "WHITE_GOLD_CTK_THEME.exists()" in main_window
+    assert 'ctk.set_default_color_theme("blue")' in main_window
     assert 'ctk.set_default_color_theme("dark-blue")' not in main_window
     assert 'ctk.set_appearance_mode("light")' not in main_window
     assert 'activeforeground="white"' not in main_window

@@ -53,6 +53,20 @@ logger = get_logger(__name__)
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
+def _apply_ctk_theme() -> None:
+    """Apply the packaged CTk theme without making startup depend on one data file."""
+    ctk.set_appearance_mode("dark")
+    try:
+        if WHITE_GOLD_CTK_THEME.exists():
+            ctk.set_default_color_theme(str(WHITE_GOLD_CTK_THEME))
+        else:
+            logger.warning("CTk theme file missing, fallback to built-in theme: %s", WHITE_GOLD_CTK_THEME)
+            ctk.set_default_color_theme("blue")
+    except Exception as exc:
+        logger.exception("CTk theme load failed, fallback to built-in theme: %s", exc)
+        ctk.set_default_color_theme("blue")
+
+
 class GUILogHandler(logging.Handler):
     """GUI 로그 핸들러"""
 
@@ -489,8 +503,7 @@ class MainWindow(ctk.CTk):
         self._mini_active_bar_snapshot = None
 
         # 테마 설정
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme(str(WHITE_GOLD_CTK_THEME))
+        _apply_ctk_theme()
 
         # 윈도우 닫기 이벤트
         self.protocol("WM_DELETE_WINDOW", self._on_close)

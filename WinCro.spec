@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [
     ('src/i18n', 'src/i18n'),
+    ('src/ui/ctk_white_gold_theme.json', 'src/ui'),
     ('arduino', 'arduino'),
     ('data', 'data'),
 ]
