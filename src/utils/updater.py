@@ -201,7 +201,9 @@ def check_for_update(repo: str, current_version: str, force: bool = False) -> Op
 
     except urllib.error.HTTPError as e:
         if e.code == 403:
-            logger.error(f"GitHub API 제한 (시간당 60회 초과). 30분 후 다시 시도하세요.")
+            logger.warning("GitHub API 제한으로 업데이트 확인을 건너뜁니다. 잠시 후 다시 시도합니다.")
+        elif 500 <= e.code < 600:
+            logger.warning(f"GitHub API 일시 오류: {e.code}")
         else:
             logger.error(f"GitHub API 오류: {e.code}")
         return None

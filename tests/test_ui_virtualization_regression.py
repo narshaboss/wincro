@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+from src.ui.virtual_scroll import VirtualScrollFrame
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_VIEW = ROOT / "src" / "ui" / "analyzer_view.py"
@@ -30,7 +32,7 @@ def test_virtual_scroll_supports_scroll_preservation():
 def test_virtual_scroll_cancels_pending_render_on_destroy():
     text = _read_text(VIRTUAL_SCROLL)
     schedule_method = text[
-        text.index("def _schedule_render(self):"):
+        text.index("def _schedule_render(self, delay_ms: int = 0):"):
         text.index("def _do_scheduled_render(self):")
     ]
     run_method = text[
@@ -42,11 +44,47 @@ def test_virtual_scroll_cancels_pending_render_on_destroy():
     ]
 
     assert "self._scroll_after_id = None" in text
-    assert "self._scroll_after_id = self.after(10, self._do_scheduled_render)" in schedule_method
+    assert "self._scroll_after_id = self.after(delay, self._do_scheduled_render)" in schedule_method
+    assert "self.after(10, self._do_scheduled_render)" not in schedule_method
     assert "self._scroll_after_id = None" in run_method
     assert "self.after_cancel(after_id)" in destroy_method
     assert "self._clear_all_widgets()" in destroy_method
     assert "super().destroy()" in destroy_method
+
+
+def test_virtual_scroll_coalesces_high_frequency_wheel_renders():
+    text = _read_text(VIRTUAL_SCROLL)
+    init_method = text[
+        text.index("def __init__(self, parent, item_height=75, buffer_count=6, **kwargs):"):
+        text.index("def _apply_appearance_mode(self, color):")
+    ]
+    wheel_method = text[
+        text.index("def _on_mousewheel(self, event):"):
+        text.index("def _on_mousewheel_linux(self, event):")
+    ]
+    schedule_method = text[
+        text.index("def _schedule_render(self, delay_ms: int = 0):"):
+        text.index("def _do_scheduled_render(self):")
+    ]
+
+    assert "self._buffer_count = max(6, int(buffer_count or 6))" in init_method
+    assert "yscrollincrement=self._scroll_unit_px" in init_method
+    assert "self._wheel_render_delay_ms = 12" in init_method
+    assert "self._wheel_scroll_units" in wheel_method
+    assert "self._schedule_render(delay_ms=self._wheel_render_delay_ms)" in wheel_method
+    assert "delay = max(0, int(delay_ms or 0))" in schedule_method
+    assert "self._scroll_after_delay_ms" in schedule_method
+    assert "delay < current_delay" in schedule_method
+
+
+def test_virtual_scroll_accumulates_high_resolution_wheel_delta():
+    frame = object.__new__(VirtualScrollFrame)
+    frame._wheel_remainder = 0
+
+    assert frame._wheel_scroll_units(40) == 0
+    assert frame._wheel_scroll_units(40) == -1
+    assert frame._wheel_remainder == 0
+    assert frame._wheel_scroll_units(-120) == 1
 
 
 def test_ui_callback_dispatcher_limits_work_by_time_budget():
@@ -71,6 +109,10 @@ def test_ui_callback_dispatcher_limits_work_by_time_budget():
 
 def test_analyzer_view_uses_virtual_lists_and_async_apply():
     text = _read_text(ANALYZER_VIEW)
+    plan_item_method = text[
+        text.index("def _create_plan_item(self, plan: AutomationPlan, parent=None):"):
+        text.index("def _edit_plan(self, plan: AutomationPlan):")
+    ]
 
     assert 'from .virtual_scroll import VirtualScrollFrame' in text
     assert 'list_frame = VirtualScrollFrame(' in text
@@ -81,6 +123,10 @@ def test_analyzer_view_uses_virtual_lists_and_async_apply():
     assert 'def _apply_recordings(self, recordings, generation=None):' in text
     assert 'self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)' in text
     assert 'self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)' in text
+    assert 'item_wrapper = ctk.CTkFrame(' in plan_item_method
+    assert 'height=2' in plan_item_method
+    assert 'fg_color=COLORS["accent"]' in plan_item_method
+    assert "return item_wrapper" in plan_item_method
 
 
 def test_recorder_view_uses_virtual_list_and_async_apply():
@@ -234,8 +280,14 @@ def test_player_sequence_picker_reuses_fonts_for_virtual_rows():
     assert "self._font_cache[key] = cached" in font_method
     assert "font=self._font(12, \"bold\")" in render_method
     assert "font=self._font(12)" in render_method
+    assert 'item_wrapper = ctk.CTkFrame(parent or self._sequence_frame, fg_color="transparent")' in plan_method
+    assert 'fg_color=COLORS["accent"]' in plan_method
+    assert "return item_wrapper" in plan_method
     assert "font=self._font(13, \"bold\")" in plan_method
     assert "font=self._font(11)" in plan_method
+    assert 'item_wrapper = ctk.CTkFrame(parent or self._sequence_frame, fg_color="transparent")' in sequence_method
+    assert 'fg_color=COLORS["accent"]' in sequence_method
+    assert "return item_wrapper" in sequence_method
     assert "font=self._font(13, \"bold\")" in sequence_method
     assert "font=self._font(11)" in sequence_method
 

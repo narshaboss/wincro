@@ -8,8 +8,8 @@
       "rule_type": "fixed_sequence",
       "description": "",
       "action_type": "double_click",
-      "action_x": null,
-      "action_y": null,
+      "action_x": 413,
+      "action_y": 397,
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
@@ -23,11 +23,17 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.65,
-      "search_radius": 0,
-      "search_region": null,
+      "search_radius": 413,
+      "search_region": [
+        0,
+        0,
+        827,
+        795
+      ],
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 2.0,
       "wait_random": true,
       "enabled": true,
@@ -79,6 +85,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 1.52,
       "wait_random": true,
       "enabled": true,
@@ -130,6 +137,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 2.0,
       "wait_random": true,
       "enabled": true,
@@ -183,6 +191,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 2.5,
       "wait_random": true,
       "enabled": true,
@@ -232,6 +241,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
+          "click_until_image_disappears_delay": 0.5,
           "wait_after": 4.0,
           "wait_random": true,
           "enabled": true,
@@ -264,7 +274,7 @@
       "monitoring_watches": []
     },
     {
-      "rule_id": "rule_eb38ce67",
+      "rule_id": "rule_f5043de1",
       "rule_type": "fixed_sequence",
       "description": "",
       "action_type": "hotkey",
@@ -272,29 +282,18 @@
       "action_y": null,
       "action_text": null,
       "action_keys": [
-        "shift",
-        "up"
+        "z"
       ],
       "action_key_events": [
         {
           "event": "down",
-          "key": "shift",
+          "key": "z",
           "delay": 0.0
         },
         {
-          "event": "down",
-          "key": "up",
-          "delay": 0.4801
-        },
-        {
           "event": "up",
-          "key": "up",
-          "delay": 0.1497
-        },
-        {
-          "event": "up",
-          "key": "shift",
-          "delay": 0.2257
+          "key": "z",
+          "delay": 0.135
         }
       ],
       "drag_to_x": null,
@@ -312,7 +311,8 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
-      "wait_after": 2.2,
+      "click_until_image_disappears_delay": 0.5,
+      "wait_after": 1.5,
       "wait_random": true,
       "enabled": true,
       "wait_random_range": 0.3,
@@ -327,15 +327,15 @@
       "trigger_missing_key_repeat_delay": 0.5,
       "trigger_missing_key_repeat_delay_random": false,
       "trigger_missing_key_repeat_delay_random_range": 0.3,
-      "repeat_count": 1,
-      "repeat_delay": 0.8,
+      "repeat_count": 2,
+      "repeat_delay": 0.5,
       "repeat_delay_random": true,
       "repeat_delay_random_range": 0.3,
       "timestamp": 0.0,
       "parent_id": null,
       "children": [
         {
-          "rule_id": "rule_c6f6e0ee",
+          "rule_id": "rule_9dbd676d",
           "rule_type": "fixed_sequence",
           "description": "",
           "action_type": "hotkey",
@@ -343,9 +343,20 @@
           "action_y": null,
           "action_text": null,
           "action_keys": [
-            "5"
+            "up"
           ],
-          "action_key_events": [],
+          "action_key_events": [
+            {
+              "event": "down",
+              "key": "up",
+              "delay": 0.0
+            },
+            {
+              "event": "up",
+              "key": "up",
+              "delay": 0.1696
+            }
+          ],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -361,7 +372,8 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
-          "wait_after": 1.5,
+          "click_until_image_disappears_delay": 0.8,
+          "wait_after": 1.3,
           "wait_random": true,
           "enabled": true,
           "wait_random_range": 0.3,
@@ -376,19 +388,19 @@
           "trigger_missing_key_repeat_delay": 0.5,
           "trigger_missing_key_repeat_delay_random": false,
           "trigger_missing_key_repeat_delay_random_range": 0.3,
-          "repeat_count": 2,
-          "repeat_delay": 0.5,
+          "repeat_count": 4,
+          "repeat_delay": 0.8,
           "repeat_delay_random": true,
           "repeat_delay_random_range": 0.3,
           "timestamp": 0.0,
-          "parent_id": "rule_eb38ce67",
+          "parent_id": "rule_f5043de1",
           "children": [],
           "is_monitoring_mode": false,
           "monitoring_final_image": null,
           "monitoring_watches": []
         },
         {
-          "rule_id": "rule_0e701965",
+          "rule_id": "rule_2b671d57",
           "rule_type": "fixed_sequence",
           "description": "",
           "action_type": "hotkey",
@@ -396,9 +408,20 @@
           "action_y": null,
           "action_text": null,
           "action_keys": [
-            "enter"
+            "left"
           ],
-          "action_key_events": [],
+          "action_key_events": [
+            {
+              "event": "down",
+              "key": "left",
+              "delay": 0.0
+            },
+            {
+              "event": "up",
+              "key": "left",
+              "delay": 0.1295
+            }
+          ],
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -414,6 +437,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
+          "click_until_image_disappears_delay": 1.2,
           "wait_after": 1.0,
           "wait_random": true,
           "enabled": true,
@@ -429,12 +453,77 @@
           "trigger_missing_key_repeat_delay": 0.5,
           "trigger_missing_key_repeat_delay_random": false,
           "trigger_missing_key_repeat_delay_random_range": 0.3,
-          "repeat_count": 3,
-          "repeat_delay": 0.5,
+          "repeat_count": 2,
+          "repeat_delay": 1.2,
           "repeat_delay_random": true,
           "repeat_delay_random_range": 0.3,
           "timestamp": 0.0,
-          "parent_id": "rule_eb38ce67",
+          "parent_id": "rule_f5043de1",
+          "children": [],
+          "is_monitoring_mode": false,
+          "monitoring_final_image": null,
+          "monitoring_watches": []
+        },
+        {
+          "rule_id": "rule_1f9bab3e",
+          "rule_type": "fixed_sequence",
+          "description": "",
+          "action_type": "hotkey",
+          "action_x": null,
+          "action_y": null,
+          "action_text": null,
+          "action_keys": [
+            "enter"
+          ],
+          "action_key_events": [
+            {
+              "event": "down",
+              "key": "enter",
+              "delay": 0.0
+            },
+            {
+              "event": "up",
+              "key": "enter",
+              "delay": 0.0927
+            }
+          ],
+          "drag_to_x": null,
+          "drag_to_y": null,
+          "drag_duration": null,
+          "scroll_amount": 0,
+          "target_image": null,
+          "target_images": [],
+          "trigger_image": null,
+          "trigger_x": null,
+          "trigger_y": null,
+          "confidence": 0.65,
+          "search_radius": 0,
+          "search_region": null,
+          "move_mouse_before_search": false,
+          "alternate_mouse_route": false,
+          "click_until_image_disappears": false,
+          "click_until_image_disappears_delay": 0.8,
+          "wait_after": 1.1,
+          "wait_random": true,
+          "enabled": true,
+          "wait_random_range": 0.3,
+          "typing_random": false,
+          "typing_delay": 0.1,
+          "typing_delay_range": 0.05,
+          "timeout": 30.0,
+          "skip_on_not_found": false,
+          "stop_playlist_on_trigger_missing": false,
+          "trigger_missing_keys": [],
+          "trigger_missing_key_repeat_count": 1,
+          "trigger_missing_key_repeat_delay": 0.5,
+          "trigger_missing_key_repeat_delay_random": false,
+          "trigger_missing_key_repeat_delay_random_range": 0.3,
+          "repeat_count": 4,
+          "repeat_delay": 0.8,
+          "repeat_delay_random": true,
+          "repeat_delay_random_range": 0.3,
+          "timestamp": 0.0,
+          "parent_id": "rule_f5043de1",
           "children": [],
           "is_monitoring_mode": false,
           "monitoring_final_image": null,
@@ -470,6 +559,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 10.0,
       "wait_random": true,
       "enabled": true,
@@ -519,6 +609,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
+          "click_until_image_disappears_delay": 0.5,
           "wait_after": 1.0,
           "wait_random": true,
           "enabled": true,
@@ -575,6 +666,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 3.0,
       "wait_random": true,
       "enabled": true,
@@ -624,6 +716,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
+          "click_until_image_disappears_delay": 0.5,
           "wait_after": 0.8,
           "wait_random": true,
           "enabled": true,
@@ -680,6 +773,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 0.5,
       "wait_random": false,
       "enabled": true,
@@ -733,6 +827,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 1.5,
       "wait_random": true,
       "enabled": true,
@@ -782,6 +877,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
+          "click_until_image_disappears_delay": 0.5,
           "wait_after": 1.1,
           "wait_random": true,
           "enabled": true,
@@ -838,6 +934,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 2.5,
       "wait_random": true,
       "enabled": true,

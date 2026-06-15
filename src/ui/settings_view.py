@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 설정 화면 모듈
 
 애플리케이션 설정을 위한 UI를 제공합니다.
@@ -35,6 +35,7 @@ from ..utils.startup_registry import (
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
 from .theme import IOS_FONTS, IOS_METRICS
+from .text_overflow import truncate_ui_text
 
 logger = get_logger(__name__)
 
@@ -222,7 +223,7 @@ class SettingsView(BaseView):
             scroll_frame,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         shutdown_card.pack(fill="x", padx=10, pady=(4, 10))
@@ -672,7 +673,7 @@ class SettingsView(BaseView):
             scroll_frame,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         seq_shell.pack(fill="x", padx=10, pady=(0, 10))
@@ -683,7 +684,7 @@ class SettingsView(BaseView):
             seq_shell,
             fg_color=COLORS["bg_elevated"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         group_panel.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
@@ -781,7 +782,7 @@ class SettingsView(BaseView):
             seq_shell,
             fg_color=COLORS["bg_elevated"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         entry_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
@@ -831,7 +832,7 @@ class SettingsView(BaseView):
             entry_panel,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["control_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         seq_list_frame.pack(fill="x", padx=10, pady=(0, 6))
@@ -997,7 +998,7 @@ class SettingsView(BaseView):
             group_repeat = normalize_repeat_count(group.get("repeat_count", 1))
             self._seq_group_listbox.insert(
                 tk.END,
-                f"{marker} {group.get('name', '그룹')}  ({entry_count}개 × {group_repeat}회)",
+                f"{marker} {truncate_ui_text(group.get('name', '그룹'), 26)}  ({entry_count}개 × {group_repeat}회)",
             )
         self._seq_group_listbox.selection_clear(0, tk.END)
         self._seq_group_listbox.selection_set(select_index)
@@ -1014,14 +1015,16 @@ class SettingsView(BaseView):
 
         group_repeat = normalize_repeat_count(group.get("repeat_count", 1))
         active_badge = " · 자동실행" if group.get("group_id") == self._seq_active_group_id else ""
-        self._seq_group_title_label.configure(text=f"{group.get('name', '그룹')}{active_badge} · 그룹 {group_repeat}회")
+        self._seq_group_title_label.configure(
+            text=f"{truncate_ui_text(group.get('name', '그룹'), 32)}{active_badge} · 그룹 {group_repeat}회"
+        )
         if hasattr(self, "_seq_group_repeat_var"):
             self._seq_group_repeat_var.set(str(group_repeat))
         entries = group.get("entries", []) or []
         for index, entry in enumerate(entries, start=1):
             plan_path = entry.get("plan_path", "")
             repeat = normalize_repeat_count(entry.get("repeat_count", 1))
-            self._seq_listbox.insert(tk.END, f"{index:02d}. {self._seq_plan_name(plan_path)}  ({repeat}회)")
+            self._seq_listbox.insert(tk.END, f"{index:02d}. {truncate_ui_text(self._seq_plan_name(plan_path), 34)}  ({repeat}회)")
 
         if entries:
             if select_index is None:
@@ -1522,7 +1525,7 @@ class SettingsView(BaseView):
         self._update_status_icon.configure(text="✅")
         self._update_status_label.configure(
             text="저장소가 저장되었습니다",
-            text_color=COLORS["success"]
+            text_color=COLORS["success_text"]
         )
 
         messagebox.showinfo("저장 완료", f"GitHub 저장소가 저장되었습니다.\n\n{repo}")
@@ -1541,7 +1544,7 @@ class SettingsView(BaseView):
         # 버튼 비활성화
         self._check_update_btn.configure(state="disabled", text="확인 중...")
         self._update_status_icon.configure(text="⏳")
-        self._update_status_label.configure(text="버전 확인 중...", text_color=COLORS["warning"])
+        self._update_status_label.configure(text="버전 확인 중...", text_color=COLORS["warning_text"])
 
         thread = threading.Thread(target=self._check_version_thread, args=(repo,), daemon=True)
         self._active_threads = [t for t in self._active_threads if t.is_alive()]
@@ -1736,7 +1739,7 @@ class SettingsView(BaseView):
             self._update_status_icon.configure(text="🆕")
             self._update_status_label.configure(
                 text=f"새 버전: v{new_version} (현재: v{APP_VERSION})",
-                text_color=COLORS["warning"]
+                text_color=COLORS["warning_text"]
             )
             # 상단 버전 라벨도 업데이트
             self._current_version_label.configure(text=f"🆕 v{APP_VERSION}→v{new_version}")
@@ -1763,7 +1766,7 @@ class SettingsView(BaseView):
             self._update_status_icon.configure(text="✅")
             self._update_status_label.configure(
                 text=f"최신 버전입니다! (v{current_version})",
-                text_color=COLORS["success"]
+                text_color=COLORS["success_text"]
             )
             # 상단 버전 라벨도 업데이트
             self._current_version_label.configure(text=f"✅ v{current_version}")
@@ -1870,7 +1873,7 @@ class SettingsView(BaseView):
             # 직접 릴리즈 정보 가져오기 시도
             self._do_update_btn.configure(state="disabled", text="확인 중...")
             self._check_update_btn.configure(state="disabled")
-            self._update_status_label.configure(text="릴리즈 정보 가져오는 중...", text_color=COLORS["warning"])
+            self._update_status_label.configure(text="릴리즈 정보 가져오는 중...", text_color=COLORS["warning_text"])
             self.update()
 
             release = self._fetch_latest_release_direct(repo)
@@ -1930,7 +1933,7 @@ class SettingsView(BaseView):
         self._check_update_btn.configure(state="disabled")
 
         self._update_status_icon.configure(text="⏳")
-        self._update_status_label.configure(text="다운로드 중...", text_color=COLORS["warning"])
+        self._update_status_label.configure(text="다운로드 중...", text_color=COLORS["warning_text"])
 
         # 다운로드 스레드 시작
         thread = threading.Thread(
@@ -2186,7 +2189,7 @@ del "%~f0"
         self._update_status_icon.configure(text="✅")
         self._update_status_label.configure(
             text=f"다운로드 완료 (개발 모드)",
-            text_color=COLORS["success"]
+            text_color=COLORS["success_text"]
         )
 
         messagebox.showinfo(
@@ -2208,7 +2211,7 @@ del "%~f0"
         self._update_status_icon.configure(text="✅")
         self._update_status_label.configure(
             text="업데이트 완료!",
-            text_color=COLORS["success"]
+            text_color=COLORS["success_text"]
         )
 
         # 마지막 업데이트 시간 표시
@@ -2949,7 +2952,7 @@ del "%~f0"
                 else:
                     self._test_status_label.configure(
                         text="모든 테스트 통과!",
-                        text_color=COLORS["success"],
+                        text_color=COLORS["success_text"],
                     )
             except Exception as e:
                 logger.warning(f"완료 콜백 오류: {e}")
@@ -3285,10 +3288,10 @@ del "%~f0"
     def _update_arduino_status(self, connected: bool, message: str) -> None:
         """아두이노 연결 상태 UI 업데이트"""
         if connected:
-            self._arduino_status_dot.configure(text_color=COLORS["success"])
+            self._arduino_status_dot.configure(text_color=COLORS["success_text"])
             self._arduino_status_label.configure(
                 text=message,
-                text_color=COLORS["success"]
+                text_color=COLORS["success_text"]
             )
             self._arduino_connect_btn.configure(
                 text="해제",

@@ -119,7 +119,7 @@ class KeyInputDialog(ctk.CTkToplevel):
             self,
             text="대기 중",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=20, weight="bold"),
-            text_color=COLORS["accent"],
+            text_color=COLORS["accent_text"],
         )
         self._key_label.pack(pady=(4, 8))
 
@@ -137,7 +137,7 @@ class KeyInputDialog(ctk.CTkToplevel):
             self,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=IOS_METRICS["hairline"],
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         helper.pack(fill="x", padx=24, pady=(0, 8))
@@ -159,7 +159,7 @@ class KeyInputDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
-            text_color=COLORS["bg_content"],
+            text_color=COLORS["text_on_accent"],
             corner_radius=IOS_METRICS["pill_radius"],
             command=self._on_ok,
         ).pack(side="left", padx=10)
@@ -172,7 +172,7 @@ class KeyInputDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             corner_radius=IOS_METRICS["pill_radius"],
             command=self._on_cancel,
         ).pack(side="left", padx=10)

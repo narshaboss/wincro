@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 기본 상세 다이얼로그
 
 PlanDetailDialog와 SequenceDetailDialog의 공통 기능을 추출한 베이스 클래스입니다.
@@ -12,7 +12,7 @@ from typing import Optional, Union, Any
 import customtkinter as ctk
 
 from ..utils.logger import get_logger
-from .theme import COLORS
+from .theme import COLORS, IOS_METRICS
 from .constants import (
     collect_all_actions, assign_new_ids,
     get_action_clipboard, set_action_clipboard,
@@ -167,7 +167,7 @@ class BaseDetailDialog(ctk.CTkToplevel):
                 try:
                     widgets[prev_id].configure(
                         border_color=COLORS["bg_sidebar"],
-                        border_width=1,
+                        border_width=IOS_METRICS["card_border_width"],
                     )
                 except Exception:
                     pass
@@ -344,7 +344,7 @@ class BaseDetailDialog(ctk.CTkToplevel):
                 if item_in_data is not None and target is not None and self._get_item_id(item_in_data) == self._get_item_id(target):
                     w.configure(border_color=COLORS["accent"], border_width=2)
                 else:
-                    w.configure(border_color=COLORS["bg_sidebar"], border_width=1)
+                    w.configure(border_color=COLORS["bg_sidebar"], border_width=IOS_METRICS["card_border_width"])
             except Exception:
                 continue
 

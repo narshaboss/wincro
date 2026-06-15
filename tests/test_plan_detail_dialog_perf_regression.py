@@ -8,8 +8,10 @@ from src.ui.player_view import (
     COMPACT_ACTION_ROW_THRESHOLD,
     PlanDetailDialog,
     SequenceDetailDialog,
+    _action_number_label_style,
     _flatten_children_after_parent,
 )
+from src.ui.theme import COLORS
 from src.ui.virtual_scroll import VirtualScrollFrame
 
 
@@ -145,10 +147,23 @@ def test_plan_detail_dialog_collapse_uses_scheduled_refresh():
     assert "self._scrollable.splice_items(index + 1, 0, new_items)" in method
     assert "self._scrollable.splice_items(index + 1, remove_count, [])" in method
     assert 'self._rule_widgets[rule.rule_id]["toggle_btn"] = toggle_btn' in text
-    assert 'toggle_btn.configure(text="▶" if rule_id in self._collapsed_items else "▼")' in method
+    assert "toggle_btn.configure(text=_collapse_toggle_text(rule_id in self._collapsed_items))" in method
     assert "self._refresh_rule_row(rule_id)" not in method
     assert "self._schedule_action_list_refresh()" not in method
     assert "self._refresh_action_list()" not in method
+
+
+def test_plan_detail_dialog_uses_larger_initial_window_size():
+    text = _read_text()
+    setup = _method_slice(
+        text,
+        "class PlanDetailDialog",
+        "def _notify_player_partial_run_started",
+    )
+
+    assert 'self.geometry("1080x760")' in setup
+    assert "self.minsize(980, 700)" in setup
+    assert 'self.geometry("950x700")' not in setup
 
 
 def test_virtual_scroll_destroy_callbacks_prune_stale_widget_maps():
@@ -235,10 +250,91 @@ def test_plan_and_sequence_detail_reuse_fonts_in_rebuilt_rows():
         assert "self._font_cache = {}" in init_method
         assert 'kwargs = {"family": IOS_FONTS["family"], "size": size}' in font_method
         assert "self._font_cache[key] = cached" in font_method
-        assert "font=self._font(10)" in compact_method
+        assert 'font=self._font(13, "bold")' in compact_method
         assert "font=self._font(12, \"bold\")" in compact_method
+        assert "_action_number_label_style(" in compact_method
+        assert "font=self._font(*number_font)" in compact_method
+        assert 'fg_color=COLORS["accent"]' in compact_method
         assert "font=self._font(13, \"bold\")" in row_method
         assert "font=self._font(12)" in row_method
+        assert "_action_number_label_style(" in row_method
+        assert "font=self._font(*number_font)" in row_method
+        assert 'fg_color=COLORS["accent"]' in row_method
+
+
+def test_action_number_badge_style_distinguishes_parent_and_child_actions():
+    parent_style, parent_font = _action_number_label_style(
+        "3",
+        0,
+        action_color="#2266ff",
+        enabled=True,
+        compact=True,
+    )
+    child_style, child_font = _action_number_label_style(
+        "3-1",
+        1,
+        action_color="#2266ff",
+        enabled=True,
+        compact=True,
+    )
+
+    assert parent_style["text"] == "3"
+    assert child_style["text"] == "↳ 3-1"
+    assert parent_style["fg_color"] != child_style["fg_color"]
+    assert parent_style["text_color"] != child_style["text_color"]
+    assert child_style["width"] > parent_style["width"]
+    assert parent_font[0] > child_font[0]
+
+
+def test_plan_detail_dialog_action_rows_use_clear_primary_typography():
+    text = _read_text()
+    plan_text = text[
+        text.index("class PlanDetailDialog"):
+        text.index("class SequenceDetailDialog")
+    ]
+    setup_method = plan_text[
+        plan_text.index("def _setup_ui(self):"):
+        plan_text.index("def _get_flat_rules")
+    ]
+    compact_method = plan_text[
+        plan_text.index("def _create_compact_rule_item"):
+        plan_text.index("def _create_action_item(self, parent, rule", plan_text.index("def _create_compact_rule_item"))
+    ]
+
+    assert 'text_color=COLORS["text_primary"]' in setup_method
+    assert 'font=ctk.CTkFont(size=12, weight="bold")' in setup_method
+    assert 'text_color=COLORS["text_secondary"]' not in setup_method
+    assert 'font=self._font(12, "bold")' in compact_method
+    assert 'font=self._font(13, "bold")' in compact_method
+    assert 'text_color=COLORS["text_secondary"]' not in compact_method
+
+
+def test_action_number_badge_style_is_reapplied_when_virtual_rows_are_reused():
+    text = _read_text()
+    plan_update = _method_slice(
+        text,
+        "def _on_rule_item_update(self, item_data: dict, index: int, widget, old_item_data=None) -> None:",
+        "def _create_action_item_virtual(self, parent, rule: AutomationRule, depth: int, index_str: str):",
+    )
+    plan_in_place = _method_slice(
+        text,
+        "def _update_rule_row_in_place(self, rule: AutomationRule) -> bool:",
+        "def _update_rule_parent_summary(self, rule: AutomationRule) -> bool:",
+    )
+    sequence_update = _method_slice(
+        text,
+        "def _on_action_item_update(self, item_data: dict, index: int, widget, old_item_data=None) -> None:",
+        "def _render_actions_batch(self, actions_list, start_idx, batch_size=5):",
+    )
+    sequence_in_place = _method_slice(
+        text,
+        "def _update_compact_action_row(self, action: Action) -> bool:",
+        "def _update_action_parent_summary(self, action: Action) -> bool:",
+    )
+
+    for method in (plan_update, plan_in_place, sequence_update, sequence_in_place):
+        assert "_configure_action_number_label(" in method
+        assert "font_factory=getattr(self, \"_font\", None)" in method
 
 
 def test_virtual_scroll_set_items_reuses_visible_rows_instead_of_full_destroy():
@@ -589,7 +685,7 @@ def test_sequence_detail_collapse_uses_virtual_splice_instead_of_full_refresh():
     assert "self._scrollable.splice_items(index + 1, 0, new_items)" in method
     assert "self._scrollable.splice_items(index + 1, remove_count, [])" in method
     assert 'self._action_widgets[action.action_id]["toggle_btn"] = toggle_btn' in sequence_text
-    assert 'toggle_btn.configure(text="▶" if action_id in self._collapsed_items else "▼")' in method
+    assert "toggle_btn.configure(text=_collapse_toggle_text(action_id in self._collapsed_items))" in method
     assert "self._refresh_action_row(action)" not in method
     assert "self._schedule_action_list_refresh()" not in method
     assert "self._refresh_action_list()" not in method
@@ -844,7 +940,7 @@ def test_plan_add_child_updates_existing_parent_summary_without_row_rebuild():
 
     assert refreshed == []
     assert child_count.config["text"] == "  (2개 하위)"
-    assert toggle.config["text"] == "▼"
+    assert toggle.config["text"] == "▲"
 
 
 def test_sequence_add_child_updates_existing_parent_summary_without_row_rebuild():
@@ -882,7 +978,7 @@ def test_sequence_add_child_updates_existing_parent_summary_without_row_rebuild(
 
     assert refreshed == []
     assert child_count.config["text"] == "  (2개 하위)"
-    assert toggle.config["text"] == "▼"
+    assert toggle.config["text"] == "▲"
 
 
 def test_hidden_parent_child_changes_do_not_schedule_full_refresh():
@@ -1104,10 +1200,106 @@ def test_plan_nonstructural_update_changes_labels_without_row_recreate():
     assert type_label.config["text"] == "더블 클릭"
     assert name_label.config["text"] == " - changed"
     assert "이동경로 변경" in detail_label.config["text"]
-    assert repeat_btn.config["text"] == "x1"
-    assert delay_btn.config["text"].endswith("초")
+    assert repeat_btn.config["text"] == "↻ 1회"
+    assert delay_btn.config["text"].startswith("⏱ ")
+    assert "초" in delay_btn.config["text"]
+    assert delay_btn.config["width"] >= 82
     assert run_btn.config["state"] == "normal"
     assert row.destroyed is False
+
+
+def test_plan_trigger_button_updates_in_place_after_trigger_save():
+    rule = AutomationRule(action_type="click", rule_id="rule")
+    dialog = _make_plan_dialog_stub([rule], set())
+    trigger_btn = _FakeWidget()
+    dialog._rule_widgets = {
+        rule.rule_id: {
+            "rule": rule,
+            "trigger_btn": trigger_btn,
+        }
+    }
+
+    rule.trigger_image = "trigger.png"
+    dialog._update_rule_buttons(rule)
+
+    assert trigger_btn.config["fg_color"] == COLORS["success"]
+    assert trigger_btn.config["hover_color"] == COLORS["green_hover"]
+    assert trigger_btn.config["text_color"] == COLORS["text_on_accent"]
+
+
+def test_plan_trigger_buttons_are_registered_for_compact_and_full_rows():
+    text = _read_text()
+    compact_method = _method_slice(
+        text,
+        "def _create_compact_rule_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = \"1\"):",
+        "def _create_action_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = \"1\", use_pack: bool = True):",
+    )
+    full_method = _method_slice(
+        text,
+        "def _create_action_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = \"1\", use_pack: bool = True):",
+        "def _on_drag_start(self, event, rule: AutomationRule, widget):",
+    )
+    update_method = _method_slice(
+        text,
+        "def _update_rule_buttons(self, rule: AutomationRule):",
+        "def _update_rule_row_in_place(self, rule: AutomationRule) -> bool:",
+    )
+
+    assert 'self._rule_widgets[rule.rule_id]["trigger_btn"] = trigger_btn' in compact_method
+    assert 'self._rule_widgets[rule.rule_id]["trigger_btn"] = trigger_btn' in full_method
+    assert 'if "trigger_btn" in widgets:' in update_method
+    assert 'has_trigger = bool(getattr(rule, "trigger_image", None))' in update_method
+
+
+def test_plan_compact_row_label_truncates_long_action_names():
+    rule = AutomationRule(
+        action_type="click",
+        rule_id="rule",
+        description="long-action-name-" * 30,
+        action_x=10,
+        action_y=20,
+    )
+    dialog = _make_plan_dialog_stub([rule], set())
+
+    label = dialog._compact_rule_label_text(rule)
+
+    assert len(label) <= 96
+    assert "..." in label
+
+
+def test_plan_partial_run_marks_current_row_and_truncates_status_text():
+    rule = AutomationRule(
+        action_type="click",
+        rule_id="rule",
+        description="current-partial-action-" * 20,
+    )
+    dialog = _make_plan_dialog_stub([rule], set())
+    dialog._is_running = True
+    dialog._selected_rule = None
+    dialog._partial_status_label = _FakeWidget()
+    row = _FakeWidget()
+    badge = _FakeWidget()
+    dialog._rule_widgets = {
+        rule.rule_id: {
+            "widget": row,
+            "rule": rule,
+            "running_badge": badge,
+        }
+    }
+    dialog.winfo_exists = lambda: True
+    dialog._expand_ancestors_for_rule = lambda _rule_id: False
+    dialog._visible_rule_index = lambda _rule_id: (0, {"rule": rule, "index_str": "1"})
+    dialog._player_view = None
+    dialog._scrollable = None
+
+    dialog._set_current_partial_rule(rule.rule_id, "partial run started")
+
+    assert dialog._partial_status_label.config["text"].startswith("현재 실행: 1 - ")
+    assert len(dialog._partial_status_label.config["text"]) <= 92
+    assert row.config["border_width"] == 0
+    assert row.config["fg_color"] == COLORS["accent_pink"]
+    assert badge.config["text"] == ""
+    assert badge.config["width"] == 0
 
 
 def test_plan_dialog_modal_edits_refresh_only_changed_rule_row():
@@ -1130,6 +1322,9 @@ def test_plan_dialog_modal_edits_refresh_only_changed_rule_row():
 
     assert 'result = {"saved": False}' in trigger_method
     assert 'if result["saved"]:' in trigger_method
+    assert "if not self._save_plan(show_message=False):" in trigger_method
+    assert 'messagebox.showerror("저장 실패", "트리거 설정 저장에 실패했습니다. 로그를 확인하세요.")' in trigger_method
+    assert "self._update_rule_buttons(rule)" in trigger_method
     assert "if not self._update_rule_row_in_place(rule):" in trigger_method
     assert "self._refresh_rule_row(rule.rule_id)" in trigger_method
     assert "if editor.was_saved:" in monitoring_method
@@ -1436,8 +1631,10 @@ def test_plan_compact_row_update_changes_labels_without_rebuild():
 
     assert "changed" in name_label.config["text"]
     assert "이동경로 변경" in name_label.config["text"]
-    assert repeat_btn.config["text"] == "x1"
-    assert delay_btn.config["text"].endswith("초")
+    assert repeat_btn.config["text"] == "↻ 1회"
+    assert delay_btn.config["text"].startswith("⏱ ")
+    assert "초" in delay_btn.config["text"]
+    assert delay_btn.config["width"] >= 82
     assert row.destroyed is False
 
 
@@ -1452,9 +1649,13 @@ def test_sequence_detail_compact_row_mode_is_reserved_for_large_action_trees():
     )
 
     assert "큰 재생목록용 경량 카드" in compact_method
-    assert "self._display_thumbnail(thumb, action, size=36)" in compact_method
+    assert "self._display_thumbnail(thumb, action, size=ACTION_COMPACT_THUMB_IMAGE_SIZE)" in compact_method
     assert '"thumb_frame"] = thumb' in compact_method
-    assert '"thumb_size"] = 36' in compact_method
+    assert '"thumb_size"] = ACTION_COMPACT_THUMB_IMAGE_SIZE' in compact_method
+    assert 'text=_collapse_toggle_text(is_collapsed)' in compact_method
+    assert "_action_number_label_style(" in compact_method
+    assert "font=self._font(*number_font)" in compact_method
+    assert 'number.pack(side="left", padx=(0, 2), pady=8)' in compact_method
     assert "self._toggle_skip_mode_action" in compact_method
     assert "self._edit_repeat_count_action" in compact_method
     assert "self._edit_wait_time_action" in compact_method
@@ -1582,8 +1783,10 @@ def test_sequence_noncompact_property_update_changes_labels_without_row_recreate
     assert type_label.config["text"] == "더블 클릭"
     assert name_label.config["text"] == " - changed"
     assert "이동경로 변경" in detail_label.config["text"]
-    assert repeat_btn.config["text"] == "x1"
-    assert delay_btn.config["text"].endswith("초")
+    assert repeat_btn.config["text"] == "↻ 1회"
+    assert delay_btn.config["text"].startswith("⏱ ")
+    assert "초" in delay_btn.config["text"]
+    assert delay_btn.config["width"] >= 82
     assert row.destroyed is False
 
 
@@ -1769,15 +1972,17 @@ def test_player_image_editor_refreshes_thumbnails_without_rebuilding_visible_row
 
     assert 'self._rule_widgets[rule.rule_id]["thumb_frame"] = thumb' in plan_create_method
     assert 'self._rule_widgets[rule.rule_id]["thumb_frame"] = thumb' in plan_compact_method
-    assert 'self._rule_widgets[rule.rule_id]["thumb_size"] = 36' in plan_compact_method
-    assert "self._display_thumbnail(thumb, rule, size=36)" in plan_compact_method
+    assert 'self._rule_widgets[rule.rule_id]["thumb_size"] = ACTION_COMPACT_THUMB_IMAGE_SIZE' in plan_compact_method
+    assert "self._display_thumbnail(thumb, rule, size=ACTION_COMPACT_THUMB_IMAGE_SIZE)" in plan_compact_method
+    assert 'thumb.pack(side="left", padx=(0, 4), pady=6)' in plan_compact_method
     assert plan_compact_method.index('self._rule_widgets[rule.rule_id]["thumb_frame"] = thumb') < plan_compact_method.index("name_label = ctk.CTkLabel(")
     assert "for child in thumb_frame.winfo_children():" in plan_thumbnail_method
     assert "self._display_thumbnail(thumb_frame, rule, size=widget_data.get(\"thumb_size\", 60))" in plan_thumbnail_method
     assert 'self._action_widgets[action.action_id]["thumb_frame"] = thumb' in sequence_create_method
     assert 'self._action_widgets[action.action_id]["thumb_frame"] = thumb' in sequence_compact_method
-    assert 'self._action_widgets[action.action_id]["thumb_size"] = 36' in sequence_compact_method
-    assert "self._display_thumbnail(thumb, action, size=36)" in sequence_compact_method
+    assert 'self._action_widgets[action.action_id]["thumb_size"] = ACTION_COMPACT_THUMB_IMAGE_SIZE' in sequence_compact_method
+    assert "self._display_thumbnail(thumb, action, size=ACTION_COMPACT_THUMB_IMAGE_SIZE)" in sequence_compact_method
+    assert 'thumb.pack(side="left", padx=(0, 4), pady=6)' in sequence_compact_method
     assert sequence_compact_method.index('self._action_widgets[action.action_id]["thumb_frame"] = thumb') < sequence_compact_method.index("name_label = ctk.CTkLabel(")
     assert "for child in thumb_frame.winfo_children():" in sequence_thumbnail_method
     assert "self._display_thumbnail(thumb_frame, action, size=widget_data.get(\"thumb_size\", 60))" in sequence_thumbnail_method
@@ -2208,6 +2413,46 @@ def test_plan_add_button_uses_selected_rule_as_parent():
     assert [item["depth"] for item in flat] == [0, 1]
 
 
+def test_plan_action_click_keeps_selected_parent_visible_for_child_add():
+    parent = AutomationRule(action_type="click", rule_id="parent")
+    other = AutomationRule(action_type="key_press", rule_id="other")
+    dialog = _make_plan_dialog_stub([parent, other], set())
+    parent_row = _FakeWidget()
+    other_row = _FakeWidget()
+    dialog._selected_rule = None
+    dialog._active_partial_rule_id = None
+    dialog._rule_widgets = {
+        parent.rule_id: {"widget": parent_row, "rule": parent},
+        other.rule_id: {"widget": other_row, "rule": other},
+    }
+
+    dialog._select_rule(parent)
+    dialog._select_rule(parent)
+    dialog._select_rule(other)
+
+    assert dialog._selected_rule is other
+    assert parent_row.config["fg_color"] == COLORS["bg_glass"]
+    assert other_row.config["fg_color"] == COLORS["selection_green"]
+
+
+def test_plan_drag_start_selects_action_without_overwriting_selection_color():
+    parent = AutomationRule(action_type="click", rule_id="parent")
+    dialog = _make_plan_dialog_stub([parent], set())
+    row = _FakeWidget()
+    dialog._selected_rule = None
+    dialog._active_partial_rule_id = None
+    dialog._rule_widgets = {
+        parent.rule_id: {"widget": row, "rule": parent},
+    }
+    dialog._drag_data = {"rule": None, "widget": None, "start_y": 0}
+    event = SimpleNamespace(y_root=100)
+
+    dialog._on_drag_start(event, parent, row)
+
+    assert dialog._selected_rule is parent
+    assert row.config["fg_color"] == COLORS["selection_green"]
+
+
 def test_plan_add_button_falls_back_to_top_level_when_selection_is_stale():
     current = AutomationRule(action_type="click", rule_id="current")
     stale = AutomationRule(action_type="click", rule_id="stale")
@@ -2257,6 +2502,44 @@ def test_sequence_add_button_uses_selected_action_as_parent():
     flat = dialog._get_flat_actions_with_depth()
     assert [item["action"].action_id for item in flat] == ["parent", "child"]
     assert [item["depth"] for item in flat] == [0, 1]
+
+
+def test_sequence_action_click_keeps_selected_parent_visible_for_child_add():
+    parent = Action(action_type="click", action_id="parent")
+    other = Action(action_type="key_press", action_id="other")
+    dialog = _make_sequence_dialog_stub(Sequence(name="seq", actions=[parent, other]), set())
+    parent_row = _FakeWidget()
+    other_row = _FakeWidget()
+    dialog._selected_action = None
+    dialog._action_widgets = {
+        parent.action_id: {"widget": parent_row, "action": parent},
+        other.action_id: {"widget": other_row, "action": other},
+    }
+
+    dialog._select_action(parent)
+    dialog._select_action(parent)
+    dialog._select_action(other)
+
+    assert dialog._selected_action is other
+    assert parent_row.config["fg_color"] == COLORS["bg_glass"]
+    assert other_row.config["fg_color"] == COLORS["selection_green"]
+
+
+def test_sequence_drag_start_selects_action_without_overwriting_selection_color():
+    parent = Action(action_type="click", action_id="parent")
+    dialog = _make_sequence_dialog_stub(Sequence(name="seq", actions=[parent]), set())
+    row = _FakeWidget()
+    dialog._selected_action = None
+    dialog._action_widgets = {
+        parent.action_id: {"widget": row, "action": parent},
+    }
+    dialog._drag_data = {"action": None, "widget": None, "start_y": 0}
+    event = SimpleNamespace(y_root=100)
+
+    dialog._on_drag_start(event, parent, row)
+
+    assert dialog._selected_action is parent
+    assert row.config["fg_color"] == COLORS["selection_green"]
 
 
 def test_sequence_add_button_falls_back_to_top_level_when_selection_is_stale():

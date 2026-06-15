@@ -79,8 +79,9 @@ def test_player_repeat_dialog_exposes_disappear_click_option():
     assert "이미지가 사라질 때까지 반복 클릭" in text
     assert "켜면 매번 이미지를 다시 찾아 클릭합니다." in text
     assert 'text="사라짐" if until_disappears' not in text
-    assert 'text=f"x{repeat_count}"' in text
-    assert 'fg_color=COLORS["accent_orange"] if until_disappears' in text
+    assert "_format_repeat_button_text(repeat_count, until_disappears)" in text
+    assert 'if until_disappears' in text
+    assert 'COLORS["accent_orange"]' in text
     assert 'click_until_image_disappears=getattr(action, "click_until_image_disappears", False)' in text
     assert 'getattr(rule, "target_images", None)' in text
 

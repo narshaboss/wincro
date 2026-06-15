@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 사용법 가이드 모듈
 
 초보자도 쉽게 이해할 수 있는 사용법 안내를 제공합니다.
@@ -61,7 +61,7 @@ class HelpDialog(ctk.CTkToplevel):
             self,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -124,7 +124,7 @@ class HelpDialog(ctk.CTkToplevel):
             width=100,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             corner_radius=IOS_METRICS["pill_radius"],
         )
         close_btn.pack(side="right")
@@ -249,7 +249,7 @@ class HelpDialog(ctk.CTkToplevel):
             parent,
             text=f"▸ {title}",
             font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
             anchor="w",
         )
         label.pack(fill="x", pady=(10, 3), padx=10)
@@ -272,7 +272,7 @@ class HelpDialog(ctk.CTkToplevel):
             parent,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["control_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         step_frame.pack(fill="x", pady=5, padx=10)
@@ -283,7 +283,7 @@ class HelpDialog(ctk.CTkToplevel):
             text=number,
             font=ctk.CTkFont(size=20, weight="bold"),
             width=40,
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
         )
         num_label.pack(side="left", padx=10, pady=10)
 

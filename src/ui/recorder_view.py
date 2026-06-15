@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro 녹화 화면 모듈
 
 프리미엄 카드 기반 UI 디자인
@@ -208,7 +208,7 @@ class RecorderView(BaseView):
             content,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         stats_frame.pack(fill="x")
@@ -320,7 +320,7 @@ class RecorderView(BaseView):
             input_log_frame,
             text="  ⚠️ 자동화 분석에 필수",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
-            text_color=COLORS["warning"],
+            text_color=COLORS["warning_text"],
         ).pack(side="left")
 
     def _setup_recordings_card(self, parent):
@@ -354,7 +354,7 @@ class RecorderView(BaseView):
             buffer_count=5,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         self._recordings_scroll.set_render_callback(self._render_recording_item)

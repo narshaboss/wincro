@@ -1,4 +1,4 @@
-﻿"""
+"""
 WinCro 메인 윈도우 모듈
 
 프리미엄 UI 디자인 - 사이드바 네비게이션 + 하단 로그 패널
@@ -37,9 +37,11 @@ from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
 from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
 from .capture_cleanup import remove_auto_capture_source_after_crop
+from .text_overflow import truncate_ui_text
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
 
 PLANS_DIR = DATA_DIR / "plans"
+WHITE_GOLD_CTK_THEME = Path(__file__).with_name("ctk_white_gold_theme.json")
 MINI_GROUP_PREFIX = "그룹: "
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ICON_FILE = PROJECT_ROOT / "icon.ico"
@@ -90,7 +92,7 @@ class LogPanel(ctk.CTkFrame):
         )
 
         # 높이 설정
-        self._collapsed_height = 32  # 축소시 헤더만
+        self._collapsed_height = 48  # 축소시 헤더만
         self._expanded_height = 500  # 확장시 크게 (화면의 절반 정도)
 
         self._setup_ui()
@@ -98,7 +100,7 @@ class LogPanel(ctk.CTkFrame):
 
     def _setup_ui(self):
         # 헤더 바
-        self._header = ctk.CTkFrame(self, fg_color=COLORS["bg_glass"], height=32, corner_radius=0)
+        self._header = ctk.CTkFrame(self, fg_color=COLORS["bg_glass"], height=48, corner_radius=0)
         self._header.pack(fill="x")
         self._header.pack_propagate(False)
 
@@ -108,13 +110,15 @@ class LogPanel(ctk.CTkFrame):
             text="▶ 실시간 로그 (클릭하여 확장)",
             command=self._toggle_expand,
             width=180,
-            height=28,
-            fg_color="transparent",
+            height=32,
+            fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_primary"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["button_border"],
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
         )
-        self._toggle_btn.pack(side="left", padx=5, pady=2)
+        self._toggle_btn.pack(side="left", padx=8, pady=8)
 
         # 필터 콤보 (한글화)
         self._filter_var = ctk.StringVar(value="전체")
@@ -124,16 +128,17 @@ class LogPanel(ctk.CTkFrame):
             variable=self._filter_var,
             command=self._on_filter_change,
             width=80,
-            height=24,
+            height=32,
             fg_color=COLORS["bg_elevated"],
-            border_color=COLORS["border"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["button_border"],
             button_color=COLORS["bg_card_hover"],
             button_hover_color=COLORS["bg_card_hover"],
             dropdown_fg_color=COLORS["bg_elevated"],
             dropdown_hover_color=COLORS["bg_card_hover"],
             corner_radius=IOS_METRICS["control_radius_small"],
         )
-        self._filter_combo.pack(side="left", padx=5, pady=4)
+        self._filter_combo.pack(side="left", padx=5, pady=8)
 
         # 지우기 버튼
         self._clear_btn = ctk.CTkButton(
@@ -141,13 +146,15 @@ class LogPanel(ctk.CTkFrame):
             text="지우기",
             command=self._clear_logs,
             width=55,
-            height=24,
+            height=32,
             fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["button_border"],
             corner_radius=IOS_METRICS["control_radius_small"],
         )
-        self._clear_btn.pack(side="right", padx=8, pady=4)
+        self._clear_btn.pack(side="right", padx=8, pady=8)
 
         # 로그 개수
         self._count_label = ctk.CTkLabel(
@@ -483,7 +490,7 @@ class MainWindow(ctk.CTk):
 
         # 테마 설정
         ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
+        ctk.set_default_color_theme(str(WHITE_GOLD_CTK_THEME))
 
         # 윈도우 닫기 이벤트
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -573,13 +580,13 @@ class MainWindow(ctk.CTk):
                 brand,
                 text="⚔",
                 font=ctk.CTkFont(size=icon_size - 2, weight="bold"),
-                text_color=COLORS["warning"],
+                text_color=COLORS["warning_text"],
             ).pack(side="left", padx=(0, 8 if not compact else 6))
         name_label = ctk.CTkLabel(
             brand,
             text=self._app_name,
             font=ctk.CTkFont(size=text_size, weight="bold"),
-            text_color=COLORS["warning"],
+            text_color=COLORS["warning_text"],
         )
         name_label.pack(side="left")
         if hasattr(self, "_brand_name_labels"):
@@ -625,6 +632,8 @@ class MainWindow(ctk.CTk):
         self._sequence_repeats = []  # 시퀀스 플랜별 반복횟수
         self._sequence_index = 0  # 현재 시퀀스 인덱스
         self._sequence_group_name = ""
+        self._sequence_group_label = ""
+        self._sequence_group_repeat_count = 1
         self._mini_active_plan = None
         self._mini_remaining_rules = []
         self._mini_gm_dialog = None
@@ -690,7 +699,7 @@ class MainWindow(ctk.CTk):
             self._main_container,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         top_frame.pack(fill="x", padx=10, pady=(10, 5))
@@ -721,7 +730,7 @@ class MainWindow(ctk.CTk):
             top_frame,
             text=f"v{APP_VERSION}",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
         )
         self._mini_version_label.pack(side="left", padx=(8, 4), pady=8)
 
@@ -734,7 +743,7 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
             fg_color=COLORS["accent_pink"],
             hover_color=COLORS["accent_pink_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._change_window_mode("editor"),
         ).pack(side="right", padx=(4, 10), pady=8)
@@ -787,7 +796,7 @@ class MainWindow(ctk.CTk):
             self._main_container,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         active_frame.pack(fill="x", padx=10, pady=(0, 5))
@@ -817,7 +826,8 @@ class MainWindow(ctk.CTk):
             corner_radius=9,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            border_width=0,
+            border_width=2,
+            border_color=COLORS["button_border"],
             command=self._toggle_mini_auto_shutdown_from_indicator,
         )
         self._mini_auto_shutdown_indicator.pack(side="left", padx=(0, 10), pady=2)
@@ -842,7 +852,8 @@ class MainWindow(ctk.CTk):
             corner_radius=9,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            border_width=0,
+            border_width=2,
+            border_color=COLORS["button_border"],
             command=self._toggle_mini_auto_update_from_indicator,
         )
         self._mini_auto_update_indicator.pack(side="left", pady=2)
@@ -860,8 +871,9 @@ class MainWindow(ctk.CTk):
             active_frame,
             text="대기",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
             anchor="w",
+            width=52,
         )
         self._mini_active_title.pack(side="left", padx=(0, 8), pady=7)
 
@@ -871,6 +883,7 @@ class MainWindow(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["text_secondary"],
             anchor="w",
+            width=280,
         )
         self._mini_active_detail.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=7)
         self._mini_update_active_bar("대기")
@@ -880,7 +893,7 @@ class MainWindow(ctk.CTk):
             self._main_container,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         ctrl_frame.pack(fill="x", padx=10, pady=5)
@@ -893,8 +906,8 @@ class MainWindow(ctk.CTk):
             height=38,
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
-            border_width=1,
-            border_color=COLORS["green_hover"],
+            border_width=2,
+            border_color=COLORS["button_border"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
             command=self._mini_on_play,
@@ -908,8 +921,8 @@ class MainWindow(ctk.CTk):
             height=38,
             fg_color=COLORS["warning"],
             hover_color=COLORS["confidence_amber_hover"],
-            border_width=1,
-            border_color=COLORS["warning"],
+            border_width=2,
+            border_color=COLORS["button_border"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
             command=self._mini_on_pause,
@@ -924,8 +937,8 @@ class MainWindow(ctk.CTk):
             height=38,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            border_width=1,
-            border_color=COLORS["danger_hover"],
+            border_width=2,
+            border_color=COLORS["button_border"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
             command=self._mini_on_stop,
@@ -946,7 +959,7 @@ class MainWindow(ctk.CTk):
             self._main_container,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         log_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -1049,7 +1062,7 @@ class MainWindow(ctk.CTk):
         """Avoid repainting the hidden mini status label when the value did not change."""
         if not hasattr(self, "_mini_status"):
             return
-        text = str(text)
+        text = truncate_ui_text(text, 90)
         try:
             current_text = self._mini_status.cget("text")
             if text_color is None:
@@ -1083,6 +1096,7 @@ class MainWindow(ctk.CTk):
         detail_parts = []
         detail_color = COLORS["text_secondary"]
         display_names = [name for name in (group_name, plan_name) if name]
+        display_names = [truncate_ui_text(name, 34) for name in display_names]
 
         if display_names:
             # 실행 표시 바는 그룹/재생목록명만 강조한다. 액션명/진행 메시지는 로그와 상태줄에만 남긴다.
@@ -1098,8 +1112,10 @@ class MainWindow(ctk.CTk):
             if repeat_count > 0:
                 detail_parts.append(f"반복 {repeat_count}회")
             if message:
-                detail_parts.append(message)
+                detail_parts.append(truncate_ui_text(message, 44))
             detail = " · ".join(detail_parts) if detail_parts else "실행 중인 재생목록 없음"
+        title = truncate_ui_text(title, 12)
+        detail = truncate_ui_text(detail, 82)
         color = COLORS["accent_blue"]
         if state in ("실행 중", "시퀀스"):
             color = COLORS["success"]
@@ -1332,7 +1348,7 @@ class MainWindow(ctk.CTk):
                 if status_update[0] and hasattr(self, '_mini_status'):
                     self._mini_set_status(
                         f"▶ [{status_update[0]}] {status_update[1][:20]}",
-                        text_color=COLORS["accent"],
+                        text_color=COLORS["accent_text"],
                     )
 
                 # 로그 UI 일괄 업데이트
@@ -1408,7 +1424,7 @@ class MainWindow(ctk.CTk):
             bg=COLORS["bg_card"],
             fg=COLORS["text_primary"],
             activebackground=COLORS["accent"],
-            activeforeground="white",
+            activeforeground=COLORS["bg_card"],
         )
         menu.add_command(label="부분 액션 실행", command=self._open_partial_execution)
 
@@ -1699,7 +1715,13 @@ class MainWindow(ctk.CTk):
                 repeat_count=repeat_count,
                 message="그룹 실행 준비",
             )
-            self._start_sequence_mode(plan_paths, repeats, group_name=selected_group.get("name", "그룹"))
+            self._start_sequence_mode(
+                plan_paths,
+                repeats,
+                group_name=selected_group.get("name", "그룹"),
+                group_label=self._mini_group_label(selected_group),
+                group_repeat=repeat_count,
+            )
             return
 
         # 반복은 rule_executor에서 처리하므로 여기서는 1회만
@@ -1778,7 +1800,14 @@ class MainWindow(ctk.CTk):
 
         threading.Thread(target=load_and_start, daemon=True).start()
 
-    def _start_sequence_mode(self, plan_paths: list, repeats: list = None, group_name: str = ""):
+    def _start_sequence_mode(
+        self,
+        plan_paths: list,
+        repeats: list = None,
+        group_name: str = "",
+        group_label: str = "",
+        group_repeat: int = 1,
+    ):
         """플랜 순서 실행 모드 시작"""
         logger.info(f"[시퀀스] 플랜 순서 실행 시작: {len(plan_paths)}개 플랜")
         self._sequence_mode = True
@@ -1789,6 +1818,15 @@ class MainWindow(ctk.CTk):
             self._sequence_repeats.append(0)
         self._sequence_index = 0
         self._sequence_group_name = group_name or self._mini_active_group_name()
+        self._sequence_group_label = group_label or (
+            self._mini_group_label({"name": self._sequence_group_name}) if self._sequence_group_name else ""
+        )
+        self._sequence_group_repeat_count = normalize_repeat_count(group_repeat)
+
+        if self._sequence_group_label and hasattr(self, "_mini_plan_var"):
+            self._mini_plan_var.set(self._sequence_group_label)
+            self._mini_repeat_var.set(str(self._sequence_group_repeat_count))
+            self._style_mini_plan_dropdown()
 
         # UI 업데이트
         self._mini_play_btn.configure(state="disabled")
@@ -1844,10 +1882,16 @@ class MainWindow(ctk.CTk):
                 logger.info(f"[시퀀스] 플랜 로드 성공: {plan.name}, 반복: {repeat_count}회 ({index + 1}/{total})")
 
                 def start_on_main():
-                    # 드롭다운 UI 동기화
+                    # 그룹 실행 중에는 선택값을 내부 플랜명으로 덮지 않는다.
+                    # 그래야 중지 후 실행 버튼을 눌러도 그룹 전체가 다시 시작된다.
                     if hasattr(self, '_mini_plan_var'):
-                        self._mini_plan_var.set(plan.name)
-                    self._mini_repeat_var.set(str(repeat_count))
+                        if self._sequence_mode and getattr(self, "_sequence_group_label", ""):
+                            self._mini_plan_var.set(self._sequence_group_label)
+                            self._mini_repeat_var.set(str(self._sequence_group_repeat_count))
+                            self._style_mini_plan_dropdown()
+                        else:
+                            self._mini_plan_var.set(plan.name)
+                            self._mini_repeat_var.set(str(repeat_count))
                     # 반복은 rule_executor에서 처리하므로 여기서는 1회만
                     self._mini_total_repeat = 1
                     self._mini_current_repeat = 0
@@ -2303,6 +2347,8 @@ class MainWindow(ctk.CTk):
         self._is_paused = False
         self._sequence_mode = False
         self._sequence_group_name = ""
+        self._sequence_group_label = ""
+        self._sequence_group_repeat_count = 1
         self._mini_play_btn.configure(state="normal")
         self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
         self._mini_stop_btn.configure(state="disabled")
@@ -2486,6 +2532,8 @@ class MainWindow(ctk.CTk):
             self._sequence_repeats = []
             self._sequence_index = 0
             self._sequence_group_name = ""
+            self._sequence_group_label = ""
+            self._sequence_group_repeat_count = 1
             self._mini_active_plan = None
             self._mini_remaining_rules = []
             self._mini_gm_dialog = None
@@ -2566,7 +2614,7 @@ class MainWindow(ctk.CTk):
             self._topbar,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["pill_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         version_frame.pack(side="right", padx=20, pady=12)
@@ -2575,7 +2623,7 @@ class MainWindow(ctk.CTk):
             version_frame,
             text=f"  v{APP_VERSION}  ",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=13, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
         )
         self._version_label.pack(padx=8, pady=4)
 
@@ -2626,7 +2674,7 @@ class MainWindow(ctk.CTk):
             self._view_container,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         self._loading_content = ctk.CTkFrame(self._loading_view, fg_color="transparent")
@@ -2828,7 +2876,7 @@ class MainWindow(ctk.CTk):
     def _set_nav_button_state(self, active_view_id: Optional[str]):
         for btn_id, btn in self._nav_buttons.items():
             if btn_id == active_view_id:
-                btn.configure(fg_color=COLORS["accent"], text_color=COLORS["text_primary"])
+                btn.configure(fg_color=COLORS["accent"], text_color=COLORS["text_on_accent"])
             else:
                 btn.configure(fg_color="transparent", text_color=COLORS["text_secondary"])
 
@@ -3058,7 +3106,7 @@ class BaseView(ctk.CTkFrame):
             parent,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
             **kwargs
         )
@@ -3094,7 +3142,7 @@ class BaseView(ctk.CTkFrame):
             "primary": {
                 "fg_color": COLORS["accent"],
                 "hover_color": COLORS["accent_hover"],
-                "text_color": "white",
+                "text_color": COLORS["text_on_accent"],
             },
             "secondary": {
                 "fg_color": COLORS["bg_elevated"],
@@ -3104,17 +3152,17 @@ class BaseView(ctk.CTkFrame):
             "success": {
                 "fg_color": COLORS["success"],
                 "hover_color": COLORS["green_hover"],
-                "text_color": "white",
+                "text_color": COLORS["text_on_accent"],
             },
             "danger": {
                 "fg_color": COLORS["error"],
                 "hover_color": COLORS["danger_hover"],
-                "text_color": "white",
+                "text_color": COLORS["text_on_accent"],
             },
             "warning": {
                 "fg_color": COLORS["warning"],
                 "hover_color": COLORS["confidence_amber_hover"],
-                "text_color": COLORS["bg_content"],
+                "text_color": COLORS["text_on_accent"],
             },
             "ghost": {
                 "fg_color": "transparent",
@@ -3130,6 +3178,8 @@ class BaseView(ctk.CTkFrame):
             "corner_radius": IOS_METRICS["control_radius"],
             "height": IOS_METRICS["button_height"],
             "font": ctk.CTkFont(family=IOS_FONTS["family"], size=IOS_FONTS["body_size"], weight="bold"),
+            "border_width": 2,
+            "border_color": COLORS["button_border"],
         }
         defaults.update(btn_style)
         defaults.update(kwargs)

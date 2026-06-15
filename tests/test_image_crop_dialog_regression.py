@@ -27,6 +27,23 @@ def test_image_crop_dialog_hides_freeform_mask_controls():
     assert "self._set_edit_mode(\"select\")" in text
 
 
+def test_image_crop_dialog_has_search_region_preset_picker():
+    text = _text(ANALYZER_VIEW)
+    start = text.index("class ImageCropDialog")
+    end = text.index("class AltImageDialog", start)
+    crop_class = text[start:end]
+
+    assert "command=self._show_search_region_options" in crop_class
+    assert "def _show_search_region_options(self):" in crop_class
+    assert 'build_preset_row("a", "A영역", COLORS["accent_blue"])' in crop_class
+    assert 'build_preset_row("b", "B영역", COLORS["accent_orange"])' in crop_class
+    assert 'self._start_search_region_selection(preset_slot=None, source_label="자유영역")' in crop_class
+    assert 'key = f"image_search_region_{slot}"' in crop_class
+    assert "save_config()" in crop_class
+    assert "def _apply_search_region_to_rule(self, region, source_label: str = \"검색범위\") -> bool:" in crop_class
+    assert "self._rule.search_region = normalized" in crop_class
+
+
 def test_image_crop_dialog_uses_sidecar_mask_pipeline():
     text = _text(ANALYZER_VIEW)
 

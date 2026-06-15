@@ -13,14 +13,16 @@ from .theme import COLORS
 class VirtualScrollFrame(ctk.CTkFrame):
     """Virtualized scroll frame for large lists."""
 
-    def __init__(self, parent, item_height=75, buffer_count=3, **kwargs):
+    def __init__(self, parent, item_height=75, buffer_count=6, **kwargs):
         if "fg_color" not in kwargs:
             kwargs["fg_color"] = COLORS["bg_card"]
         self._surface_color = kwargs["fg_color"]
         super().__init__(parent, **kwargs)
 
         self._item_height = item_height
-        self._buffer_count = buffer_count
+        self._buffer_count = max(6, int(buffer_count or 6))
+        self._scroll_unit_px = max(16, min(48, int(self._item_height * 0.55)))
+        self._wheel_remainder = 0
         self._items = []
         self._item_index_by_identity = {}
         self._item_index_dirty = False
@@ -30,6 +32,8 @@ class VirtualScrollFrame(ctk.CTkFrame):
         self._update_callback = None
         self._scroll_scheduled = False
         self._scroll_after_id = None
+        self._scroll_after_delay_ms = None
+        self._wheel_render_delay_ms = 12
         self._last_render_range = None
 
         self._canvas = tk.Canvas(
@@ -37,6 +41,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
             bg=self._apply_appearance_mode(self._surface_color),
             highlightthickness=0,
             borderwidth=0,
+            yscrollincrement=self._scroll_unit_px,
         )
 
         self._scrollbar = ctk.CTkScrollbar(self, command=self._canvas.yview)
@@ -56,8 +61,8 @@ class VirtualScrollFrame(ctk.CTkFrame):
         self._canvas.bind("<Button-5>", self._on_mousewheel_linux)
         self._container.bind("<MouseWheel>", self._on_mousewheel)
 
-        self._scrollbar.bind("<B1-Motion>", lambda e: self._schedule_render())
-        self._scrollbar.bind("<ButtonRelease-1>", lambda e: self._schedule_render())
+        self._scrollbar.bind("<B1-Motion>", lambda e: self._schedule_render(delay_ms=0))
+        self._scrollbar.bind("<ButtonRelease-1>", lambda e: self._schedule_render(delay_ms=0))
 
     def _apply_appearance_mode(self, color):
         if isinstance(color, tuple):
@@ -461,28 +466,67 @@ class VirtualScrollFrame(ctk.CTkFrame):
     def _on_canvas_configure(self, event):
         self._canvas.itemconfig(self._canvas_window, width=event.width)
         self._update_scroll_region()
-        self._schedule_render()
+        self._schedule_render(delay_ms=0)
 
     def _on_mousewheel(self, event):
-        delta = -1 * (event.delta // 120)
-        self._canvas.yview_scroll(delta, "units")
-        self._schedule_render()
+        delta = self._wheel_scroll_units(getattr(event, "delta", 0))
+        if delta:
+            self._canvas.yview_scroll(delta, "units")
+            self._schedule_render(delay_ms=self._wheel_render_delay_ms)
 
     def _on_mousewheel_linux(self, event):
         if event.num == 4:
             self._canvas.yview_scroll(-1, "units")
         elif event.num == 5:
             self._canvas.yview_scroll(1, "units")
-        self._schedule_render()
+        self._schedule_render(delay_ms=self._wheel_render_delay_ms)
 
-    def _schedule_render(self):
-        if not self._scroll_scheduled:
-            self._scroll_scheduled = True
-            self._scroll_after_id = self.after(10, self._do_scheduled_render)
+    def _wheel_scroll_units(self, raw_delta) -> int:
+        try:
+            delta = int(raw_delta)
+        except (TypeError, ValueError):
+            return 0
+        if delta == 0:
+            return 0
+
+        self._wheel_remainder = getattr(self, "_wheel_remainder", 0) + delta
+        units = int(self._wheel_remainder / 120)
+        if units == 0:
+            if abs(self._wheel_remainder) < 60:
+                return 0
+            units = 1 if self._wheel_remainder > 0 else -1
+            self._wheel_remainder = 0
+        else:
+            self._wheel_remainder -= units * 120
+        return -units
+
+    def _schedule_render(self, delay_ms: int = 0):
+        try:
+            delay = max(0, int(delay_ms or 0))
+        except (TypeError, ValueError):
+            delay = 0
+        if self._scroll_scheduled:
+            current_delay = self._scroll_after_delay_ms
+            if current_delay is not None and delay < current_delay:
+                after_id = self._scroll_after_id
+                self._scroll_after_id = None
+                self._scroll_scheduled = False
+                self._scroll_after_delay_ms = None
+                if after_id:
+                    try:
+                        self.after_cancel(after_id)
+                    except (tk.TclError, RuntimeError):
+                        pass
+            else:
+                return
+        self._scroll_scheduled = True
+        self._scroll_after_delay_ms = delay
+        self._scroll_after_id = self.after(delay, self._do_scheduled_render)
 
     def _do_scheduled_render(self):
         self._scroll_scheduled = False
         self._scroll_after_id = None
+        self._scroll_after_delay_ms = None
         self._render_visible_items()
 
     def _get_visible_range(self):
@@ -564,6 +608,7 @@ class VirtualScrollFrame(ctk.CTkFrame):
         after_id = getattr(self, "_scroll_after_id", None)
         self._scroll_after_id = None
         self._scroll_scheduled = False
+        self._scroll_after_delay_ms = None
         if after_id:
             try:
                 self.after_cancel(after_id)

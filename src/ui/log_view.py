@@ -68,7 +68,7 @@ class LogView(BaseView):
             self,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         control_frame.pack(fill="x", padx=10, pady=(10, 5))
@@ -125,6 +125,8 @@ class LogView(BaseView):
             fg_color=COLORS["bg_elevated"],
             hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_secondary"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["button_border"],
             corner_radius=IOS_METRICS["pill_radius"],
         )
         self._clear_btn.pack(side="right", padx=10)
@@ -144,7 +146,7 @@ class LogView(BaseView):
             self,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         log_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
@@ -162,7 +164,7 @@ class LogView(BaseView):
             padx=10,
             pady=10,
         )
-        self._log_text.pack(side="left", fill="both", expand=True)
+        self._log_text.pack(side="left", fill="both", expand=True, padx=(10, 4), pady=10)
 
         # 수직 스크롤바
         v_scroll = ctk.CTkScrollbar(
@@ -170,7 +172,7 @@ class LogView(BaseView):
             orientation="vertical",
             command=self._log_text.yview,
         )
-        v_scroll.pack(side="right", fill="y")
+        v_scroll.pack(side="right", fill="y", padx=(0, 10), pady=10)
         self._log_text.configure(yscrollcommand=v_scroll.set)
 
         # 수평 스크롤바
@@ -179,6 +181,8 @@ class LogView(BaseView):
             height=20,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["control_radius_small"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["border"],
         )
         h_scroll_frame.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -187,7 +191,7 @@ class LogView(BaseView):
             orientation="horizontal",
             command=self._log_text.xview,
         )
-        h_scroll.pack(fill="x")
+        h_scroll.pack(fill="x", padx=8, pady=4)
         self._log_text.configure(xscrollcommand=h_scroll.set)
 
         # 읽기 전용

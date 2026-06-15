@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import locale
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Optional
 
 from .logger import get_logger
 
@@ -45,11 +45,29 @@ def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess:
         ["schtasks", *args],
         capture_output=True,
         text=True,
-        encoding="utf-8",
+        encoding=locale.getpreferredencoding(False),
         errors="replace",
         timeout=15,
         check=False,
     )
+
+
+def _task_missing_output(output: str) -> bool:
+    """schtasks stderr is localized, so detect the common missing-task cases."""
+    text = (output or "").lower()
+    if any(
+        marker in text
+        for marker in (
+            "cannot find",
+            "could not find",
+            "does not exist",
+            "not found",
+            "존재하지",
+            "찾을",
+        )
+    ):
+        return True
+    return "작업" in text and "없" in text
 
 
 def is_shutdown_task_registered() -> bool:
@@ -103,12 +121,19 @@ def unregister_shutdown_task() -> ShutdownScheduleResult:
     if not _is_windows():
         return ShutdownScheduleResult(False, "미지원", "Windows에서만 지원됩니다")
 
+    query = _run_schtasks(["/Query", "/TN", TASK_NAME])
+    query_output = (query.stderr or query.stdout or "").strip()
+    if query.returncode != 0 and _task_missing_output(query_output):
+        logger.info("[PC자동종료] 작업 미등록 - 삭제 생략")
+        return ShutdownScheduleResult(True, "미등록")
+
     result = _run_schtasks(["/Delete", "/TN", TASK_NAME, "/F"])
     output = (result.stderr or result.stdout or "").strip()
     if result.returncode == 0:
         logger.info("[PC자동종료] 작업 삭제 완료")
         return ShutdownScheduleResult(True, "미등록")
-    if "cannot find" in output.lower() or "찾을 수" in output:
+    if _task_missing_output(output):
+        logger.info("[PC자동종료] 작업 미등록 - 삭제 생략")
         return ShutdownScheduleResult(True, "미등록")
 
     logger.error(f"[PC자동종료] 작업 삭제 실패: {output}")

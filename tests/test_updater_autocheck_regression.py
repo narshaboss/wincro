@@ -1,3 +1,5 @@
+import logging
+import urllib.error
 from pathlib import Path
 
 from src.utils import updater
@@ -28,3 +30,23 @@ def test_auto_update_does_not_restore_old_plan_playlists():
 
     assert 'xcopy /E /I /Y /Q "{data_backup}\\\\plans\\\\*"' not in app_text
     assert "plans_user_backup" in app_text
+
+
+def test_transient_github_http_error_is_warning_not_error(monkeypatch, caplog):
+    def raise_http_error(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            url="https://api.github.com/repos/test/repo/releases/latest",
+            code=504,
+            msg="Gateway Timeout",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(updater, "_urlopen_with_fallback", raise_http_error)
+
+    with caplog.at_level(logging.WARNING):
+        result = updater.check_for_update("test/repo", "1.0.0", force=True)
+
+    assert result is None
+    assert any("GitHub API 일시 오류: 504" in record.message for record in caplog.records)
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)

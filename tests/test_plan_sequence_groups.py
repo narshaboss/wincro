@@ -49,6 +49,21 @@ def test_legacy_plan_sequence_migrates_to_default_group():
     ]
 
 
+def test_image_search_region_presets_survive_config_roundtrip():
+    config = AppConfig(
+        player=PlayerConfig(
+            image_search_region_a=[10, 20, 110, 220],
+            image_search_region_b=[30, 40, 130, 240],
+        )
+    )
+
+    manager = ConfigManager()
+    restored = manager._dict_to_config(manager._config_to_dict(config))
+
+    assert restored.player.image_search_region_a == [10, 20, 110, 220]
+    assert restored.player.image_search_region_b == [30, 40, 130, 240]
+
+
 def test_active_group_only_resolves_for_startup_autorun():
     group_a = make_plan_sequence_group(
         "자동사냥",

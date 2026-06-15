@@ -20,7 +20,7 @@ import json
 from PIL import Image, ImageTk
 
 from ..utils.logger import get_logger
-from ..utils.config import DATA_DIR
+from ..utils.config import DATA_DIR, get_config, save_config
 from ..utils.json_utils import load_json_file
 from ..utils.window_position import setup_window_position
 
@@ -30,6 +30,7 @@ from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from ..database import get_db, Recording, Sequence
 from .main_window import BaseView, COLORS
 from .theme import IOS_FONTS, IOS_METRICS
+from .text_overflow import truncate_ui_text
 from .image_crop_utils import (
     auto_extract_foreground_mask,
     fit_image_to_box,
@@ -186,7 +187,7 @@ class ScreenRegionSelector(tk.Toplevel):
         self.attributes("-fullscreen", True)
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.3)  # 반투명
-        self.configure(bg="black")
+        self.configure(bg=COLORS["overlay_dim"])
         self.overrideredirect(True)
 
         # 화면 크기
@@ -198,7 +199,7 @@ class ScreenRegionSelector(tk.Toplevel):
             self,
             width=screen_w,
             height=screen_h,
-            bg="gray20",
+            bg=COLORS["image_canvas_bg"],
             highlightthickness=0,
             cursor="crosshair"
         )
@@ -225,7 +226,7 @@ class ScreenRegionSelector(tk.Toplevel):
                 screen_w // 2, 50,
                 text="마우스로 드래그하여 새 검색 영역을 선택하세요 (ESC: 취소)",
                 font=("맑은 고딕", 16, "bold"),
-                fill="white"
+                fill=COLORS["overlay_text"]
             )
             self._canvas.create_text(
                 screen_w // 2, 80,
@@ -239,7 +240,7 @@ class ScreenRegionSelector(tk.Toplevel):
                 screen_w // 2, 50,
                 text="마우스로 드래그하여 검색 영역을 선택하세요 (ESC: 취소)",
                 font=("맑은 고딕", 16, "bold"),
-                fill="white"
+                fill=COLORS["overlay_text"]
             )
 
         # 이벤트 바인딩
@@ -359,7 +360,8 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._cropped_photo = None
         self._scale = 1.0
         self._min_scale = 0.1
-        self._max_scale = 3.0
+        self._max_scale = 8.0
+        self._initial_zoom_cap = 5.0
         self._crop_coords = None  # 크롭 좌표 저장
         self._crop_mask = None
         self._crop_mask_needs_refresh = False
@@ -423,6 +425,43 @@ class ImageCropDialog(ctk.CTkToplevel):
                     self._crop_mask = None
         except Exception as e:
             logger.error(f"이미지 로드 실패: {e}")
+
+    def _configure_image_view_metrics(self, image_width: int, image_height: int) -> None:
+        screen_w = max(1024, int(self.winfo_screenwidth() or 1024))
+        screen_h = max(768, int(self.winfo_screenheight() or 768))
+
+        canvas_w = min(1180, max(760, screen_w - 360))
+        canvas_h = min(720, max(500, screen_h - 280))
+        win_w = min(screen_w - 32, canvas_w + 280)
+        win_h = min(screen_h - 32, canvas_h + 220)
+
+        self._canvas_width = max(640, win_w - 280)
+        self._canvas_height = max(420, win_h - 220)
+        self._max_scale = 8.0
+        self._initial_zoom_cap = 5.0
+        self._reset_image_scale(image_width, image_height)
+
+    def _fit_canvas_scale(self, image_width: int, image_height: int, cap: float | None = None) -> float:
+        if image_width <= 0 or image_height <= 0:
+            return 1.0
+        fit_scale = min(self._canvas_width / image_width, self._canvas_height / image_height)
+        if cap is not None:
+            fit_scale = min(fit_scale, cap)
+        return max(0.05, fit_scale)
+
+    def _reset_image_scale(self, image_width: int, image_height: int) -> None:
+        self._scale = self._fit_canvas_scale(image_width, image_height, cap=self._initial_zoom_cap)
+        self._min_scale = max(0.05, min(0.25, self._scale * 0.5))
+
+    def _format_image_info_text(self) -> str:
+        if self._original_image is None:
+            return ""
+        h, w = self._original_image.shape[:2]
+        return f"원본: {w} x {h} px  |  표시: {int(self._scale * 100)}%"
+
+    def _update_image_info_label(self) -> None:
+        if hasattr(self, "_info_label"):
+            self._info_label.configure(text=self._format_image_info_text())
 
     def _bind_crop_keyboard_controls(self):
         for sequence in (
@@ -504,14 +543,7 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         h, w = self._original_image.shape[:2]
 
-        # 캔버스 표시 영역 (고정 크기)
-        self._canvas_width = 800
-        self._canvas_height = 500
-
-        # 초기 스케일 계산 (이미지가 캔버스에 맞게)
-        self._scale = min(self._canvas_width / w, self._canvas_height / h, 1.0)
-        self._min_scale = min(0.1, self._scale * 0.5)
-        self._max_scale = 3.0
+        self._configure_image_view_metrics(w, h)
 
         # 창 크기 설정
         win_w = self._canvas_width + 280
@@ -527,9 +559,9 @@ class ImageCropDialog(ctk.CTkToplevel):
         filename = Path(self._image_path).name
         self._filename_label = ctk.CTkLabel(
             self,
-            text=f"📁 {filename}",
+            text=f"📁 {truncate_ui_text(filename, 58)}",
             font=ctk.CTkFont(size=16, weight="bold"),
-            text_color=COLORS["accent"],
+            text_color=COLORS["accent_text"],
         )
         self._filename_label.pack(pady=(15, 5))
 
@@ -548,7 +580,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             top_frame,
             text="선택 후 방향키=1px 이동, Shift+방향키=10px 이동",
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
         )
         self._crop_key_hint_label.pack(side="left", padx=(14, 0))
 
@@ -571,7 +603,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             zoom_frame,
             text=f"{int(self._scale * 100)}%",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
             width=60,
         )
         self._zoom_label.pack(side="left", padx=5)
@@ -646,7 +678,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 이전 버튼
             self._prev_btn = ctk.CTkButton(
                 nav_frame,
-                text="◀ 이전",
+                text="< 이전",
                 width=80,
                 height=30,
                 command=lambda: self._navigate_image(-1),
@@ -669,7 +701,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 다음 버튼
             self._next_btn = ctk.CTkButton(
                 nav_frame,
-                text="다음 ▶",
+                text="다음 >",
                 width=80,
                 height=30,
                 command=lambda: self._navigate_image(1),
@@ -683,9 +715,9 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 키보드 안내
             ctk.CTkLabel(
                 nav_frame,
-                text="(← → 키로 이동)",
-                font=ctk.CTkFont(size=10),
-                text_color=COLORS["text_muted"],
+                text="(좌/우 방향키로 이동)",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=COLORS["text_primary"],
             ).pack(side="left", padx=10)
 
             # 버튼 상태 업데이트
@@ -696,7 +728,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             self,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         name_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 6))
@@ -729,10 +761,16 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._update_crop_filename_state()
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(side="bottom", pady=15)
+        btn_frame.pack(side="bottom", fill="x", padx=20, pady=(6, 15))
+
+        primary_btn_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        primary_btn_row.pack(anchor="center", pady=(0, 6))
+
+        option_btn_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        option_btn_row.pack(anchor="center")
 
         self._save_btn = ctk.CTkButton(
-            btn_frame,
+            primary_btn_row,
             text="크롭 저장",
             command=self._save_crop,
             width=100,
@@ -740,7 +778,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             state="disabled" if self._crop_coords is None else "normal",
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         )
@@ -748,28 +786,28 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 이미지 변경 버튼
         ctk.CTkButton(
-            btn_frame,
+            primary_btn_row,
             text="이미지 변경",
             command=self._change_image,
             width=100,
             height=40,
             fg_color=COLORS["accent_blue"],
             hover_color=COLORS["hover_blue"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
 
         # 이미지 삭제 버튼
         ctk.CTkButton(
-            btn_frame,
+            primary_btn_row,
             text="이미지 삭제",
             command=self._delete_image,
             width=100,
             height=40,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
@@ -779,14 +817,14 @@ class ImageCropDialog(ctk.CTkToplevel):
             alt_count = len(getattr(self._rule, 'target_images', []) or [])
             alt_text = f"멀티이미지 ({alt_count})" if alt_count > 0 else "멀티이미지 추가"
             self._alt_image_btn = ctk.CTkButton(
-                btn_frame,
+                option_btn_row,
                 text=alt_text,
                 command=self._manage_alt_images,
                 width=120,
                 height=40,
                 fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
                 hover_color=COLORS["confidence_amber_hover"] if alt_count > 0 else COLORS["bg_card_hover"],
-                text_color=COLORS["text_primary"] if alt_count > 0 else COLORS["text_secondary"],
+                text_color=COLORS["text_on_accent"] if alt_count > 0 else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -794,25 +832,16 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 검색 범위 설정 버튼 (rule이 있을 때만)
         if self._rule is not None:
-            search_region = getattr(self._rule, 'search_region', None)
-            search_radius = getattr(self._rule, 'search_radius', 0)
-            has_region = search_region is not None or search_radius > 0
-            if search_region:
-                w, h = search_region[2] - search_region[0], search_region[3] - search_region[1]
-                radius_text = f"검색범위: {w}x{h}"
-            elif search_radius > 0:
-                radius_text = f"검색범위: {search_radius}px"
-            else:
-                radius_text = "검색범위: 전체"
+            radius_text, has_region = self._search_button_state()
             self._search_radius_btn = ctk.CTkButton(
-                btn_frame,
+                option_btn_row,
                 text=radius_text,
-                command=self._set_search_radius,
+                command=self._show_search_region_options,
                 width=130,
                 height=40,
                 fg_color=COLORS["search_radius_purple"] if has_region else COLORS["bg_card"],
                 hover_color=COLORS["search_radius_purple_hover"] if has_region else COLORS["bg_card_hover"],
-                text_color=COLORS["text_primary"] if has_region else COLORS["text_secondary"],
+                text_color=COLORS["text_on_accent"] if has_region else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -822,14 +851,14 @@ class ImageCropDialog(ctk.CTkToplevel):
             conf_value = getattr(self._rule, 'confidence', 0.65) or 0.65
             conf_pct = int(conf_value * 100)
             self._confidence_btn = ctk.CTkButton(
-                btn_frame,
+                option_btn_row,
                 text=f"인식률: {conf_pct}%",
                 command=self._set_confidence,
                 width=100,
                 height=40,
                 fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
                 hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                text_color=COLORS["text_primary"] if conf_pct != 65 else COLORS["text_secondary"],
+                text_color=COLORS["text_on_accent"] if conf_pct != 65 else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -838,7 +867,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 마우스 이동 체크박스
             self._move_mouse_var = ctk.BooleanVar(value=getattr(self._rule, 'move_mouse_before_search', False))
             self._move_mouse_cb = ctk.CTkCheckBox(
-                btn_frame,
+                option_btn_row,
                 text="커서 숨김",
                 variable=self._move_mouse_var,
                 command=self._on_move_mouse_changed,
@@ -851,7 +880,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._move_mouse_cb.pack(side="left", padx=5)
 
         ctk.CTkButton(
-            btn_frame,
+            primary_btn_row,
             text="취소",
             command=self.destroy,
             width=80,
@@ -871,7 +900,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             content_frame,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
         left_frame.pack(side="left", fill="both", expand=True)
@@ -879,9 +908,9 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 이미지 정보
         self._info_label = ctk.CTkLabel(
             left_frame,
-            text=f"원본: {w} x {h} px",
-            font=ctk.CTkFont(size=11),
-            text_color=COLORS["text_secondary"],
+            text=self._format_image_info_text(),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
         )
         self._info_label.pack(pady=(8, 5))
 
@@ -891,8 +920,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=self._canvas_width,
             height=self._canvas_height,
             bg=COLORS["bg_log"],
-            highlightthickness=1,
-            highlightbackground=COLORS["border"],
+            highlightthickness=IOS_METRICS["canvas_border_width"],
+            highlightbackground=COLORS["image_canvas_border"],
             takefocus=1,
         )
         self._canvas.pack(padx=10, pady=(0, 10))
@@ -922,7 +951,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             content_frame,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
             width=200,
         )
@@ -942,8 +971,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             width=180,
             height=180,
             bg=COLORS["bg_log"],
-            highlightthickness=1,
-            highlightbackground=COLORS["border"],
+            highlightthickness=IOS_METRICS["canvas_border_width"],
+            highlightbackground=COLORS["image_canvas_border"],
         )
         self._preview_canvas.pack(padx=10, pady=5)
 
@@ -967,8 +996,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             return
 
         h, w = self._original_image.shape[:2]
-        display_w = int(w * self._scale)
-        display_h = int(h * self._scale)
+        display_w = max(1, int(w * self._scale))
+        display_h = max(1, int(h * self._scale))
 
         # 스케일된 이미지 생성
         self._display_image = cv2.resize(self._original_image, (display_w, display_h))
@@ -1007,6 +1036,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 줌 레이블 업데이트
         if hasattr(self, '_zoom_label'):
             self._zoom_label.configure(text=f"{int(self._scale * 100)}%")
+        self._update_image_info_label()
 
     def _zoom(self, delta: float):
         """줌 조정"""
@@ -1023,7 +1053,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         if self._original_image is None:
             return
         h, w = self._original_image.shape[:2]
-        self._scale = min(self._canvas_width / w, self._canvas_height / h)
+        self._scale = self._fit_canvas_scale(w, h, cap=self._max_scale)
         self._canvas_offset_x = 0
         self._canvas_offset_y = 0
         self._update_canvas_image()
@@ -1031,7 +1061,7 @@ class ImageCropDialog(ctk.CTkToplevel):
     def _set_edit_mode(self, mode: str):
         self._edit_mode = "select"
         if hasattr(self, "_select_mode_btn"):
-            self._select_mode_btn.configure(fg_color=COLORS["accent_blue"], text_color=COLORS["text_primary"])
+            self._select_mode_btn.configure(fg_color=COLORS["accent_blue"], text_color=COLORS["text_on_accent"])
         if hasattr(self, "_guide_label"):
             self._guide_label.configure(text="좌클릭 드래그: 영역 선택  |  우클릭 드래그: 이동  |  휠: 확대/축소")
 
@@ -1144,7 +1174,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 text="이름 입력 후 저장하면 즉시 해당 파일명으로 저장"
                 if ready
                 else "크롭 영역을 먼저 선택하세요",
-                text_color=COLORS["success"] if ready else COLORS["text_muted"],
+                text_color=COLORS["success_text"] if ready else COLORS["text_muted"],
             )
 
     def _reset_crop_filename(self):
@@ -1502,13 +1532,108 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._rule.x = x
             self._rule.y = y
 
+    @staticmethod
+    def _normalize_search_region_value(region):
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            return None
+        try:
+            x1, y1, x2, y2 = [int(v) for v in region]
+        except (TypeError, ValueError):
+            return None
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        if right <= left or bottom <= top:
+            return None
+        return [left, top, right, bottom]
+
+    @staticmethod
+    def _same_search_region(a, b) -> bool:
+        return ImageCropDialog._normalize_search_region_value(a) == ImageCropDialog._normalize_search_region_value(b)
+
+    def _current_search_region(self):
+        if self._rule is None:
+            return None
+        search_region = self._normalize_search_region_value(getattr(self._rule, 'search_region', None))
+        if search_region:
+            return search_region
+        search_radius = getattr(self._rule, 'search_radius', 0) or 0
+        if search_radius <= 0:
+            return None
+        cx, cy = self._rule_search_center()
+        if cx is None or cy is None:
+            return None
+        try:
+            r = int(search_radius)
+            return self._normalize_search_region_value([int(cx) - r, int(cy) - r, int(cx) + r, int(cy) + r])
+        except (TypeError, ValueError):
+            return None
+
+    def _saved_search_region(self, slot: str):
+        key = f"image_search_region_{slot}"
+        try:
+            return self._normalize_search_region_value(getattr(get_config().player, key, None))
+        except Exception:
+            return None
+
+    def _save_search_region_preset(self, slot: str, region) -> bool:
+        normalized = self._normalize_search_region_value(region)
+        if normalized is None:
+            return False
+        key = f"image_search_region_{slot}"
+        try:
+            setattr(get_config().player, key, normalized)
+            if not save_config():
+                logger.warning(f"검색범위 {slot.upper()}영역 저장 실패")
+                return False
+            return True
+        except Exception as exc:
+            logger.warning(f"검색범위 {slot.upper()}영역 저장 오류: {exc}")
+            return False
+
+    def _search_region_label(self, region) -> str:
+        normalized = self._normalize_search_region_value(region)
+        if not normalized:
+            return "미설정"
+        x1, y1, x2, y2 = normalized
+        return f"({x1}, {y1}) ~ ({x2}, {y2})  {x2 - x1}x{y2 - y1}"
+
+    def _search_region_source_name(self, region) -> str:
+        normalized = self._normalize_search_region_value(region)
+        if not normalized:
+            return "전체"
+        if self._same_search_region(normalized, self._saved_search_region("a")):
+            return "A영역"
+        if self._same_search_region(normalized, self._saved_search_region("b")):
+            return "B영역"
+        return "자유영역"
+
+    def _apply_search_region_to_rule(self, region, source_label: str = "검색범위") -> bool:
+        normalized = self._normalize_search_region_value(region)
+        if self._rule is None or normalized is None:
+            return False
+        x1, y1, x2, y2 = normalized
+        self._rule.search_region = normalized
+
+        # 기존 실행부/구버전 데이터와의 호환을 위해 중심점과 반경도 같이 갱신한다.
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        self._set_rule_search_center(center_x, center_y)
+        self._rule.search_radius = max(x2 - x1, y2 - y1) // 2
+
+        logger.info(f"{source_label} 적용: ({x1}, {y1}) ~ ({x2}, {y2})")
+        self._refresh_rule_setting_controls()
+        self._invoke_image_callback(self._on_search_radius_change, self._rule)
+        return True
+
     def _search_button_state(self):
         search_region = getattr(self._rule, 'search_region', None) if self._rule is not None else None
         search_radius = getattr(self._rule, 'search_radius', 0) if self._rule is not None else 0
         has_region = search_region is not None or search_radius > 0
-        if search_region:
-            w, h = search_region[2] - search_region[0], search_region[3] - search_region[1]
-            text = f"검색범위: {w}x{h}"
+        normalized = self._normalize_search_region_value(search_region)
+        if normalized:
+            w, h = normalized[2] - normalized[0], normalized[3] - normalized[1]
+            source_name = self._search_region_source_name(normalized)
+            text = f"검색범위: {source_name} {w}x{h}"
         elif search_radius > 0:
             text = f"검색범위: {search_radius}px"
         else:
@@ -1530,7 +1655,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                     state="normal",
                     fg_color=COLORS["accent_orange"] if alt_count > 0 else COLORS["bg_card"],
                     hover_color=COLORS["confidence_amber_hover"] if alt_count > 0 else COLORS["bg_card_hover"],
-                    text_color=COLORS["text_primary"] if alt_count > 0 else COLORS["text_secondary"],
+                    text_color=COLORS["text_on_accent"] if alt_count > 0 else COLORS["text_secondary"],
                 )
             else:
                 self._alt_image_btn.configure(
@@ -1548,7 +1673,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 state="normal" if self._rule is not None else "disabled",
                 fg_color=COLORS["search_radius_purple"] if has_region else COLORS["bg_card"],
                 hover_color=COLORS["search_radius_purple_hover"] if has_region else COLORS["bg_card_hover"],
-                text_color=COLORS["text_primary"] if has_region else COLORS["text_secondary"],
+                text_color=COLORS["text_on_accent"] if has_region else COLORS["text_secondary"],
             )
 
         if hasattr(self, '_confidence_btn'):
@@ -1558,72 +1683,217 @@ class ImageCropDialog(ctk.CTkToplevel):
                 state="normal" if self._rule is not None else "disabled",
                 fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
                 hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                text_color=COLORS["text_primary"] if conf_pct != 65 else COLORS["text_secondary"],
+                text_color=COLORS["text_on_accent"] if conf_pct != 65 else COLORS["text_secondary"],
             )
 
         if hasattr(self, '_move_mouse_var'):
             self._move_mouse_var.set(bool(getattr(self._rule, 'move_mouse_before_search', False)))
 
-    def _set_search_radius(self):
-        """검색 범위 설정 - 화면에서 직접 영역 선택"""
+    def _show_search_region_options(self):
+        """검색범위 버튼: A/B 공용 영역 또는 자유영역을 선택한다."""
+        if self._rule is None:
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("검색범위 선택")
+        dialog.geometry("520x360")
+        dialog.resizable(False, False)
+        dialog.configure(fg_color=COLORS["bg_content"])
+        dialog.transient(self)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = self.winfo_x() + max(0, (self.winfo_width() - 520) // 2)
+        y = self.winfo_y() + max(0, (self.winfo_height() - 360) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        main = ctk.CTkFrame(dialog, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=18, pady=16)
+
+        ctk.CTkLabel(
+            main,
+            text="검색범위 적용 방식",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            main,
+            text="A/B 영역은 공용 프리셋으로 저장되고, 자유영역은 현재 이미지 액션에만 적용됩니다.",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(anchor="w", pady=(0, 12))
+
+        def close_then(callback):
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+            callback()
+
+        def build_preset_row(slot: str, title: str, color: str):
+            saved_region = self._saved_search_region(slot)
+            row = ctk.CTkFrame(
+                main,
+                fg_color=COLORS["bg_glass"],
+                corner_radius=IOS_METRICS["card_radius_compact"],
+                border_width=IOS_METRICS["card_border_width"],
+                border_color=color if saved_region else COLORS["border"],
+            )
+            row.pack(fill="x", pady=5)
+
+            text_col = ctk.CTkFrame(row, fg_color="transparent")
+            text_col.pack(side="left", fill="x", expand=True, padx=12, pady=10)
+            ctk.CTkLabel(
+                text_col,
+                text=title,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color=color,
+            ).pack(anchor="w")
+            ctk.CTkLabel(
+                text_col,
+                text=self._search_region_label(saved_region),
+                font=ctk.CTkFont(size=11),
+                text_color=COLORS["text_secondary"] if saved_region else COLORS["text_muted"],
+            ).pack(anchor="w", pady=(3, 0))
+
+            if saved_region:
+                ctk.CTkButton(
+                    row,
+                    text="적용",
+                    width=70,
+                    height=32,
+                    fg_color=color,
+                    hover_color=COLORS["accent_hover"],
+                    text_color=COLORS["text_on_accent"],
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    corner_radius=IOS_METRICS["pill_radius"],
+                    command=lambda r=saved_region, label=title: close_then(
+                        lambda: self._apply_search_region_to_rule(r, label)
+                    ),
+                ).pack(side="right", padx=(0, 8))
+                set_text = "다시설정"
+            else:
+                set_text = "설정"
+
+            ctk.CTkButton(
+                row,
+                text=set_text,
+                width=80,
+                height=32,
+                fg_color=COLORS["bg_elevated"],
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_primary"],
+                font=ctk.CTkFont(size=12, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
+                command=lambda s=slot, label=title: close_then(
+                    lambda: self._start_search_region_selection(preset_slot=s, source_label=label)
+                ),
+            ).pack(side="right", padx=(0, 8))
+
+        build_preset_row("a", "A영역", COLORS["accent_blue"])
+        build_preset_row("b", "B영역", COLORS["accent_orange"])
+
+        free_row = ctk.CTkFrame(
+            main,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["search_radius_purple"],
+        )
+        free_row.pack(fill="x", pady=5)
+
+        free_text = ctk.CTkFrame(free_row, fg_color="transparent")
+        free_text.pack(side="left", fill="x", expand=True, padx=12, pady=10)
+        ctk.CTkLabel(
+            free_text,
+            text="자유영역",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=COLORS["search_radius_purple"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            free_text,
+            text="현재 이미지 액션에만 새 영역을 지정합니다.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+        ).pack(anchor="w", pady=(3, 0))
+
+        ctk.CTkButton(
+            free_row,
+            text="선택",
+            width=80,
+            height=32,
+            fg_color=COLORS["search_radius_purple"],
+            hover_color=COLORS["search_radius_purple_hover"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
+            command=lambda: close_then(
+                lambda: self._start_search_region_selection(preset_slot=None, source_label="자유영역")
+            ),
+        ).pack(side="right", padx=(0, 8))
+
+        ctk.CTkButton(
+            main,
+            text="닫기",
+            width=90,
+            height=34,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
+            command=dialog.destroy,
+        ).pack(anchor="e", pady=(10, 0))
+
+    def _start_search_region_selection(self, preset_slot: str | None = None, source_label: str = "자유영역"):
+        """화면에서 영역을 선택하고, 필요하면 A/B 프리셋에도 저장한다."""
         if self._rule is None:
             return
 
         from tkinter import messagebox
 
-        # 현재 다이얼로그 숨기기
         self.withdraw()
 
         def on_region_select(x1, y1, x2, y2):
-            """영역 선택 완료"""
-            # 직사각형 좌표 그대로 저장
-            self._rule.search_region = [x1, y1, x2, y2]
+            region = self._normalize_search_region_value([x1, y1, x2, y2])
+            if region is None:
+                self.deiconify()
+                self.grab_set()
+                return
+            if preset_slot:
+                self._save_search_region_preset(preset_slot, region)
 
-            # 중심점도 업데이트 (backward compat)
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            self._set_rule_search_center(center_x, center_y)
-            self._rule.search_radius = max(x2 - x1, y2 - y1) // 2
-
-            logger.info(f"검색 범위 설정: ({x1}, {y1}) ~ ({x2}, {y2})")
-
-            # 다이얼로그 다시 표시
             self.deiconify()
             self.grab_set()
 
-            # 버튼 텍스트 업데이트
+            self._apply_search_region_to_rule(region, source_label)
+            x1, y1, x2, y2 = region
             w, h = x2 - x1, y2 - y1
-            self._refresh_rule_setting_controls()
-
-            # 콜백 호출
-            self._invoke_image_callback(self._on_search_radius_change, self._rule)
 
             messagebox.showinfo(
                 "설정 완료",
-                f"검색 범위가 설정되었습니다.\n\n"
+                f"{source_label}이 적용되었습니다.\n\n"
                 f"영역: ({x1}, {y1}) ~ ({x2}, {y2})\n"
                 f"크기: {w} x {h}px"
             )
 
         def on_cancel():
-            """선택 취소"""
             self.deiconify()
             self.grab_set()
 
-        # 기존 검색 범위 계산
-        existing_region = None
-        if self._rule and getattr(self._rule, 'search_region', None):
-            existing_region = self._rule.search_region
-        elif self._rule and getattr(self._rule, 'search_radius', 0):
-            cx, cy = self._rule_search_center()
-            r = self._rule.search_radius
-            if cx is None or cy is None:
-                existing_region = None
-            else:
-                existing_region = [cx - r, cy - r, cx + r, cy + r]
+        existing_region = self._saved_search_region(preset_slot) if preset_slot else self._current_search_region()
+        if existing_region is None:
+            existing_region = self._current_search_region()
 
-        # 잠시 후 영역 선택 시작 (다이얼로그 숨김 완료 후)
         self.after(100, lambda: ScreenRegionSelector(self, on_region_select, on_cancel, existing_region=existing_region))
+
+    def _set_search_radius(self):
+        """기존 호출 호환용: 자유영역 선택으로 연결한다."""
+        self._start_search_region_selection(preset_slot=None, source_label="자유영역")
 
     def _on_move_mouse_changed(self):
         """마우스 이동 옵션 변경"""
@@ -1736,7 +2006,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                     text=f"인식률: {conf_pct}%",
                     fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
                     hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                    text_color=COLORS["text_primary"] if conf_pct != 65 else COLORS["text_secondary"],
+                    text_color=COLORS["text_on_accent"] if conf_pct != 65 else COLORS["text_secondary"],
                 )
 
             self._invoke_image_callback(self._on_search_radius_change, self._rule)
@@ -1828,18 +2098,14 @@ class ImageCropDialog(ctk.CTkToplevel):
         # UI 업데이트
         if self._original_image is not None:
             h, w = self._original_image.shape[:2]
-            self._scale = min(self._canvas_width / w, self._canvas_height / h, 1.0)
+            self._reset_image_scale(w, h)
             self._update_canvas_image()
-
-            # 정보 레이블 업데이트
-            if hasattr(self, '_info_label'):
-                self._info_label.configure(text=f"원본: {w} x {h} px")
 
         # 파일명 업데이트
         filename = Path(self._image_path).name
         self.title(f"이미지 편집: {filename}")
         if hasattr(self, '_filename_label'):
-            self._filename_label.configure(text=f"📁 {filename}")
+            self._filename_label.configure(text=f"📁 {truncate_ui_text(filename, 58)}")
 
         # 미리보기 초기화
         if hasattr(self, '_preview_canvas'):
@@ -1938,7 +2204,7 @@ class AltImageDialog(ctk.CTkToplevel):
             buffer_count=4,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=1,
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
             height=220,
         )
@@ -2065,7 +2331,7 @@ class AltImageDialog(ctk.CTkToplevel):
         filename = Path(img_path).name
         ctk.CTkLabel(
             row,
-            text=f"{index + 1}. {filename}",
+            text=f"{index + 1}. {truncate_ui_text(filename, 48)}",
             font=ctk.CTkFont(size=12),
             text_color=COLORS["text_primary"],
         ).pack(side="left", padx=10)
@@ -2079,7 +2345,7 @@ class AltImageDialog(ctk.CTkToplevel):
             height=28,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=10, pady=8)
@@ -2854,9 +3120,11 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         if details:
             ctk.CTkLabel(
                 row2,
-                text="  |  ".join(details),
+                text=truncate_ui_text("  |  ".join(details), 76),
                 font=self._font(12),
                 text_color=COLORS["text_secondary"],
+                anchor="w",
+                width=330,
             ).pack(side="left")
 
         # 대기 시간
@@ -2865,7 +3133,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 row2,
                 text=f"대기 {rule.wait_after:.1f}초",
                 font=self._font(11),
-                text_color=COLORS["warning"],
+                text_color=COLORS["warning_text"],
             ).pack(side="right")
 
         if render_inline_children and rule.children:
@@ -3297,20 +3565,20 @@ class AnalyzerView(BaseView):
         main_frame.grid_rowconfigure(0, weight=1)
         main_frame.grid_rowconfigure(1, weight=1)
 
-        # 좌상단: 녹화 목록
+        # 좌상단: 분석된 재생 목록
+        plans_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        plans_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        self._setup_plans_card(plans_frame)
+
+        # 우상단: 녹화 목록
         recordings_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        recordings_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        recordings_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
         self._setup_recordings_card(recordings_frame)
 
-        # 우상단: 분석 실행
+        # 좌하단: 분석 실행
         analyze_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        analyze_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
+        analyze_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
         self._setup_analyze_card(analyze_frame)
-
-        # 좌하단: 분석된 재생 목록
-        plans_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        plans_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
-        self._setup_plans_card(plans_frame)
 
         # 우하단: 분석 결과
         result_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -3469,15 +3737,28 @@ class AnalyzerView(BaseView):
         # 연관된 녹화의 잠금 상태 확인 (캐시 사용 — 루프 내 DB 쿼리 방지)
         is_locked = self._plan_lock_cache.get(plan.plan_id, False)
 
-        item = ctk.CTkFrame(
+        item_wrapper = ctk.CTkFrame(
             parent or self._plans_scroll,
+            fg_color="transparent",
+            height=56,
+        )
+        item_wrapper.pack_propagate(False)
+        if parent is None:
+            item_wrapper.pack(fill="x", pady=0)
+
+        item = ctk.CTkFrame(
+            item_wrapper,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["control_radius"],
-            height=50,
+            height=46,
         )
         item.pack_propagate(False)
-        if parent is None:
-            item.pack(fill="x", pady=3)
+        item.pack(fill="x", pady=(2, 1), padx=0)
+        ctk.CTkFrame(
+            item_wrapper,
+            height=2,
+            fg_color=COLORS["accent"],
+        ).pack(fill="x", padx=10, pady=(0, 2))
 
         content = ctk.CTkFrame(item, fg_color="transparent")
         content.pack(fill="x", padx=10, pady=8)
@@ -3494,10 +3775,11 @@ class AnalyzerView(BaseView):
         # 이름
         name_label = ctk.CTkLabel(
             content,
-            text=plan.name,
+            text=truncate_ui_text(plan.name, 38),
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
+            width=190,
         )
         name_label.pack(side="left", fill="x", expand=True)
 
@@ -3520,7 +3802,7 @@ class AnalyzerView(BaseView):
             height=20,
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right")
@@ -3534,11 +3816,11 @@ class AnalyzerView(BaseView):
             height=20,
             fg_color=COLORS["accent_blue"],
             hover_color=COLORS["hover_blue"],
-            text_color=COLORS["text_primary"],
+            text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 3))
-        return item
+        return item_wrapper
 
     def _edit_plan(self, plan: AutomationPlan):
         """재생 수정"""
@@ -3709,11 +3991,12 @@ class AnalyzerView(BaseView):
 
         name_label = ctk.CTkLabel(
             top_row,
-            text=recording.name,
+            text=truncate_ui_text(recording.name, 38),
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
             cursor="hand2",
+            width=190,
         )
         name_label.pack(side="left", fill="x", expand=True)
         name_label.bind("<Button-1>", on_click)
@@ -3776,7 +4059,7 @@ class AnalyzerView(BaseView):
             height=28,
             fg_color=lock_color,
             hover_color=COLORS["danger_hover"] if recording.locked else COLORS["bg_card_hover"],
-            text_color=COLORS["text_primary"] if recording.locked else COLORS["text_secondary"],
+            text_color=COLORS["text_on_accent"] if recording.locked else COLORS["text_secondary"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 5))
@@ -3909,7 +4192,7 @@ class AnalyzerView(BaseView):
         """분석 시작"""
         try:
             if not self._selected_video:
-                self._progress_label.configure(text="녹화를 먼저 선택하세요", text_color=COLORS["warning"])
+                self._progress_label.configure(text="녹화를 먼저 선택하세요", text_color=COLORS["warning_text"])
                 return
 
             # 수정된 녹화는 재분석 불가
@@ -3967,7 +4250,7 @@ class AnalyzerView(BaseView):
                 self._is_analyzing = False
             self._analyze_btn.configure(state="normal")
             self._cancel_btn.configure(state="disabled")
-            self._progress_label.configure(text="취소됨", text_color=COLORS["warning"])
+            self._progress_label.configure(text="취소됨", text_color=COLORS["warning_text"])
         except Exception as e:
             logger.error(f"취소 오류: {e}")
 
@@ -3979,7 +4262,7 @@ class AnalyzerView(BaseView):
             self._analyzer_ui_post(lambda: self._update_progress(progress))
 
     def _update_progress(self, progress: AnalysisProgress):
-        self._progress_label.configure(text=progress.message)
+        self._progress_label.configure(text=truncate_ui_text(progress.message, 72))
         self._progress_bar.set(progress.progress_percent / 100)
 
     def _on_automation_plan_ready(self, plan: AutomationPlan) -> bool:
@@ -4041,7 +4324,7 @@ class AnalyzerView(BaseView):
         self._cancel_btn.configure(state="disabled")
 
         if plan is not None:
-            self._progress_label.configure(text="✅ 분석 완료", text_color=COLORS["success"])
+            self._progress_label.configure(text="✅ 분석 완료", text_color=COLORS["success_text"])
             self._progress_bar.set(1)
 
             all_rules = plan.initial_rules + plan.monitoring_rules
@@ -4049,7 +4332,7 @@ class AnalyzerView(BaseView):
             status_color = COLORS["success"] if plan.user_verified else COLORS["warning"]
 
             self._result_status.configure(
-                text=f"계획: {plan.name}\n동작 수: {len(all_rules)}개\n상태: {status}",
+                text=f"계획: {truncate_ui_text(plan.name, 52)}\n동작 수: {len(all_rules)}개\n상태: {status}",
                 text_color=status_color
             )
 

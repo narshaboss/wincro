@@ -105,4 +105,35 @@ def test_sync_shutdown_task_from_config_unregisters_when_disabled(monkeypatch):
     result = scheduler.sync_shutdown_task_from_config(config.system)
 
     assert result.ok is True
-    assert calls == [["/Delete", "/TN", scheduler.TASK_NAME, "/F"]]
+    assert calls == [
+        ["/Query", "/TN", scheduler.TASK_NAME],
+        ["/Delete", "/TN", scheduler.TASK_NAME, "/F"],
+    ]
+
+
+def test_unregister_shutdown_task_treats_missing_task_as_success(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(scheduler.sys, "platform", "win32")
+
+    def fake_run(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="",
+            stderr="ERROR: The system cannot find the file specified.",
+        )
+
+    monkeypatch.setattr(scheduler, "_run_schtasks", fake_run)
+
+    result = scheduler.unregister_shutdown_task()
+
+    assert result.ok is True
+    assert result.status == "미등록"
+    assert calls == [["/Query", "/TN", scheduler.TASK_NAME]]
+
+
+def test_shutdown_task_missing_output_handles_localized_messages():
+    assert scheduler._task_missing_output("ERROR: The system cannot find the file specified.")
+    assert scheduler._task_missing_output("작업을 찾을 수 없습니다.")

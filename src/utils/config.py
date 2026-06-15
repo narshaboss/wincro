@@ -34,7 +34,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.236"
+APP_VERSION = "1.0.237"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
 # When APP_VERSION changes on the next release, this guard stops touching PC-local settings.
@@ -115,6 +115,8 @@ class PlayerConfig:
     plan_sequence_groups: List[dict] = field(default_factory=list)
     active_plan_sequence_group_id: str = ""
     auto_run_profile_version: str = ""
+    image_search_region_a: Optional[List[int]] = None
+    image_search_region_b: Optional[List[int]] = None
 
 
 @dataclass

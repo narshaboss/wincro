@@ -88,7 +88,7 @@ class GuideView(ctk.CTkFrame):
             parent,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=IOS_METRICS["hairline"],
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         card.pack(fill="x", pady=(0, 15))
@@ -98,7 +98,7 @@ class GuideView(ctk.CTkFrame):
             card,
             text=title,
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
         ).pack(anchor="w", padx=15, pady=(15, 10))
 
         # 아이템들
@@ -163,7 +163,7 @@ class GuideView(ctk.CTkFrame):
             parent,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius"],
-            border_width=IOS_METRICS["hairline"],
+            border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["separator"],
         )
         card.pack(fill="x", pady=(0, 15))
@@ -172,7 +172,7 @@ class GuideView(ctk.CTkFrame):
             card,
             text="기본 사용법",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
-            text_color=COLORS["accent_blue"],
+            text_color=COLORS["accent_blue_text"],
         ).pack(anchor="w", padx=15, pady=(15, 10))
 
         usage_text = """1. 화면 녹화: 자동화할 작업을 녹화합니다.

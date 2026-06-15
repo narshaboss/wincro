@@ -19,6 +19,7 @@ from PIL import Image
 from ..utils.logger import get_logger
 from ..utils.config import DATA_DIR
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
+from .text_overflow import truncate_ui_text
 from .constants import (
     ACTION_NAMES_SHORT,
     get_action_clipboard, collect_all_actions,
@@ -155,7 +156,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text="모니터링 모드 활성화",
             variable=self._is_monitoring_var,
             font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=COLORS["success"],
+            text_color=COLORS["success_text"],
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
         ).pack(side="left")
@@ -238,7 +239,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         elif t == "마우스 클릭":
             return f"클릭:({action.get('x')},{action.get('y')})", COLORS["accent_blue"]
         elif t == "이미지 클릭":
-            img = Path(action.get("image", "")).name[:8] if action.get("image") else ""
+            img = truncate_ui_text(Path(action.get("image", "")).name, 10) if action.get("image") else ""
             return f"이미지:{img}", COLORS["scroll_purple"]
         return "?", COLORS["text_muted"]
 
@@ -400,7 +401,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         count_label = ctk.CTkLabel(
             header_frame, text=f"모니터링 액션 ({len(current_actions)}개)",
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=COLORS["success"],
+            text_color=COLORS["success_text"],
         )
         count_label.pack(side="left")
         self._watch_action_count_labels[watch_idx] = count_label
@@ -511,7 +512,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ma_detail = f"({action.get('x', 0)}, {action.get('y', 0)}){click_suffix}"
         elif ma_type == "이미지 클릭":
             img = action.get("image", "")
-            ma_detail = (Path(img).name[:15] if img else "") + click_suffix
+            ma_detail = (truncate_ui_text(Path(img).name, 18) if img else "") + click_suffix
         elif ma_type == "스크롤":
             ma_detail = f"{action.get('amount', 0)}"
         elif ma_type == "드래그":
@@ -531,7 +532,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ctk.CTkLabel(
             card_inner, text=f"{ai + 1}.",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["success"], width=24,
+            text_color=COLORS["success_text"], width=24,
         ).pack(side="left")
 
         # 타입
@@ -543,8 +544,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         # 상세 정보
         if ma_detail:
             ctk.CTkLabel(
-                card_inner, text=f"  {ma_detail}",
+                card_inner, text=f"  {truncate_ui_text(ma_detail, 34)}",
                 font=ctk.CTkFont(size=10), text_color=COLORS["text_secondary"],
+                width=170,
+                anchor="w",
             ).pack(side="left")
 
         # === 버튼 영역 (오른쪽) ===
@@ -1412,11 +1415,13 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text_color=COLORS["text_muted"],
         ).pack(side="left", padx=(0, 5))
 
-        img_name = Path(watch["image"]).name[:20] + "..." if watch.get("image") and len(Path(watch["image"]).name) > 20 else (Path(watch["image"]).name if watch.get("image") else "없음")
+        img_name = truncate_ui_text(Path(watch["image"]).name, 24) if watch.get("image") else "없음"
         ctk.CTkLabel(
             row1, text=img_name,
             font=self._font(11),
-            text_color=COLORS["accent"] if watch.get("image") else COLORS["text_muted"],
+            text_color=COLORS["accent_text"] if watch.get("image") else COLORS["text_muted"],
+            width=135,
+            anchor="w",
         ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
@@ -1494,7 +1499,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         region_label = ctk.CTkLabel(
             row2, text=region_text,
             font=self._font(11),
-            text_color=COLORS["accent"] if region else COLORS["text_secondary"],
+            text_color=COLORS["accent_text"] if region else COLORS["text_secondary"],
             width=150,
             anchor="w",
         )
@@ -1537,7 +1542,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         conf_label = ctk.CTkLabel(
             row_conf, text=f"{int(watch_conf * 100)}%",
             font=self._font(11),
-            text_color=COLORS["accent"],
+            text_color=COLORS["accent_text"],
             width=35,
         )
         conf_label.pack(side="left", padx=(0, 5))
@@ -1641,7 +1646,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             self._watches_data[watch_index]["search_region"] = [x1, y1, x2, y2]
             region_label.configure(
                 text=f"({x1}, {y1}) ~ ({x2}, {y2})",
-                text_color=COLORS["accent"]
+                text_color=COLORS["accent_text"]
             )
             self.deiconify()
             self.grab_set()
@@ -1719,11 +1724,13 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         preview_label.pack(side="left")
 
         # 이미지 이름
-        img_name = Path(current_condition).name if current_condition else "조건 없음"
+        img_name = truncate_ui_text(Path(current_condition).name, 30) if current_condition else "조건 없음"
         name_label = ctk.CTkLabel(
             preview_inner, text=img_name,
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_primary"] if current_condition else COLORS["text_muted"],
+            width=220,
+            anchor="w",
         )
         name_label.pack(side="left", padx=(15, 0))
 
@@ -1745,7 +1752,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 if not dest.exists():
                     shutil.copy(path, dest)
                 selected_path[0] = str(dest)
-                name_label.configure(text=Path(dest).name, text_color=COLORS["text_primary"])
+                name_label.configure(text=truncate_ui_text(Path(dest).name, 30), text_color=COLORS["text_primary"])
                 thumb = self._load_thumbnail(str(dest), size=(60, 60))
                 if thumb:
                     preview_label.configure(image=thumb, text="")
@@ -1793,7 +1800,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         region_label = ctk.CTkLabel(
             region_inner, text=region_text,
             font=ctk.CTkFont(size=11),
-            text_color=COLORS["accent"] if current_region else COLORS["text_secondary"],
+            text_color=COLORS["accent_text"] if current_region else COLORS["text_secondary"],
             width=150, anchor="w",
         )
         region_label.pack(side="left", padx=(10, 10))
@@ -1810,7 +1817,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 selected_region[0] = [x1, y1, x2, y2]
                 region_label.configure(
                     text=f"({x1}, {y1}) ~ ({x2}, {y2})",
-                    text_color=COLORS["accent"]
+                    text_color=COLORS["accent_text"]
                 )
                 self.deiconify()
                 dialog.deiconify()
@@ -1867,7 +1874,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         conf_label = ctk.CTkLabel(
             conf_inner, text=f"{int(current_confidence * 100)}%",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["accent"],
+            text_color=COLORS["accent_text"],
             width=45,
         )
         conf_label.pack(side="left")

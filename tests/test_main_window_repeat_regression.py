@@ -199,7 +199,51 @@ def test_play_mode_dropdown_can_run_grouped_playlists():
     assert 'self._mini_status.configure(text=f"✓ 그룹 반복 {repeat_count}회 저장됨")' in text
     assert "group_to_run = dict(selected_group)" in text
     assert "plan_paths, repeats = self._mini_expand_group_sequence(group_to_run)" in text
-    assert 'self._start_sequence_mode(plan_paths, repeats, group_name=selected_group.get("name", "그룹"))' in text
+    assert "group_label=self._mini_group_label(selected_group)" in text
+    assert "group_repeat=repeat_count" in text
+
+
+def test_group_sequence_keeps_group_selection_when_inner_plan_runs():
+    text = _read_text()
+    setup_slice = text[
+        text.index("def _setup_mini_player_ui(self):"):
+        text.index("def _create_mini_player_ui(self):")
+    ]
+    play_slice = text[
+        text.index("def _mini_on_play(self):"):
+        text.index("def _start_sequence_mode(", text.index("def _mini_on_play(self):"))
+    ]
+    start_slice = text[
+        text.index("def _start_sequence_mode("):
+        text.index("def _run_sequence_plan(self, index: int):")
+    ]
+    run_slice = text[
+        text.index("def _run_sequence_plan(self, index: int):"):
+        text.index("def _mini_on_load_failed(self, message: str):")
+    ]
+    stop_slice = text[
+        text.index("def _mini_on_stop(self):"):
+        text.index("def _mini_on_progress(self, progress):")
+    ]
+    complete_slice = text[
+        text.index("def _mini_on_complete(self, success, message):"):
+        text.index("def _setup_topbar(self):")
+    ]
+
+    assert "self._sequence_group_label = \"\"" in setup_slice
+    assert "self._sequence_group_repeat_count = 1" in setup_slice
+    assert "group_label=self._mini_group_label(selected_group)" in play_slice
+    assert "group_repeat=repeat_count" in play_slice
+    assert "self._sequence_group_label = group_label or (" in start_slice
+    assert "self._mini_plan_var.set(self._sequence_group_label)" in start_slice
+    assert "self._mini_repeat_var.set(str(self._sequence_group_repeat_count))" in start_slice
+    assert "그룹 실행 중에는 선택값을 내부 플랜명으로 덮지 않는다." in run_slice
+    assert "self._mini_plan_var.set(self._sequence_group_label)" in run_slice
+    assert "self._mini_plan_var.set(plan.name)" in run_slice
+    assert "self._sequence_group_label = \"\"" in stop_slice
+    assert "self._sequence_group_repeat_count = 1" in stop_slice
+    assert "self._sequence_group_label = \"\"" in complete_slice
+    assert "self._sequence_group_repeat_count = 1" in complete_slice
 
 
 def test_settings_group_repeat_apply_keeps_list_selection_when_entry_has_focus():
