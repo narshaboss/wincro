@@ -101,45 +101,110 @@ class ArduinoHID:
             # 이전 연결 정리
             self.disconnect()
 
-            self._serial = serial.Serial(
-                port=port,
-                baudrate=baud_rate,
-                timeout=1,
-                write_timeout=1,
-                dsrdtr=False,
-                rtscts=False
-            )
+            if not self._open_serial_session(port, baud_rate):
+                return False
 
-            if self._serial.is_open:
-                # Leonardo 리셋
-                self._serial.dtr = False
-                time.sleep(0.1)
-                self._serial.dtr = True
-                time.sleep(2)  # 부트로더 대기
-
-                self._serial.reset_input_buffer()
-
-                # PING 테스트
-                if self._ping():
-                    self._connected = True
-                    self._port = port
-                    self._baud_rate = baud_rate
-                    self._supports_mouse_move = self._probe_mouse_move_support()
-                    self._supports_key_combo_tap = self._probe_key_combo_tap_support()
+            if self._initialize_connected_session(port, baud_rate):
+                if self._supports_key_combo_tap:
                     logger.info(f"Arduino HID 연결 성공: {port}")
                     return True
-                else:
-                    logger.warning("Arduino HID 응답 없음 (펌웨어 확인 필요)")
-                    self._connected = False
-                    if self._serial:
-                        self._serial.close()
-                    self._serial = None
-                    return False
+
+                if self._auto_refresh_firmware(port, baud_rate, "KQ unsupported"):
+                    return True
+
+                logger.warning("Arduino HID key combo tap remains unsupported after firmware refresh attempt")
+                return True
+
+            logger.warning("Arduino HID 응답 없음 (펌웨어 확인 필요)")
+            self._close_serial_only()
+            return self._auto_refresh_firmware(port, baud_rate, "PING failed")
 
         except Exception as e:
             logger.error(f"Arduino HID 연결 실패: {e}")
             self._connected = False
             return False
+
+    def _open_serial_session(self, port: str, baud_rate: int) -> bool:
+        """Open serial and wait for Leonardo reset."""
+        self._serial = serial.Serial(
+            port=port,
+            baudrate=baud_rate,
+            timeout=1,
+            write_timeout=1,
+            dsrdtr=False,
+            rtscts=False
+        )
+
+        if not self._serial.is_open:
+            return False
+
+        self._serial.dtr = False
+        time.sleep(0.1)
+        self._serial.dtr = True
+        time.sleep(2)
+        self._serial.reset_input_buffer()
+        return True
+
+    def _initialize_connected_session(self, port: str, baud_rate: int) -> bool:
+        """Validate firmware and cache supported capabilities."""
+        if not self._ping():
+            self._connected = False
+            return False
+
+        self._connected = True
+        self._port = port
+        self._baud_rate = baud_rate
+        self._supports_mouse_move = self._probe_mouse_move_support()
+        self._supports_key_combo_tap = self._probe_key_combo_tap_support()
+        return True
+
+    def _close_serial_only(self) -> None:
+        try:
+            if self._serial:
+                self._serial.close()
+        except (OSError, serial.SerialException) as e:
+            logger.debug(f"Arduino HID serial close ignored: {e}")
+        self._serial = None
+        self._connected = False
+        self._supports_mouse_move = False
+        self._supports_key_combo_tap = False
+
+    def _auto_refresh_firmware(self, port: str, baud_rate: int, reason: str) -> bool:
+        """Upload bundled firmware once, then reconnect and re-probe capabilities."""
+        logger.warning(f"Arduino HID firmware refresh required: {reason}")
+        self._close_serial_only()
+
+        try:
+            from .arduino_uploader import upload_firmware
+            success, message = upload_firmware(port)
+        except Exception as e:
+            logger.error(f"Arduino HID firmware auto refresh failed: {e}")
+            return False
+
+        if not success:
+            logger.error(f"Arduino HID firmware auto refresh failed: {message}")
+            return False
+
+        logger.info(f"Arduino HID firmware auto refresh complete: {message}")
+        time.sleep(2)
+
+        try:
+            if not self._open_serial_session(port, baud_rate):
+                return False
+            if not self._initialize_connected_session(port, baud_rate):
+                self._close_serial_only()
+                return False
+        except Exception as e:
+            logger.error(f"Arduino HID reconnect after firmware refresh failed: {e}")
+            self._close_serial_only()
+            return False
+
+        if not self._supports_key_combo_tap:
+            logger.error("Arduino HID firmware refreshed but KQ is still unsupported")
+            return False
+
+        logger.info(f"Arduino HID 연결 성공: {port} (firmware refreshed)")
+        return True
 
     def disconnect(self):
         """연결 해제"""

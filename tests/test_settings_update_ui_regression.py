@@ -42,3 +42,18 @@ def test_settings_update_controls_are_visible_and_named():
     assert 'text="⬇️ 업데이트"' in update_settings
     assert 'text="자동 업데이트 확인"' in update_settings
     assert 'placeholder_text="username/repo"' in update_settings
+
+
+def test_settings_arduino_firmware_check_requires_kq_capability():
+    text = SETTINGS_VIEW.read_text(encoding="utf-8")
+    check_start = text.index("    def _check_firmware_status")
+    check_end = text.index("    def _disconnect_arduino", check_start)
+    check_body = text[check_start:check_end]
+    connect_start = text.index("    def _connect_arduino_thread")
+    connect_end = text.index("    def _check_firmware", connect_start)
+    connect_body = text[connect_start:connect_end]
+
+    assert 'ser.write(b"KQ\\n")' in check_body
+    assert 'return True, "current"' in check_body
+    assert 'return False, "outdated"' in check_body
+    assert "arduino_hid._supports_key_combo_tap = firmware_ok" in connect_body

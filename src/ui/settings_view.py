@@ -3191,14 +3191,15 @@ del "%~f0"
             time.sleep(2)
             ser.reset_input_buffer()
 
-            # 펌웨어 확인 (PING 테스트)
+            # 펌웨어 확인 (PING + 필수 기능 테스트)
             logger.info("펌웨어 확인 중...")
-            firmware_ok = self._check_firmware(ser)
+            firmware_ok, firmware_status = self._check_firmware_status(ser)
 
             if not firmware_ok:
-                # 펌웨어 없음 - 자동 업로드 시도
-                self.after(0, lambda: self._update_arduino_status(False, "펌웨어 업로드 중..."))
-                logger.info("펌웨어가 설치되지 않음, 자동 업로드 시작")
+                # 펌웨어 없음/구형 - 자동 업로드 시도
+                status_text = "펌웨어 업데이트 중..." if firmware_status == "outdated" else "펌웨어 업로드 중..."
+                self.after(0, lambda s=status_text: self._update_arduino_status(False, s))
+                logger.info(f"펌웨어 상태={firmware_status}, 자동 업로드 시작")
 
                 ser.close()
                 self._arduino_serial = None
@@ -3237,7 +3238,7 @@ del "%~f0"
 
                 time.sleep(2)
                 ser.reset_input_buffer()
-                firmware_ok = self._check_firmware(ser)
+                firmware_ok, firmware_status = self._check_firmware_status(ser)
 
             # ArduinoHID 인스턴스 연결 (재생 시 사용)
             try:
@@ -3248,6 +3249,8 @@ del "%~f0"
                     arduino_hid._connected = True
                     arduino_hid._port = port
                     arduino_hid._baud_rate = baud_rate
+                    arduino_hid._supports_mouse_move = firmware_ok
+                    arduino_hid._supports_key_combo_tap = firmware_ok
             except Exception as hid_err:
                 logger.warning(f"ArduinoHID 설정 실패 (무시): {hid_err}")
 
@@ -3257,7 +3260,7 @@ del "%~f0"
                 logger.info(f"아두이노 HID 연결 성공: {port}")
             else:
                 self.after(0, lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (펌웨어?)"))
-                logger.warning("펌웨어 응답 없음")
+                logger.warning(f"펌웨어 준비 미완료: {firmware_status}")
 
             # 설정 저장
             config = get_config()
@@ -3287,7 +3290,12 @@ del "%~f0"
             self.after(0, lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
 
     def _check_firmware(self, ser) -> bool:
-        """펌웨어 설치 확인 (PING 테스트)"""
+        """펌웨어 설치 확인 (호환용 wrapper)."""
+        ok, _status = self._check_firmware_status(ser)
+        return ok
+
+    def _check_firmware_status(self, ser) -> tuple[bool, str]:
+        """펌웨어가 현재 앱이 요구하는 기능까지 지원하는지 확인한다."""
         try:
             ser.reset_input_buffer()
             ser.write(b"PING\n")
@@ -3296,13 +3304,33 @@ del "%~f0"
             import time
             time.sleep(0.1)
 
-            if ser.in_waiting:
-                response = ser.readline().decode().strip()
-                return response == "PONG"
-            return False
+            if not ser.in_waiting:
+                return False, "missing"
+
+            response = ser.readline().decode().strip()
+            if response != "PONG":
+                logger.warning(f"펌웨어 PING 응답 불일치: {response}")
+                return False, "missing"
+
+            # KQ는 키를 누르지 않는 기능 확인 명령이다. 구형 펌웨어는 PONG은 주지만 KQ를 모른다.
+            ser.reset_input_buffer()
+            ser.write(b"KQ\n")
+            ser.flush()
+            time.sleep(0.1)
+
+            if not ser.in_waiting:
+                logger.warning("펌웨어 구형/불일치: KQ 응답 없음")
+                return False, "outdated"
+
+            response = ser.readline().decode().strip()
+            if response == "OK":
+                return True, "current"
+
+            logger.warning(f"펌웨어 구형/불일치: KQ 응답={response}")
+            return False, "outdated"
         except Exception as e:
             logger.debug(f"펌웨어 확인 실패: {e}")
-            return False
+            return False, "missing"
 
     def _disconnect_arduino(self) -> None:
         """아두이노 연결 해제"""

@@ -14,6 +14,7 @@
  * KT,text     - 텍스트 타이핑 (문자 간 딜레이 적용)
  * KD,delay    - 타이핑 딜레이 설정 (ms, 0~200)
  * KA          - 모든 키 떼기
+ * KQ          - key combo tap capability check / atomic combo tap
  * PING        - 연결 확인 (PONG 응답)
  */
 
@@ -27,7 +28,7 @@ const int LED_PIN = 13;
 int typingDelay = 100;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   while (!Serial) {
     ; // 시리얼 연결 대기 (Leonardo 전용)
   }

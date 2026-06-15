@@ -227,3 +227,69 @@ def test_firmware_combo_tap_uses_release_all_and_stable_timing():
         assert "Keyboard.releaseAll();" in body
         assert "delay(16);" in body
         assert "delay(6);" in body
+
+
+def test_bundled_upload_firmware_uses_app_baud_rate():
+    from pathlib import Path
+
+    source = Path("arduino/wincro_hid/wincro_hid.ino").read_text(encoding="utf-8", errors="ignore")
+
+    assert "Serial.begin(115200);" in source
+    assert "Serial.begin(9600);" not in source
+
+
+def test_arduino_connect_refreshes_old_firmware_without_kq(monkeypatch):
+    import src.utils.arduino_hid as arduino_hid_module
+    import src.utils.arduino_uploader as uploader_module
+
+    class FakeSerial:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.index = len(self.instances)
+            self.commands = []
+            self.is_open = True
+            self.dtr = True
+            self.instances.append(self)
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, data):
+            self.commands.append(data.decode().strip())
+
+        def flush(self):
+            pass
+
+        def readline(self):
+            cmd = self.commands[-1] if self.commands else ""
+            if cmd == "PING":
+                return b"PONG\n"
+            if cmd == "MM,0,0":
+                return b"OK\n"
+            if cmd == "KQ":
+                return b"ERR:UNKNOWN_CMD\n" if self.index == 0 else b"OK\n"
+            return b"OK\n"
+
+        def close(self):
+            self.is_open = False
+
+    upload_calls = []
+
+    monkeypatch.setattr(arduino_hid_module.serial, "Serial", FakeSerial)
+    monkeypatch.setattr(arduino_hid_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        uploader_module,
+        "upload_firmware",
+        lambda port: upload_calls.append(port) or (True, "uploaded"),
+    )
+
+    hid = ArduinoHID()
+    hid.disconnect()
+
+    assert hid.connect(port="COM7", baud_rate=115200) is True
+    assert upload_calls == ["COM7"]
+    assert len(FakeSerial.instances) == 2
+    assert hid.supports_key_combo_tap() is True
+
+    hid.disconnect()
