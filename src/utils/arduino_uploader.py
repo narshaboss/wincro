@@ -31,9 +31,111 @@ ARDUINO_CLI_DIR = ARDUINO_DIR / "arduino-cli"
 ARDUINO_CLI_EXE = ARDUINO_CLI_DIR / "arduino-cli.exe"
 SKETCH_PATH = ARDUINO_DIR / "wincro_hid"
 SKETCH_FILE = SKETCH_PATH / "wincro_hid.ino"
+_LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", str(ARDUINO_DIR)))
+ARDUINO_STATE_DIR = _LOCALAPPDATA / "WinCro" / "arduino"
+ARDUINO_CONFIG_DIR = ARDUINO_STATE_DIR / "config"
+ARDUINO_BUILD_DIR = ARDUINO_STATE_DIR / "build"
+ARDUINO_OUTPUT_DIR = ARDUINO_STATE_DIR / "output"
 
 # Arduino CLI 다운로드 URL (Windows 64-bit)
 ARDUINO_CLI_URL = "https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Windows_64bit.zip"
+
+
+def _arduino_cli_cmd(*args: str) -> list[str]:
+    """Run arduino-cli with WinCro-owned config/data paths."""
+    ARDUINO_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    return [str(ARDUINO_CLI_EXE), "--config-dir", str(ARDUINO_CONFIG_DIR), *args]
+
+
+def _ensure_build_dirs(clean: bool = False) -> None:
+    """Create isolated build/output dirs and optionally clear stale artifacts."""
+    ARDUINO_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if clean:
+        _safe_remove_tree(ARDUINO_BUILD_DIR)
+        _safe_remove_tree(ARDUINO_OUTPUT_DIR)
+    ARDUINO_BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    ARDUINO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_remove_tree(path: Path) -> None:
+    """Remove only paths inside the WinCro Arduino state dir."""
+    try:
+        resolved = path.resolve()
+        root = ARDUINO_STATE_DIR.resolve()
+        if resolved == root or root not in resolved.parents:
+            logger.warning(f"Arduino cache cleanup skipped outside state dir: {path}")
+            return
+        if resolved.exists():
+            shutil.rmtree(resolved, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"Arduino cache cleanup failed for {path}: {e}")
+
+
+def _run_arduino_cli(*args: str, timeout: int) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        _arduino_cli_cmd(*args),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout
+    )
+
+
+def _combined_output(result: subprocess.CompletedProcess) -> str:
+    return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+
+def _is_recoverable_avr_core_compile_error(output: str) -> bool:
+    needles = (
+        "undefined reference to `main'",
+        "undefined reference to `PluggableUSB",
+        "undefined reference to `USB_Send",
+        "undefined reference to `USB_SendControl",
+        "crtatmega32u4.o",
+    )
+    return any(needle in output for needle in needles)
+
+
+def _repair_avr_core(progress_callback=None) -> bool:
+    """Clear WinCro-owned Arduino core/cache and reinstall arduino:avr once."""
+    if progress_callback:
+        progress_callback("Arduino AVR 코어 복구 중...")
+
+    logger.warning("[Arduino] AVR 코어/캐시 복구 시작")
+    try:
+        _run_arduino_cli("core", "uninstall", "arduino:avr", timeout=120)
+    except Exception as e:
+        logger.debug(f"AVR core uninstall ignored during repair: {e}")
+
+    _safe_remove_tree(ARDUINO_CONFIG_DIR / "packages" / "arduino")
+    _ensure_build_dirs(clean=True)
+    return install_avr_core(progress_callback)
+
+
+def _compile_firmware(clean: bool = True) -> subprocess.CompletedProcess:
+    _ensure_build_dirs(clean=clean)
+    return _run_arduino_cli(
+        "compile",
+        "--fqbn", "arduino:avr:leonardo",
+        "--build-path", str(ARDUINO_BUILD_DIR),
+        "--output-dir", str(ARDUINO_OUTPUT_DIR),
+        "--jobs", "1",
+        "--clean",
+        str(SKETCH_PATH),
+        timeout=120
+    )
+
+
+def _upload_compiled_firmware(port: str) -> subprocess.CompletedProcess:
+    return _run_arduino_cli(
+        "upload",
+        "-p", port,
+        "--fqbn", "arduino:avr:leonardo",
+        "--build-path", str(ARDUINO_BUILD_DIR),
+        str(SKETCH_PATH),
+        timeout=60
+    )
 
 
 def is_arduino_cli_installed() -> bool:
@@ -73,23 +175,13 @@ def download_arduino_cli(progress_callback=None) -> bool:
 
             # 코어 인덱스 업데이트
             logger.info("[Arduino] 코어 인덱스 업데이트 시작 (최대 120초 소요)...")
-            update_result = subprocess.run(
-                [str(ARDUINO_CLI_EXE), "core", "update-index"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
+            update_result = _run_arduino_cli("core", "update-index", timeout=120)
             if update_result.returncode != 0:
                 logger.warning(f"코어 인덱스 업데이트 실패: {update_result.stderr}")
 
             # AVR 코어 설치
             logger.info("[Arduino] AVR 코어 설치 시작 (최대 180초 소요)...")
-            install_result = subprocess.run(
-                [str(ARDUINO_CLI_EXE), "core", "install", "arduino:avr"],
-                capture_output=True,
-                text=True,
-                timeout=180
-            )
+            install_result = _run_arduino_cli("core", "install", "arduino:avr", timeout=180)
             if install_result.returncode != 0:
                 logger.warning(f"AVR 코어 설치 실패: {install_result.stderr}")
                 return False
@@ -123,12 +215,7 @@ def is_avr_core_installed() -> bool:
         return False
 
     try:
-        result = subprocess.run(
-            [str(ARDUINO_CLI_EXE), "core", "list"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
+        result = _run_arduino_cli("core", "list", timeout=30)
         return result.returncode == 0 and result.stdout and "arduino:avr" in result.stdout
     except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as e:
         logger.debug(f"AVR 코어 확인 실패: {e}")
@@ -144,20 +231,11 @@ def install_avr_core(progress_callback=None) -> bool:
 
         # 코어 인덱스 업데이트
         logger.info("[Arduino] 코어 인덱스 업데이트 시작 (최대 120초 소요)...")
-        subprocess.run(
-            [str(ARDUINO_CLI_EXE), "core", "update-index"],
-            capture_output=True,
-            timeout=120
-        )
+        _run_arduino_cli("core", "update-index", timeout=120)
 
         # AVR 코어 설치
         logger.info("[Arduino] AVR 코어 설치 시작 (최대 180초 소요)...")
-        result = subprocess.run(
-            [str(ARDUINO_CLI_EXE), "core", "install", "arduino:avr"],
-            capture_output=True,
-            text=True,
-            timeout=180
-        )
+        result = _run_arduino_cli("core", "install", "arduino:avr", timeout=180)
 
         if result.returncode != 0:
             logger.error(f"AVR 코어 설치 실패: {result.stderr}")
@@ -170,17 +248,9 @@ def install_avr_core(progress_callback=None) -> bool:
             progress_callback("HID 라이브러리 설치 중...")
 
         logger.info("[Arduino] Mouse 라이브러리 설치 시작 (최대 120초 소요)...")
-        subprocess.run(
-            [str(ARDUINO_CLI_EXE), "lib", "install", "Mouse"],
-            capture_output=True,
-            timeout=120
-        )
+        _run_arduino_cli("lib", "install", "Mouse", timeout=120)
         logger.info("[Arduino] Keyboard 라이브러리 설치 시작 (최대 120초 소요)...")
-        subprocess.run(
-            [str(ARDUINO_CLI_EXE), "lib", "install", "Keyboard"],
-            capture_output=True,
-            timeout=120
-        )
+        _run_arduino_cli("lib", "install", "Keyboard", timeout=120)
 
         logger.info("HID 라이브러리 설치 완료")
         return True
@@ -224,17 +294,9 @@ def upload_firmware(port: str, progress_callback=None) -> Tuple[bool, str]:
 
         try:
             logger.info("[Arduino] Mouse 라이브러리 설치 확인 (최대 120초 소요)...")
-            subprocess.run(
-                [str(ARDUINO_CLI_EXE), "lib", "install", "Mouse"],
-                capture_output=True,
-                timeout=120
-            )
+            _run_arduino_cli("lib", "install", "Mouse", timeout=120)
             logger.info("[Arduino] Keyboard 라이브러리 설치 확인 (최대 120초 소요)...")
-            subprocess.run(
-                [str(ARDUINO_CLI_EXE), "lib", "install", "Keyboard"],
-                capture_output=True,
-                timeout=120
-            )
+            _run_arduino_cli("lib", "install", "Keyboard", timeout=120)
             logger.info("HID 라이브러리 설치 완료")
         except Exception as e:
             logger.warning(f"HID 라이브러리 설치 중 경고: {e}")
@@ -248,43 +310,33 @@ def upload_firmware(port: str, progress_callback=None) -> Tuple[bool, str]:
             progress_callback("펌웨어 컴파일 중...")
 
         logger.info("[Arduino] 펌웨어 컴파일 시작 (최대 120초 소요)...")
-        compile_result = subprocess.run(
-            [
-                str(ARDUINO_CLI_EXE),
-                "compile",
-                "--fqbn", "arduino:avr:leonardo",
-                str(SKETCH_PATH)
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        compile_result = _compile_firmware(clean=True)
 
         if compile_result.returncode != 0:
-            logger.error(f"컴파일 실패: {compile_result.stderr}")
-            return False, f"컴파일 실패: {compile_result.stderr[:200]}"
+            compile_output = _combined_output(compile_result)
+            if _is_recoverable_avr_core_compile_error(compile_output):
+                logger.warning("[Arduino] AVR 코어 링크 오류 감지, 코어 복구 후 1회 재시도")
+                if progress_callback:
+                    progress_callback("컴파일 캐시/코어 복구 후 재시도 중...")
+                if _repair_avr_core(progress_callback):
+                    compile_result = _compile_firmware(clean=True)
+                    compile_output = _combined_output(compile_result)
+
+            if compile_result.returncode != 0:
+                logger.error(f"컴파일 실패: {compile_output}")
+                return False, f"컴파일 실패: {compile_output[:200]}"
 
         # 4. 업로드
         if progress_callback:
             progress_callback("펌웨어 업로드 중...")
 
         logger.info(f"[Arduino] 펌웨어 업로드 시작: {port} (최대 60초 소요)...")
-        upload_result = subprocess.run(
-            [
-                str(ARDUINO_CLI_EXE),
-                "upload",
-                "-p", port,
-                "--fqbn", "arduino:avr:leonardo",
-                str(SKETCH_PATH)
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
+        upload_result = _upload_compiled_firmware(port)
 
         if upload_result.returncode != 0:
-            logger.error(f"업로드 실패: {upload_result.stderr}")
-            return False, f"업로드 실패: {upload_result.stderr[:200]}"
+            upload_output = _combined_output(upload_result)
+            logger.error(f"업로드 실패: {upload_output}")
+            return False, f"업로드 실패: {upload_output[:200]}"
 
         logger.info("펌웨어 업로드 완료")
         if progress_callback:
