@@ -417,6 +417,8 @@ class RuleExecutionResult:
     executed_at: Optional[datetime] = None
     execution_time_ms: int = 0
     skip_current_playlist: bool = False
+    rewind_previous_action: bool = False
+    rewind_delay: float = 0.0
 
 
 @dataclass
@@ -474,6 +476,7 @@ class RuleExecutor:
         # 결과 저장
         self._results: List[RuleExecutionResult] = []
         self._child_rules_executed_with_parent: set[str] = set()
+        self._trigger_missing_rewind_attempts: dict[str, int] = {}
 
         # 콜백
         self._on_progress: Optional[Callable[[ExecutionProgress], None]] = None
@@ -859,14 +862,19 @@ class RuleExecutor:
                     self._progress.initial_completed = 0
                 self._child_rules_executed_with_parent = set()
 
+                self._trigger_missing_rewind_attempts.clear()
+
                 # 모든 규칙 순차 실행 (룰과 스텝 번호를 함께 순회)
-                for i, (rule, step_num) in enumerate(all_rules_with_step):
+                i = 0
+                while i < len(all_rules_with_step):
+                    rule, step_num = all_rules_with_step[i]
                     if self._stop_event.is_set():
                         break
 
                     if rule.rule_id in self._child_rules_executed_with_parent:
                         logger.debug(f"[반복묶음] 부모 반복에서 실행된 하위 액션 스킵: {step_num} {rule.description or rule.action_type}")
                         self._progress.initial_completed = i + 1
+                        i += 1
                         continue
 
                     # 일시정지 대기 (중지 이벤트 주기적 체크)
@@ -899,7 +907,12 @@ class RuleExecutor:
                     is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
                     logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
                     if is_monitoring:
-                        trigger_result = self._handle_trigger_gate(rule, datetime.now(), step_num)
+                        trigger_result = self._handle_trigger_gate(
+                            rule,
+                            datetime.now(),
+                            step_num,
+                            can_rewind_previous=i > 0,
+                        )
                         if trigger_result is not None:
                             result = trigger_result
                         else:
@@ -920,11 +933,31 @@ class RuleExecutor:
                                 next_target_image = next_rule.target_image
 
                         # 규칙 실행 (재시도 포함)
-                        result = self._execute_rule_with_retry(rule, next_target_image, next_rule=next_rule, step_num=step_num)
+                        result = self._execute_rule_with_retry(
+                            rule,
+                            next_target_image,
+                            next_rule=next_rule,
+                            step_num=step_num,
+                            can_rewind_previous=i > 0,
+                        )
                         self._results.append(result)
 
                     if self._on_rule_executed:
                         self._on_rule_executed(result)
+
+                    if getattr(result, "rewind_previous_action", False):
+                        rewind_delay = max(0.0, float(getattr(result, "rewind_delay", 0.0) or 0.0))
+                        target_index = max(0, i - 1)
+                        target_step = all_rules_with_step[target_index][1] if all_rules_with_step else "1"
+                        logger.warning(
+                            f"{_YELLOW}↩ [{step_num}] 트리거 미감지 → 이전 액션 [{target_step}]으로 이동: "
+                            f"{result.message}{_RESET}"
+                        )
+                        self._update_progress(f"[{step_num}] 트리거 미감지 → 이전 액션으로 이동")
+                        if rewind_delay > 0 and self._stop_event.wait(rewind_delay):
+                            break
+                        i = target_index
+                        continue
 
                     if getattr(result, "skip_current_playlist", False):
                         self._progress.initial_completed = i + 1
@@ -960,6 +993,8 @@ class RuleExecutor:
                         if wait_time > 0:
                             if self._stop_event.wait(timeout=wait_time):
                                 break
+
+                    i += 1
 
                 # 중지 이벤트 체크 - while 루프도 종료
                 if self._stop_event.is_set():
@@ -1054,42 +1089,55 @@ class RuleExecutor:
         x1, y1, x2, y2 = region
         return x1 <= int(x) <= x2 and y1 <= int(y) <= y2
 
-    def _execute_trigger_missing_keys(self, rule: AutomationRule, step_prefix: str = "") -> None:
-        """트리거 미감지로 재생목록을 종료하기 직전에 지정 키를 반복 입력한다."""
+    def _execute_trigger_missing_keys(
+        self,
+        rule: AutomationRule,
+        step_prefix: str = "",
+        *,
+        keys_attr: str = "trigger_missing_keys",
+        repeat_count_attr: str = "trigger_missing_key_repeat_count",
+        repeat_delay_attr: str = "trigger_missing_key_repeat_delay",
+        repeat_delay_random_attr: str = "trigger_missing_key_repeat_delay_random",
+        repeat_delay_range_attr: str = "trigger_missing_key_repeat_delay_random_range",
+        log_label: str = "트리거 미감지 종료 전 키입력",
+    ) -> bool:
+        """트리거 미감지 처리 직전에 지정 키를 반복 입력한다."""
         keys = [
             str(key).strip().lower()
-            for key in (getattr(rule, "trigger_missing_keys", None) or [])
+            for key in (getattr(rule, keys_attr, None) or [])
             if str(key).strip()
         ]
-        if not keys or self._stop_event.is_set():
-            return
+        if not keys:
+            return True
+        if self._stop_event.is_set():
+            return False
 
         try:
-            repeat_count = max(1, int(getattr(rule, "trigger_missing_key_repeat_count", 1) or 1))
+            repeat_count = max(1, int(getattr(rule, repeat_count_attr, 1) or 1))
         except (TypeError, ValueError):
             repeat_count = 1
         try:
-            repeat_delay = max(0.0, float(getattr(rule, "trigger_missing_key_repeat_delay", 0.5) or 0.0))
+            repeat_delay = max(0.0, float(getattr(rule, repeat_delay_attr, 0.5) or 0.0))
         except (TypeError, ValueError):
             repeat_delay = 0.5
         try:
             repeat_delay_range = max(
                 0.0,
-                float(getattr(rule, "trigger_missing_key_repeat_delay_random_range", 0.3) or 0.0),
+                float(getattr(rule, repeat_delay_range_attr, 0.3) or 0.0),
             )
         except (TypeError, ValueError):
             repeat_delay_range = 0.3
-        repeat_delay_random = bool(getattr(rule, "trigger_missing_key_repeat_delay_random", False))
+        repeat_delay_random = bool(getattr(rule, repeat_delay_random_attr, False))
 
         input_ctrl = get_input_controller()
         key_label = " + ".join(key.upper() for key in keys)
         logger.info(
-            f"{_YELLOW}{step_prefix}트리거 미감지 종료 전 키입력: "
+            f"{_YELLOW}{step_prefix}{log_label}: "
             f"{key_label} x{repeat_count} delay={repeat_delay:.2f}s random={repeat_delay_random}{_RESET}"
         )
         for index in range(repeat_count):
             if self._stop_event.is_set():
-                return
+                return False
             try:
                 if len(keys) == 1:
                     ok = input_ctrl.press(keys[0])
@@ -1097,28 +1145,34 @@ class RuleExecutor:
                     ok = input_ctrl.hotkey(*keys)
                 if ok is False:
                     logger.warning(
-                        f"{_YELLOW}{step_prefix}트리거 미감지 종료 전 키입력 실패: "
+                        f"{_YELLOW}{step_prefix}{log_label} 실패: "
                         f"{key_label} ({index + 1}/{repeat_count}){_RESET}"
                     )
-                    return
+                    return False
+                logger.info(
+                    f"{_YELLOW}{step_prefix}{log_label} 완료: "
+                    f"{key_label} ({index + 1}/{repeat_count}){_RESET}"
+                )
             except Exception as e:
                 logger.warning(
-                    f"{_YELLOW}{step_prefix}트리거 미감지 종료 전 키입력 예외: "
+                    f"{_YELLOW}{step_prefix}{log_label} 예외: "
                     f"{key_label} ({index + 1}/{repeat_count}, {e}){_RESET}"
                 )
-                return
+                return False
             if index < repeat_count - 1:
                 actual_delay = repeat_delay
                 if repeat_delay_random:
                     actual_delay = max(0.0, repeat_delay + random.uniform(-repeat_delay_range, repeat_delay_range))
                 if actual_delay > 0 and self._stop_event.wait(actual_delay):
-                    return
+                    return False
+        return True
 
     def _handle_trigger_gate(
         self,
         rule: AutomationRule,
         start_time: datetime,
         step_num: str = "",
+        can_rewind_previous: bool = False,
     ) -> Optional[RuleExecutionResult]:
         """트리거 이미지 대기/재생목록 종료 옵션을 공통 처리한다."""
         trigger_image = getattr(rule, "trigger_image", None)
@@ -1132,8 +1186,16 @@ class RuleExecutor:
         trigger_confidence = rule.confidence if rule.confidence > 0 else 0.65
         step_prefix = f"[{step_num}] " if step_num else ""
         stop_playlist = bool(getattr(rule, "stop_playlist_on_trigger_missing", False))
-        trigger_timeout = PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS if stop_playlist else 0.0
-        mode_desc = f"{trigger_timeout:.1f}초 후 재생목록 종료" if stop_playlist else "무제한"
+        rewind_previous = bool(getattr(rule, "rewind_previous_on_trigger_missing", False))
+        trigger_timeout = PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS if (stop_playlist or rewind_previous) else 0.0
+        if rewind_previous and stop_playlist:
+            mode_desc = f"{trigger_timeout:.1f}초 후 이전 액션 재시도, 횟수 초과 시 재생목록 종료"
+        elif rewind_previous:
+            mode_desc = f"{trigger_timeout:.1f}초 후 이전 액션 재시도"
+        elif stop_playlist:
+            mode_desc = f"{trigger_timeout:.1f}초 후 재생목록 종료"
+        else:
+            mode_desc = "무제한"
         search_region = self._trigger_search_region_for_rule(rule)
 
         logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중... ({mode_desc}){_RESET}")
@@ -1152,8 +1214,70 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
 
+            if rewind_previous:
+                try:
+                    max_rewinds = max(1, int(getattr(rule, "trigger_missing_rewind_count", 1) or 1))
+                except (TypeError, ValueError):
+                    max_rewinds = 1
+                used_rewinds = self._trigger_missing_rewind_attempts.get(rule.rule_id, 0)
+                if can_rewind_previous and used_rewinds < max_rewinds:
+                    self._trigger_missing_rewind_attempts[rule.rule_id] = used_rewinds + 1
+                    keys_ok = self._execute_trigger_missing_keys(
+                        rule,
+                        step_prefix,
+                        keys_attr="trigger_missing_rewind_keys",
+                        repeat_count_attr="trigger_missing_rewind_key_repeat_count",
+                        repeat_delay_attr="trigger_missing_rewind_key_repeat_delay",
+                        repeat_delay_random_attr="trigger_missing_rewind_key_repeat_delay_random",
+                        repeat_delay_range_attr="trigger_missing_rewind_key_repeat_delay_random_range",
+                        log_label="트리거 미감지 종료 전 키입력(전 액션 복귀)",
+                    )
+                    if not keys_ok:
+                        if self._stop_event.is_set():
+                            return self._make_result(rule, False, "트리거 미감지 전 액션 복귀 전 키입력 중 중지됨", start_time)
+                        return self._make_result(rule, False, "트리거 미감지 전 액션 복귀 전 키입력 실패", start_time)
+                    try:
+                        rewind_delay = max(0.0, float(getattr(rule, "trigger_missing_rewind_delay", 0.5) or 0.0))
+                    except (TypeError, ValueError):
+                        rewind_delay = 0.5
+                    if bool(getattr(rule, "trigger_missing_rewind_delay_random", False)):
+                        try:
+                            rewind_range = max(
+                                0.0,
+                                float(getattr(rule, "trigger_missing_rewind_delay_random_range", 0.3) or 0.0),
+                            )
+                        except (TypeError, ValueError):
+                            rewind_range = 0.3
+                        rewind_delay = max(0.0, rewind_delay + random.uniform(-rewind_range, rewind_range))
+                    message = (
+                        f"트리거 이미지 없음 → 이전 액션으로 이동 "
+                        f"({used_rewinds + 1}/{max_rewinds}, {trigger_path.name})"
+                    )
+                    return self._make_result(
+                        rule,
+                        True,
+                        message,
+                        start_time,
+                        rewind_previous_action=True,
+                        rewind_delay=rewind_delay,
+                    )
+                logger.warning(
+                    f"{_YELLOW}{step_prefix}트리거 미감지 이전 액션 이동 불가/횟수초과: "
+                    f"{used_rewinds}/{max_rewinds}, can_rewind={can_rewind_previous}{_RESET}"
+                )
+                if not stop_playlist:
+                    message = (
+                        f"트리거 미감지 이전 액션 이동 불가/횟수초과 "
+                        f"({used_rewinds}/{max_rewinds}, can_rewind={can_rewind_previous})"
+                    )
+                    return self._make_result(rule, False, message, start_time)
+
             if stop_playlist:
-                self._execute_trigger_missing_keys(rule, step_prefix)
+                keys_ok = self._execute_trigger_missing_keys(rule, step_prefix)
+                if not keys_ok:
+                    if self._stop_event.is_set():
+                        return self._make_result(rule, False, "트리거 미감지 종료 전 키입력 중 중지됨", start_time)
+                    return self._make_result(rule, False, "트리거 미감지 종료 전 키입력 실패", start_time)
                 message = (
                     f"{PLAYLIST_SKIP_TRIGGER_MISSING}: "
                     f"트리거 이미지 없음 ({trigger_path.name}, {trigger_timeout:.1f}초)"
@@ -1169,6 +1293,7 @@ class RuleExecutor:
 
             return self._make_result(rule, False, "트리거 이미지 대기 중 중지됨", start_time)
 
+        self._trigger_missing_rewind_attempts.pop(rule.rule_id, None)
         self._prepare_for_click_after_trigger()
         return None
 
@@ -1179,6 +1304,7 @@ class RuleExecutor:
         max_retries: int = 3,
         next_rule: Optional[AutomationRule] = None,
         step_num: str = "",
+        can_rewind_previous: bool = False,
     ) -> RuleExecutionResult:
         """
         규칙 실행 + 다음 이미지 확인 + 재시도
@@ -1192,7 +1318,12 @@ class RuleExecutor:
         # 화면 안정화 대기 (이전 액션 효과가 반영될 시간)
         time.sleep(0.2)
 
-        trigger_result = self._handle_trigger_gate(rule, start_time, step_num)
+        trigger_result = self._handle_trigger_gate(
+            rule,
+            start_time,
+            step_num,
+            can_rewind_previous=can_rewind_previous,
+        )
         if trigger_result is not None:
             return trigger_result
 
@@ -3514,6 +3645,8 @@ class RuleExecutor:
         message: str,
         start_time: datetime,
         skip_current_playlist: bool = False,
+        rewind_previous_action: bool = False,
+        rewind_delay: float = 0.0,
     ) -> RuleExecutionResult:
         """실행 결과 생성"""
         execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -3524,6 +3657,8 @@ class RuleExecutor:
             executed_at=datetime.now(),
             execution_time_ms=execution_time,
             skip_current_playlist=skip_current_playlist,
+            rewind_previous_action=rewind_previous_action,
+            rewind_delay=rewind_delay,
         )
 
     def _update_progress(self, message: str) -> None:

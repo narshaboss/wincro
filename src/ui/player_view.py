@@ -3346,7 +3346,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             pass
         self._gm_wait_after_id = None
 
-    def _run_game_mode(self, config_rule_id=None, source_rule=None):
+    def _run_game_mode(self, config_rule_id=None, source_rule=None, source_previous_rule=None):
         """특화모드 실행 — 숨긴 GameModeDialog로 _run_coordinate_loop 사용"""
         config = self._plan.game_modes.get(config_rule_id) if config_rule_id else self._plan.game_mode
         if not config:
@@ -3373,8 +3373,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
             pass
 
         # GameModeDialog를 숨겨서 생성 + 자동 실행
-        self._gm_dialog = GameModeDialog(self, self._plan, self._save_plan, self._refresh_action_list,
-                                         config_rule_id=config_rule_id, auto_run=True, source_rule=source_rule)
+        if not hasattr(self, "_gm_trigger_rewind_attempts"):
+            self._gm_trigger_rewind_attempts = {}
+        self._gm_previous_rule = source_previous_rule
+        self._gm_dialog = GameModeDialog(
+            self,
+            self._plan,
+            self._save_plan,
+            self._refresh_action_list,
+            config_rule_id=config_rule_id,
+            auto_run=True,
+            source_rule=source_rule,
+            source_previous_rule=source_previous_rule,
+            trigger_rewind_attempts=self._gm_trigger_rewind_attempts,
+        )
         self._gm_dialog.withdraw()  # 창 숨기기
         self._running_executor = None
 
@@ -3393,9 +3405,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     completed_ok = getattr(gm, '_completed_normally', False)
                     completion_msg = getattr(gm, '_completion_message', None)
                     skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))
+                    rewind_previous_action = bool(getattr(gm, '_rewind_previous_action', False))
+                    rewind_delay = float(getattr(gm, "_rewind_delay", 0.0) or 0.0)
                     gm.destroy()
                     self._gm_dialog = None
-                    if skip_current_playlist:
+                    if rewind_previous_action:
+                        self._on_game_mode_complete(
+                            False,
+                            completion_msg or "특화모드 트리거 미감지로 전 액션 복귀",
+                            rewind_previous_action=True,
+                            rewind_delay=rewind_delay,
+                        )
+                    elif skip_current_playlist:
                         self._gm_remaining_rules = []
                         self._on_game_mode_complete(False, completion_msg or "트리거 미감지로 현재 재생목록을 종료했습니다.")
                     else:
@@ -3408,14 +3429,57 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         self._gm_check_after_id = self.after(500, _check_gm_done)
 
-    def _on_game_mode_complete(self, success: bool, error_msg: str = None):
+    def _on_game_mode_complete(
+        self,
+        success: bool,
+        error_msg: str = None,
+        *,
+        rewind_previous_action: bool = False,
+        rewind_delay: float = 0.0,
+    ):
         """특화모드 완료 — 나머지 규칙이 있으면 이어서 실행"""
         if not self.winfo_exists():
             return
         remaining = getattr(self, '_gm_remaining_rules', [])
         self._gm_remaining_rules = []
         gm_rule = getattr(self, "_gm_current_rule", None)
+        previous_rule = getattr(self, "_gm_previous_rule", None)
         self._gm_current_rule = None
+
+        if rewind_previous_action:
+            if previous_rule is not None and gm_rule is not None:
+                retry_rules = [previous_rule, gm_rule] + remaining
+                logger.warning(
+                    f"[부분실행] 특화모드 트리거 미감지 → 전 액션부터 재시도 "
+                    f"({getattr(previous_rule, 'description', '') or previous_rule.action_type})"
+                )
+                self._is_running = True
+                try:
+                    self.title("▶ 트리거 미감지 → 전 액션 재시도 중...")
+                    self.configure(fg_color=COLORS["bg_dark"])
+                    self._set_partial_status_text("트리거 미감지 → 전 액션 재시도", active=True)
+                except (tk.TclError, RuntimeError, AttributeError):
+                    pass
+                self._gm_previous_rule = previous_rule
+                try:
+                    retry_delay = max(0.0, float(rewind_delay or 0.0))
+                except (TypeError, ValueError):
+                    retry_delay = 0.0
+
+                def _retry_previous_action():
+                    self._gm_wait_after_id = None
+                    if not self.winfo_exists() or not getattr(self, "_is_running", False):
+                        return
+                    self._run_remaining_rules(retry_rules)
+
+                if retry_delay > 0:
+                    logger.info(f"[부분실행] 트리거 미감지 전 액션 복귀 대기: {retry_delay:.2f}초")
+                    self._set_partial_status_text(f"전 액션 재시도 대기 {retry_delay:.1f}초", active=True)
+                    self._gm_wait_after_id = self.after(int(retry_delay * 1000), _retry_previous_action)
+                else:
+                    _retry_previous_action()
+                return
+            logger.warning("[부분실행] 특화모드 전 액션 복귀 요청 실패: 이전 액션 없음")
 
         # 성공 + 나머지 규칙 있으면 → executor로 이어서 실행
         if success:
@@ -3473,14 +3537,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
         if first_gm_idx == 0:
             # 첫 규칙이 game_mode → GameModeDialog로 바로 실행
             gm_rule = rules_to_run[0]
+            previous_rule = getattr(self, "_gm_next_previous_rule", None)
             self._gm_remaining_rules = list(getattr(gm_rule, "children", []) or []) + list(rules_to_run[1:])
             logger.info(f"[이어서실행] game_mode → GameModeDialog ({len(self._gm_remaining_rules)}개 대기)")
-            self._run_game_mode(config_rule_id=gm_rule.rule_id, source_rule=gm_rule)
+            self._run_game_mode(
+                config_rule_id=gm_rule.rule_id,
+                source_rule=gm_rule,
+                source_previous_rule=previous_rule,
+            )
             return
 
         # game_mode가 중간 → 앞부분만 RuleExecutor, 완료 후 나머지 체이닝
         before_gm = rules_to_run[:first_gm_idx]
         gm_and_after = rules_to_run[first_gm_idx:]
+        self._gm_next_previous_rule = before_gm[-1] if before_gm else None
         logger.info(f"[이어서실행] {len(before_gm)}개 먼저 실행, 이후 game_mode 체이닝")
         self._run_remaining_via_executor(before_gm, chain_remaining=gm_and_after)
 
@@ -3591,6 +3661,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             logger.warning(f"[부분실행] Arduino 준비 실패로 실행 차단: rule_id={rule.rule_id}")
             return
 
+        self._gm_trigger_rewind_attempts = {}
+        self._gm_next_previous_rule = None
+        self._gm_previous_rule = None
+
         # 모든 규칙을 평탄화 (자식 포함)
         def flatten_rules(rules):
             result = []
@@ -3610,10 +3684,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             remaining_after = []
             if _gm_idx >= 0 and _gm_idx + 1 < len(all_rules_flat):
                 remaining_after = _build_manual_partial_rules(all_rules_flat, _gm_idx + 1)
+            previous_rule = all_rules_flat[_gm_idx - 1] if _gm_idx > 0 else None
             count_msg = f"\n(이후 {len(remaining_after)}개 액션도 이어서 실행)" if remaining_after else ""
             if messagebox.askyesno("특화모드 실행", f"특화모드를 실행합니다.\nESC로 중지 가능{count_msg}\n\n시작할까요?"):
                 self._gm_remaining_rules = remaining_after
-                self._run_game_mode(config_rule_id=rule.rule_id, source_rule=rule)
+                self._gm_next_previous_rule = previous_rule
+                self._run_game_mode(
+                    config_rule_id=rule.rule_id,
+                    source_rule=rule,
+                    source_previous_rule=previous_rule,
+                )
             return
 
         all_rules_flat = flatten_rules(self._plan.initial_rules)
@@ -3853,7 +3933,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 화면 높이에 맞춰 다이얼로그를 제한하고, 본문은 스크롤로 처리한다.
         dialog.update_idletasks()
-        dialog_width = 500
+        dialog_width = 620
         dialog_height = min(820, max(640, dialog.winfo_screenheight() - 120))
         x = max(0, (dialog.winfo_screenwidth() - dialog_width) // 2)
         y = max(20, (dialog.winfo_screenheight() - dialog_height) // 2)
@@ -3903,7 +3983,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             text=rule.trigger_image or "",
             font=ctk.CTkFont(size=9),
             text_color=COLORS["text_muted"],
-            wraplength=460,
+            wraplength=580,
         )
         path_label.pack(pady=(0, 10))
 
@@ -4148,6 +4228,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             "value": list(getattr(rule, "trigger_missing_keys", None) or [])
         }
         trigger_missing_key_text = ctk.StringVar()
+        trigger_missing_rewind_keys_state = {
+            "value": list(getattr(rule, "trigger_missing_rewind_keys", None) or [])
+        }
+        trigger_missing_rewind_key_text = ctk.StringVar()
 
         def normalize_trigger_missing_key_repeat_count(value):
             try:
@@ -4177,6 +4261,37 @@ class PlanDetailDialog(ctk.CTkToplevel):
         trigger_missing_key_delay_range_var = ctk.StringVar(
             value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_key_repeat_delay_random_range', 0.3), 0.3):.2f}"
         )
+        rewind_previous_var = ctk.BooleanVar(
+            value=bool(getattr(rule, "rewind_previous_on_trigger_missing", False))
+        )
+        trigger_missing_rewind_count_var = ctk.StringVar(
+            value=str(normalize_trigger_missing_key_repeat_count(
+                getattr(rule, "trigger_missing_rewind_count", 1)
+            ))
+        )
+        trigger_missing_rewind_delay_var = ctk.StringVar(
+            value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_rewind_delay', 0.5), 0.5):.2f}"
+        )
+        trigger_missing_rewind_delay_random_var = ctk.BooleanVar(
+            value=bool(getattr(rule, "trigger_missing_rewind_delay_random", False))
+        )
+        trigger_missing_rewind_delay_range_var = ctk.StringVar(
+            value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_rewind_delay_random_range', 0.3), 0.3):.2f}"
+        )
+        trigger_missing_rewind_key_repeat_var = ctk.StringVar(
+            value=str(normalize_trigger_missing_key_repeat_count(
+                getattr(rule, "trigger_missing_rewind_key_repeat_count", 1)
+            ))
+        )
+        trigger_missing_rewind_key_delay_var = ctk.StringVar(
+            value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_rewind_key_repeat_delay', 0.5), 0.5):.2f}"
+        )
+        trigger_missing_rewind_key_delay_random_var = ctk.BooleanVar(
+            value=bool(getattr(rule, "trigger_missing_rewind_key_repeat_delay_random", False))
+        )
+        trigger_missing_rewind_key_delay_range_var = ctk.StringVar(
+            value=f"{normalize_trigger_missing_key_float(getattr(rule, 'trigger_missing_rewind_key_repeat_delay_random_range', 0.3), 0.3):.2f}"
+        )
 
         def format_trigger_missing_keys(keys):
             clean_keys = [str(key).strip().upper() for key in (keys or []) if str(key).strip()]
@@ -4197,10 +4312,44 @@ class PlanDetailDialog(ctk.CTkToplevel):
             trigger_missing_key_delay_range_var.set(f"{delay_range:.2f}")
             return delay_range
 
+        def get_trigger_missing_rewind_count():
+            repeat_count = normalize_trigger_missing_key_repeat_count(trigger_missing_rewind_count_var.get())
+            trigger_missing_rewind_count_var.set(str(repeat_count))
+            return repeat_count
+
+        def get_trigger_missing_rewind_delay():
+            delay = normalize_trigger_missing_key_float(trigger_missing_rewind_delay_var.get(), 0.5)
+            trigger_missing_rewind_delay_var.set(f"{delay:.2f}")
+            return delay
+
+        def get_trigger_missing_rewind_delay_range():
+            delay_range = normalize_trigger_missing_key_float(trigger_missing_rewind_delay_range_var.get(), 0.3)
+            trigger_missing_rewind_delay_range_var.set(f"{delay_range:.2f}")
+            return delay_range
+
+        def get_trigger_missing_rewind_key_repeat_count():
+            repeat_count = normalize_trigger_missing_key_repeat_count(trigger_missing_rewind_key_repeat_var.get())
+            trigger_missing_rewind_key_repeat_var.set(str(repeat_count))
+            return repeat_count
+
+        def get_trigger_missing_rewind_key_delay():
+            delay = normalize_trigger_missing_key_float(trigger_missing_rewind_key_delay_var.get(), 0.5)
+            trigger_missing_rewind_key_delay_var.set(f"{delay:.2f}")
+            return delay
+
+        def get_trigger_missing_rewind_key_delay_range():
+            delay_range = normalize_trigger_missing_key_float(trigger_missing_rewind_key_delay_range_var.get(), 0.3)
+            trigger_missing_rewind_key_delay_range_var.set(f"{delay_range:.2f}")
+            return delay_range
+
         def sync_trigger_missing_key_text():
             trigger_missing_key_text.set(format_trigger_missing_keys(trigger_missing_keys_state["value"]))
 
+        def sync_trigger_missing_rewind_key_text():
+            trigger_missing_rewind_key_text.set(format_trigger_missing_keys(trigger_missing_rewind_keys_state["value"]))
+
         sync_trigger_missing_key_text()
+        sync_trigger_missing_rewind_key_text()
 
         def save_confidence_only():
             rule.confidence = conf_var.get() / 100.0
@@ -4210,6 +4359,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.trigger_missing_key_repeat_delay = get_trigger_missing_key_delay()
             rule.trigger_missing_key_repeat_delay_random = bool(trigger_missing_key_delay_random_var.get())
             rule.trigger_missing_key_repeat_delay_random_range = get_trigger_missing_key_delay_range()
+            rule.rewind_previous_on_trigger_missing = bool(rewind_previous_var.get()) and bool(selected_path["value"])
+            rule.trigger_missing_rewind_count = get_trigger_missing_rewind_count()
+            rule.trigger_missing_rewind_delay = get_trigger_missing_rewind_delay()
+            rule.trigger_missing_rewind_delay_random = bool(trigger_missing_rewind_delay_random_var.get())
+            rule.trigger_missing_rewind_delay_random_range = get_trigger_missing_rewind_delay_range()
+            rule.trigger_missing_rewind_keys = list(trigger_missing_rewind_keys_state["value"])
+            rule.trigger_missing_rewind_key_repeat_count = get_trigger_missing_rewind_key_repeat_count()
+            rule.trigger_missing_rewind_key_repeat_delay = get_trigger_missing_rewind_key_delay()
+            rule.trigger_missing_rewind_key_repeat_delay_random = bool(trigger_missing_rewind_key_delay_random_var.get())
+            rule.trigger_missing_rewind_key_repeat_delay_random_range = get_trigger_missing_rewind_key_delay_range()
             logger.info(f"트리거 이미지 인식률 저장: {int(conf_var.get())}%")
             self._modified = True
             self._save_plan(show_message=False)  # JSON 파일에 즉시 저장
@@ -4235,8 +4394,72 @@ class PlanDetailDialog(ctk.CTkToplevel):
         )
         missing_frame.pack(fill="x", pady=10)
 
-        ctk.CTkCheckBox(
+        ctk.CTkLabel(
             missing_frame,
+            text="트리거를 찾지 못했을 때 실행 흐름을 어떻게 처리할지 선택합니다.",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 8))
+
+        playlist_skip_summary_var = ctk.StringVar()
+        rewind_summary_var = ctk.StringVar()
+        playlist_skip_options_expanded = {"value": False}
+        rewind_options_expanded = {"value": False}
+
+        def update_playlist_skip_summary():
+            summary_parts = ["재생목록 종료 ON" if bool(stop_playlist_var.get()) else "재생목록 종료 OFF"]
+            if trigger_missing_keys_state["value"]:
+                summary_parts.append(f"종료 전 키입력 {format_trigger_missing_keys(trigger_missing_keys_state['value'])}")
+            playlist_skip_summary_var.set(" · ".join(summary_parts))
+
+        def update_rewind_summary():
+            if bool(rewind_previous_var.get()):
+                summary_parts = [f"전 액션 복귀 ON · 최대 {get_trigger_missing_rewind_count()}회"]
+            else:
+                summary_parts = ["전 액션 복귀 OFF"]
+            if trigger_missing_rewind_keys_state["value"]:
+                summary_parts.append(
+                    f"종료 전 키입력 {format_trigger_missing_keys(trigger_missing_rewind_keys_state['value'])}"
+                )
+            rewind_summary_var.set(" · ".join(summary_parts))
+
+        def apply_playlist_skip_options_visibility():
+            if playlist_skip_options_expanded["value"]:
+                playlist_skip_options_frame.pack(fill="x", padx=10, pady=(0, 10))
+                playlist_skip_toggle_btn.configure(text="▲ 옵션 접기")
+            else:
+                playlist_skip_options_frame.pack_forget()
+                playlist_skip_toggle_btn.configure(text="▼ 옵션 펼치기")
+            update_playlist_skip_summary()
+
+        def apply_rewind_options_visibility():
+            if rewind_options_expanded["value"]:
+                rewind_options_frame.pack(fill="x", padx=10, pady=(0, 10))
+                rewind_toggle_btn.configure(text="▲ 옵션 접기")
+            else:
+                rewind_options_frame.pack_forget()
+                rewind_toggle_btn.configure(text="▼ 옵션 펼치기")
+            update_rewind_summary()
+
+        def toggle_playlist_skip_options():
+            playlist_skip_options_expanded["value"] = not playlist_skip_options_expanded["value"]
+            apply_playlist_skip_options_visibility()
+
+        def toggle_rewind_options():
+            rewind_options_expanded["value"] = not rewind_options_expanded["value"]
+            apply_rewind_options_visibility()
+
+        playlist_skip_frame = ctk.CTkFrame(
+            missing_frame,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["control_radius"],
+        )
+        playlist_skip_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkCheckBox(
+            playlist_skip_frame,
             text="트리거 미감지 시 현재 재생목록 종료",
             variable=stop_playlist_var,
             font=ctk.CTkFont(size=12, weight="bold"),
@@ -4244,23 +4467,54 @@ class PlanDetailDialog(ctk.CTkToplevel):
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
             border_color=COLORS["text_muted"],
+            command=update_playlist_skip_summary,
         ).pack(anchor="w", padx=10, pady=(10, 4))
 
         ctk.CTkLabel(
-            missing_frame,
-            text="실행 시 트리거 이미지를 최대 30초 찾고, 없으면 이 액션만 넘기지 않고 현재 재생목록을 끝내고 다음 재생목록으로 이동합니다.",
+            playlist_skip_frame,
+            text="트리거 이미지를 최대 30초 찾고, 없으면 현재 재생목록을 끝낸 뒤 다음 재생목록으로 이동합니다.",
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
-            wraplength=450,
+            wraplength=560,
             justify="left",
-        ).pack(anchor="w", padx=10, pady=(0, 10))
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        playlist_skip_toggle_row = ctk.CTkFrame(playlist_skip_frame, fg_color="transparent")
+        playlist_skip_toggle_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        playlist_skip_toggle_btn = ctk.CTkButton(
+            playlist_skip_toggle_row,
+            text="▼ 옵션 펼치기",
+            width=120,
+            height=30,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["accent_text"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius"],
+            command=toggle_playlist_skip_options,
+        )
+        playlist_skip_toggle_btn.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(
+            playlist_skip_toggle_row,
+            textvariable=playlist_skip_summary_var,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        playlist_skip_options_frame = ctk.CTkFrame(
+            playlist_skip_frame,
+            fg_color="transparent",
+        )
 
         trigger_key_frame = ctk.CTkFrame(
-            missing_frame,
-            fg_color=COLORS["bg_elevated"],
+            playlist_skip_options_frame,
+            fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["control_radius"],
         )
-        trigger_key_frame.pack(fill="x", padx=10, pady=(0, 10))
+        trigger_key_frame.pack(fill="x", pady=(0, 10))
 
         key_row = ctk.CTkFrame(trigger_key_frame, fg_color="transparent")
         key_row.pack(fill="x", padx=10, pady=(10, 6))
@@ -4289,10 +4543,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
             if keys:
                 trigger_missing_keys_state["value"] = [str(key).lower().strip() for key in keys if str(key).strip()]
                 sync_trigger_missing_key_text()
+                update_playlist_skip_summary()
 
         def clear_trigger_missing_keys():
             trigger_missing_keys_state["value"] = []
             sync_trigger_missing_key_text()
+            update_playlist_skip_summary()
 
         ctk.CTkButton(
             key_row,
@@ -4438,13 +4694,381 @@ class PlanDetailDialog(ctk.CTkToplevel):
         ).pack(side="left")
 
         ctk.CTkLabel(
-            missing_frame,
+            playlist_skip_options_frame,
             text="미감지 종료 직전에 기존 반복 설정과 같은 방식으로 입력합니다. 예: ESC, ENTER, SHIFT+UP",
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
-            wraplength=450,
+            wraplength=560,
             justify="left",
         ).pack(anchor="w", padx=10, pady=(0, 10))
+
+        rewind_frame = ctk.CTkFrame(
+            missing_frame,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["control_radius"],
+        )
+        rewind_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkCheckBox(
+            rewind_frame,
+            text="트리거 미감지 시 전 액션으로 돌아가기",
+            variable=rewind_previous_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+            command=update_rewind_summary,
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+
+        ctk.CTkLabel(
+            rewind_frame,
+            text="트리거를 30초 동안 못 찾으면 전 액션으로 돌아간 뒤 현재 액션을 다시 시도합니다. 지정 횟수를 초과하면 다른 미감지 처리로 넘어갑니다.",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        rewind_toggle_row = ctk.CTkFrame(rewind_frame, fg_color="transparent")
+        rewind_toggle_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        rewind_toggle_btn = ctk.CTkButton(
+            rewind_toggle_row,
+            text="▼ 옵션 펼치기",
+            width=120,
+            height=30,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["accent_text"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius"],
+            command=toggle_rewind_options,
+        )
+        rewind_toggle_btn.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(
+            rewind_toggle_row,
+            textvariable=rewind_summary_var,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        rewind_options_frame = ctk.CTkFrame(
+            rewind_frame,
+            fg_color="transparent",
+        )
+
+        rewind_key_frame = ctk.CTkFrame(
+            rewind_options_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
+        )
+        rewind_key_frame.pack(fill="x", pady=(0, 10))
+
+        rewind_key_row = ctk.CTkFrame(rewind_key_frame, fg_color="transparent")
+        rewind_key_row.pack(fill="x", padx=10, pady=(10, 6))
+
+        ctk.CTkLabel(
+            rewind_key_row,
+            text="종료 전 키입력",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=96,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(
+            rewind_key_row,
+            textvariable=trigger_missing_rewind_key_text,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["accent_text"],
+            width=150,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def set_trigger_missing_rewind_keys():
+            key_dialog = KeyInputDialog(dialog)
+            keys = key_dialog.get_keys()
+            if keys:
+                trigger_missing_rewind_keys_state["value"] = [
+                    str(key).lower().strip()
+                    for key in keys
+                    if str(key).strip()
+                ]
+                sync_trigger_missing_rewind_key_text()
+                update_rewind_summary()
+
+        def clear_trigger_missing_rewind_keys():
+            trigger_missing_rewind_keys_state["value"] = []
+            sync_trigger_missing_rewind_key_text()
+            update_rewind_summary()
+
+        ctk.CTkButton(
+            rewind_key_row,
+            text="키 설정",
+            width=80,
+            height=28,
+            fg_color=COLORS["accent_blue"],
+            hover_color=COLORS["hover_blue"],
+            command=set_trigger_missing_rewind_keys,
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            rewind_key_row,
+            text="해제",
+            width=60,
+            height=28,
+            fg_color=COLORS["bg_dark"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            command=clear_trigger_missing_rewind_keys,
+        ).pack(side="left")
+
+        rewind_key_repeat_row = ctk.CTkFrame(rewind_key_frame, fg_color="transparent")
+        rewind_key_repeat_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkLabel(
+            rewind_key_repeat_row,
+            text="반복 횟수",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=96,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        trigger_missing_rewind_key_repeat_entry = ctk.CTkEntry(
+            rewind_key_repeat_row,
+            textvariable=trigger_missing_rewind_key_repeat_var,
+            width=92,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center",
+        )
+        trigger_missing_rewind_key_repeat_entry.pack(side="left", padx=(0, 8))
+        trigger_missing_rewind_key_repeat_entry.bind(
+            "<Button-1>",
+            lambda _event: trigger_missing_rewind_key_repeat_entry.focus_set(),
+            add="+",
+        )
+
+        ctk.CTkLabel(
+            rewind_key_repeat_row,
+            text="종료 전 키입력 반복횟수",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        rewind_key_delay_row = ctk.CTkFrame(rewind_key_frame, fg_color="transparent")
+        rewind_key_delay_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkLabel(
+            rewind_key_delay_row,
+            text="반복 대기시간",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=96,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        trigger_missing_rewind_key_delay_entry = ctk.CTkEntry(
+            rewind_key_delay_row,
+            textvariable=trigger_missing_rewind_key_delay_var,
+            width=92,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center",
+        )
+        trigger_missing_rewind_key_delay_entry.pack(side="left", padx=(0, 8))
+        trigger_missing_rewind_key_delay_entry.bind(
+            "<Button-1>",
+            lambda _event: trigger_missing_rewind_key_delay_entry.focus_set(),
+            add="+",
+        )
+
+        ctk.CTkLabel(
+            rewind_key_delay_row,
+            text="초",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left")
+
+        rewind_key_random_row = ctk.CTkFrame(rewind_key_frame, fg_color="transparent")
+        rewind_key_random_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkCheckBox(
+            rewind_key_random_row,
+            text="랜덤시간 활성화",
+            variable=trigger_missing_rewind_key_delay_random_var,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+        ).pack(side="left", padx=(0, 12))
+
+        ctk.CTkLabel(
+            rewind_key_random_row,
+            text="±범위",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 6))
+
+        trigger_missing_rewind_key_delay_range_entry = ctk.CTkEntry(
+            rewind_key_random_row,
+            textvariable=trigger_missing_rewind_key_delay_range_var,
+            width=72,
+            height=30,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            justify="center",
+        )
+        trigger_missing_rewind_key_delay_range_entry.pack(side="left", padx=(0, 6))
+        trigger_missing_rewind_key_delay_range_entry.bind(
+            "<Button-1>",
+            lambda _event: trigger_missing_rewind_key_delay_range_entry.focus_set(),
+            add="+",
+        )
+
+        ctk.CTkLabel(
+            rewind_key_random_row,
+            text="초",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            rewind_options_frame,
+            text="트리거를 못 찾고 전 액션으로 돌아가기 직전에 입력합니다. 예: ESC, ENTER, SHIFT+UP",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+        rewind_count_row = ctk.CTkFrame(rewind_options_frame, fg_color="transparent")
+        rewind_count_row.pack(fill="x", padx=10, pady=(0, 8))
+
+        ctk.CTkLabel(
+            rewind_count_row,
+            text="돌아가기 횟수",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=112,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        rewind_count_entry = ctk.CTkEntry(
+            rewind_count_row,
+            textvariable=trigger_missing_rewind_count_var,
+            width=88,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center",
+        )
+        rewind_count_entry.pack(side="left", padx=(0, 8))
+        rewind_count_entry.bind("<Button-1>", lambda _event: rewind_count_entry.focus_set(), add="+")
+
+        ctk.CTkLabel(
+            rewind_count_row,
+            text="무한 반복 방지용 최대 횟수",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        rewind_delay_row = ctk.CTkFrame(rewind_options_frame, fg_color="transparent")
+        rewind_delay_row.pack(fill="x", padx=10, pady=(0, 8))
+
+        ctk.CTkLabel(
+            rewind_delay_row,
+            text="돌아가기 대기",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            width=112,
+            anchor="w",
+        ).pack(side="left", padx=(0, 8))
+
+        rewind_delay_entry = ctk.CTkEntry(
+            rewind_delay_row,
+            textvariable=trigger_missing_rewind_delay_var,
+            width=88,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center",
+        )
+        rewind_delay_entry.pack(side="left", padx=(0, 8))
+        rewind_delay_entry.bind("<Button-1>", lambda _event: rewind_delay_entry.focus_set(), add="+")
+
+        ctk.CTkLabel(
+            rewind_delay_row,
+            text="초",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(side="left")
+
+        rewind_random_row = ctk.CTkFrame(rewind_options_frame, fg_color="transparent")
+        rewind_random_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkCheckBox(
+            rewind_random_row,
+            text="랜덤시간 활성화",
+            variable=trigger_missing_rewind_delay_random_var,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+        ).pack(side="left", padx=(0, 12))
+
+        ctk.CTkLabel(
+            rewind_random_row,
+            text="±범위",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 6))
+
+        rewind_delay_range_entry = ctk.CTkEntry(
+            rewind_random_row,
+            textvariable=trigger_missing_rewind_delay_range_var,
+            width=72,
+            height=30,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            justify="center",
+        )
+        rewind_delay_range_entry.pack(side="left", padx=(0, 6))
+        rewind_delay_range_entry.bind("<Button-1>", lambda _event: rewind_delay_range_entry.focus_set(), add="+")
+
+        ctk.CTkLabel(
+            rewind_random_row,
+            text="초",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+        apply_playlist_skip_options_visibility()
+        apply_rewind_options_visibility()
 
         # 저장/취소 버튼
         bottom_frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -4459,6 +5083,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.trigger_missing_key_repeat_delay = get_trigger_missing_key_delay()
             rule.trigger_missing_key_repeat_delay_random = bool(trigger_missing_key_delay_random_var.get())
             rule.trigger_missing_key_repeat_delay_random_range = get_trigger_missing_key_delay_range()
+            rule.rewind_previous_on_trigger_missing = bool(rewind_previous_var.get()) and bool(rule.trigger_image)
+            rule.trigger_missing_rewind_count = get_trigger_missing_rewind_count()
+            rule.trigger_missing_rewind_delay = get_trigger_missing_rewind_delay()
+            rule.trigger_missing_rewind_delay_random = bool(trigger_missing_rewind_delay_random_var.get())
+            rule.trigger_missing_rewind_delay_random_range = get_trigger_missing_rewind_delay_range()
+            rule.trigger_missing_rewind_keys = list(trigger_missing_rewind_keys_state["value"])
+            rule.trigger_missing_rewind_key_repeat_count = get_trigger_missing_rewind_key_repeat_count()
+            rule.trigger_missing_rewind_key_repeat_delay = get_trigger_missing_rewind_key_delay()
+            rule.trigger_missing_rewind_key_repeat_delay_random = bool(trigger_missing_rewind_key_delay_random_var.get())
+            rule.trigger_missing_rewind_key_repeat_delay_random_range = get_trigger_missing_rewind_key_delay_range()
             # 트리거 좌표 저장
             try:
                 x_val = trigger_x_entry.get().strip()
@@ -5809,7 +6443,8 @@ class GameModeDialog(ctk.CTkToplevel):
     """게임 특화모드 설정 다이얼로그"""
 
     def __init__(self, parent, plan: AutomationPlan, save_callback, refresh_callback=None,
-                 config_rule_id=None, auto_run=False, source_rule=None):
+                 config_rule_id=None, auto_run=False, source_rule=None,
+                 source_previous_rule=None, trigger_rewind_attempts=None):
         super().__init__(parent)
 
         self._plan = plan
@@ -5843,6 +6478,10 @@ class GameModeDialog(ctk.CTkToplevel):
         self._wp_cards = []
         self._auto_run = auto_run
         self._source_rule = source_rule
+        self._source_previous_rule = source_previous_rule
+        self._trigger_rewind_attempts = trigger_rewind_attempts if isinstance(trigger_rewind_attempts, dict) else {}
+        self._rewind_previous_action = False
+        self._rewind_delay = 0.0
         self._completion_message = ""
         self._skip_current_playlist = False
         self._wp_empty_label = None
@@ -6007,6 +6646,8 @@ class GameModeDialog(ctk.CTkToplevel):
             "dead_thread_forced_reset": "실행 스레드 종료 감지 후 강제 리셋",
             "mapping_local_no_direction": "맵핑 방향 없음: 로컬 탐색 후보 고갈",
             "abnormal_coord_jump": "비정상 좌표 점프 감지",
+            "trigger_gate_failed": "트리거 이미지 조건 실패",
+            "trigger_gate_exception": "트리거 이미지 처리 예외",
             "coordinate_loop_exception": "좌표 이동 루프 예외",
             "run_loop_exception": "실행 루프 예외",
             "coordinate_loop_finally_unclassified": "좌표 루프 종료 사유 미분류",
@@ -6837,6 +7478,9 @@ class GameModeDialog(ctk.CTkToplevel):
         # 이미 중지된 상태면 무시 (중복 호출 방지)
         if not self._is_running and self._stop_event.is_set():
             return
+        if not self._is_running and not getattr(self, "_stop_reason", ""):
+            logger.debug("[중단추적] stop_execution ignored: already idle without explicit reason")
+            return
         was_mapping = getattr(self, '_is_mapping', False)
         mapping_seg = getattr(self, '_current_segment_idx', -1)
         if not getattr(self, "_stop_reason", ""):
@@ -6935,6 +7579,7 @@ class GameModeDialog(ctk.CTkToplevel):
         try:
             trigger_executor = RuleExecutor()
             trigger_executor._stop_event = self._stop_event
+            trigger_executor._trigger_missing_rewind_attempts = self._trigger_rewind_attempts
 
             def _on_trigger_progress(progress):
                 message = getattr(progress, "message", "")
@@ -6945,12 +7590,35 @@ class GameModeDialog(ctk.CTkToplevel):
 
             self._schedule_ui_log("⏳ 특화모드 트리거 이미지 확인 중...")
             from datetime import datetime
-            result = trigger_executor._handle_trigger_gate(rule, datetime.now(), "특화")
+            result = trigger_executor._handle_trigger_gate(
+                rule,
+                datetime.now(),
+                "특화",
+                can_rewind_previous=bool(getattr(self, "_source_previous_rule", None)),
+            )
             if result is None:
                 self._schedule_ui_log("✅ 특화모드 트리거 감지 → 좌표 이동 시작")
                 return True
 
             self._completion_message = result.message or ""
+            if getattr(result, "rewind_previous_action", False):
+                self._rewind_previous_action = True
+                try:
+                    self._rewind_delay = max(0.0, float(getattr(result, "rewind_delay", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    self._rewind_delay = 0.0
+                self._completed_normally = True
+                self._is_running = False
+                self._stop_event.set()
+                if self._rewind_delay > 0:
+                    self._schedule_ui_log(
+                        f"↩ 특화모드 트리거 미감지 → {self._rewind_delay:.1f}초 후 전 액션으로 돌아가기",
+                        force=True,
+                    )
+                else:
+                    self._schedule_ui_log("↩ 특화모드 트리거 미감지 → 전 액션으로 돌아가기", force=True)
+                return False
+
             if getattr(result, "skip_current_playlist", False):
                 self._skip_current_playlist = True
                 self._completed_normally = True
@@ -29879,6 +30547,9 @@ class PlayerView(BaseView):
         self._rule_executor = None
         self._playback_active_plan = playback_plan
         self._playback_remaining_rules = []
+        self._playback_next_previous_rule = None
+        self._playback_gm_previous_rule = None
+        self._playback_trigger_rewind_attempts = {}
         self._update_ui_state(True)
         self._status_label.configure(text="▶ 재생 실행 중...")
         self._status_indicator.configure(text_color=COLORS["accent_text"])
@@ -29921,6 +30592,9 @@ class PlayerView(BaseView):
             self._rule_executor = None
             self._playback_active_plan = plan_to_execute
             self._playback_remaining_rules = []
+            self._playback_next_previous_rule = None
+            self._playback_gm_previous_rule = None
+            self._playback_trigger_rewind_attempts = {}
             self._play_plan_rules(plan_to_execute.initial_rules)
             return
 
@@ -29989,13 +30663,19 @@ class PlayerView(BaseView):
 
         if first_gm_idx == 0:
             gm_rule = rules_to_run[0]
+            previous_rule = getattr(self, "_playback_next_previous_rule", None)
             self._playback_remaining_rules = list(getattr(gm_rule, "children", []) or []) + list(rules_to_run[1:])
             logger.info(f"[재생] game_mode → GameModeDialog ({len(self._playback_remaining_rules)}개 대기)")
-            self._play_run_game_mode(gm_rule.rule_id, source_rule=gm_rule)
+            self._play_run_game_mode(
+                gm_rule.rule_id,
+                source_rule=gm_rule,
+                source_previous_rule=previous_rule,
+            )
             return
 
         before_gm = rules_to_run[:first_gm_idx]
         gm_and_after = rules_to_run[first_gm_idx:]
+        self._playback_next_previous_rule = before_gm[-1] if before_gm else None
         logger.info(f"[재생] {len(before_gm)}개 먼저 실행, 이후 game_mode 체이닝")
         self._play_run_rules_via_executor(before_gm, chain_remaining=gm_and_after)
 
@@ -30038,7 +30718,7 @@ class PlayerView(BaseView):
 
         self._playback_gm_wait_after_id = self.after(int(wait_time * 1000), _finish_wait)
 
-    def _play_run_game_mode(self, config_rule_id, source_rule=None):
+    def _play_run_game_mode(self, config_rule_id, source_rule=None, source_previous_rule=None):
         active_plan = self._playback_active_plan
         if active_plan is None:
             self._show_plan_complete(False, "재생 계획이 없습니다.")
@@ -30047,6 +30727,9 @@ class PlayerView(BaseView):
             self._on_playback_game_mode_complete(False, "특화모드 설정 없음")
             return
 
+        if not hasattr(self, "_playback_trigger_rewind_attempts"):
+            self._playback_trigger_rewind_attempts = {}
+        self._playback_gm_previous_rule = source_previous_rule
         self._playback_gm_dialog = GameModeDialog(
             self,
             active_plan,
@@ -30055,6 +30738,8 @@ class PlayerView(BaseView):
             config_rule_id=config_rule_id,
             auto_run=True,
             source_rule=source_rule,
+            source_previous_rule=source_previous_rule,
+            trigger_rewind_attempts=self._playback_trigger_rewind_attempts,
         )
         self._playback_gm_current_rule = source_rule
         self._cancel_playback_game_mode_wait()
@@ -30075,12 +30760,16 @@ class PlayerView(BaseView):
                     completed_ok = getattr(gm, "_completed_normally", False)
                     completion_msg = getattr(gm, "_completion_message", None)
                     skip_current_playlist = bool(getattr(gm, "_skip_current_playlist", False))
+                    rewind_previous_action = bool(getattr(gm, "_rewind_previous_action", False))
+                    rewind_delay = float(getattr(gm, "_rewind_delay", 0.0) or 0.0)
                     gm.destroy()
                     self._playback_gm_dialog = None
                     self._on_playback_game_mode_complete(
                         completed_ok,
                         completion_msg,
                         skip_current_playlist=skip_current_playlist,
+                        rewind_previous_action=rewind_previous_action,
+                        rewind_delay=rewind_delay,
                     )
                     return
                 self._playback_gm_after_id = self.after(500, _check_gm_done)
@@ -30096,11 +30785,51 @@ class PlayerView(BaseView):
         error_msg: str = None,
         *,
         skip_current_playlist: bool = False,
+        rewind_previous_action: bool = False,
+        rewind_delay: float = 0.0,
     ):
         remaining = list(getattr(self, "_playback_remaining_rules", []) or [])
         self._playback_remaining_rules = []
         gm_rule = getattr(self, "_playback_gm_current_rule", None)
+        previous_rule = getattr(self, "_playback_gm_previous_rule", None)
         self._playback_gm_current_rule = None
+        if rewind_previous_action:
+            if previous_rule is not None and gm_rule is not None:
+                retry_rules = [previous_rule, gm_rule] + remaining
+                logger.warning(
+                    f"[재생] 특화모드 트리거 미감지 → 전 액션부터 재시도 "
+                    f"({getattr(previous_rule, 'description', '') or previous_rule.action_type})"
+                )
+                try:
+                    self._update_ui_state(True)
+                    self._status_label.configure(text="↩ 트리거 미감지 → 전 액션 재시도 중...")
+                    self._status_indicator.configure(text_color=COLORS["warning_text"])
+                    self._current_action_label.configure(text="트리거 미감지 → 전 액션 재시도")
+                except (tk.TclError, RuntimeError, AttributeError):
+                    pass
+                self._playback_next_previous_rule = previous_rule
+                try:
+                    retry_delay = max(0.0, float(rewind_delay or 0.0))
+                except (TypeError, ValueError):
+                    retry_delay = 0.0
+
+                def _retry_previous_action():
+                    self._playback_gm_wait_after_id = None
+                    if self._rule_executor is not None:
+                        return
+                    self._play_plan_rules(retry_rules)
+
+                if retry_delay > 0:
+                    logger.info(f"[재생] 트리거 미감지 전 액션 복귀 대기: {retry_delay:.2f}초")
+                    try:
+                        self._current_action_label.configure(text=f"전 액션 재시도 대기 {retry_delay:.1f}초")
+                    except (tk.TclError, RuntimeError, AttributeError):
+                        pass
+                    self._playback_gm_wait_after_id = self.after(int(retry_delay * 1000), _retry_previous_action)
+                else:
+                    _retry_previous_action()
+                return
+            logger.warning("[재생] 특화모드 전 액션 복귀 요청 실패: 이전 액션 없음")
         if skip_current_playlist:
             message = error_msg or PLAYLIST_SKIP_TRIGGER_MISSING
             logger.warning(f"[재생] 특화모드 트리거 미감지 → 현재 재생목록 종료: {message}")

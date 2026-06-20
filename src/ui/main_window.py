@@ -1225,6 +1225,43 @@ class MainWindow(ctk.CTk):
                 return group
         return None
 
+    def _mini_group_by_name(self, name: str) -> dict | None:
+        group_name = str(name or "").strip()
+        if not group_name:
+            return None
+        for group in self._mini_sequence_groups():
+            if str(group.get("name", "") or "").strip() == group_name:
+                return group
+        return None
+
+    def _mini_restore_group_selection(
+        self,
+        group_name: str = "",
+        group_label: str = "",
+        group_repeat: int | None = None,
+    ) -> None:
+        """Restore group selection after sequence stop/complete."""
+        if not hasattr(self, "_mini_plan_var") or not hasattr(self, "_mini_repeat_var"):
+            return
+
+        group = self._mini_group_by_label(group_label) if group_label else None
+        if group is None:
+            group = self._mini_group_by_name(group_name)
+
+        if group is not None:
+            label = self._mini_group_label(group)
+            repeat = normalize_repeat_count(group.get("repeat_count", group_repeat or 1))
+            self._mini_plan_var.set(label)
+            self._mini_repeat_var.set(str(repeat))
+            self._style_mini_plan_dropdown()
+            return
+
+        if group_label and self._is_mini_group_label(group_label):
+            repeat = normalize_repeat_count(group_repeat or 1)
+            self._mini_plan_var.set(group_label)
+            self._mini_repeat_var.set(str(repeat))
+            self._style_mini_plan_dropdown()
+
     def _is_mini_group_label(self, value: str) -> bool:
         return bool(value and value.startswith(MINI_GROUP_PREFIX))
 
@@ -1697,6 +1734,8 @@ class MainWindow(ctk.CTk):
 
         selected_group = self._mini_group_by_label(plan_name)
         if selected_group:
+            repeat_count = normalize_repeat_count(selected_group.get("repeat_count", repeat_count))
+            self._mini_repeat_var.set(str(repeat_count))
             group_to_run = dict(selected_group)
             group_to_run["repeat_count"] = repeat_count
             plan_paths, repeats = self._mini_expand_group_sequence(group_to_run)
@@ -1831,8 +1870,13 @@ class MainWindow(ctk.CTk):
             self._sequence_repeats.append(0)
         self._sequence_index = 0
         self._sequence_group_name = group_name or self._mini_active_group_name()
+        configured_group = self._mini_group_by_name(self._sequence_group_name)
+        if configured_group is not None and group_repeat <= 1:
+            group_repeat = normalize_repeat_count(configured_group.get("repeat_count", group_repeat))
         self._sequence_group_label = group_label or (
-            self._mini_group_label({"name": self._sequence_group_name}) if self._sequence_group_name else ""
+            self._mini_group_label(configured_group)
+            if configured_group is not None
+            else (self._mini_group_label({"name": self._sequence_group_name}) if self._sequence_group_name else "")
         )
         self._sequence_group_repeat_count = normalize_repeat_count(group_repeat)
 
@@ -1895,6 +1939,9 @@ class MainWindow(ctk.CTk):
                 logger.info(f"[시퀀스] 플랜 로드 성공: {plan.name}, 반복: {repeat_count}회 ({index + 1}/{total})")
 
                 def start_on_main():
+                    if getattr(self, "_mini_stop_requested", False) or not getattr(self, "_is_running", False):
+                        logger.info("[sequence] start skipped because playback already stopped")
+                        return
                     # 그룹 실행 중에는 선택값을 내부 플랜명으로 덮지 않는다.
                     # 그래야 중지 후 실행 버튼을 눌러도 그룹 전체가 다시 시작된다.
                     if hasattr(self, '_mini_plan_var'):
@@ -1976,6 +2023,9 @@ class MainWindow(ctk.CTk):
             logger.info(f"[mini-player] start, repeat={repeat_count}")
             self._mini_active_plan = selected_plan
             self._mini_remaining_rules = []
+            self._mini_next_gm_previous_rule = None
+            self._mini_gm_previous_rule = None
+            self._mini_trigger_rewind_attempts = {}
             self._mini_stop_requested = False
             self._mini_total_repeat = max(1, repeat_count)
             self._mini_current_repeat = 0
@@ -2005,7 +2055,9 @@ class MainWindow(ctk.CTk):
             self._mini_active_plan = plan
             self._mini_remaining_rules = []
             has_game_mode = any(
-                rule.action_type == "game_mode" and plan.game_modes.get(rule.rule_id)
+                getattr(rule, "enabled", True)
+                and rule.action_type == "game_mode"
+                and plan.game_modes.get(rule.rule_id)
                 for rule in plan.initial_rules
             )
 
@@ -2044,7 +2096,11 @@ class MainWindow(ctk.CTk):
 
         first_gm_idx = None
         for i, rule in enumerate(rules_to_run):
-            if rule.action_type == "game_mode" and active_plan.game_modes.get(rule.rule_id):
+            if (
+                getattr(rule, "enabled", True)
+                and rule.action_type == "game_mode"
+                and active_plan.game_modes.get(rule.rule_id)
+            ):
                 first_gm_idx = i
                 break
 
@@ -2054,13 +2110,19 @@ class MainWindow(ctk.CTk):
 
         if first_gm_idx == 0:
             gm_rule = rules_to_run[0]
+            previous_rule = getattr(self, "_mini_next_gm_previous_rule", None)
             self._mini_remaining_rules = list(getattr(gm_rule, "children", []) or []) + list(rules_to_run[1:])
             logger.info(f"[mini-player] run game_mode first ({len(self._mini_remaining_rules)} remaining)")
-            self._mini_run_game_mode(gm_rule.rule_id, source_rule=gm_rule)
+            self._mini_run_game_mode(
+                gm_rule.rule_id,
+                source_rule=gm_rule,
+                source_previous_rule=previous_rule,
+            )
             return
 
         before_gm = list(rules_to_run[:first_gm_idx])
         gm_and_after = list(rules_to_run[first_gm_idx:])
+        self._mini_next_gm_previous_rule = before_gm[-1] if before_gm else None
         logger.info(f"[mini-player] run {len(before_gm)} rules before game_mode")
         self._mini_run_rules_via_executor(before_gm, chain_remaining=gm_and_after)
 
@@ -2104,7 +2166,7 @@ class MainWindow(ctk.CTk):
 
         self._mini_gm_wait_after_id = self.after(int(wait_time * 1000), _finish_wait)
 
-    def _mini_run_game_mode(self, config_rule_id, source_rule=None):
+    def _mini_run_game_mode(self, config_rule_id, source_rule=None, source_previous_rule=None):
         active_plan = self._mini_active_plan
         if active_plan is None:
             self._mini_on_complete(False, "no active plan")
@@ -2118,6 +2180,9 @@ class MainWindow(ctk.CTk):
 
         from .player_view import GameModeDialog
 
+        if not hasattr(self, "_mini_trigger_rewind_attempts"):
+            self._mini_trigger_rewind_attempts = {}
+        self._mini_gm_previous_rule = source_previous_rule
         self._mini_gm_dialog = GameModeDialog(
             self,
             active_plan,
@@ -2126,6 +2191,8 @@ class MainWindow(ctk.CTk):
             config_rule_id=config_rule_id,
             auto_run=True,
             source_rule=source_rule,
+            source_previous_rule=source_previous_rule,
+            trigger_rewind_attempts=self._mini_trigger_rewind_attempts,
         )
         self._mini_gm_current_rule = source_rule
         self._mini_cancel_game_mode_wait()
@@ -2146,12 +2213,16 @@ class MainWindow(ctk.CTk):
                     completed_ok = getattr(gm, '_completed_normally', False)
                     completion_msg = getattr(gm, '_completion_message', None)
                     skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))
+                    rewind_previous_action = bool(getattr(gm, '_rewind_previous_action', False))
+                    rewind_delay = float(getattr(gm, "_rewind_delay", 0.0) or 0.0)
                     gm.destroy()
                     self._mini_gm_dialog = None
                     self._mini_on_game_mode_complete(
                         completed_ok,
                         completion_msg,
                         skip_current_playlist=skip_current_playlist,
+                        rewind_previous_action=rewind_previous_action,
+                        rewind_delay=rewind_delay,
                     )
                     return
                 self._mini_gm_after_id = self.after(500, _check_gm_done)
@@ -2167,6 +2238,8 @@ class MainWindow(ctk.CTk):
         error_msg: str = None,
         *,
         skip_current_playlist: bool = False,
+        rewind_previous_action: bool = False,
+        rewind_delay: float = 0.0,
     ):
         if getattr(self, '_mini_stop_requested', False):
             self._mini_on_complete(False, error_msg or "stopped")
@@ -2174,7 +2247,64 @@ class MainWindow(ctk.CTk):
         remaining = list(getattr(self, '_mini_remaining_rules', []) or [])
         self._mini_remaining_rules = []
         gm_rule = getattr(self, "_mini_gm_current_rule", None)
+        previous_rule = getattr(self, "_mini_gm_previous_rule", None)
         self._mini_gm_current_rule = None
+        if rewind_previous_action:
+            if previous_rule is not None and gm_rule is not None:
+                retry_rules = [previous_rule, gm_rule] + remaining
+                logger.warning(
+                    f"[mini-player] game_mode trigger missing -> rewind previous action: "
+                    f"{getattr(previous_rule, 'description', '') or previous_rule.action_type}"
+                )
+                self._is_running = True
+                self._mini_stop_requested = False
+                try:
+                    self._mini_play_btn.configure(state="disabled")
+                    self._mini_pause_btn.configure(state="normal")
+                    self._mini_stop_btn.configure(state="normal")
+                    self._mini_status.configure(text="↩ 트리거 미감지 → 전 액션 재시도 중...")
+                    self._mini_update_active_bar(
+                        "실행 중",
+                        plan_name=getattr(getattr(self, "_mini_active_plan", None), "name", ""),
+                        group_name=getattr(self, "_sequence_group_name", "") if self._sequence_mode else "",
+                        index=self._sequence_index + 1 if self._sequence_mode else 0,
+                        total=len(self._sequence_plans) if self._sequence_mode else 0,
+                        repeat_count=self._mini_total_repeat if not self._sequence_mode else 0,
+                        message="트리거 미감지 → 전 액션 재시도",
+                    )
+                except (tk.TclError, RuntimeError, AttributeError):
+                    pass
+                self._mini_next_gm_previous_rule = previous_rule
+                try:
+                    retry_delay = max(0.0, float(rewind_delay or 0.0))
+                except (TypeError, ValueError):
+                    retry_delay = 0.0
+
+                def _retry_previous_action():
+                    self._mini_gm_wait_after_id = None
+                    if getattr(self, "_mini_stop_requested", False) or not getattr(self, "_is_running", False):
+                        return
+                    self._mini_play_plan_rules(retry_rules)
+
+                if retry_delay > 0:
+                    logger.info(f"[mini-player] trigger rewind delay {retry_delay:.2f}s")
+                    try:
+                        self._mini_update_active_bar(
+                            "대기",
+                            plan_name=getattr(getattr(self, "_mini_active_plan", None), "name", ""),
+                            group_name=getattr(self, "_sequence_group_name", "") if self._sequence_mode else "",
+                            index=self._sequence_index + 1 if self._sequence_mode else 0,
+                            total=len(self._sequence_plans) if self._sequence_mode else 0,
+                            repeat_count=self._mini_total_repeat if not self._sequence_mode else 0,
+                            message=f"전 액션 재시도 대기 {retry_delay:.1f}초",
+                        )
+                    except (tk.TclError, RuntimeError, AttributeError):
+                        pass
+                    self._mini_gm_wait_after_id = self.after(int(retry_delay * 1000), _retry_previous_action)
+                else:
+                    _retry_previous_action()
+                return
+            logger.warning("[mini-player] game_mode rewind requested but previous rule is missing")
         if skip_current_playlist:
             message = error_msg or PLAYLIST_SKIP_TRIGGER_MISSING
             logger.warning(f"[mini-player] game_mode trigger missing -> playlist skip: {message}")
@@ -2305,7 +2435,16 @@ class MainWindow(ctk.CTk):
         self._is_running = True
 
         # 시퀀스 모드 시작
-        self._start_sequence_mode(plan_paths, repeats, group_name=group_name)
+        group = self._mini_group_by_name(group_name)
+        group_label = self._mini_group_label(group) if group is not None else ""
+        group_repeat = normalize_repeat_count(group.get("repeat_count", 1)) if group is not None else 1
+        self._start_sequence_mode(
+            plan_paths,
+            repeats,
+            group_name=group_name,
+            group_label=group_label,
+            group_repeat=group_repeat,
+        )
         return True
 
     def _mini_on_pause(self):
@@ -2334,6 +2473,10 @@ class MainWindow(ctk.CTk):
         self._mini_stop_requested = True
         self._mini_cancel_game_mode_wait()
         self._mini_gm_current_rule = None
+        stopped_group_name = getattr(self, "_sequence_group_name", "")
+        stopped_group_label = getattr(self, "_sequence_group_label", "")
+        stopped_group_repeat = getattr(self, "_sequence_group_repeat_count", 1)
+        was_sequence = bool(self._sequence_mode or self._sequence_plans or stopped_group_label)
 
         if self._rule_executor:
             self._rule_executor.stop()
@@ -2359,14 +2502,25 @@ class MainWindow(ctk.CTk):
         self._is_running = False
         self._is_paused = False
         self._sequence_mode = False
+        self._sequence_plans = []
+        self._sequence_repeats = []
+        self._sequence_index = 0
         self._sequence_group_name = ""
         self._sequence_group_label = ""
         self._sequence_group_repeat_count = 1
+        self._mini_active_plan = None
+        self._mini_remaining_rules = []
         self._mini_play_btn.configure(state="normal")
         self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
         self._mini_stop_btn.configure(state="disabled")
+        if was_sequence:
+            self._mini_restore_group_selection(stopped_group_name, stopped_group_label, stopped_group_repeat)
         self._mini_status.configure(text="⏹ 정지 요청 중...")
-        self._mini_update_active_bar("중단", message="정지 요청 중")
+        self._mini_update_active_bar(
+            "중단",
+            group_name=stopped_group_name if was_sequence else "",
+            message="정지 요청 중",
+        )
 
     def _mini_on_progress(self, progress):
         """미니 플레이어 - 진행 콜백 (ExecutionProgress 객체)"""
@@ -2528,6 +2682,9 @@ class MainWindow(ctk.CTk):
         """Mini player completion callback."""
         was_sequence = self._sequence_mode or len(self._sequence_plans) > 0
         seq_count = len(self._sequence_plans)
+        completed_group_name = getattr(self, "_sequence_group_name", "")
+        completed_group_label = getattr(self, "_sequence_group_label", "")
+        completed_group_repeat = getattr(self, "_sequence_group_repeat_count", 1)
 
         def update():
             try:
@@ -2554,6 +2711,12 @@ class MainWindow(ctk.CTk):
             self._mini_gm_wait_after_id = None
             self._mini_gm_current_rule = None
             self._mini_stop_requested = False
+            if was_sequence:
+                self._mini_restore_group_selection(
+                    completed_group_name,
+                    completed_group_label,
+                    completed_group_repeat,
+                )
             self._mini_play_btn.configure(state="normal")
             self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
             self._mini_stop_btn.configure(state="disabled")

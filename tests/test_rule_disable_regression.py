@@ -7,6 +7,7 @@ from src.analyzer.automation_models import AutomationRule
 
 
 PLAYER_VIEW = Path(r"C:\Projects\wincro\src\ui\player_view.py")
+MAIN_WINDOW = Path(r"C:\Projects\wincro\src\ui\main_window.py")
 RULE_EXECUTOR_MODULE = importlib.import_module("src.player.rule_executor")
 
 
@@ -70,3 +71,20 @@ def test_player_view_ignores_disabled_game_mode_in_chain_detection():
 
     assert '_rule_is_enabled(rule) and rule.action_type == "game_mode"' in src
     assert '_rule_is_enabled(r) and r.action_type == "game_mode"' in src
+
+
+def test_mini_player_ignores_disabled_game_mode_in_chain_detection():
+    src = MAIN_WINDOW.read_text(encoding="utf-8")
+    execute_slice = src[
+        src.index("def _mini_execute_plan"):
+        src.index("def _mini_play_plan_rules")
+    ]
+    chain_slice = src[
+        src.index("def _mini_play_plan_rules"):
+        src.index("def _mini_game_mode_wait_seconds")
+    ]
+
+    assert 'getattr(rule, "enabled", True)' in execute_slice
+    assert 'rule.action_type == "game_mode"' in execute_slice
+    assert 'getattr(rule, "enabled", True)' in chain_slice
+    assert 'rule.action_type == "game_mode"' in chain_slice

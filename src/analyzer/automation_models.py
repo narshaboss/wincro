@@ -103,6 +103,16 @@ class AutomationRule:
     trigger_missing_key_repeat_delay: float = 0.5  # 트리거 미감지 종료 전 키입력 반복 대기시간
     trigger_missing_key_repeat_delay_random: bool = False  # 트리거 미감지 종료 전 키입력 랜덤 대기
     trigger_missing_key_repeat_delay_random_range: float = 0.3  # 트리거 미감지 종료 전 키입력 랜덤 대기 범위
+    rewind_previous_on_trigger_missing: bool = False  # 트리거 미감지 시 현재 액션의 전 액션으로 이동
+    trigger_missing_rewind_count: int = 1  # 트리거 미감지 시 전 액션으로 돌아가는 최대 횟수
+    trigger_missing_rewind_delay: float = 0.5  # 전 액션으로 돌아가기 전 대기시간
+    trigger_missing_rewind_delay_random: bool = False  # 전 액션 되돌아가기 랜덤 대기
+    trigger_missing_rewind_delay_random_range: float = 0.3  # 전 액션 되돌아가기 랜덤 대기 범위
+    trigger_missing_rewind_keys: List[str] = field(default_factory=list)  # 전 액션 복귀 전 입력할 키/조합
+    trigger_missing_rewind_key_repeat_count: int = 1  # 전 액션 복귀 전 키입력 반복횟수
+    trigger_missing_rewind_key_repeat_delay: float = 0.5  # 전 액션 복귀 전 키입력 반복 대기시간
+    trigger_missing_rewind_key_repeat_delay_random: bool = False  # 전 액션 복귀 전 키입력 랜덤 대기
+    trigger_missing_rewind_key_repeat_delay_random_range: float = 0.3  # 전 액션 복귀 전 키입력 랜덤 대기 범위
     repeat_count: int = 1  # ??? ??? (1 = 1?????)
     repeat_delay: float = 0.5  # ??? ??? ??????(??
     repeat_delay_random: bool = False  # ??? ????????? ???
@@ -132,6 +142,8 @@ class AutomationRule:
             self.target_images = []
         if self.trigger_missing_keys is None:
             self.trigger_missing_keys = []
+        if self.trigger_missing_rewind_keys is None:
+            self.trigger_missing_rewind_keys = []
         try:
             self.trigger_missing_key_repeat_count = max(1, int(self.trigger_missing_key_repeat_count or 1))
         except (TypeError, ValueError):
@@ -147,6 +159,42 @@ class AutomationRule:
             )
         except (TypeError, ValueError):
             self.trigger_missing_key_repeat_delay_random_range = 0.3
+        try:
+            self.trigger_missing_rewind_count = max(1, int(self.trigger_missing_rewind_count or 1))
+        except (TypeError, ValueError):
+            self.trigger_missing_rewind_count = 1
+        try:
+            self.trigger_missing_rewind_delay = max(0.0, float(self.trigger_missing_rewind_delay or 0.0))
+        except (TypeError, ValueError):
+            self.trigger_missing_rewind_delay = 0.5
+        try:
+            self.trigger_missing_rewind_delay_random_range = max(
+                0.0,
+                float(self.trigger_missing_rewind_delay_random_range or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.trigger_missing_rewind_delay_random_range = 0.3
+        try:
+            self.trigger_missing_rewind_key_repeat_count = max(
+                1,
+                int(self.trigger_missing_rewind_key_repeat_count or 1),
+            )
+        except (TypeError, ValueError):
+            self.trigger_missing_rewind_key_repeat_count = 1
+        try:
+            self.trigger_missing_rewind_key_repeat_delay = max(
+                0.0,
+                float(self.trigger_missing_rewind_key_repeat_delay or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.trigger_missing_rewind_key_repeat_delay = 0.5
+        try:
+            self.trigger_missing_rewind_key_repeat_delay_random_range = max(
+                0.0,
+                float(self.trigger_missing_rewind_key_repeat_delay_random_range or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.trigger_missing_rewind_key_repeat_delay_random_range = 0.3
         try:
             self.click_until_image_disappears_delay = max(
                 0.0,
@@ -222,6 +270,16 @@ class AutomationRule:
             "trigger_missing_key_repeat_delay": self.trigger_missing_key_repeat_delay,
             "trigger_missing_key_repeat_delay_random": self.trigger_missing_key_repeat_delay_random,
             "trigger_missing_key_repeat_delay_random_range": self.trigger_missing_key_repeat_delay_random_range,
+            "rewind_previous_on_trigger_missing": self.rewind_previous_on_trigger_missing,
+            "trigger_missing_rewind_count": self.trigger_missing_rewind_count,
+            "trigger_missing_rewind_delay": self.trigger_missing_rewind_delay,
+            "trigger_missing_rewind_delay_random": self.trigger_missing_rewind_delay_random,
+            "trigger_missing_rewind_delay_random_range": self.trigger_missing_rewind_delay_random_range,
+            "trigger_missing_rewind_keys": self.trigger_missing_rewind_keys,
+            "trigger_missing_rewind_key_repeat_count": self.trigger_missing_rewind_key_repeat_count,
+            "trigger_missing_rewind_key_repeat_delay": self.trigger_missing_rewind_key_repeat_delay,
+            "trigger_missing_rewind_key_repeat_delay_random": self.trigger_missing_rewind_key_repeat_delay_random,
+            "trigger_missing_rewind_key_repeat_delay_random_range": self.trigger_missing_rewind_key_repeat_delay_random_range,
             "repeat_count": self.repeat_count,
             "repeat_delay": self.repeat_delay,
             "repeat_delay_random": self.repeat_delay_random,
@@ -317,6 +375,16 @@ class AutomationRule:
             trigger_missing_key_repeat_delay=data.get("trigger_missing_key_repeat_delay", 0.5),
             trigger_missing_key_repeat_delay_random=data.get("trigger_missing_key_repeat_delay_random", False),
             trigger_missing_key_repeat_delay_random_range=data.get("trigger_missing_key_repeat_delay_random_range", 0.3),
+            rewind_previous_on_trigger_missing=data.get("rewind_previous_on_trigger_missing", False),
+            trigger_missing_rewind_count=data.get("trigger_missing_rewind_count", 1),
+            trigger_missing_rewind_delay=data.get("trigger_missing_rewind_delay", 0.5),
+            trigger_missing_rewind_delay_random=data.get("trigger_missing_rewind_delay_random", False),
+            trigger_missing_rewind_delay_random_range=data.get("trigger_missing_rewind_delay_random_range", 0.3),
+            trigger_missing_rewind_keys=data.get("trigger_missing_rewind_keys", []),
+            trigger_missing_rewind_key_repeat_count=data.get("trigger_missing_rewind_key_repeat_count", 1),
+            trigger_missing_rewind_key_repeat_delay=data.get("trigger_missing_rewind_key_repeat_delay", 0.5),
+            trigger_missing_rewind_key_repeat_delay_random=data.get("trigger_missing_rewind_key_repeat_delay_random", False),
+            trigger_missing_rewind_key_repeat_delay_random_range=data.get("trigger_missing_rewind_key_repeat_delay_random_range", 0.3),
             repeat_count=data.get("repeat_count", 1),
             repeat_delay=data.get("repeat_delay", 0.5),
             repeat_delay_random=data.get("repeat_delay_random", False),

@@ -177,7 +177,9 @@ def test_play_mode_active_bar_tracks_current_group_and_playlist():
     assert "def _mini_active_group_name(self) -> str:" in text
     assert "get_active_plan_sequence_group(self._config.player)" in text
     assert 'def auto_run_sequence(self, plan_paths: list, repeats: list = None, group_name: str = "") -> bool:' in text
-    assert "self._start_sequence_mode(plan_paths, repeats, group_name=group_name)" in text
+    assert "group = self._mini_group_by_name(group_name)" in text
+    assert "group_repeat = normalize_repeat_count(group.get(\"repeat_count\", 1)) if group is not None else 1" in text
+    assert "group_repeat=group_repeat" in text
     assert "self._sequence_group_name = group_name or self._mini_active_group_name()" in text
     assert "auto_run_sequence(converted_paths, repeats, group_name=group_name)" in app_text
 
@@ -196,6 +198,7 @@ def test_play_mode_dropdown_can_run_grouped_playlists():
     assert "menu.entryconfigure(index, foreground=color, activeforeground=color)" in text
     assert "selected_group = self._mini_group_by_label(plan_name)" in text
     assert "self._mini_repeat_var.set(str(group_repeat))" in text
+    assert "repeat_count = normalize_repeat_count(selected_group.get(\"repeat_count\", repeat_count))" in text
     assert 'self._mini_status.configure(text=f"✓ 그룹 반복 {repeat_count}회 저장됨")' in text
     assert "group_to_run = dict(selected_group)" in text
     assert "plan_paths, repeats = self._mini_expand_group_sequence(group_to_run)" in text
@@ -232,16 +235,23 @@ def test_group_sequence_keeps_group_selection_when_inner_plan_runs():
 
     assert "self._sequence_group_label = \"\"" in setup_slice
     assert "self._sequence_group_repeat_count = 1" in setup_slice
+    assert "def _mini_restore_group_selection(" in text
     assert "group_label=self._mini_group_label(selected_group)" in play_slice
     assert "group_repeat=repeat_count" in play_slice
+    assert "configured_group = self._mini_group_by_name(self._sequence_group_name)" in start_slice
     assert "self._sequence_group_label = group_label or (" in start_slice
     assert "self._mini_plan_var.set(self._sequence_group_label)" in start_slice
     assert "self._mini_repeat_var.set(str(self._sequence_group_repeat_count))" in start_slice
+    assert "start skipped because playback already stopped" in run_slice
     assert "그룹 실행 중에는 선택값을 내부 플랜명으로 덮지 않는다." in run_slice
     assert "self._mini_plan_var.set(self._sequence_group_label)" in run_slice
     assert "self._mini_plan_var.set(plan.name)" in run_slice
+    assert "stopped_group_name = getattr(self, \"_sequence_group_name\", \"\")" in stop_slice
+    assert "self._mini_restore_group_selection(stopped_group_name, stopped_group_label, stopped_group_repeat)" in stop_slice
     assert "self._sequence_group_label = \"\"" in stop_slice
     assert "self._sequence_group_repeat_count = 1" in stop_slice
+    assert "completed_group_name = getattr(self, \"_sequence_group_name\", \"\")" in complete_slice
+    assert "self._mini_restore_group_selection(" in complete_slice
     assert "self._sequence_group_label = \"\"" in complete_slice
     assert "self._sequence_group_repeat_count = 1" in complete_slice
 
