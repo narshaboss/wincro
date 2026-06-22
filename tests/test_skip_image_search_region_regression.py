@@ -1,5 +1,7 @@
 from pathlib import Path
+from datetime import datetime
 
+from src.analyzer.automation_models import AutomationRule
 from src.database.models import Action
 from src.player.rule_executor import RuleExecutor
 
@@ -66,3 +68,46 @@ def test_playback_and_monitor_conversions_keep_search_region():
     assert "rule=action" in player_text
     assert 'search_region=getattr(action, "search_region", None),' in player_text
     assert 'ma["search_region"] = getattr(act, \'search_region\', None)' in monitoring_text
+
+
+def test_next_screen_wait_checks_multi_target_images(monkeypatch):
+    executor = RuleExecutor()
+    current_rule = AutomationRule(
+        action_type="click",
+        action_x=10,
+        action_y=20,
+        description="current click",
+    )
+    next_rule = AutomationRule(
+        action_type="click",
+        target_image="primary.png",
+        target_images=["alt.png"],
+        skip_on_not_found=True,
+        wait_after=0.5,
+        description="next multi image",
+    )
+    searched = []
+
+    def fake_execute_rule(rule, step_num=""):
+        return executor._make_result(rule, True, "click ok", datetime.now())
+
+    def fake_find_image(image_path, confidence, search_region=None):
+        searched.append(image_path)
+        if image_path == "alt.png":
+            return (100, 200, 0.9)
+        return None
+
+    monkeypatch.setattr("src.player.rule_executor.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(executor, "_execute_rule", fake_execute_rule)
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find_image)
+
+    result = executor._execute_rule_with_retry(
+        current_rule,
+        RuleExecutor._target_images_for_rule(next_rule),
+        max_retries=1,
+        next_rule=next_rule,
+        step_num="1",
+    )
+
+    assert result.success is True
+    assert searched == ["primary.png", "alt.png"]

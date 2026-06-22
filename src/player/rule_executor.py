@@ -921,8 +921,8 @@ class RuleExecutor:
                             self._state = ExecutionState.RUNNING_INITIAL
                         self._results.append(result)
                     else:
-                        # 다음 규칙의 타겟 이미지 (확인용)
-                        next_target_image = None
+                        # 다음 규칙의 타겟 이미지들 (확인용, 기본+멀티 OR)
+                        next_target_images = []
                         next_rule = None
                         if not self._rule_repeats_child_actions(rule) and i + 1 < len(all_rules):
                             next_rule = all_rules[i + 1]
@@ -930,12 +930,12 @@ class RuleExecutor:
                             next_has_watches = len(getattr(next_rule, 'monitoring_watches', []) or []) > 0
                             next_is_monitoring = getattr(next_rule, 'is_monitoring_mode', False) or next_has_watches
                             if not next_is_monitoring:
-                                next_target_image = next_rule.target_image
+                                next_target_images = self._target_images_for_rule(next_rule)
 
                         # 규칙 실행 (재시도 포함)
                         result = self._execute_rule_with_retry(
                             rule,
-                            next_target_image,
+                            next_target_images,
                             next_rule=next_rule,
                             step_num=step_num,
                             can_rewind_previous=i > 0,
@@ -1297,10 +1297,31 @@ class RuleExecutor:
         self._prepare_for_click_after_trigger()
         return None
 
+    @staticmethod
+    def _target_images_for_rule(rule: AutomationRule) -> List[str]:
+        """Return primary + multi images in OR-search order without duplicates."""
+        images: List[str] = []
+        seen = set()
+        raw_images = []
+        primary = getattr(rule, "target_image", None)
+        if primary:
+            raw_images.append(primary)
+        raw_images.extend(getattr(rule, "target_images", None) or [])
+
+        for image_path in raw_images:
+            if not image_path:
+                continue
+            text_path = str(image_path)
+            if text_path in seen:
+                continue
+            images.append(text_path)
+            seen.add(text_path)
+        return images
+
     def _execute_rule_with_retry(
         self,
         rule: AutomationRule,
-        next_target_image: Optional[str] = None,
+        next_target_images: Optional[List[str]] = None,
         max_retries: int = 3,
         next_rule: Optional[AutomationRule] = None,
         step_num: str = "",
@@ -1314,6 +1335,10 @@ class RuleExecutor:
         next_rule이 skip_on_not_found=True면 wait_after 시간만 대기.
         """
         start_time = datetime.now()
+        if isinstance(next_target_images, str):
+            next_target_images = [next_target_images]
+        else:
+            next_target_images = [p for p in (next_target_images or []) if p]
 
         # 화면 안정화 대기 (이전 액션 효과가 반영될 시간)
         time.sleep(0.2)
@@ -1386,7 +1411,7 @@ class RuleExecutor:
 
             # 클릭 동작이고 다음 타겟 이미지가 있으면 확인 (스킵된 경우 제외)
             is_skipped = "스킵됨" in result.message if result.message else False
-            if is_click_action and next_target_image and not is_skipped:
+            if is_click_action and next_target_images and not is_skipped:
                 check_interval = 0.5
                 waited = 0.0
                 # 다음 액션에 스킵 설정이 있으면 wait_after 시간만 대기
@@ -1419,10 +1444,21 @@ class RuleExecutor:
                     next_search_region = self._image_search_region_for_rule(next_rule) if next_rule else None
 
                     if waited == 0:
-                        logger.debug(f"[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}")
+                        logger.debug(
+                            f"[다음화면대기] 인식률=45% (고정), 검색범위={next_search_region}, "
+                            f"이미지={len(next_target_images)}개"
+                        )
 
                     search_start = time.time()
-                    location = self._find_image_on_screen(next_target_image, next_confidence, search_region=next_search_region)
+                    location = None
+                    for image_path in next_target_images:
+                        location = self._find_image_on_screen(
+                            image_path,
+                            next_confidence,
+                            search_region=next_search_region,
+                        )
+                        if location:
+                            break
                     search_time = time.time() - search_start
 
                     # 검색이 오래 걸리면 로그
@@ -1575,11 +1611,7 @@ class RuleExecutor:
 
                 # 이미지 인식 - 이미지가 나타날 때까지 무한 대기
                 # 기본 이미지 + 멀티이미지를 모두 검색 (OR 조건)
-                all_target_images = []
-                if rule.target_image:
-                    all_target_images.append(rule.target_image)
-                if hasattr(rule, 'target_images') and rule.target_images:
-                    all_target_images.extend(rule.target_images)
+                all_target_images = self._target_images_for_rule(rule)
 
                 if all_target_images:
 
