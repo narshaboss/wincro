@@ -23,6 +23,11 @@ from pathlib import Path
 import ctypes
 import ctypes.wintypes
 
+try:
+    import mss
+except ImportError:  # pragma: no cover - packaged builds include mss, this is a safe fallback.
+    mss = None
+
 from ..utils.input_controller import (
     block_automation_input,
     get_input_controller,
@@ -83,6 +88,7 @@ _MULTISCALE_FACTORS = (1.0, 1.1, 0.9, 1.25, 0.8, 1.4, 0.7, 1.5)
 PLAYLIST_SKIP_TRIGGER_MISSING = "playlist_skip:trigger_missing"
 PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS = 30.0
 TRIGGER_COORD_SEARCH_RADIUS = 220
+_screen_capture_lock = threading.Lock()
 
 
 def _resize_template_gray(template_gray: np.ndarray, scale: float):
@@ -93,6 +99,26 @@ def _resize_template_gray(template_gray: np.ndarray, scale: float):
     if resized is None or resized.size == 0:
         return None
     return resized
+
+
+def _grab_screen_bgr() -> Optional[np.ndarray]:
+    """Capture the screen without spawning per-capture daemon threads."""
+    with _screen_capture_lock:
+        if mss is not None:
+            with mss.mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else None
+                if monitor is None:
+                    return None
+                screenshot = sct.grab(monitor)
+            frame = np.array(screenshot)
+            if frame.ndim == 3 and frame.shape[2] == 4:
+                return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if frame.ndim == 3 and frame.shape[2] == 3:
+                return frame
+            return None
+
+        screenshot = ImageGrab.grab()
+        return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
 
 # ANSI 색상 코드 상수 (성능 최적화)
 _CYAN = "\033[96m"
@@ -501,9 +527,6 @@ class RuleExecutor:
 
         # 현재 실행 중인 액션 번호 (로깅용)
         self._current_step_num = ""
-
-        # 화면 캡처 동시 실행 제한 (스레드 누수 방지)
-        self._capture_semaphore = threading.Semaphore(3)  # Max 3 concurrent captures
 
 
     @property
@@ -2016,8 +2039,6 @@ class RuleExecutor:
         search_region: 검색 영역 제한 [x1, y1, x2, y2] 또는 None (전체 화면)
         """
         func_start = time.time()
-        screenshot = None
-        screenshot_np = None
         screenshot_bgr = None
 
         # 중지 체크
@@ -2042,42 +2063,14 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return None
 
-            # 화면 캡처 (타임아웃 + 세마포어 적용)
-            screenshot = None
-            capture_result = [None]
-
-            if not self._capture_semaphore.acquire(timeout=2.0):
-                logger.warning("화면 캡처 세마포어 대기 타임아웃")
+            capture_start = time.time()
+            screenshot_bgr = _grab_screen_bgr()
+            if screenshot_bgr is None:
+                logger.warning("화면 캡처 실패")
                 return None
-
-            try:
-                def capture_screen():
-                    try:
-                        capture_result[0] = ImageGrab.grab()
-                    except Exception as e:
-                        logger.error(f"화면 캡처 오류: {e}")
-
-                capture_thread = threading.Thread(target=capture_screen, daemon=True)
-                capture_start = time.time()
-                capture_thread.start()
-                capture_thread.join(timeout=5.0)  # 5초 타임아웃
-
-                if capture_thread.is_alive():
-                    logger.warning(f"화면 캡처 타임아웃 (5초) - 건너뜀")
-                    return None
-
-                screenshot = capture_result[0]
-                if screenshot is None:
-                    logger.warning("화면 캡처 실패")
-                    return None
-
-                capture_time = time.time() - capture_start
-                if capture_time > 2.0:
-                    logger.debug(f"화면 캡처 지연: {capture_time:.1f}초")
-            finally:
-                self._capture_semaphore.release()
-            screenshot_np = np.array(screenshot)
-            screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
+            capture_time = time.time() - capture_start
+            if capture_time > 2.0:
+                logger.debug(f"화면 캡처 지연: {capture_time:.1f}초")
 
             # 검색 영역 제한
             region_offset_x, region_offset_y = 0, 0
@@ -2141,7 +2134,7 @@ class RuleExecutor:
             return None
         finally:
             # 메모리 해제 (저사양 PC 지원)
-            del screenshot, screenshot_np, screenshot_bgr
+            del screenshot_bgr
 
     def _wait_for_trigger(
         self,
@@ -2203,26 +2196,15 @@ class RuleExecutor:
                     return None
 
                 # 화면 캡처 및 매칭
-                screenshot = None
-                screenshot_np = None
+                screenshot_bgr = None
                 screenshot_gray = None
                 result = None
                 try:
-                    _cap = [None]
-                    def _grab_trigger():
-                        try:
-                            _cap[0] = ImageGrab.grab()
-                        except Exception:
-                            pass
-                    _gt = threading.Thread(target=_grab_trigger, daemon=True)
-                    _gt.start()
-                    _gt.join(timeout=5.0)
-                    if _gt.is_alive() or _cap[0] is None:
+                    screenshot_bgr = _grab_screen_bgr()
+                    if screenshot_bgr is None:
                         time.sleep(check_interval)
                         continue
-                    screenshot = _cap[0]
-                    screenshot_np = np.array(screenshot)
-                    screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
+                    screenshot_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
 
                     scr_h, scr_w = screenshot_gray.shape[:2]
                     region_offset_x, region_offset_y = 0, 0
@@ -2278,7 +2260,7 @@ class RuleExecutor:
                         return (center_x, center_y)
                 finally:
                     # 메모리 해제 (저사양 PC 지원)
-                    del screenshot, screenshot_np, screenshot_gray, result
+                    del screenshot_bgr, screenshot_gray, result
 
                 time.sleep(check_interval)
 
@@ -2352,8 +2334,7 @@ class RuleExecutor:
         Returns:
             List[tuple]: 발견된 모든 위치 [(x, y), ...]
         """
-        screenshot = None
-        screenshot_np = None
+        screenshot_bgr = None
         screenshot_gray = None
         result = None
 
@@ -2368,21 +2349,11 @@ class RuleExecutor:
             if self._stop_event.is_set():
                 return []
 
-            # 화면 캡처 (타임아웃 보호)
-            _cap2 = [None]
-            def _grab_all():
-                try:
-                    _cap2[0] = ImageGrab.grab()
-                except Exception:
-                    pass
-            _gt2 = threading.Thread(target=_grab_all, daemon=True)
-            _gt2.start()
-            _gt2.join(timeout=5.0)
-            if _gt2.is_alive() or _cap2[0] is None:
+            # 화면 캡처. 캡처마다 daemon 스레드를 만들면 장시간 실행 시 누적될 수 있다.
+            screenshot_bgr = _grab_screen_bgr()
+            if screenshot_bgr is None:
                 return []
-            screenshot = _cap2[0]
-            screenshot_np = np.array(screenshot)
-            screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
+            screenshot_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
             screen_h, screen_w = screenshot_gray.shape
 
             # 중지 체크
@@ -2504,7 +2475,7 @@ class RuleExecutor:
             return []
         finally:
             # 메모리 해제 (저사양 PC 지원)
-            del screenshot, screenshot_np, screenshot_gray, result
+            del screenshot_bgr, screenshot_gray, result
 
     def _find_rule_image_click_target(self, rule: AutomationRule, valid_images: List[str]) -> Optional[Dict[str, Any]]:
         """규칙의 이미지 검색 설정을 적용해 클릭 대상 1개를 찾는다."""

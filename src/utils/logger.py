@@ -62,6 +62,26 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
+class DropOldestLogQueue(queue.Queue):
+    """Bounded log queue that keeps the process alive during log bursts."""
+
+    def __init__(self, maxsize: int):
+        super().__init__(maxsize=max(1, int(maxsize)))
+        self.dropped_count = 0
+
+    def put(self, item, block=True, timeout=None):
+        while True:
+            try:
+                return super().put(item, block=False)
+            except queue.Full:
+                try:
+                    self.get_nowait()
+                    self.task_done()
+                    self.dropped_count += 1
+                except queue.Empty:
+                    continue
+
+
 class LoggerManager:
     """
     로거 관리자 클래스
@@ -116,7 +136,8 @@ class LoggerManager:
         self._console_handler.setFormatter(ColoredFormatter(DEFAULT_FORMAT))
 
         # QueueHandler + QueueListener 설정 (멀티스레드 안전)
-        self._log_queue = queue.Queue(-1)  # 무제한 큐
+        # 무제한 큐는 특화모드 로그 폭주 시 메모리를 계속 잡아먹으므로 상한을 둔다.
+        self._log_queue = DropOldestLogQueue(maxsize=20000)
         queue_handler = QueueHandler(self._log_queue)
         root_logger.addHandler(queue_handler)
 

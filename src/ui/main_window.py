@@ -1359,6 +1359,14 @@ class MainWindow(ctk.CTk):
         import threading
         import collections
 
+        existing_handler = getattr(self, "_mini_log_handler", None)
+        if existing_handler is not None:
+            try:
+                logging.getLogger().removeHandler(existing_handler)
+            except (ValueError, RuntimeError):
+                pass
+            self._mini_log_handler = None
+
         # ANSI 색상 코드 매핑
         ansi_map = {
             '\033[96m': 'ansi_cyan',    # 청록 (액션 번호)

@@ -36,15 +36,18 @@ class UiCallbackDispatcher:
         tick_ms: int = 25,
         max_callbacks_per_tick: int = 64,
         max_millis_per_tick: float = 8.0,
+        max_queue_items: int = 2000,
     ):
         self._widget = widget
         self._tick_ms = max(10, int(tick_ms))
         self._max_callbacks_per_tick = max(1, int(max_callbacks_per_tick))
         self._max_millis_per_tick = max(1.0, float(max_millis_per_tick))
+        self._max_queue_items = max(128, int(max_queue_items))
         self._queue: Deque[Callable[[], None]] = deque()
         self._lock = threading.Lock()
         self._after_id: Optional[str] = None
         self._closed = False
+        self._dropped_count = 0
         self._schedule_tick()
 
     def post(self, callback: Callable[[], None]) -> None:
@@ -57,6 +60,9 @@ class UiCallbackDispatcher:
                 pass
             return
         with self._lock:
+            while len(self._queue) >= self._max_queue_items:
+                self._queue.popleft()
+                self._dropped_count += 1
             self._queue.append(callback)
 
     def clear(self) -> None:
@@ -76,6 +82,10 @@ class UiCallbackDispatcher:
     def pending_count(self) -> int:
         with self._lock:
             return len(self._queue)
+
+    def dropped_count(self) -> int:
+        with self._lock:
+            return self._dropped_count
 
     def _schedule_tick(self) -> None:
         if self._closed:
@@ -118,23 +128,29 @@ class BufferedRecordPump(Generic[T]):
         flush_callback: Callable[[List[T]], None],
         flush_interval_ms: int = 40,
         max_items_per_flush: int = 200,
+        max_queue_items: int = 2000,
     ):
         self._widget = widget
         self._dispatcher = dispatcher
         self._flush_callback = flush_callback
         self._flush_interval_ms = max(10, int(flush_interval_ms))
         self._max_items_per_flush = max(1, int(max_items_per_flush))
+        self._max_queue_items = max(self._max_items_per_flush, int(max_queue_items))
         self._queue: Deque[T] = deque()
         self._lock = threading.Lock()
         self._after_id: Optional[str] = None
         self._scheduled = False
         self._closed = False
+        self._dropped_count = 0
 
     def push(self, item: T) -> None:
         if self._closed:
             return
         should_schedule = False
         with self._lock:
+            while len(self._queue) >= self._max_queue_items:
+                self._queue.popleft()
+                self._dropped_count += 1
             self._queue.append(item)
             if not self._scheduled:
                 self._scheduled = True
@@ -160,6 +176,10 @@ class BufferedRecordPump(Generic[T]):
     def pending_count(self) -> int:
         with self._lock:
             return len(self._queue)
+
+    def dropped_count(self) -> int:
+        with self._lock:
+            return self._dropped_count
 
     def _schedule_flush(self) -> None:
         if self._closed:

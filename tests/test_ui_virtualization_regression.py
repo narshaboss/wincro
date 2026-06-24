@@ -101,10 +101,74 @@ def test_ui_callback_dispatcher_limits_work_by_time_budget():
     assert "import time" in text
     assert "max_millis_per_tick: float = 8.0" in init_method
     assert "self._max_millis_per_tick = max(1.0, float(max_millis_per_tick))" in init_method
+    assert "max_queue_items: int = 2000" in init_method
+    assert "self._max_queue_items = max(128, int(max_queue_items))" in init_method
+    assert "while len(self._queue) >= self._max_queue_items:" in text
     assert "started_at = time.perf_counter()" in drain_method
     assert "processed < self._max_callbacks_per_tick" in drain_method
     assert "elapsed_ms = (time.perf_counter() - started_at) * 1000" in drain_method
     assert "elapsed_ms >= self._max_millis_per_tick" in drain_method
+
+
+def test_ui_batcher_drops_old_items_when_worker_queue_is_saturated():
+    from src.ui.ui_batcher import UiCallbackDispatcher
+
+    class FakeWidget:
+        def after(self, _ms, _func=None, *_args):
+            return "after-id"
+
+        def after_cancel(self, _after_id):
+            return None
+
+        def winfo_exists(self):
+            return True
+
+    dispatcher = UiCallbackDispatcher(FakeWidget(), max_queue_items=3)
+
+    def post_from_worker():
+        for index in range(140):
+            dispatcher.post(lambda i=index: i)
+
+    import threading
+
+    worker = threading.Thread(target=post_from_worker)
+    worker.start()
+    worker.join()
+
+    assert dispatcher.pending_count() == 128
+    assert dispatcher.dropped_count() == 12
+    dispatcher.close()
+
+
+def test_buffered_record_pump_drops_old_items_when_queue_is_saturated():
+    from src.ui.ui_batcher import BufferedRecordPump, UiCallbackDispatcher
+
+    class FakeWidget:
+        def after(self, _ms, _func=None, *_args):
+            return "after-id"
+
+        def after_cancel(self, _after_id):
+            return None
+
+        def winfo_exists(self):
+            return True
+
+    dispatcher = UiCallbackDispatcher(FakeWidget())
+    pump = BufferedRecordPump(
+        FakeWidget(),
+        dispatcher,
+        lambda records: None,
+        max_items_per_flush=2,
+        max_queue_items=4,
+    )
+
+    for index in range(10):
+        pump.push(index)
+
+    assert pump.pending_count() == 4
+    assert pump.dropped_count() == 6
+    pump.close()
+    dispatcher.close()
 
 
 def test_analyzer_view_uses_virtual_lists_and_async_apply():
