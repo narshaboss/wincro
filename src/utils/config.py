@@ -34,7 +34,7 @@ else:
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-APP_VERSION = "1.0.251"
+APP_VERSION = "1.0.252"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
 # When APP_VERSION changes on the next release, this guard stops touching PC-local settings.
