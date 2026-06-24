@@ -27,6 +27,23 @@ def test_playlist_dialog_item_collapse_does_not_rebuild_full_action_list():
     assert "self._action_widgets.get(rule_id)" not in method
 
 
+def test_image_confidence_dialog_exposes_optional_visual_verification():
+    text = _read_text()
+    method = _method_slice(
+        text,
+        "def _set_confidence(self):",
+        "def _navigate_image(self, direction: int):",
+    )
+
+    assert 'text="추가 확인"' in method
+    assert 'text="색상 확인"' in method
+    assert 'text="밝기 확인"' in method
+    assert 'getattr(self._rule, "verify_image_color", False)' in method
+    assert 'getattr(self._rule, "verify_image_brightness", False)' in method
+    assert "self._rule.verify_image_color = bool(verify_color_var.get())" in method
+    assert "self._rule.verify_image_brightness = bool(verify_brightness_var.get())" in method
+
+
 def test_playlist_dialog_expand_all_keeps_nested_children_lazy():
     text = _read_text()
     method = _method_slice(

@@ -149,9 +149,11 @@ _screen_size_lock = threading.Lock()
 
 # OrderedDict로 진정한 LRU 캐시 구현
 from collections import OrderedDict
-_template_cache: OrderedDict = OrderedDict()  # {image_path: (template_gray, h, w, mtime)}
+_template_cache: OrderedDict = OrderedDict()  # {image_path: (template_gray, h, w, mtime, template_bgr)}
 _template_cache_lock = threading.Lock()
 _MAX_TEMPLATE_CACHE = 50
+_IMAGE_COLOR_DELTA_MAX = 18.0
+_IMAGE_BRIGHTNESS_DELTA_MAX = 28.0
 
 
 def _get_screen_size_cached() -> Tuple[int, int]:
@@ -200,11 +202,104 @@ def _get_cached_template(image_path: str):
             # 용량 초과시 가장 오래된 항목(맨 앞) 삭제
             while len(_template_cache) >= _MAX_TEMPLATE_CACHE:
                 _template_cache.popitem(last=False)
-            _template_cache[image_path] = (template_gray, h, w, mtime)
+            _template_cache[image_path] = (template_gray, h, w, mtime, template)
 
         return template_gray, h, w
     except Exception:
         return None
+
+
+def _get_cached_template_bgr(image_path: str) -> Optional[np.ndarray]:
+    """Return the cached color template used by optional color/brightness verification."""
+    global _template_cache
+    try:
+        path = Path(image_path)
+        if not path.exists():
+            return None
+        mtime = path.stat().st_mtime
+
+        with _template_cache_lock:
+            cached = _template_cache.get(image_path)
+            if cached and cached[3] == mtime and len(cached) >= 5:
+                _template_cache.move_to_end(image_path)
+                return cached[4]
+
+        img_array = np.fromfile(image_path, np.uint8)
+        template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if template is None:
+            return None
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        h, w = template_gray.shape
+
+        with _template_cache_lock:
+            if image_path in _template_cache:
+                del _template_cache[image_path]
+            while len(_template_cache) >= _MAX_TEMPLATE_CACHE:
+                _template_cache.popitem(last=False)
+            _template_cache[image_path] = (template_gray, h, w, mtime, template)
+
+        return template
+    except Exception:
+        return None
+
+
+def _resize_template_bgr(template_bgr: np.ndarray, width: int, height: int) -> Optional[np.ndarray]:
+    if template_bgr is None or width <= 0 or height <= 0:
+        return None
+    if template_bgr.shape[1] == width and template_bgr.shape[0] == height:
+        return template_bgr
+    interp = cv2.INTER_AREA if width < template_bgr.shape[1] or height < template_bgr.shape[0] else cv2.INTER_LINEAR
+    resized = cv2.resize(template_bgr, (width, height), interpolation=interp)
+    if resized is None or resized.size == 0:
+        return None
+    return resized
+
+
+def _passes_image_visual_verification(
+    screenshot_bgr: np.ndarray,
+    template_bgr: Optional[np.ndarray],
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+    *,
+    verify_color: bool = False,
+    verify_brightness: bool = False,
+) -> bool:
+    """Filter shape matches with fixed color/brightness checks when explicitly enabled."""
+    if not verify_color and not verify_brightness:
+        return True
+    if screenshot_bgr is None or template_bgr is None:
+        return False
+    if left < 0 or top < 0 or width <= 0 or height <= 0:
+        return False
+    crop = screenshot_bgr[top:top + height, left:left + width]
+    if crop.size == 0 or crop.shape[0] != height or crop.shape[1] != width:
+        return False
+
+    template_scaled = _resize_template_bgr(template_bgr, width, height)
+    if template_scaled is None:
+        return False
+
+    try:
+        crop_lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+        template_lab = cv2.cvtColor(template_scaled, cv2.COLOR_BGR2LAB)
+    except cv2.error:
+        return False
+
+    if verify_brightness:
+        brightness_delta = float(abs(np.mean(crop_lab[:, :, 0]) - np.mean(template_lab[:, :, 0])))
+        if brightness_delta > _IMAGE_BRIGHTNESS_DELTA_MAX:
+            return False
+
+    if verify_color:
+        crop_ab = crop_lab[:, :, 1:3].astype(np.float32)
+        template_ab = template_lab[:, :, 1:3].astype(np.float32)
+        color_delta = float(np.mean(np.linalg.norm(crop_ab - template_ab, axis=2)))
+        if color_delta > _IMAGE_COLOR_DELTA_MAX:
+            return False
+
+    return True
 
 
 def _perform_mouse_click(click_type: str = "click") -> bool:
@@ -1528,6 +1623,8 @@ class RuleExecutor:
                     rule.timeout,
                     rule.confidence,
                     disappear=False,
+                    verify_color=bool(getattr(rule, "verify_image_color", False)),
+                    verify_brightness=bool(getattr(rule, "verify_image_brightness", False)),
                 )
                 return self._make_result(rule, success, msg, start_time)
 
@@ -1538,13 +1635,20 @@ class RuleExecutor:
                     rule.timeout,
                     rule.confidence,
                     disappear=True,
+                    verify_color=bool(getattr(rule, "verify_image_color", False)),
+                    verify_brightness=bool(getattr(rule, "verify_image_brightness", False)),
                 )
                 return self._make_result(rule, success, msg, start_time)
 
             elif rule_type == RuleType.CLICK_ON_APPEAR.value:
                 # 이미지가 나타나면 클릭
                 if rule.target_image:
-                    location = self._find_image_on_screen(rule.target_image, rule.confidence)
+                    location = self._find_image_on_screen(
+                        rule.target_image,
+                        rule.confidence,
+                        verify_color=bool(getattr(rule, "verify_image_color", False)),
+                        verify_brightness=bool(getattr(rule, "verify_image_brightness", False)),
+                    )
                     if location:
                         self._click_at(location[0], location[1])
                         return self._make_result(rule, True, "이미지 클릭 완료", start_time)
@@ -1589,7 +1693,12 @@ class RuleExecutor:
             elif rule_type == RuleType.MONITOR.value:
                 # 모니터링 규칙 (트리거 시 실행)
                 if rule.target_image:
-                    location = self._find_image_on_screen(rule.target_image, rule.confidence)
+                    location = self._find_image_on_screen(
+                        rule.target_image,
+                        rule.confidence,
+                        verify_color=bool(getattr(rule, "verify_image_color", False)),
+                        verify_brightness=bool(getattr(rule, "verify_image_brightness", False)),
+                    )
                     if location:
                         self._click_at(location[0], location[1])
                         return self._make_result(rule, True, "모니터링 규칙 실행", start_time)
@@ -1926,6 +2035,8 @@ class RuleExecutor:
         timeout: float,
         confidence: float,
         disappear: bool = False,
+        verify_color: bool = False,
+        verify_brightness: bool = False,
     ) -> tuple:
         """이미지 대기"""
         if not image_path:
@@ -1947,7 +2058,12 @@ class RuleExecutor:
                 mode = "사라짐" if disappear else "나타남"
                 return (False, f"타임아웃: 이미지 {mode} 대기 실패 ({timeout}초)")
 
-            location = self._find_image_on_screen(image_path, confidence)
+            location = self._find_image_on_screen(
+                image_path,
+                confidence,
+                verify_color=verify_color,
+                verify_brightness=verify_brightness,
+            )
 
             if disappear:
                 if location is None:
@@ -2029,6 +2145,8 @@ class RuleExecutor:
         image_path: str,
         confidence: float = 0.8,
         search_region: Optional[list] = None,
+        verify_color: bool = False,
+        verify_brightness: bool = False,
     ) -> Optional[tuple]:
         """
         화면에서 이미지 찾기 (마스크 매칭)
@@ -2093,6 +2211,11 @@ class RuleExecutor:
                 logger.warning(f"템플릿 로드 실패: {Path(image_path).name}")
                 return None
             tmpl_gray, th, tw = cached
+            verify_visual = bool(verify_color or verify_brightness)
+            template_bgr = _get_cached_template_bgr(image_path) if verify_visual else None
+            if verify_visual and template_bgr is None:
+                logger.warning(f"템플릿 컬러 로드 실패: {Path(image_path).name}")
+                return None
 
             screen_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
             sh, sw = screen_gray.shape[:2]
@@ -2115,6 +2238,30 @@ class RuleExecutor:
                     best_match = (max_loc, stw, sth, float(max_val))
                     best_scale = scale
                 if max_val >= confidence:
+                    if verify_visual:
+                        candidate_points = np.argwhere(result >= confidence)
+                        if candidate_points.size:
+                            scores = result[candidate_points[:, 0], candidate_points[:, 1]]
+                            for idx in np.argsort(scores)[::-1][:25]:
+                                row, col = candidate_points[idx]
+                                if _passes_image_visual_verification(
+                                    screenshot_bgr,
+                                    template_bgr,
+                                    int(col),
+                                    int(row),
+                                    stw,
+                                    sth,
+                                    verify_color=verify_color,
+                                    verify_brightness=verify_brightness,
+                                ):
+                                    logger.debug(
+                                        f"[이미지 검색] CCOEFF+visual: conf={float(scores[idx]):.2f}, "
+                                        f"설정={confidence:.2f}, scale={scale:.2f} - {Path(image_path).name}"
+                                    )
+                                    final_x = int(col) + stw // 2 + region_offset_x
+                                    final_y = int(row) + sth // 2 + region_offset_y
+                                    return (final_x, final_y, float(scores[idx]))
+                        continue
                     logger.debug(
                         f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f}, scale={scale:.2f} - {Path(image_path).name}"
                     )
@@ -2322,6 +2469,8 @@ class RuleExecutor:
         center_x: int = None,
         center_y: int = None,
         search_region: list = None,
+        verify_color: bool = False,
+        verify_brightness: bool = False,
     ) -> List[tuple]:
         """
         화면에서 모든 일치하는 이미지 위치 찾기
@@ -2365,6 +2514,10 @@ class RuleExecutor:
             if cached is None:
                 return []
             template_gray, h, w = cached
+            verify_visual = bool(verify_color or verify_brightness)
+            template_bgr = _get_cached_template_bgr(image_path) if verify_visual else None
+            if verify_visual and template_bgr is None:
+                return []
 
             # 중지 체크
             if self._stop_event.is_set():
@@ -2399,6 +2552,9 @@ class RuleExecutor:
             if has_roi:
                 screenshot_gray = screenshot_gray[roi_y1:roi_y2, roi_x1:roi_x2]
                 roi_offset_x, roi_offset_y = roi_x1, roi_y1
+                search_bgr = screenshot_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
+            else:
+                search_bgr = screenshot_bgr
 
             # 크기 체크: 템플릿이 화면보다 크면 스킵
             scr_h, scr_w = screenshot_gray.shape[:2]
@@ -2454,6 +2610,18 @@ class RuleExecutor:
             loc = np.where(result >= confidence)
 
             for pt in zip(*loc[::-1]):
+                if verify_visual and not _passes_image_visual_verification(
+                    search_bgr,
+                    template_bgr,
+                    int(pt[0]),
+                    int(pt[1]),
+                    best_tmpl_w,
+                    best_tmpl_h,
+                    verify_color=verify_color,
+                    verify_brightness=verify_brightness,
+                ):
+                    continue
+
                 found_x = pt[0] + best_tmpl_w // 2 + roi_offset_x
                 found_y = pt[1] + best_tmpl_h // 2 + roi_offset_y
                 score = result[pt[1], pt[0]]
@@ -2481,6 +2649,8 @@ class RuleExecutor:
         """규칙의 이미지 검색 설정을 적용해 클릭 대상 1개를 찾는다."""
         rule_search_region = self._image_search_region_for_rule(rule)
         has_rule_search_region = rule_search_region is not None
+        verify_color = bool(getattr(rule, "verify_image_color", False))
+        verify_brightness = bool(getattr(rule, "verify_image_brightness", False))
 
         for img_path in valid_images:
             locations = self._find_all_images_on_screen(
@@ -2490,6 +2660,8 @@ class RuleExecutor:
                 center_x=rule.action_x,
                 center_y=rule.action_y,
                 search_region=rule_search_region,
+                verify_color=verify_color,
+                verify_brightness=verify_brightness,
             )
             if has_rule_search_region:
                 before_filter = len(locations)

@@ -850,15 +850,19 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 인식률 설정 버튼
             conf_value = getattr(self._rule, 'confidence', 0.65) or 0.65
             conf_pct = int(conf_value * 100)
+            has_extra_verify = bool(
+                getattr(self._rule, "verify_image_color", False)
+                or getattr(self._rule, "verify_image_brightness", False)
+            )
             self._confidence_btn = ctk.CTkButton(
                 option_btn_row,
                 text=f"인식률: {conf_pct}%",
                 command=self._set_confidence,
                 width=100,
                 height=40,
-                fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
-                hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                text_color=COLORS["text_on_accent"] if conf_pct != 65 else COLORS["text_secondary"],
+                fg_color=COLORS["confidence_amber"] if conf_pct != 65 or has_extra_verify else COLORS["bg_card"],
+                hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 or has_extra_verify else COLORS["bg_card_hover"],
+                text_color=COLORS["text_on_accent"] if conf_pct != 65 or has_extra_verify else COLORS["text_secondary"],
                 font=ctk.CTkFont(size=13, weight="bold"),
                 corner_radius=IOS_METRICS["pill_radius"],
             )
@@ -1912,7 +1916,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 인식률 설정 다이얼로그
         conf_dialog = ctk.CTkToplevel(self)
         conf_dialog.title("이미지 인식률 설정")
-        conf_dialog.geometry("350x200")
+        conf_dialog.geometry("390x285")
         conf_dialog.resizable(False, False)
         conf_dialog.configure(fg_color=COLORS["bg_dark"])
         conf_dialog.transient(self)
@@ -1920,8 +1924,8 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 중앙 배치
         conf_dialog.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - 350) // 2
-        y = self.winfo_y() + (self.winfo_height() - 200) // 2
+        x = self.winfo_x() + (self.winfo_width() - 390) // 2
+        y = self.winfo_y() + (self.winfo_height() - 285) // 2
         conf_dialog.geometry(f"+{x}+{y}")
 
         main_frame = ctk.CTkFrame(conf_dialog, fg_color="transparent")
@@ -1995,18 +1999,65 @@ class ImageCropDialog(ctk.CTkToplevel):
         conf_dialog.bind("<Right>", on_conf_key)
         conf_dialog.after(100, conf_slider.focus_set)
 
+        verify_color_var = ctk.BooleanVar(value=bool(getattr(self._rule, "verify_image_color", False)))
+        verify_brightness_var = ctk.BooleanVar(value=bool(getattr(self._rule, "verify_image_brightness", False)))
+
+        verify_frame = ctk.CTkFrame(
+            main_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["border"],
+        )
+        verify_frame.pack(fill="x", pady=(6, 0))
+
+        ctk.CTkLabel(
+            verify_frame,
+            text="추가 확인",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=12, pady=(9, 2))
+
+        verify_row = ctk.CTkFrame(verify_frame, fg_color="transparent")
+        verify_row.pack(fill="x", padx=10, pady=(0, 9))
+
+        ctk.CTkCheckBox(
+            verify_row,
+            text="색상 확인",
+            variable=verify_color_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            checkbox_width=20,
+            checkbox_height=20,
+        ).pack(side="left", padx=(0, 14))
+
+        ctk.CTkCheckBox(
+            verify_row,
+            text="밝기 확인",
+            variable=verify_brightness_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            checkbox_width=20,
+            checkbox_height=20,
+        ).pack(side="left")
+
         def save_conf():
             self._rule.confidence = conf_var.get() / 100.0
+            self._rule.verify_image_color = bool(verify_color_var.get())
+            self._rule.verify_image_brightness = bool(verify_brightness_var.get())
             conf_pct = int(conf_var.get())
-            logger.info(f"인식률 설정: {conf_pct}%")
+            logger.info(
+                f"인식률 설정: {conf_pct}% "
+                f"color_verify={self._rule.verify_image_color} "
+                f"brightness_verify={self._rule.verify_image_brightness}"
+            )
 
             # 버튼 텍스트 업데이트
             if hasattr(self, '_confidence_btn'):
+                has_extra_verify = self._rule.verify_image_color or self._rule.verify_image_brightness
                 self._confidence_btn.configure(
                     text=f"인식률: {conf_pct}%",
-                    fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
-                    hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                    text_color=COLORS["text_on_accent"] if conf_pct != 65 else COLORS["text_secondary"],
+                    fg_color=COLORS["confidence_amber"] if conf_pct != 65 or has_extra_verify else COLORS["bg_card"],
+                    hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 or has_extra_verify else COLORS["bg_card_hover"],
+                    text_color=COLORS["text_on_accent"] if conf_pct != 65 or has_extra_verify else COLORS["text_secondary"],
                 )
 
             self._invoke_image_callback(self._on_search_radius_change, self._rule)

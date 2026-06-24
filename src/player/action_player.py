@@ -48,7 +48,14 @@ from ..database.db_manager import get_db
 from ..analyzer.template_matcher import get_template_matcher
 from ..analyzer.automation_models import AutomationPlan, AutomationRule
 from ..recorder.screen_recorder import get_screen_recorder
-from .rule_executor import RuleExecutor, get_rule_executor, ExecutionState, ExecutionProgress as RuleExecutionProgress
+from .rule_executor import (
+    ExecutionProgress as RuleExecutionProgress,
+    ExecutionState,
+    RuleExecutor,
+    _get_cached_template_bgr,
+    _passes_image_visual_verification,
+    get_rule_executor,
+)
 
 logger = get_logger(__name__)
 
@@ -582,6 +589,8 @@ class ActionPlayer:
         self,
         image_path: str,
         confidence: float = 0.9,
+        verify_color: bool = False,
+        verify_brightness: bool = False,
     ) -> List[tuple]:
         """화면에서 모든 일치하는 이미지 위치 찾기 (캐시 사용)"""
         screenshot = None
@@ -598,11 +607,17 @@ class ActionPlayer:
             if template_gray is None:
                 logger.warning(f"이미지 로드 실패: {image_path}")
                 return []
+            verify_visual = bool(verify_color or verify_brightness)
+            template_bgr = _get_cached_template_bgr(image_path) if verify_visual else None
+            if verify_visual and template_bgr is None:
+                logger.warning(f"이미지 컬러 로드 실패: {image_path}")
+                return []
 
             # 스크린샷 캡처
             screenshot = ImageGrab.grab()
             screenshot_np = np.array(screenshot)
             screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
+            screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR) if verify_visual else None
 
             # 크기 체크: 템플릿이 화면보다 크면 스킵
             scr_h, scr_w = screenshot_gray.shape[:2]
@@ -632,6 +647,18 @@ class ActionPlayer:
             locations = []
             half_w, half_h = w // 2, h // 2
             for pt in points:
+                if verify_visual and not _passes_image_visual_verification(
+                    screenshot_bgr,
+                    template_bgr,
+                    int(pt[0]),
+                    int(pt[1]),
+                    w,
+                    h,
+                    verify_color=verify_color,
+                    verify_brightness=verify_brightness,
+                ):
+                    continue
+
                 center_x = pt[0] + half_w
                 center_y = pt[1] + half_h
 
@@ -737,7 +764,12 @@ class ActionPlayer:
                     if self._state == PlayerState.STOPPED:
                         return False, "중지됨"
 
-                    locations = self._find_all_images_on_screen(action.target_image, confidence)
+                    locations = self._find_all_images_on_screen(
+                        action.target_image,
+                        confidence,
+                        verify_color=bool(getattr(action, "verify_image_color", False)),
+                        verify_brightness=bool(getattr(action, "verify_image_brightness", False)),
+                    )
                     if not locations:
                         # 30초마다 간단한 대기 상태 로그
                         elapsed_int = int(elapsed)

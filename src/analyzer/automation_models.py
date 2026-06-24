@@ -80,6 +80,8 @@ class AutomationRule:
     trigger_x: Optional[int] = None  # ??????????? ??? X ???
     trigger_y: Optional[int] = None  # ??????????? ??? Y ???
     confidence: float = 0.65  # ??? ?????(?????? ???????? ???)
+    verify_image_color: bool = False  # 이미지 매칭 후 색상 차이 추가 확인
+    verify_image_brightness: bool = False  # 이미지 매칭 후 밝기 차이 추가 확인
     search_radius: int = 0  # ????????? (0=??????, >0=action_x/y ??? ??? ???)
     search_region: Optional[List[int]] = None  # ?????? ?????? [x1, y1, x2, y2] (search_radius??? ???)
     move_mouse_before_search: bool = False  # ??????????? ??? ???????? (hover ??? ???)
@@ -249,6 +251,8 @@ class AutomationRule:
             "trigger_x": self.trigger_x,
             "trigger_y": self.trigger_y,
             "confidence": self.confidence,
+            "verify_image_color": self.verify_image_color,
+            "verify_image_brightness": self.verify_image_brightness,
             "search_radius": self.search_radius,
             "search_region": self.search_region,
             "move_mouse_before_search": self.move_mouse_before_search,
@@ -351,6 +355,8 @@ class AutomationRule:
             trigger_x=data.get("trigger_x"),
             trigger_y=data.get("trigger_y"),
             confidence=data.get("confidence", 0.65),
+            verify_image_color=data.get("verify_image_color", False),
+            verify_image_brightness=data.get("verify_image_brightness", False),
             search_radius=data.get("search_radius", 0),
             search_region=data.get("search_region"),
             move_mouse_before_search=data.get("move_mouse_before_search", False),

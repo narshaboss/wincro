@@ -30,9 +30,24 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
 
     assert saved_rule["click_until_image_disappears"] is True
     assert saved_rule["click_until_image_disappears_delay"] == 0.15
+    assert saved_rule["verify_image_color"] is False
+    assert saved_rule["verify_image_brightness"] is False
     restored_rule = AutomationRule.from_dict(saved_rule, templates_dir=tmp_path)
     assert restored_rule.click_until_image_disappears is True
     assert restored_rule.click_until_image_disappears_delay == 0.15
+    assert restored_rule.verify_image_color is False
+    assert restored_rule.verify_image_brightness is False
+    verified_rule = AutomationRule.from_dict(
+        {
+            "action_type": "click",
+            "target_image": str(target),
+            "verify_image_color": True,
+            "verify_image_brightness": True,
+        },
+        templates_dir=tmp_path,
+    )
+    assert verified_rule.verify_image_color is True
+    assert verified_rule.verify_image_brightness is True
     legacy_rule = AutomationRule.from_dict(
         {
             "action_type": "click",
@@ -59,6 +74,18 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
     assert action.to_dict()["click_until_image_disappears"] is True
     assert action.click_until_image_disappears_delay == 0.2
     assert action.to_dict()["click_until_image_disappears_delay"] == 0.2
+    assert action.verify_image_color is False
+    assert action.verify_image_brightness is False
+    verified_action = Action.from_dict(
+        {
+            "action_type": "click",
+            "target_image": str(target),
+            "verify_image_color": True,
+            "verify_image_brightness": True,
+        }
+    )
+    assert verified_action.verify_image_color is True
+    assert verified_action.verify_image_brightness is True
     legacy_action = Action.from_dict(
         {
             "action_type": "click",

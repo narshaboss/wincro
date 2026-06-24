@@ -64,6 +64,8 @@ class Action:
     typing_delay_range: float = 0.05  # 타이핑 딜레이 ±범위 (초)
     target_image: Optional[str] = None  # 대상 이미지 경로
     confidence: float = 0.8  # 이미지 매칭 신뢰도
+    verify_image_color: bool = False  # 이미지 매칭 후 색상 차이 추가 확인
+    verify_image_brightness: bool = False  # 이미지 매칭 후 밝기 차이 추가 확인
     search_radius: int = 0  # 이미지 검색 반경
     search_region: Optional[List[int]] = None  # 이미지 검색 영역 [x1, y1, x2, y2]
     alternate_mouse_route: bool = False  # 이미지 클릭 시 반대 우회 이동 경로 사용
@@ -122,7 +124,8 @@ class Action:
             'action_type', 'x', 'y', 'button', 'text', 'keys', 'key_events', 'duration',
             'wait_before', 'wait_after', 'wait_random', 'wait_random_range',
             'typing_random', 'typing_delay', 'typing_delay_range',
-            'target_image', 'confidence', 'search_radius', 'search_region',
+            'target_image', 'confidence', 'verify_image_color', 'verify_image_brightness',
+            'search_radius', 'search_region',
             'alternate_mouse_route', 'click_until_image_disappears',
             'click_until_image_disappears_delay',
             'scroll_amount', 'drag_to_x', 'drag_to_y', 'drag_duration', 'timestamp',
