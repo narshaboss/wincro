@@ -2821,8 +2821,8 @@
               "trigger_x": null,
               "trigger_y": null,
               "confidence": 0.8022727272727272,
-              "verify_image_color": false,
-              "verify_image_brightness": false,
+              "verify_image_color": true,
+              "verify_image_brightness": true,
               "search_radius": 357,
               "search_region": [
                 14,
