@@ -2654,7 +2654,7 @@
               "rule_id": "rule_e8119c46",
               "rule_type": "fixed_sequence",
               "description": "",
-              "action_type": "double_click",
+              "action_type": "click",
               "action_x": 413,
               "action_y": 397,
               "action_text": null,
