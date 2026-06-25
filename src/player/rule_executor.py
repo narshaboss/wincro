@@ -1585,7 +1585,8 @@ class RuleExecutor:
                     if location:
                         return self._make_result(rule, True, f"{result.message}", start_time)
 
-                    time.sleep(check_interval)
+                    if self._stop_event.wait(check_interval):
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
                     waited += check_interval
 
                     # 10초마다 로그 출력
@@ -1597,6 +1598,8 @@ class RuleExecutor:
 
                 # 타임아웃 도달 = next_skip=True (max_wait_time>0) 경우만 가능
                 # next_skip=False이면 max_wait_time=0(무제한)이므로 while에서 빠져나오지 않음
+                if self._stop_event.is_set():
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
                 logger.info(f"{_YELLOW}{self._step_prefix}⏭ 다음 화면 스킵 ({max_wait_time:.1f}초 대기 후){_RESET}")
 
             # 클릭이 아니거나 다음 이미지가 없으면 바로 성공

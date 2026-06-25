@@ -11,6 +11,7 @@ from src.analyzer.automation_models import AutomationRule
 RULE_EXECUTOR_MODULE = importlib.import_module("src.player.rule_executor")
 PLAYER_VIEW = Path(r"C:\Projects\wincro\src\ui\player_view.py")
 MAIN_WINDOW = Path(r"C:\Projects\wincro\src\ui\main_window.py")
+RULE_EXECUTOR = Path(r"C:\Projects\wincro\src\player\rule_executor.py")
 
 
 def _make_executor():
@@ -409,7 +410,20 @@ def test_trigger_playlist_skip_ui_and_sequence_hooks_exist():
     assert "고급 옵션" not in trigger_editor_src
     assert "PLAYLIST_SKIP_TRIGGER_MISSING" in main_window_src
     assert "def _mini_on_playlist_skip(self, message: str):" in main_window_src
-    assert "self._run_sequence_plan(next_index)" in main_window_src
+    assert "self._run_sequence_plan(next_index, playback_generation=playback_generation)" in main_window_src
+
+
+def test_next_screen_wait_uses_stop_event_wait_before_skip_log():
+    rule_executor_src = RULE_EXECUTOR.read_text(encoding="utf-8")
+    next_screen_wait_src = rule_executor_src[
+        rule_executor_src.index("# 클릭 동작이고 다음 타겟 이미지가 있으면 확인"):
+        rule_executor_src.index("# 클릭이 아니거나 다음 이미지가 없으면 바로 성공")
+    ]
+
+    assert "self._stop_event.wait(check_interval)" in next_screen_wait_src
+    assert "time.sleep(check_interval)" not in next_screen_wait_src
+    assert "if self._stop_event.is_set():" in next_screen_wait_src
+    assert "⏭ 다음 화면 스킵" in next_screen_wait_src
 
 
 def test_game_mode_trigger_gate_receives_source_rule_in_all_playback_paths():

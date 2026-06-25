@@ -654,6 +654,7 @@ class MainWindow(ctk.CTk):
         self._mini_gm_wait_after_id = None
         self._mini_gm_current_rule = None
         self._mini_stop_requested = False
+        self._mini_playback_generation = 0
 
         # UI 먼저 생성 (빠르게)
         self._create_mini_player_ui()
@@ -1740,6 +1741,8 @@ class MainWindow(ctk.CTk):
         except ValueError:
             repeat_count = 1
 
+        playback_generation = self._mini_prepare_new_playback_request()
+
         selected_group = self._mini_group_by_label(plan_name)
         if selected_group:
             repeat_count = normalize_repeat_count(selected_group.get("repeat_count", repeat_count))
@@ -1781,6 +1784,7 @@ class MainWindow(ctk.CTk):
                 group_name=selected_group.get("name", "그룹"),
                 group_label=self._mini_group_label(selected_group),
                 group_repeat=repeat_count,
+                playback_generation=playback_generation,
             )
             return
 
@@ -1809,7 +1813,13 @@ class MainWindow(ctk.CTk):
 
                 if not cached_plan:
                     try:
-                        self.after(0, lambda: self._mini_on_load_failed("⚠ 플랜을 찾을 수 없음"))
+                        self.after(
+                            0,
+                            lambda g=playback_generation: self._mini_on_load_failed(
+                                "⚠ 플랜을 찾을 수 없음",
+                                playback_generation=g,
+                            ),
+                        )
                     except (tk.TclError, RuntimeError):
                         pass
                     return
@@ -1845,20 +1855,83 @@ class MainWindow(ctk.CTk):
                 # 플랜 객체에 반복횟수 설정 (rule_executor에서 사용)
                 selected_plan.total_repeat_count = repeat_count
 
+                if not self._mini_is_current_playback_generation(playback_generation):
+                    logger.info("[mini-player] stale plan load ignored")
+                    return
+
                 # 메인 스레드에서 실행 시작
                 try:
-                    self.after(0, lambda: self._mini_start_execution(selected_plan, repeat_count))
+                    self.after(
+                        0,
+                        lambda g=playback_generation: self._mini_start_execution(
+                            selected_plan,
+                            repeat_count,
+                            playback_generation=g,
+                        ),
+                    )
                 except (tk.TclError, RuntimeError):
                     pass
 
             except Exception as e:
                 logger.error(f"[미니플레이어] 플랜 로드 오류: {e}")
                 try:
-                    self.after(0, lambda: self._mini_on_load_failed(f"✗ 로드 오류: {e}"))
+                    self.after(
+                        0,
+                        lambda err=e, g=playback_generation: self._mini_on_load_failed(
+                            f"✗ 로드 오류: {err}",
+                            playback_generation=g,
+                        ),
+                    )
                 except (tk.TclError, RuntimeError):
                     pass
 
         threading.Thread(target=load_and_start, daemon=True).start()
+
+    def _mini_prepare_new_playback_request(self) -> int:
+        """새 실행 요청이 이전 중지/콜백 상태를 물고 시작하지 않게 초기화한다."""
+        self._mini_playback_generation = getattr(self, "_mini_playback_generation", 0) + 1
+        self._mini_stop_requested = False
+        self._is_paused = False
+        self._mini_cancel_game_mode_wait()
+        self._mini_gm_current_rule = None
+        self._mini_gm_previous_rule = None
+        self._mini_next_gm_previous_rule = None
+        try:
+            self._mini_pause_btn.configure(text="⏸ 일시정지")
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
+        return self._mini_playback_generation
+
+    def _mini_is_current_playback_generation(self, playback_generation: int | None) -> bool:
+        if playback_generation is None:
+            return True
+        return playback_generation == getattr(self, "_mini_playback_generation", 0)
+
+    def _mini_cancel_sequence_start(self, message: str, playback_generation: int | None = None) -> None:
+        """백그라운드 로드 후 시작이 취소될 때 실행 버튼이 잠긴 채 남지 않게 복구한다."""
+        if not self._mini_is_current_playback_generation(playback_generation):
+            return
+        logger.info(message)
+        self._is_running = False
+        self._is_paused = False
+        self._sequence_mode = False
+        self._sequence_plans = []
+        self._sequence_repeats = []
+        self._sequence_index = 0
+        self._sequence_group_name = ""
+        self._sequence_group_label = ""
+        self._sequence_group_repeat_count = 1
+        self._mini_active_plan = None
+        self._mini_remaining_rules = []
+        self._mini_stop_requested = False
+        try:
+            self._mini_play_btn.configure(state="normal")
+            self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
+            self._mini_stop_btn.configure(state="disabled")
+            self._mini_status.configure(text="정지됨")
+            self._mini_update_active_bar("중단", message="시작 취소됨")
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
 
     def _start_sequence_mode(
         self,
@@ -1867,6 +1940,7 @@ class MainWindow(ctk.CTk):
         group_name: str = "",
         group_label: str = "",
         group_repeat: int = 1,
+        playback_generation: int | None = None,
     ):
         """플랜 순서 실행 모드 시작"""
         logger.info(f"[시퀀스] 플랜 순서 실행 시작: {len(plan_paths)}개 플랜")
@@ -1905,15 +1979,18 @@ class MainWindow(ctk.CTk):
         )
 
         # 첫 번째 플랜 실행
-        self._run_sequence_plan(0)
+        self._run_sequence_plan(0, playback_generation=playback_generation)
 
-    def _run_sequence_plan(self, index: int):
+    def _run_sequence_plan(self, index: int, playback_generation: int | None = None):
         """시퀀스에서 지정 인덱스의 플랜 로드 및 실행"""
         import threading
 
+        if playback_generation is None:
+            playback_generation = getattr(self, "_mini_playback_generation", 0)
+
         if index >= len(self._sequence_plans):
             # 모든 시퀀스 완료
-            self.after(0, lambda: self._mini_on_complete(True, ""))
+            self.after(0, lambda g=playback_generation: self._mini_on_complete(True, "", playback_generation=g))
             self._sequence_mode = False
             return
 
@@ -1929,7 +2006,14 @@ class MainWindow(ctk.CTk):
                 if not plan_file.exists():
                     logger.error(f"[시퀀스] 플랜 파일 없음: {plan_path}")
                     try:
-                        self.after(0, lambda: self._mini_on_complete(False, f"플랜 파일 없음: {plan_path}"))
+                        self.after(
+                            0,
+                            lambda p=plan_path, g=playback_generation: self._mini_on_complete(
+                                False,
+                                f"플랜 파일 없음: {p}",
+                                playback_generation=g,
+                            ),
+                        )
                     except (tk.TclError, RuntimeError):
                         pass
                     self._sequence_mode = False
@@ -1947,8 +2031,14 @@ class MainWindow(ctk.CTk):
                 logger.info(f"[시퀀스] 플랜 로드 성공: {plan.name}, 반복: {repeat_count}회 ({index + 1}/{total})")
 
                 def start_on_main():
+                    if not self._mini_is_current_playback_generation(playback_generation):
+                        logger.info("[sequence] stale start skipped because playback generation changed")
+                        return
                     if getattr(self, "_mini_stop_requested", False) or not getattr(self, "_is_running", False):
-                        logger.info("[sequence] start skipped because playback already stopped")
+                        self._mini_cancel_sequence_start(
+                            "[sequence] start skipped because playback already stopped",
+                            playback_generation=playback_generation,
+                        )
                         return
                     # 그룹 실행 중에는 선택값을 내부 플랜명으로 덮지 않는다.
                     # 그래야 중지 후 실행 버튼을 눌러도 그룹 전체가 다시 시작된다.
@@ -1974,7 +2064,7 @@ class MainWindow(ctk.CTk):
                         total=total,
                         repeat_count=repeat_count,
                     )
-                    self._mini_start_execution(plan, repeat_count)
+                    self._mini_start_execution(plan, repeat_count, playback_generation=playback_generation)
 
                 try:
                     self.after(0, start_on_main)
@@ -1984,18 +2074,32 @@ class MainWindow(ctk.CTk):
             except Exception as e:
                 logger.error(f"[시퀀스] 플랜 로드 오류: {e}")
                 try:
-                    self.after(0, lambda: self._mini_on_complete(False, f"시퀀스 로드 오류: {e}"))
+                    self.after(
+                        0,
+                        lambda err=e, g=playback_generation: self._mini_on_complete(
+                            False,
+                            f"시퀀스 로드 오류: {err}",
+                            playback_generation=g,
+                        ),
+                    )
                 except (tk.TclError, RuntimeError):
                     pass
                 self._sequence_mode = False
 
         threading.Thread(target=load_and_start, daemon=True).start()
 
-    def _mini_on_load_failed(self, message: str):
+    def _mini_on_load_failed(self, message: str, playback_generation: int | None = None):
         """플랜 로드 실패 시 UI 복원"""
+        if not self._mini_is_current_playback_generation(playback_generation):
+            return
+        self._is_running = False
+        self._is_paused = False
+        self._mini_stop_requested = False
         self._mini_status.configure(text=message)
         self._mini_update_active_bar("실패", message=message)
         self._mini_play_btn.configure(state="normal")
+        self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
+        self._mini_stop_btn.configure(state="disabled")
 
     def _ensure_arduino_ready_for_mini(self, context_label: str) -> bool:
         """미니 플레이어 재생 시작 전 Arduino 연결 확인"""
@@ -2019,9 +2123,12 @@ class MainWindow(ctk.CTk):
             messagebox.showerror("아두이노 연결 필요", message)
         return False
 
-    def _mini_start_execution(self, selected_plan, repeat_count: int):
+    def _mini_start_execution(self, selected_plan, repeat_count: int, playback_generation: int | None = None):
         """Mini player start entrypoint."""
         try:
+            if not self._mini_is_current_playback_generation(playback_generation):
+                logger.info("[mini-player] stale start ignored")
+                return
             if not self._ensure_arduino_ready_for_mini("미니 플레이어 재생"):
                 self._mini_play_btn.configure(state="normal")
                 self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
@@ -2088,14 +2195,25 @@ class MainWindow(ctk.CTk):
         except Exception as e:
             logger.error(f"[mini-player] execute error: {e}")
             try:
-                self.after(0, lambda: self._mini_on_complete(False, str(e)))
+                self.after(
+                    0,
+                    lambda err=e, g=getattr(self, "_mini_playback_generation", 0): self._mini_on_complete(
+                        False,
+                        str(err),
+                        playback_generation=g,
+                    ),
+                )
             except (tk.TclError, RuntimeError):
                 pass
 
     def _mini_play_plan_rules(self, rules_to_run):
         active_plan = self._mini_active_plan
         if active_plan is None:
-            self._mini_on_complete(False, "no active plan")
+            self._mini_on_complete(
+                False,
+                "no active plan",
+                playback_generation=getattr(self, "_mini_playback_generation", 0),
+            )
             return
 
         if not rules_to_run:
@@ -2175,9 +2293,10 @@ class MainWindow(ctk.CTk):
         self._mini_gm_wait_after_id = self.after(int(wait_time * 1000), _finish_wait)
 
     def _mini_run_game_mode(self, config_rule_id, source_rule=None, source_previous_rule=None):
+        game_mode_generation = getattr(self, "_mini_playback_generation", 0)
         active_plan = self._mini_active_plan
         if active_plan is None:
-            self._mini_on_complete(False, "no active plan")
+            self._mini_on_complete(False, "no active plan", playback_generation=game_mode_generation)
             return
         if config_rule_id not in active_plan.game_modes:
             self._mini_on_game_mode_complete(False, "missing game mode")
@@ -2209,6 +2328,9 @@ class MainWindow(ctk.CTk):
         self._rule_executor = None
 
         def _check_gm_done():
+            if not self._mini_is_current_playback_generation(game_mode_generation):
+                logger.info("[mini-player] stale game_mode monitor ignored")
+                return
             gm = getattr(self, '_mini_gm_dialog', None)
             if gm is None:
                 return
@@ -2250,7 +2372,11 @@ class MainWindow(ctk.CTk):
         rewind_delay: float = 0.0,
     ):
         if getattr(self, '_mini_stop_requested', False):
-            self._mini_on_complete(False, error_msg or "stopped")
+            self._mini_on_complete(
+                False,
+                error_msg or "stopped",
+                playback_generation=getattr(self, "_mini_playback_generation", 0),
+            )
             return
         remaining = list(getattr(self, '_mini_remaining_rules', []) or [])
         self._mini_remaining_rules = []
@@ -2333,7 +2459,11 @@ class MainWindow(ctk.CTk):
     def _mini_run_rules_via_executor(self, rules_to_run, chain_remaining=None):
         active_plan = self._mini_active_plan
         if active_plan is None:
-            self._mini_on_complete(False, "no active plan")
+            self._mini_on_complete(
+                False,
+                "no active plan",
+                playback_generation=getattr(self, "_mini_playback_generation", 0),
+            )
             return
 
         partial_plan = AutomationPlan(
@@ -2351,29 +2481,60 @@ class MainWindow(ctk.CTk):
             self._mini_on_repeat_complete(False, "아두이노 연결 필요")
             return
         self._rule_executor = RuleExecutor()
+        callback_generation = getattr(self, "_mini_playback_generation", 0)
+
+        def on_progress(progress):
+            if not self._mini_is_current_playback_generation(callback_generation):
+                return
+            self._mini_on_progress(progress)
 
         def on_complete(success: bool, message: str):
             try:
                 if not self.winfo_exists():
                     return
+                if not self._mini_is_current_playback_generation(callback_generation):
+                    logger.info("[mini-player] stale executor completion ignored")
+                    return
                 if getattr(self, '_mini_stop_requested', False):
                     self._rule_executor = None
-                    self.after(0, lambda: self._mini_on_complete(False, "stopped"))
+                    self.after(
+                        0,
+                        lambda g=callback_generation: self._mini_on_complete(
+                            False,
+                            "stopped",
+                            playback_generation=g,
+                        ),
+                    )
                     return
                 if isinstance(message, str) and message.startswith(PLAYLIST_SKIP_TRIGGER_MISSING):
                     self._rule_executor = None
-                    self.after(0, lambda m=message: self._mini_on_playlist_skip(m))
+                    self.after(
+                        0,
+                        lambda m=message, g=callback_generation: self._mini_on_playlist_skip(m)
+                        if self._mini_is_current_playback_generation(g)
+                        else None,
+                    )
                     return
                 if success and chain_remaining:
                     self._rule_executor = None
-                    self.after(0, lambda: self._mini_play_plan_rules(chain_remaining))
+                    self.after(
+                        0,
+                        lambda g=callback_generation: self._mini_play_plan_rules(chain_remaining)
+                        if self._mini_is_current_playback_generation(g)
+                        else None,
+                    )
                 else:
-                    self.after(0, lambda s=success, m=message: self._mini_on_repeat_complete(s, m))
+                    self.after(
+                        0,
+                        lambda s=success, m=message, g=callback_generation: self._mini_on_repeat_complete(s, m)
+                        if self._mini_is_current_playback_generation(g)
+                        else None,
+                    )
             except (tk.TclError, RuntimeError):
                 pass
 
         self._rule_executor.set_callbacks(
-            on_progress=self._mini_on_progress,
+            on_progress=on_progress,
             on_complete=on_complete,
         )
         self._rule_executor.execute_plan_async(plan_to_run)
@@ -2388,10 +2549,15 @@ class MainWindow(ctk.CTk):
 
             if getattr(self, '_mini_stop_requested', False):
                 self._sequence_mode = False
-                self._mini_on_complete(False, "stopped")
+                self._mini_on_complete(
+                    False,
+                    "stopped",
+                    playback_generation=getattr(self, "_mini_playback_generation", 0),
+                )
                 return
 
             if self._sequence_mode:
+                playback_generation = getattr(self, "_mini_playback_generation", 0)
                 next_index = self._sequence_index + 1
                 if next_index < len(self._sequence_plans):
                     logger.info(
@@ -2408,15 +2574,19 @@ class MainWindow(ctk.CTk):
                         total=len(self._sequence_plans),
                         message="트리거 미감지로 다음 재생목록 이동",
                     )
-                    self._run_sequence_plan(next_index)
+                    self._run_sequence_plan(next_index, playback_generation=playback_generation)
                     return
 
                 logger.info(f"[sequence] complete after playlist skip ({len(self._sequence_plans)} plans)")
                 self._sequence_mode = False
-                self._mini_on_complete(True, "")
+                self._mini_on_complete(True, "", playback_generation=playback_generation)
                 return
 
-            self._mini_on_complete(True, message)
+            self._mini_on_complete(
+                True,
+                message,
+                playback_generation=getattr(self, "_mini_playback_generation", 0),
+            )
         except (tk.TclError, RuntimeError):
             pass
 
@@ -2436,6 +2606,8 @@ class MainWindow(ctk.CTk):
                 self._mini_status.configure(text=f"⚠ 플랜 파일 없음: {Path(path).name}")
                 return False
 
+        playback_generation = self._mini_prepare_new_playback_request()
+
         # UI 버튼 상태 업데이트
         self._mini_play_btn.configure(state="disabled")
         self._mini_pause_btn.configure(state="normal")
@@ -2452,6 +2624,7 @@ class MainWindow(ctk.CTk):
             group_name=group_name,
             group_label=group_label,
             group_repeat=group_repeat,
+            playback_generation=playback_generation,
         )
         return True
 
@@ -2479,6 +2652,7 @@ class MainWindow(ctk.CTk):
         if getattr(self, '_mini_stop_requested', False):
             return
         self._mini_stop_requested = True
+        self._mini_playback_generation = getattr(self, "_mini_playback_generation", 0) + 1
         self._mini_cancel_game_mode_wait()
         self._mini_gm_current_rule = None
         stopped_group_name = getattr(self, "_sequence_group_name", "")
@@ -2571,12 +2745,26 @@ class MainWindow(ctk.CTk):
 
             if getattr(self, '_mini_stop_requested', False):
                 self._sequence_mode = False
-                self.after(0, lambda: self._mini_on_complete(False, "stopped"))
+                self.after(
+                    0,
+                    lambda g=getattr(self, "_mini_playback_generation", 0): self._mini_on_complete(
+                        False,
+                        "stopped",
+                        playback_generation=g,
+                    ),
+                )
                 return
 
             if not success:
                 self._sequence_mode = False
-                self.after(0, lambda: self._mini_on_complete(False, message))
+                self.after(
+                    0,
+                    lambda m=message, g=getattr(self, "_mini_playback_generation", 0): self._mini_on_complete(
+                        False,
+                        m,
+                        playback_generation=g,
+                    ),
+                )
                 return
 
             self._mini_current_repeat += 1
@@ -2586,19 +2774,46 @@ class MainWindow(ctk.CTk):
                     next_index = self._sequence_index + 1
                     if next_index < len(self._sequence_plans):
                         logger.info(f"[sequence] plan {self._sequence_index + 1}/{len(self._sequence_plans)} complete -> next")
-                        self.after(0, lambda idx=next_index: self._run_sequence_plan(idx))
+                        self.after(
+                            0,
+                            lambda idx=next_index, g=getattr(self, "_mini_playback_generation", 0): self._run_sequence_plan(
+                                idx,
+                                playback_generation=g,
+                            ),
+                        )
                         return
                     logger.info(f"[sequence] complete ({len(self._sequence_plans)} plans)")
                     self._sequence_mode = False
-                    self.after(0, lambda: self._mini_on_complete(True, ""))
+                    self.after(
+                        0,
+                        lambda g=getattr(self, "_mini_playback_generation", 0): self._mini_on_complete(
+                            True,
+                            "",
+                            playback_generation=g,
+                        ),
+                    )
                     return
 
-                self.after(0, lambda: self._mini_on_complete(True, ""))
+                self.after(
+                    0,
+                    lambda g=getattr(self, "_mini_playback_generation", 0): self._mini_on_complete(
+                        True,
+                        "",
+                        playback_generation=g,
+                    ),
+                )
                 return
 
             if not self._is_running:
                 self._sequence_mode = False
-                self.after(0, lambda: self._mini_on_complete(False, "stopped"))
+                self.after(
+                    0,
+                    lambda g=getattr(self, "_mini_playback_generation", 0): self._mini_on_complete(
+                        False,
+                        "stopped",
+                        playback_generation=g,
+                    ),
+                )
                 return
 
             logger.info(f"[mini-player] repeat {self._mini_current_repeat + 1}/{self._mini_total_repeat}")
@@ -2631,6 +2846,8 @@ class MainWindow(ctk.CTk):
             return
 
         if self._sequence_mode and self._sequence_index < len(self._sequence_plans):
+            playback_generation = getattr(self, "_mini_playback_generation", 0)
+
             def reload_and_execute():
                 try:
                     import json
@@ -2638,14 +2855,29 @@ class MainWindow(ctk.CTk):
                     data = load_json_file(plan_path)
                     templates_dir = DATA_DIR / 'templates'
                     plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                    if not self._mini_is_current_playback_generation(playback_generation):
+                        logger.info("[sequence] stale repeat reload ignored")
+                        return
                     try:
-                        self.after(0, lambda p=plan: self._mini_execute_plan(p))
+                        self.after(
+                            0,
+                            lambda p=plan, g=playback_generation: self._mini_execute_plan(p)
+                            if self._mini_is_current_playback_generation(g)
+                            else None,
+                        )
                     except (tk.TclError, RuntimeError):
                         pass
                 except Exception as e:
                     logger.error(f"[sequence] reload error: {e}")
                     try:
-                        self.after(0, lambda: self._mini_on_complete(False, str(e)))
+                        self.after(
+                            0,
+                            lambda err=e, g=playback_generation: self._mini_on_complete(
+                                False,
+                                str(err),
+                                playback_generation=g,
+                            ),
+                        )
                     except (tk.TclError, RuntimeError):
                         pass
 
@@ -2653,17 +2885,34 @@ class MainWindow(ctk.CTk):
         else:
             plan = self._mini_active_plan
             if plan is not None:
+                playback_generation = getattr(self, "_mini_playback_generation", 0)
+
                 def reload_and_execute_current():
                     try:
                         reloaded_plan = self._mini_reload_plan_for_repeat(plan)
+                        if not self._mini_is_current_playback_generation(playback_generation):
+                            logger.info("[mini-player] stale repeat reload ignored")
+                            return
                         try:
-                            self.after(0, lambda p=reloaded_plan: self._mini_execute_plan(p))
+                            self.after(
+                                0,
+                                lambda p=reloaded_plan, g=playback_generation: self._mini_execute_plan(p)
+                                if self._mini_is_current_playback_generation(g)
+                                else None,
+                            )
                         except (tk.TclError, RuntimeError):
                             pass
                     except Exception as e:
                         logger.error(f"[mini-player] repeat reload error: {e}")
                         try:
-                            self.after(0, lambda: self._mini_on_complete(False, str(e)))
+                            self.after(
+                                0,
+                                lambda err=e, g=playback_generation: self._mini_on_complete(
+                                    False,
+                                    str(err),
+                                    playback_generation=g,
+                                ),
+                            )
                         except (tk.TclError, RuntimeError):
                             pass
 
@@ -2686,8 +2935,10 @@ class MainWindow(ctk.CTk):
         reloaded_plan.total_repeat_count = getattr(plan, "total_repeat_count", 1) or 1
         return reloaded_plan
 
-    def _mini_on_complete(self, success, message):
+    def _mini_on_complete(self, success, message, playback_generation: int | None = None):
         """Mini player completion callback."""
+        if not self._mini_is_current_playback_generation(playback_generation):
+            return
         was_sequence = self._sequence_mode or len(self._sequence_plans) > 0
         seq_count = len(self._sequence_plans)
         completed_group_name = getattr(self, "_sequence_group_name", "")
