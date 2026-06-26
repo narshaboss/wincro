@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN_WINDOW = ROOT / "src" / "ui" / "main_window.py"
 SETTINGS_VIEW = ROOT / "src" / "ui" / "settings_view.py"
 APP = ROOT / "src" / "app.py"
+RULE_EXECUTOR = ROOT / "src" / "player" / "rule_executor.py"
 
 
 def _read_text() -> str:
@@ -17,6 +18,10 @@ def _read_settings_text() -> str:
 
 def _read_app_text() -> str:
     return APP.read_text(encoding="utf-8")
+
+
+def _read_rule_executor_text() -> str:
+    return RULE_EXECUTOR.read_text(encoding="utf-8")
 
 
 def test_main_window_reloads_single_plan_before_repeat():
@@ -347,3 +352,28 @@ def test_play_mode_discord_notification_watchdog_hooks_are_present():
     assert "WinCro 그룹 실행 완료" in complete_body
     assert "message != \"stopped\"" in complete_body
     assert "WinCro 재생 실패" in complete_body
+
+
+def test_play_mode_discord_stuck_alert_uses_action_identity_without_version_field():
+    text = _read_text()
+    formatter_start = text.index("    def _mini_format_notification_progress(self, progress) -> str:")
+    formatter_end = text.index("    def _mini_record_notification_progress", formatter_start)
+    formatter_body = text[formatter_start:formatter_end]
+    send_start = text.index("    def _mini_send_discord_alert(")
+    send_end = text.index("        def _on_complete(result) -> None:", send_start)
+    send_body = text[send_start:send_end]
+
+    assert 'getattr(progress, "current_action_number", "")' in formatter_body
+    assert 'getattr(progress, "current_action_name", "")' in formatter_body
+    assert 'parts.append(f"액션 [{action_number}] {action_name}")' in formatter_body
+    assert "self._mini_notification_last_progress_text = truncate_ui_text(message, 160)" in text
+    assert '("버전", APP_VERSION)' not in send_body
+
+
+def test_rule_executor_progress_keeps_current_action_number_and_name():
+    text = _read_rule_executor_text()
+
+    assert 'current_action_number: str = ""' in text
+    assert 'current_action_name: str = ""' in text
+    assert "self._progress.current_action_number = str(step_num)" in text
+    assert "self._progress.current_action_name = action_name" in text

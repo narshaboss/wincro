@@ -547,6 +547,8 @@ class ExecutionProgress:
     """실행 진행 상태"""
     state: ExecutionState = ExecutionState.IDLE
     current_rule: Optional[str] = None
+    current_action_number: str = ""
+    current_action_name: str = ""
     initial_total: int = 0
     initial_completed: int = 0
     monitoring_rules_active: int = 0
@@ -1017,6 +1019,8 @@ class RuleExecutor:
                         logger.info(f"  입력: {text_preview}")
 
                     self._progress.current_rule = rule.rule_id
+                    self._progress.current_action_number = str(step_num)
+                    self._progress.current_action_name = action_name
                     self._update_progress(f"[{step_num}] {action_name}")
 
                     # 모니터링 모드인 경우 별도 처리
@@ -2884,6 +2888,8 @@ class RuleExecutor:
         logger.info(f"{_CYAN}[{step_num}] 반복묶음 하위: {action_name}{_RESET}")
 
         self._progress.current_rule = rule.rule_id
+        self._progress.current_action_number = str(step_num)
+        self._progress.current_action_name = action_name
         self._update_progress(f"[{step_num}] {action_name}")
 
         has_monitoring_watches = len(getattr(rule, "monitoring_watches", []) or []) > 0

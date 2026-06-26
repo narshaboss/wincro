@@ -8,6 +8,7 @@ import customtkinter as ctk
 import tkinter as tk
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -1173,15 +1174,46 @@ class MainWindow(ctk.CTk):
         self._mini_notification_last_progress_at = time.monotonic()
         self._mini_notification_last_progress_text = ""
 
+    def _mini_format_notification_progress(self, progress) -> str:
+        raw_message = (
+            getattr(progress, "current_rule_description", "")
+            or getattr(progress, "message", "")
+            or getattr(progress, "current_rule", "")
+            or ""
+        ).strip()
+        action_number = str(getattr(progress, "current_action_number", "") or "").strip()
+        action_name = str(getattr(progress, "current_action_name", "") or "").strip()
+
+        match = re.match(r"^\[([^\]]+)\]\s*(.+)$", raw_message)
+        if match:
+            action_number = action_number or match.group(1).strip()
+            action_name = action_name or match.group(2).strip()
+
+        current = getattr(progress, "initial_completed", 0)
+        total = getattr(progress, "initial_total", 0)
+        parts: list[str] = []
+        if current or total:
+            parts.append(f"진행 {current}/{total}" if total else f"진행 {current}")
+
+        if action_number or action_name:
+            if action_number and action_name:
+                parts.append(f"액션 [{action_number}] {action_name}")
+            elif action_number:
+                parts.append(f"액션 [{action_number}]")
+            else:
+                parts.append(f"액션 {action_name}")
+
+        normalized_action = f"[{action_number}] {action_name}".strip()
+        if raw_message and raw_message not in {normalized_action, action_name}:
+            parts.append(f"상태 {raw_message}")
+
+        return " | ".join(parts) or raw_message or "진행 갱신"
+
     def _mini_record_notification_progress(self, progress) -> None:
         try:
-            message = (getattr(progress, "message", "") or getattr(progress, "current_rule", "") or "").strip()
-            current = getattr(progress, "initial_completed", 0)
-            total = getattr(progress, "initial_total", 0)
-            if current or total:
-                message = f"{current}/{total} {message}".strip()
+            message = self._mini_format_notification_progress(progress)
             self._mini_notification_last_progress_at = time.monotonic()
-            self._mini_notification_last_progress_text = truncate_ui_text(message or "진행 갱신", 120)
+            self._mini_notification_last_progress_text = truncate_ui_text(message, 160)
         except Exception:
             self._mini_notification_last_progress_at = time.monotonic()
 
@@ -1274,7 +1306,6 @@ class MainWindow(ctk.CTk):
         alert_fields = [
             ("그룹", group_name or "없음"),
             ("재생목록", plan_name or "알 수 없음"),
-            ("버전", APP_VERSION),
         ]
         alert_fields.extend(fields)
 
