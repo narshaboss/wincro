@@ -32,6 +32,13 @@ def test_auto_update_does_not_restore_old_plan_playlists():
     assert "plans_user_backup" in app_text
 
 
+def test_auto_update_preserves_pc_local_config_file():
+    app_text = Path(r"C:\Projects\wincro\src\app.py").read_text(encoding="utf-8")
+
+    assert 'if exist "{data_backup}\\\\config.json" (' in app_text
+    assert 'copy /y "{data_backup}\\\\config.json" "{app_dir}\\\\_internal\\\\data\\\\config.json"' in app_text
+
+
 def test_transient_github_http_error_is_warning_not_error(monkeypatch, caplog):
     def raise_http_error(*_args, **_kwargs):
         raise urllib.error.HTTPError(

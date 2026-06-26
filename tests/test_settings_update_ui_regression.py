@@ -32,6 +32,45 @@ def test_settings_save_and_load_include_update_config():
     assert "config.update.auto_check = bool(self._auto_update_var.get())" in save_settings
 
 
+def test_general_settings_include_pc_number_local_identifier():
+    text = SETTINGS_VIEW.read_text(encoding="utf-8")
+    general_start = text.index("    def _setup_general_settings(self, parent) -> None:")
+    general_end = text.index("    def _setup_player_settings", general_start)
+    general_settings = text[general_start:general_end]
+    load_start = text.index("    def _load_settings(self) -> None:")
+    load_end = text.index("    def _save_settings(self) -> bool:", load_start)
+    load_settings = text[load_start:load_end]
+    save_start = load_end
+    save_end = text.index("    def _refresh_shutdown_status_label", save_start)
+    save_settings = text[save_start:save_end]
+
+    assert 'text="PC 번호"' in general_settings
+    assert 'self._pc_number_var = ctk.StringVar()' in general_settings
+    assert 'placeholder_text="예: 1, 02, A-3"' in general_settings
+    assert 'self._pc_number_var.set(str(getattr(config.system, "pc_number", "") or ""))' in load_settings
+    assert 'config.system.pc_number = self._pc_number_var.get().strip()' in save_settings
+
+
+def test_general_settings_include_discord_notification_controls():
+    text = SETTINGS_VIEW.read_text(encoding="utf-8")
+    general_start = text.index("    def _setup_general_settings(self, parent) -> None:")
+    general_end = text.index("    def _setup_player_settings", general_start)
+    general_settings = text[general_start:general_end]
+    load_start = text.index("    def _load_settings(self) -> None:")
+    load_end = text.index("    def _save_settings(self) -> bool:", load_start)
+    load_settings = text[load_start:load_end]
+    save_start = load_end
+    save_end = text.index("    def _refresh_shutdown_status_label", save_start)
+    save_settings = text[save_start:save_end]
+
+    assert "self._setup_discord_notification_settings(scroll_frame)" in general_settings
+    assert 'text="디스코드 휴대폰 알림"' in general_settings
+    assert 'placeholder_text="https://discord.com/api/webhooks/..."' in general_settings
+    assert 'self._discord_enabled_var.set(bool(getattr(notification, "discord_enabled", False)))' in load_settings
+    assert "notification.discord_enabled = bool(self._discord_enabled_var.get())" in save_settings
+    assert "is_valid_discord_webhook_url(notification.discord_webhook_url)" in save_settings
+
+
 def test_settings_update_controls_are_visible_and_named():
     text = SETTINGS_VIEW.read_text(encoding="utf-8")
     update_start = text.index("    def _setup_update_settings(self, parent) -> None:")

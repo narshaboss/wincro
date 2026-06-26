@@ -9,6 +9,7 @@ import tkinter as tk
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from typing import Optional, Callable, Dict
 from collections import deque
@@ -23,6 +24,11 @@ from PIL import Image
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
+from ..utils.discord_notifier import (
+    DiscordAlert,
+    is_valid_discord_webhook_url,
+    send_discord_alert_async,
+)
 from ..utils.app_identity import get_effective_app_name
 from ..utils.json_utils import load_json_file
 from ..utils.plan_sequence_groups import (
@@ -655,6 +661,10 @@ class MainWindow(ctk.CTk):
         self._mini_gm_current_rule = None
         self._mini_stop_requested = False
         self._mini_playback_generation = 0
+        self._mini_notification_after_id = None
+        self._mini_notification_last_progress_at = time.monotonic()
+        self._mini_notification_last_progress_text = ""
+        self._mini_notification_last_sent_at = {}
 
         # UI 먼저 생성 (빠르게)
         self._create_mini_player_ui()
@@ -1143,6 +1153,143 @@ class MainWindow(ctk.CTk):
         self._mini_active_bar_snapshot = snapshot
         self._mini_active_title.configure(text=title, text_color=color)
         self._mini_active_detail.configure(text=detail, text_color=detail_color)
+
+    def _mini_notification_config(self):
+        return getattr(get_config(), "notification", None)
+
+    def _mini_notification_enabled(self, event_type: str) -> bool:
+        config = self._mini_notification_config()
+        if config is None or not bool(getattr(config, "discord_enabled", False)):
+            return False
+        if not is_valid_discord_webhook_url(getattr(config, "discord_webhook_url", "")):
+            return False
+        if event_type == "stuck":
+            return bool(getattr(config, "discord_notify_on_stuck", True))
+        if event_type == "failure":
+            return bool(getattr(config, "discord_notify_on_failure", True))
+        return True
+
+    def _mini_reset_notification_runtime(self) -> None:
+        self._mini_notification_last_progress_at = time.monotonic()
+        self._mini_notification_last_progress_text = ""
+
+    def _mini_record_notification_progress(self, progress) -> None:
+        try:
+            message = (getattr(progress, "message", "") or getattr(progress, "current_rule", "") or "").strip()
+            current = getattr(progress, "initial_completed", 0)
+            total = getattr(progress, "initial_total", 0)
+            if current or total:
+                message = f"{current}/{total} {message}".strip()
+            self._mini_notification_last_progress_at = time.monotonic()
+            self._mini_notification_last_progress_text = truncate_ui_text(message or "진행 갱신", 120)
+        except Exception:
+            self._mini_notification_last_progress_at = time.monotonic()
+
+    def _mini_cancel_notification_watchdog(self) -> None:
+        after_id = getattr(self, "_mini_notification_after_id", None)
+        self._mini_notification_after_id = None
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError, ValueError):
+                pass
+
+    def _mini_start_notification_watchdog(self, playback_generation: int | None = None) -> None:
+        self._mini_cancel_notification_watchdog()
+        if not self._mini_notification_enabled("stuck"):
+            return
+        if playback_generation is None:
+            playback_generation = getattr(self, "_mini_playback_generation", 0)
+        config = self._mini_notification_config()
+        threshold = max(10, int(getattr(config, "discord_stuck_seconds", 120) or 120))
+        delay_ms = max(5000, min(30000, threshold * 1000 // 2))
+        try:
+            self._mini_notification_after_id = self.after(
+                delay_ms,
+                lambda g=playback_generation: self._mini_check_notification_watchdog(g),
+            )
+        except (tk.TclError, RuntimeError):
+            self._mini_notification_after_id = None
+
+    def _mini_check_notification_watchdog(self, playback_generation: int | None = None) -> None:
+        self._mini_notification_after_id = None
+        if not self._mini_is_current_playback_generation(playback_generation):
+            return
+        if not getattr(self, "_is_running", False) or getattr(self, "_mini_stop_requested", False):
+            return
+        if getattr(self, "_is_paused", False):
+            self._mini_start_notification_watchdog(playback_generation)
+            return
+        if not self._mini_notification_enabled("stuck"):
+            return
+
+        config = self._mini_notification_config()
+        threshold = max(10, int(getattr(config, "discord_stuck_seconds", 120) or 120))
+        elapsed = time.monotonic() - float(getattr(self, "_mini_notification_last_progress_at", time.monotonic()))
+        if elapsed >= threshold:
+            self._mini_send_discord_alert(
+                "stuck",
+                "WinCro 장시간 진행 없음",
+                f"{int(elapsed)}초 동안 진행 로그가 갱신되지 않았습니다.",
+                fields=(
+                    ("마지막 진행", getattr(self, "_mini_notification_last_progress_text", "") or "없음"),
+                    ("감지 기준", f"{threshold}초"),
+                ),
+                playback_generation=playback_generation,
+            )
+        self._mini_start_notification_watchdog(playback_generation)
+
+    def _mini_send_discord_alert(
+        self,
+        event_key: str,
+        title: str,
+        description: str,
+        fields: tuple[tuple[str, str], ...] = (),
+        playback_generation: int | None = None,
+    ) -> None:
+        if event_key == "stuck":
+            event_type = "stuck"
+        elif event_key == "group_complete":
+            event_type = "complete"
+        else:
+            event_type = "failure"
+        if not self._mini_notification_enabled(event_type):
+            return
+        if playback_generation is not None and not self._mini_is_current_playback_generation(playback_generation):
+            return
+
+        config = self._mini_notification_config()
+        cooldown = max(10, int(getattr(config, "discord_cooldown_seconds", 300) or 300))
+        now = time.monotonic()
+        last_sent = float(getattr(self, "_mini_notification_last_sent_at", {}).get(event_key, 0.0))
+        if now - last_sent < cooldown:
+            return
+        self._mini_notification_last_sent_at[event_key] = now
+
+        app_config = get_config()
+        plan_name = getattr(getattr(self, "_mini_active_plan", None), "name", "")
+        if not plan_name and hasattr(self, "_mini_plan_var"):
+            plan_name = self._mini_plan_var.get()
+        group_name = getattr(self, "_sequence_group_name", "") if getattr(self, "_sequence_mode", False) else ""
+        alert_fields = [
+            ("그룹", group_name or "없음"),
+            ("재생목록", plan_name or "알 수 없음"),
+            ("버전", APP_VERSION),
+        ]
+        alert_fields.extend(fields)
+
+        alert = DiscordAlert(
+            title=title,
+            description=description,
+            pc_number=getattr(app_config.system, "pc_number", ""),
+            fields=tuple(alert_fields),
+        )
+
+        def _on_complete(result) -> None:
+            if not result.ok:
+                logger.warning(f"[디스코드알림] 전송 실패: {result.status} {result.detail}")
+
+        send_discord_alert_async(getattr(config, "discord_webhook_url", ""), alert, on_complete=_on_complete)
 
     def _toggle_mini_auto_update_from_indicator(self):
         """원형 상태 표시 클릭 시 자동업데이트 ON/OFF를 전환한다."""
@@ -1893,6 +2040,8 @@ class MainWindow(ctk.CTk):
         self._mini_stop_requested = False
         self._is_paused = False
         self._mini_cancel_game_mode_wait()
+        self._mini_cancel_notification_watchdog()
+        self._mini_reset_notification_runtime()
         self._mini_gm_current_rule = None
         self._mini_gm_previous_rule = None
         self._mini_next_gm_previous_rule = None
@@ -1915,6 +2064,7 @@ class MainWindow(ctk.CTk):
         self._is_running = False
         self._is_paused = False
         self._sequence_mode = False
+        self._mini_cancel_notification_watchdog()
         self._sequence_plans = []
         self._sequence_repeats = []
         self._sequence_index = 0
@@ -2092,6 +2242,13 @@ class MainWindow(ctk.CTk):
         """플랜 로드 실패 시 UI 복원"""
         if not self._mini_is_current_playback_generation(playback_generation):
             return
+        self._mini_cancel_notification_watchdog()
+        self._mini_send_discord_alert(
+            "failure_load",
+            "WinCro 재생목록 로드 실패",
+            str(message),
+            playback_generation=playback_generation,
+        )
         self._is_running = False
         self._is_paused = False
         self._mini_stop_requested = False
@@ -2130,6 +2287,12 @@ class MainWindow(ctk.CTk):
                 logger.info("[mini-player] stale start ignored")
                 return
             if not self._ensure_arduino_ready_for_mini("미니 플레이어 재생"):
+                self._mini_send_discord_alert(
+                    "failure_arduino",
+                    "WinCro 재생 시작 실패",
+                    "아두이노 연결 준비가 되지 않아 플레이모드 재생을 시작하지 못했습니다.",
+                    playback_generation=playback_generation,
+                )
                 self._mini_play_btn.configure(state="normal")
                 self._mini_pause_btn.configure(state="disabled", text="⏸ 일시정지")
                 self._mini_stop_btn.configure(state="disabled")
@@ -2145,6 +2308,8 @@ class MainWindow(ctk.CTk):
             self._mini_total_repeat = max(1, repeat_count)
             self._mini_current_repeat = 0
             self._is_running = True
+            self._mini_reset_notification_runtime()
+            self._mini_start_notification_watchdog(playback_generation)
             self._mini_pause_btn.configure(state="normal")
             self._mini_stop_btn.configure(state="normal")
             self._mini_status.configure(text=f"▶ 실행 중... (1/{self._mini_total_repeat}회)")
@@ -2157,6 +2322,12 @@ class MainWindow(ctk.CTk):
             self._mini_execute_plan(selected_plan)
         except Exception as e:
             logger.error(f"[mini-player] start error: {e}")
+            self._mini_send_discord_alert(
+                "failure_start_error",
+                "WinCro 재생 시작 오류",
+                str(e),
+                playback_generation=playback_generation,
+            )
             self._mini_status.configure(text=f"오류: {e}")
             self._mini_update_active_bar("실패", message=str(e))
             self._is_running = False
@@ -2654,6 +2825,7 @@ class MainWindow(ctk.CTk):
         self._mini_stop_requested = True
         self._mini_playback_generation = getattr(self, "_mini_playback_generation", 0) + 1
         self._mini_cancel_game_mode_wait()
+        self._mini_cancel_notification_watchdog()
         self._mini_gm_current_rule = None
         stopped_group_name = getattr(self, "_sequence_group_name", "")
         stopped_group_label = getattr(self, "_sequence_group_label", "")
@@ -2707,6 +2879,7 @@ class MainWindow(ctk.CTk):
     def _mini_on_progress(self, progress):
         """미니 플레이어 - 진행 콜백 (ExecutionProgress 객체)"""
         try:
+            self._mini_record_notification_progress(progress)
             current = progress.initial_completed
             total = progress.initial_total
             message = progress.message or progress.current_rule or ""
@@ -2944,6 +3117,26 @@ class MainWindow(ctk.CTk):
         completed_group_name = getattr(self, "_sequence_group_name", "")
         completed_group_label = getattr(self, "_sequence_group_label", "")
         completed_group_repeat = getattr(self, "_sequence_group_repeat_count", 1)
+        if success and was_sequence:
+            self._mini_send_discord_alert(
+                "group_complete",
+                "WinCro 그룹 실행 완료",
+                f"그룹 '{completed_group_name or '알 수 없음'}' 실행이 완료되었습니다.",
+                fields=(
+                    ("그룹", completed_group_name or "알 수 없음"),
+                    ("재생목록 수", f"{seq_count}개"),
+                    ("그룹 반복", f"{completed_group_repeat}회"),
+                ),
+                playback_generation=playback_generation,
+            )
+        if not success and message != "stopped":
+            self._mini_send_discord_alert(
+                "failure_complete",
+                "WinCro 재생 실패",
+                str(message or "알 수 없는 오류"),
+                fields=(("중단 사유", str(message or "없음")),),
+                playback_generation=playback_generation,
+            )
 
         def update():
             try:
@@ -2951,6 +3144,7 @@ class MainWindow(ctk.CTk):
                 if after_id:
                     self.after_cancel(after_id)
                 self._mini_cancel_game_mode_wait()
+                self._mini_cancel_notification_watchdog()
             except (tk.TclError, RuntimeError, ValueError):
                 pass
 

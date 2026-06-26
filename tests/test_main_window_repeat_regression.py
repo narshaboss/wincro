@@ -314,3 +314,36 @@ def test_play_mode_high_frequency_status_updates_skip_duplicate_configures():
     assert "self._mini_set_status(" in progress_method
     assert "self._mini_set_status(" in repeat_method
     assert "self._mini_set_status(" in log_flush
+
+
+def test_play_mode_discord_notification_watchdog_hooks_are_present():
+    text = _read_text()
+    setup_start = text.index("    def _setup_mini_player_ui(self):")
+    setup_end = text.index("    def _create_mini_player_ui", setup_start)
+    setup_body = text[setup_start:setup_end]
+    start_start = text.index("    def _mini_start_execution(")
+    start_end = text.index("    def _mini_execute_plan", start_start)
+    start_body = text[start_start:start_end]
+    progress_start = text.index("    def _mini_on_progress(")
+    progress_end = text.index("    def _mini_on_repeat_complete", progress_start)
+    progress_body = text[progress_start:progress_end]
+    stop_start = text.index("    def _mini_on_stop(")
+    stop_end = text.index("    def _mini_on_progress", stop_start)
+    stop_body = text[stop_start:stop_end]
+    complete_start = text.index("    def _mini_on_complete(")
+    complete_end = text.index("    def _setup_topbar", complete_start)
+    complete_body = text[complete_start:complete_end]
+
+    assert "self._mini_notification_after_id = None" in setup_body
+    assert "def _mini_start_notification_watchdog" in text
+    assert "def _mini_cancel_notification_watchdog" in text
+    assert "def _mini_send_discord_alert" in text
+    assert "elif event_key == \"group_complete\":" in text
+    assert "event_type = \"complete\"" in text
+    assert "self._mini_start_notification_watchdog(playback_generation)" in start_body
+    assert "self._mini_record_notification_progress(progress)" in progress_body
+    assert "self._mini_cancel_notification_watchdog()" in stop_body
+    assert "success and was_sequence" in complete_body
+    assert "WinCro 그룹 실행 완료" in complete_body
+    assert "message != \"stopped\"" in complete_body
+    assert "WinCro 재생 실패" in complete_body

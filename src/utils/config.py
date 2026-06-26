@@ -33,8 +33,10 @@ else:
     LOGS_DIR = PROJECT_ROOT / "logs"
 
 CONFIG_FILE = DATA_DIR / "config.json"
+PACKAGED_NOTIFICATION_DEFAULTS_FILE = DATA_DIR / "notification_defaults.json"
 
-APP_VERSION = "1.0.253"
+APP_VERSION = "1.0.254"
+NOTIFICATION_PROFILE_VERSION = "discord_alerts_v1"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
 # When APP_VERSION changes on the next release, this guard stops touching PC-local settings.
@@ -157,6 +159,17 @@ class UpdateConfig:
 
 
 @dataclass
+class NotificationConfig:
+    discord_enabled: bool = False
+    discord_webhook_url: str = ""
+    discord_notify_on_stuck: bool = True
+    discord_notify_on_failure: bool = True
+    discord_stuck_seconds: int = 120
+    discord_cooldown_seconds: int = 300
+    discord_profile_version: str = ""
+
+
+@dataclass
 class PerformanceConfig:
     debug_logging: bool = False
     thread_pool_size: int = 4
@@ -164,6 +177,7 @@ class PerformanceConfig:
 
 @dataclass
 class SystemConfig:
+    pc_number: str = ""
     shutdown_enabled: bool = True
     shutdown_time: str = "00:00"
     shutdown_force: bool = True
@@ -177,6 +191,7 @@ class AppConfig:
     ui: UIConfig = field(default_factory=UIConfig)
     arduino: ArduinoConfig = field(default_factory=ArduinoConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    notification: NotificationConfig = field(default_factory=NotificationConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     version: str = "1.0.0"
@@ -219,11 +234,11 @@ class ConfigManager:
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     self._config = self._dict_to_config(data)
-                    player_defaults_changed = self._normalize_loaded_local_config(self._config)
+                    local_defaults_changed = self._normalize_loaded_local_config(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
-                    if player_defaults_changed:
-                        self._persist_loaded_player_config(self._config)
+                    if local_defaults_changed:
+                        self._persist_loaded_config_sections(self._config, ("player", "notification"))
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
                     self._seed_packaged_defaults(self._config)
@@ -285,6 +300,7 @@ class ConfigManager:
             "ui": asdict(config.ui),
             "arduino": asdict(config.arduino),
             "update": asdict(config.update),
+            "notification": asdict(config.notification),
             "performance": asdict(config.performance),
             "system": asdict(config.system),
             "version": config.version,
@@ -306,6 +322,7 @@ class ConfigManager:
             ui=UIConfig(**filter_known_keys(UIConfig, data.get("ui", {}))),
             arduino=ArduinoConfig(**filter_known_keys(ArduinoConfig, data.get("arduino", {}))),
             update=UpdateConfig(**filter_known_keys(UpdateConfig, data.get("update", {}))),
+            notification=NotificationConfig(**filter_known_keys(NotificationConfig, data.get("notification", {}))),
             performance=PerformanceConfig(**filter_known_keys(PerformanceConfig, data.get("performance", {}))),
             system=SystemConfig(**filter_known_keys(SystemConfig, data.get("system", {}))),
             version=data.get("version", "1.0.0"),
@@ -316,16 +333,53 @@ class ConfigManager:
     def _seed_packaged_defaults(self, config: AppConfig) -> None:
         """Seed defaults only for a fresh or unrecoverable local config."""
         self._apply_packaged_player_defaults(config)
+        self._apply_packaged_notification_defaults(config)
         self._apply_packaged_ui_branding(config)
 
     def _normalize_loaded_local_config(self, config: AppConfig) -> bool:
         """Keep existing PC-local settings intact while normalizing shape only."""
         normalize_plan_sequence_groups(config.player, mutate=True)
-        if self._apply_release_player_profile_once(config):
-            return True
-        else:
+        player_changed = self._apply_release_player_profile_once(config)
+        if not player_changed:
             mirror_active_group_to_legacy(config.player)
+        notification_changed = self._apply_packaged_notification_defaults(config)
+        return player_changed or notification_changed
+
+    def _load_packaged_notification_defaults(self) -> dict[str, Any]:
+        try:
+            if not PACKAGED_NOTIFICATION_DEFAULTS_FILE.exists():
+                return {}
+            with open(PACKAGED_NOTIFICATION_DEFAULTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    def _apply_packaged_notification_defaults(self, config: AppConfig) -> bool:
+        """Apply packaged Discord defaults without touching PC-local system settings."""
+        defaults = self._load_packaged_notification_defaults()
+        if not defaults:
             return False
+
+        profile_version = str(defaults.get("profile_version") or NOTIFICATION_PROFILE_VERSION)
+        notification = config.notification
+        if getattr(notification, "discord_profile_version", "") == profile_version:
+            return False
+
+        notification.discord_enabled = bool(defaults.get("discord_enabled", False))
+        notification.discord_webhook_url = str(defaults.get("discord_webhook_url", "") or "")
+        notification.discord_notify_on_stuck = bool(defaults.get("discord_notify_on_stuck", True))
+        notification.discord_notify_on_failure = bool(defaults.get("discord_notify_on_failure", True))
+        try:
+            notification.discord_stuck_seconds = max(10, int(defaults.get("discord_stuck_seconds", 120) or 120))
+        except (TypeError, ValueError):
+            notification.discord_stuck_seconds = 120
+        try:
+            notification.discord_cooldown_seconds = max(10, int(defaults.get("discord_cooldown_seconds", 300) or 300))
+        except (TypeError, ValueError):
+            notification.discord_cooldown_seconds = 300
+        notification.discord_profile_version = profile_version
+        return True
 
     def _apply_release_player_profile_once(self, config: AppConfig) -> bool:
         """Apply this release's playback defaults once without touching other settings."""
@@ -418,8 +472,8 @@ class ConfigManager:
             mirror_active_group_to_legacy(player)
         return changed
 
-    def _persist_loaded_player_config(self, config: AppConfig) -> bool:
-        """Persist only player settings after a release migration, preserving PC-local settings."""
+    def _persist_loaded_config_sections(self, config: AppConfig, sections: tuple[str, ...]) -> bool:
+        """Persist selected migrated sections, preserving other PC-local settings."""
         try:
             raw_data: dict[str, Any] = {}
             if CONFIG_FILE.exists():
@@ -427,12 +481,19 @@ class ConfigManager:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
                     raw_data = loaded
-            raw_data["player"] = asdict(config.player)
+            if "player" in sections:
+                raw_data["player"] = asdict(config.player)
+            if "notification" in sections:
+                raw_data["notification"] = asdict(config.notification)
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(raw_data, f, ensure_ascii=False, indent=2)
             return True
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return False
+
+    def _persist_loaded_player_config(self, config: AppConfig) -> bool:
+        """Persist only player settings after a release migration, preserving PC-local settings."""
+        return self._persist_loaded_config_sections(config, ("player",))
 
     def _apply_packaged_ui_branding(self, config: AppConfig) -> None:
         """Migrate legacy/random display names to the fixed Korean product brand."""

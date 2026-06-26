@@ -32,6 +32,11 @@ from ..utils.startup_registry import (
     get_auto_start_entry_candidates,
     sync_auto_start_registry,
 )
+from ..utils.discord_notifier import (
+    DiscordAlert,
+    is_valid_discord_webhook_url,
+    send_discord_alert_async,
+)
 from ..i18n import SETTINGS, BUTTONS, MESSAGES
 from .main_window import BaseView, COLORS
 from .theme import IOS_FONTS, IOS_METRICS
@@ -153,6 +158,38 @@ class SettingsView(BaseView):
         ctk.CTkLabel(
             name_frame,
             text="  ",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+        # PC 번호는 각 컴퓨터 식별용 로컬 설정이다. 배포 기본값으로 강제하지 않는다.
+        pc_number_label = ctk.CTkLabel(
+            scroll_frame,
+            text="PC 번호",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        pc_number_label.pack(anchor="w", padx=10, pady=(10, 5))
+
+        pc_number_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        pc_number_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        self._pc_number_var = ctk.StringVar()
+        ctk.CTkEntry(
+            pc_number_frame,
+            textvariable=self._pc_number_var,
+            placeholder_text="예: 1, 02, A-3",
+            width=160,
+            height=32,
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(
+            pc_number_frame,
+            text="각 PC에서 직접 지정하는 식별값입니다. 업데이트 시 덮어쓰지 않습니다.",
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
         ).pack(side="left")
@@ -292,6 +329,8 @@ class SettingsView(BaseView):
             text_color=COLORS["text_primary"],
             font=ctk.CTkFont(size=12),
         ).pack(side="left")
+
+        self._setup_discord_notification_settings(scroll_frame)
 
         admin_label = ctk.CTkLabel(
             scroll_frame,
@@ -527,6 +566,193 @@ class SettingsView(BaseView):
 
         # 시작 시 자동 연결 시도
         self.after(1500, self._auto_connect_arduino)
+
+    def _setup_discord_notification_settings(self, parent) -> None:
+        """디스코드 웹훅 알림 설정."""
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["border"],
+        )
+        card.pack(fill="x", padx=10, pady=(0, 10))
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(
+            header,
+            text="디스코드 휴대폰 알림",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        self._discord_test_status_label = ctk.CTkLabel(
+            header,
+            text="OFF",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_muted"],
+        )
+        self._discord_test_status_label.pack(side="right")
+
+        self._discord_enabled_var = ctk.BooleanVar()
+        self._create_checkbox_with_help(
+            card,
+            "디스코드 알림 사용",
+            self._discord_enabled_var,
+            help_text="웹훅 URL은 이 PC의 config.json에만 저장됩니다.",
+        )
+
+        url_row = ctk.CTkFrame(card, fg_color="transparent")
+        url_row.pack(fill="x", padx=12, pady=(2, 6))
+        ctk.CTkLabel(
+            url_row,
+            text="웹훅 URL",
+            width=72,
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 8))
+        self._discord_webhook_var = ctk.StringVar()
+        ctk.CTkEntry(
+            url_row,
+            textvariable=self._discord_webhook_var,
+            placeholder_text="https://discord.com/api/webhooks/...",
+            height=30,
+            fg_color=COLORS["bg_card"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11),
+            show="*",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self._discord_test_btn = ctk.CTkButton(
+            url_row,
+            text="테스트",
+            command=self._test_discord_notification,
+            width=72,
+            height=30,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._discord_test_btn.pack(side="left")
+
+        option_row = ctk.CTkFrame(card, fg_color="transparent")
+        option_row.pack(fill="x", padx=12, pady=(0, 10))
+
+        self._discord_notify_stuck_var = ctk.BooleanVar()
+        ctk.CTkCheckBox(
+            option_row,
+            text="장시간 멈춤",
+            variable=self._discord_notify_stuck_var,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left", padx=(0, 12))
+
+        self._discord_notify_failure_var = ctk.BooleanVar()
+        ctk.CTkCheckBox(
+            option_row,
+            text="실패/비정상 중단",
+            variable=self._discord_notify_failure_var,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left", padx=(0, 16))
+
+        ctk.CTkLabel(
+            option_row,
+            text="멈춤 감지",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 6))
+        self._discord_stuck_seconds_var = ctk.StringVar(value="120")
+        ctk.CTkEntry(
+            option_row,
+            textvariable=self._discord_stuck_seconds_var,
+            width=58,
+            height=28,
+            fg_color=COLORS["bg_card"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(
+            option_row,
+            text="초",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", padx=(0, 14))
+
+        ctk.CTkLabel(
+            option_row,
+            text="재알림",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 6))
+        self._discord_cooldown_seconds_var = ctk.StringVar(value="300")
+        ctk.CTkEntry(
+            option_row,
+            textvariable=self._discord_cooldown_seconds_var,
+            width=58,
+            height=28,
+            fg_color=COLORS["bg_card"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(
+            option_row,
+            text="초",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
+    def _test_discord_notification(self) -> None:
+        """현재 입력값으로 디스코드 테스트 알림을 보낸다."""
+        url = self._discord_webhook_var.get().strip()
+        if not is_valid_discord_webhook_url(url):
+            self._discord_test_status_label.configure(text="URL 확인 필요", text_color=COLORS["error"])
+            self._show_message("디스코드 알림", "Discord 웹훅 URL을 먼저 정확히 입력하세요.")
+            return
+
+        self._discord_test_btn.configure(state="disabled", text="전송 중")
+        self._discord_test_status_label.configure(text="전송 중", text_color=COLORS["warning"])
+
+        pc_number = self._pc_number_var.get().strip()
+        alert = DiscordAlert(
+            title="WinCro 테스트 알림",
+            description="디스코드 웹훅 연동 테스트입니다.",
+            pc_number=pc_number,
+            fields=(
+                ("상태", "환경설정에서 보낸 테스트 알림"),
+            ),
+        )
+
+        def _on_complete(result) -> None:
+            def _apply_result() -> None:
+                try:
+                    self._discord_test_btn.configure(state="normal", text="테스트")
+                    if result.ok:
+                        self._discord_test_status_label.configure(text="테스트 성공", text_color=COLORS["success"])
+                    else:
+                        self._discord_test_status_label.configure(text="테스트 실패", text_color=COLORS["error"])
+                        logger.warning(f"[디스코드알림] 테스트 전송 실패: {result.status} {result.detail}")
+                except (tk.TclError, RuntimeError):
+                    pass
+
+            try:
+                self.after(0, _apply_result)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        thread = send_discord_alert_async(url, alert, on_complete=_on_complete)
+        self._active_threads = [t for t in self._active_threads if t.is_alive()]
+        self._active_threads.append(thread)
 
     def _setup_recording_settings(self, parent) -> None:
         """녹화 설정 섹션"""
@@ -2426,9 +2652,23 @@ del "%~f0"
         self._confirm_var.set(config.ui.confirm_before_run)
         self._minimize_var.set(config.ui.minimize_on_run)
         self._tooltips_var.set(config.ui.show_tooltips)
+        self._pc_number_var.set(str(getattr(config.system, "pc_number", "") or ""))
         self._shutdown_enabled_var.set(bool(getattr(config.system, "shutdown_enabled", True)))
         self._shutdown_time_var.set(str(getattr(config.system, "shutdown_time", "00:00") or "00:00"))
         self._shutdown_force_var.set(bool(getattr(config.system, "shutdown_force", True)))
+        notification = getattr(config, "notification", None)
+        if notification is not None:
+            self._discord_enabled_var.set(bool(getattr(notification, "discord_enabled", False)))
+            self._discord_webhook_var.set(str(getattr(notification, "discord_webhook_url", "") or ""))
+            self._discord_notify_stuck_var.set(bool(getattr(notification, "discord_notify_on_stuck", True)))
+            self._discord_notify_failure_var.set(bool(getattr(notification, "discord_notify_on_failure", True)))
+            self._discord_stuck_seconds_var.set(str(getattr(notification, "discord_stuck_seconds", 120) or 120))
+            self._discord_cooldown_seconds_var.set(str(getattr(notification, "discord_cooldown_seconds", 300) or 300))
+            if hasattr(self, "_discord_test_status_label"):
+                self._discord_test_status_label.configure(
+                    text="ON" if bool(getattr(notification, "discord_enabled", False)) else "OFF",
+                    text_color=COLORS["success"] if bool(getattr(notification, "discord_enabled", False)) else COLORS["text_muted"],
+                )
         self._refresh_shutdown_status_label()
 
         # 창 모드 (이전 값 호환: small→play, medium/large→editor)
@@ -2504,6 +2744,24 @@ del "%~f0"
         config.ui.show_tooltips = self._tooltips_var.get()
         config.ui.run_as_admin = self._run_as_admin_var.get()
         from ..utils.shutdown_scheduler import normalize_shutdown_time
+        config.system.pc_number = self._pc_number_var.get().strip()
+        notification = config.notification
+        notification.discord_enabled = bool(self._discord_enabled_var.get())
+        notification.discord_webhook_url = self._discord_webhook_var.get().strip()
+        notification.discord_notify_on_stuck = bool(self._discord_notify_stuck_var.get())
+        notification.discord_notify_on_failure = bool(self._discord_notify_failure_var.get())
+        stuck_seconds = self._parse_int(self._discord_stuck_seconds_var.get(), 10, 86400, "디스코드 멈춤 감지 시간")
+        if stuck_seconds is not None:
+            notification.discord_stuck_seconds = stuck_seconds
+        else:
+            validation_errors.append("디스코드 멈춤 감지 시간은 10-86400초 사이여야 합니다")
+        cooldown_seconds = self._parse_int(self._discord_cooldown_seconds_var.get(), 10, 86400, "디스코드 재알림 간격")
+        if cooldown_seconds is not None:
+            notification.discord_cooldown_seconds = cooldown_seconds
+        else:
+            validation_errors.append("디스코드 재알림 간격은 10-86400초 사이여야 합니다")
+        if notification.discord_enabled and not is_valid_discord_webhook_url(notification.discord_webhook_url):
+            validation_errors.append("디스코드 알림을 사용하려면 올바른 웹훅 URL이 필요합니다")
         try:
             shutdown_time = normalize_shutdown_time(self._shutdown_time_var.get())
         except ValueError as e:
