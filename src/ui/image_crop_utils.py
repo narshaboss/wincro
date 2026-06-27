@@ -104,6 +104,33 @@ def fit_image_to_box(image_rgb: np.ndarray, max_width: int, max_height: int) -> 
     return fitted, scale
 
 
+def _is_usable_foreground_mask(mask: np.ndarray, shape: tuple[int, int], *, max_ratio: float = 0.80) -> bool:
+    if mask is None or mask.size == 0:
+        return False
+    height, width = shape
+    total = max(1, int(height * width))
+    kept = int(np.count_nonzero(mask))
+    ratio = kept / total
+    return kept >= max(8, int(total * 0.015)) and ratio <= max_ratio
+
+
+def _extract_colored_text_mask(image_rgb: np.ndarray) -> Optional[MaskArray]:
+    """Extract bright, saturated UI text/icons before falling back to GrabCut."""
+    height, width = image_rgb.shape[:2]
+    hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+
+    # Most game reward/notice text is bright colored foreground on a changing dark background.
+    mask = np.where((saturation > 45) & (value > 115), 255, 0).astype(np.uint8)
+    kernel = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    if _is_usable_foreground_mask(mask, (height, width), max_ratio=0.65):
+        return mask
+    return None
+
+
 def auto_extract_foreground_mask(image_rgb: np.ndarray) -> MaskArray:
     if image_rgb is None or image_rgb.size == 0:
         return np.zeros((0, 0), dtype=np.uint8)
@@ -111,6 +138,10 @@ def auto_extract_foreground_mask(image_rgb: np.ndarray) -> MaskArray:
     height, width = image_rgb.shape[:2]
     if width < 3 or height < 3:
         return np.full((height, width), 255, dtype=np.uint8)
+
+    colored_text_mask = _extract_colored_text_mask(image_rgb)
+    if colored_text_mask is not None:
+        return colored_text_mask
 
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     gc_mask = np.full((height, width), cv2.GC_PR_FGD, dtype=np.uint8)

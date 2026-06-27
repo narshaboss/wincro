@@ -191,6 +191,13 @@ def _get_file_mtime(image_path: str) -> float:
         return 0
 
 
+def _safe_int(value, default: int = -1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def get_cached_thumbnail(image_path: str, size: tuple):
     """캐시된 썸네일 가져오기 (파일 수정 시간 확인)"""
     mtime = _get_file_mtime(image_path)
@@ -281,6 +288,8 @@ def _convert_action_to_monitor_dict(action):
         monitor_action["typing_delay_range"] = getattr(action, 'typing_delay_range', 0.05)
         monitor_action["search_radius"] = getattr(action, 'search_radius', 0)
         monitor_action["search_region"] = getattr(action, 'search_region', None)
+        monitor_action["verify_image_color"] = getattr(action, 'verify_image_color', False)
+        monitor_action["verify_image_brightness"] = getattr(action, 'verify_image_brightness', False)
 
     return monitor_action
 
@@ -470,23 +479,14 @@ def _ios_run_button_style(enabled: bool) -> dict:
     }
 
 
-def _is_manual_partial_monitor_parent(rule: AutomationRule) -> bool:
-    """Manual partial-run should enter concrete children, not wait on a monitor parent."""
-    return bool(
-        _rule_is_enabled(rule)
-        and getattr(rule, "children", None)
-        and (
-            getattr(rule, "is_monitoring_mode", False)
-            or bool(getattr(rule, "monitoring_watches", None))
-        )
-    )
-
-
 def _manual_partial_start_index(flat_rules: List[AutomationRule], rule: AutomationRule, rule_index: int) -> int:
+    """부분실행은 사용자가 선택한 액션 자체부터 시작해야 한다.
+
+    모니터링/트리거가 설정된 부모도 실제 실행 단위이므로 하위 액션으로
+    자동 진입하면 부모의 확인 조건을 건너뛰는 구조적 버그가 생긴다.
+    """
     if rule_index < 0:
         return rule_index
-    if _is_manual_partial_monitor_parent(rule) and rule_index + 1 < len(flat_rules):
-        return rule_index + 1
     return rule_index
 
 
@@ -1665,9 +1665,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             has_monitoring = False
             for mi, mr in enumerate(self._plan.initial_rules):
                 if getattr(mr, 'is_monitoring_mode', False) and getattr(mr, 'monitoring_watches', []):
-                    has_monitoring = True
                     action_name = mr.description[:15] if mr.description else f"액션{mi+1}"
                     for wi, _watch in enumerate(mr.monitoring_watches):
+                        if _safe_int(_watch.get("goto_index", -1), -1) < 0:
+                            continue
+                        has_monitoring = True
                         watch_label = f"{action_name} - 감시{wi+1}"
                         monitor_menu.add_command(
                             label=watch_label,
@@ -2044,10 +2046,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 has_monitoring = False
                 for mi, mr in enumerate(self._plan.initial_rules):
                     if getattr(mr, 'is_monitoring_mode', False) and getattr(mr, 'monitoring_watches', []):
-                        has_monitoring = True
                         # 액션 이름 (description 사용)
                         action_name = mr.description[:15] if mr.description else f"액션{mi+1}"
                         for wi, watch in enumerate(mr.monitoring_watches):
+                            if _safe_int(watch.get("goto_index", -1), -1) < 0:
+                                continue
+                            has_monitoring = True
                             watch_label = f"{action_name} - 감시{wi+1}"
                             monitor_menu.add_command(
                                 label=watch_label,
@@ -2787,16 +2791,26 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
 
         parent = None
+        removed = False
         # 최상위에서 찾기
         if rule in self._plan.initial_rules:
             self._plan.initial_rules.remove(rule)
+            removed = True
         elif rule in self._plan.monitoring_rules:
             self._plan.monitoring_rules.remove(rule)
+            removed = True
         else:
             # 부모에서 찾아서 삭제
             parent = self._find_parent_rule(rule)
             if parent and rule in parent.children:
                 parent.children.remove(rule)
+                removed = True
+
+        if not removed:
+            logger.error("규칙 삭제 실패: 실제 트리에서 대상을 찾지 못함 rule_id=%s", getattr(rule, "rule_id", None))
+            messagebox.showerror("삭제 실패", "선택한 액션을 실제 계획 데이터에서 찾지 못했습니다.\n목록을 다시 열고 다시 시도하세요.")
+            self._sync_visible_rules_from_model()
+            return
 
         # game_modes에서 연결된 특화모드 설정도 제거
         if rule.action_type == "game_mode" and hasattr(self, '_plan'):
@@ -3729,14 +3743,6 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rules_to_run = [rule]
         else:
             start_index = _manual_partial_start_index(all_rules_flat, rule, rule_index)
-            if start_index != rule_index:
-                first_child = all_rules_flat[start_index]
-                logger.info(
-                    "[부분실행] 모니터링 부모 직접실행 방지: parent_idx=%s -> child_idx=%s, first_child=%s",
-                    rule_index,
-                    start_index,
-                    first_child.description or first_child.action_type,
-                )
             # 해당 인덱스부터 끝까지 포함하되, 반복 클릭 부모의 children은 보존한다.
             # 일반 부모는 기존처럼 children을 비워 executor 재평탄화 중복 실행을 막는다.
             rules_to_run = _build_manual_partial_rules(all_rules_flat, start_index)
@@ -5142,12 +5148,25 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """모니터링 모드 설정"""
         from .monitoring_editor import MonitoringModeEditor
 
-        editor = MonitoringModeEditor(self, rule, self._plan.initial_rules)
-        editor.wait_window()
-        if editor.was_saved:
+        save_applied = {"value": False}
+
+        def apply_editor_save() -> bool:
             self._modified = True
+            if not self._save_plan(show_message=False):
+                from tkinter import messagebox
+
+                messagebox.showerror("저장 실패", "모니터링 설정 저장에 실패했습니다. 로그를 확인하세요.", parent=self)
+                return False
+            self._update_rule_buttons(rule)
             if not self._update_rule_row_in_place(rule):
                 self._refresh_rule_row(rule.rule_id)
+            save_applied["value"] = True
+            return True
+
+        editor = MonitoringModeEditor(self, rule, self._plan.initial_rules, on_save=apply_editor_save)
+        editor.wait_window()
+        if editor.was_saved and not save_applied["value"]:
+            apply_editor_save()
         logger.info(f"[다이얼로그 종료] rule.is_monitoring_mode={rule.is_monitoring_mode}, watches={len(rule.monitoring_watches)}")
 
     def _detach_rule(self, rule: AutomationRule):
@@ -5290,6 +5309,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         watches = getattr(rule, 'monitoring_watches', [])
         if watch_index >= len(watches):
             return
+        if _safe_int(watches[watch_index].get("goto_index", -1), -1) < 0:
+            return
 
         # 클립보드 액션과 모든 자식 수집
         all_actions = collect_all_actions(clipboard)
@@ -5334,40 +5355,37 @@ class PlanDetailDialog(ctk.CTkToplevel):
             messagebox.showwarning("경고", "이 액션은 모니터링 액션으로 변환할 수 없습니다.")
             return
 
-        # 감시 항목이 여러 개면 선택, 1개면 바로 추가, 없으면 새로 생성
-        if len(rule.monitoring_watches) > 1:
+        route_watch_indexes = [
+            idx
+            for idx, watch in enumerate(rule.monitoring_watches)
+            if _safe_int(watch.get("goto_index", -1), -1) >= 0
+        ]
+        if not route_watch_indexes:
+            from tkinter import messagebox
+            messagebox.showwarning("경고", "모니터링 이미지 액션 항목을 먼저 추가한 뒤 전용액션을 붙여넣으세요.")
+            return
+
+        # 모니터링 이미지 액션 항목이 여러 개면 선택, 1개면 바로 추가
+        if len(route_watch_indexes) > 1:
             from tkinter import simpledialog
             # 선택 다이얼로그 표시
             watch_options = []
-            for i, w in enumerate(rule.monitoring_watches):
+            for display_idx, watch_idx in enumerate(route_watch_indexes, start=1):
+                w = rule.monitoring_watches[watch_idx]
                 img_name = Path(w.get("image", "")).name[:15] if w.get("image") else "이미지 없음"
                 action_count = len(w.get("monitor_actions", []))
-                watch_options.append(f"{i+1}. {img_name} ({action_count}개 액션)")
+                watch_options.append(f"{display_idx}. {img_name} ({action_count}개 액션)")
 
             selected = simpledialog.askinteger(
                 "감시 항목 선택",
-                f"모니터링 액션을 추가할 감시 항목을 선택하세요:\n\n" + "\n".join(watch_options) + "\n\n번호 입력 (1~{})".format(len(rule.monitoring_watches)),
-                minvalue=1, maxvalue=len(rule.monitoring_watches)
+                f"전용액션을 추가할 모니터링 이미지 액션 항목을 선택하세요:\n\n" + "\n".join(watch_options) + "\n\n번호 입력 (1~{})".format(len(route_watch_indexes)),
+                minvalue=1, maxvalue=len(route_watch_indexes)
             )
             if selected is None:
                 return
-            watch_idx = selected - 1
-        elif len(rule.monitoring_watches) == 1:
-            watch_idx = 0
+            watch_idx = route_watch_indexes[selected - 1]
         else:
-            # 새 watch 생성
-            new_watch = {
-                "image": getattr(clipboard, 'target_image', None),
-                "goto_index": -1,
-                "monitor_actions": monitor_actions,
-            }
-            rule.monitoring_watches.append(new_watch)
-            rule.is_monitoring_mode = True
-            self._modified = True
-            if not self._update_rule_row_in_place(rule):
-                self._refresh_rule_row(rule.rule_id)
-            logger.info(f"모니터링 액션 추가 (새 감시 항목): {len(monitor_actions)}개")
-            return
+            watch_idx = route_watch_indexes[0]
 
         # 선택된 감시 항목에 추가
         if "monitor_actions" not in rule.monitoring_watches[watch_idx]:
@@ -5794,6 +5812,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return -1
         return self._scrollable.find_item_index_by_object_id(rule_id, "AutomationRule")
 
+    def _find_visible_rule_item_index_by_object(self, target: AutomationRule) -> int:
+        """Find the visible row for the exact rule object, not a possibly duplicated rule_id."""
+        if not isinstance(self._scrollable, VirtualScrollFrame) or target is None:
+            return -1
+        try:
+            for index, item in enumerate(self._scrollable.get_items()):
+                if item.get("rule") is target:
+                    return index
+        except (tk.TclError, RuntimeError, AttributeError):
+            return -1
+        return -1
+
     def _visible_rule_descendant_count(self, items: list, parent_index: int, parent_depth: int) -> int:
         count = 0
         for item in items[parent_index + 1:]:
@@ -5957,7 +5987,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._schedule_action_list_refresh()
             return
 
-        deleted_index = self._find_visible_rule_item_index(deleted_rule.rule_id)
+        deleted_index = self._find_visible_rule_item_index_by_object(deleted_rule)
         if deleted_index < 0:
             if parent_rule is not None:
                 if not self._update_rule_parent_summary(parent_rule):
@@ -6356,21 +6386,29 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         def visit(items, parent):
             for item in items or []:
+                cache[("object", id(item))] = parent
                 rule_id = getattr(item, "rule_id", None)
                 if rule_id is not None:
-                    cache[rule_id] = parent
+                    cache.setdefault(("id", rule_id), parent)
                 visit(getattr(item, "children", []) or [], item)
 
         visit(getattr(self._plan, "initial_rules", []) or [], None)
+        visit(getattr(self._plan, "monitoring_rules", []) or [], None)
         self._rule_parent_cache = cache
         return cache
 
     def _find_parent_rule(self, target: AutomationRule) -> Optional[AutomationRule]:
         """대상 규칙의 부모 규칙 찾기"""
+        if target is None:
+            return None
+        cache = self._get_rule_parent_cache()
+        exact_key = ("object", id(target))
+        if exact_key in cache:
+            return cache.get(exact_key)
         target_id = getattr(target, "rule_id", None)
         if target_id is None:
             return None
-        return self._get_rule_parent_cache().get(target_id)
+        return cache.get(("id", target_id))
 
     def _find_parent_in_tree(self, rule: AutomationRule, target: AutomationRule) -> Optional[AutomationRule]:
         """트리에서 대상의 부모 찾기 (재귀)"""
@@ -6453,6 +6491,8 @@ class GameModeDialog(ctk.CTkToplevel):
         self._thumbnail_refs = []
         self._is_running = False
         self._completed_normally = False
+        self._last_runtime_activity_at = time.monotonic()
+        self._last_runtime_activity_text = "특화모드 준비 중"
         self._stop_event = threading.Event()
         self._map_save_lock = threading.Lock()
         self._segment_switch_in_progress = False
@@ -16258,6 +16298,8 @@ class GameModeDialog(ctk.CTkToplevel):
         try:
             if not force and self._stop_event.is_set():
                 return
+            self._last_runtime_activity_at = time.monotonic()
+            self._last_runtime_activity_text = str(message or "").strip()
             # 일반 로그에도 출력 (부분실행 시 특화모드 UI가 숨겨져 있어도 확인 가능)
             # 타이밍(⏱) 로그는 쓰로틀링, 나머지(구간전환/에러/모드전환 등)는 항상 출력
             _is_timing = message.startswith("⏱")
@@ -27006,10 +27048,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 has_monitoring = False
                 for mi, mr in enumerate(self._sequence.actions):
                     if getattr(mr, 'is_monitoring_mode', False) and getattr(mr, 'monitoring_watches', []):
-                        has_monitoring = True
                         # 액션 이름 (description 사용)
                         action_name = mr.description[:15] if mr.description else f"액션{mi+1}"
                         for wi, watch in enumerate(mr.monitoring_watches):
+                            if _safe_int(watch.get("goto_index", -1), -1) < 0:
+                                continue
+                            has_monitoring = True
                             watch_label = f"{action_name} - 감시{wi+1}"
                             monitor_menu.add_command(
                                 label=watch_label,
@@ -27573,14 +27617,23 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
 
         parent = None
+        removed = False
         # 최상위에서 찾기
         if action in self._sequence.actions:
             self._sequence.actions.remove(action)
+            removed = True
         else:
             # 부모에서 찾아서 삭제
             parent = self._find_parent_action(action)
             if parent and action in parent.children:
                 parent.children.remove(action)
+                removed = True
+
+        if not removed:
+            logger.error("액션 삭제 실패: 실제 트리에서 대상을 찾지 못함 action_id=%s", getattr(action, "action_id", None))
+            messagebox.showerror("삭제 실패", "선택한 액션을 실제 재생목록 데이터에서 찾지 못했습니다.\n목록을 다시 열고 다시 시도하세요.")
+            self._sync_visible_actions_from_model()
+            return
 
         self._invalidate_action_tree_cache()
         self._modified = True
@@ -28124,40 +28177,35 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if not hasattr(action, 'monitoring_watches') or action.monitoring_watches is None:
             action.monitoring_watches = []
 
-        # 감시 항목이 여러 개면 선택, 1개면 바로 추가, 없으면 새로 생성
-        if len(action.monitoring_watches) > 1:
+        route_watch_indexes = [
+            idx
+            for idx, watch in enumerate(action.monitoring_watches)
+            if _safe_int(watch.get("goto_index", -1), -1) >= 0
+        ]
+        if not route_watch_indexes:
+            return
+
+        # 모니터링 이미지 액션 항목이 여러 개면 선택, 1개면 바로 추가
+        if len(route_watch_indexes) > 1:
             from tkinter import simpledialog
             # 선택 다이얼로그 표시
             watch_options = []
-            for i, w in enumerate(action.monitoring_watches):
+            for display_idx, watch_idx in enumerate(route_watch_indexes, start=1):
+                w = action.monitoring_watches[watch_idx]
                 img_name = Path(w.get("image", "")).name[:15] if w.get("image") else "이미지 없음"
                 action_count = len(w.get("monitor_actions", []))
-                watch_options.append(f"{i+1}. {img_name} ({action_count}개 액션)")
+                watch_options.append(f"{display_idx}. {img_name} ({action_count}개 액션)")
 
             selected = simpledialog.askinteger(
                 "감시 항목 선택",
-                f"모니터링 액션을 추가할 감시 항목을 선택하세요:\n\n" + "\n".join(watch_options) + "\n\n번호 입력 (1~{})".format(len(action.monitoring_watches)),
-                minvalue=1, maxvalue=len(action.monitoring_watches)
+                f"전용액션을 추가할 모니터링 이미지 액션 항목을 선택하세요:\n\n" + "\n".join(watch_options) + "\n\n번호 입력 (1~{})".format(len(route_watch_indexes)),
+                minvalue=1, maxvalue=len(route_watch_indexes)
             )
             if selected is None:
                 return
-            watch_idx = selected - 1
-        elif len(action.monitoring_watches) == 1:
-            watch_idx = 0
+            watch_idx = route_watch_indexes[selected - 1]
         else:
-            # 새 watch 항목 생성
-            new_watch = {
-                "image": getattr(clipboard, 'target_image', None),
-                "goto_index": -1,
-                "monitor_actions": monitor_actions,
-            }
-            action.monitoring_watches.append(new_watch)
-            logger.info(f"모니터링 액션 추가 (새 감시 항목): {len(monitor_actions)}개")
-            action.is_monitoring_mode = True
-            self._modified = True
-            if not self._update_compact_action_row(action):
-                self._refresh_action_row(action)
-            return
+            watch_idx = route_watch_indexes[0]
 
         # 선택된 감시 항목에 추가
         if "monitor_actions" not in action.monitoring_watches[watch_idx]:
@@ -28182,6 +28230,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         action = self._sequence.actions[action_index]
         watches = getattr(action, 'monitoring_watches', [])
         if watch_index >= len(watches):
+            return
+        if _safe_int(watches[watch_index].get("goto_index", -1), -1) < 0:
             return
 
         # Action을 monitor_action 형식으로 변환 (모든 속성 포함)
@@ -28238,6 +28288,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             )
             monitor_action["search_radius"] = getattr(clipboard, 'search_radius', 0)
             monitor_action["search_region"] = getattr(clipboard, 'search_region', None)
+            monitor_action["verify_image_color"] = getattr(clipboard, 'verify_image_color', False)
+            monitor_action["verify_image_brightness"] = getattr(clipboard, 'verify_image_brightness', False)
 
             # monitor_actions 리스트에 추가 (없으면 생성)
             if "monitor_actions" not in watches[watch_index]:
@@ -28662,6 +28714,18 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return -1
         return self._scrollable.find_item_index_by_object_id(action_id, "Action")
 
+    def _find_visible_action_item_index_by_object(self, target: Action) -> int:
+        """Find the visible row for the exact action object, not a possibly duplicated action_id."""
+        if not isinstance(self._scrollable, VirtualScrollFrame) or target is None:
+            return -1
+        try:
+            for index, item in enumerate(self._scrollable.get_items()):
+                if item.get("action") is target:
+                    return index
+        except (tk.TclError, RuntimeError, AttributeError):
+            return -1
+        return -1
+
     def _visible_action_descendant_count(self, items: list, parent_index: int, parent_depth: int) -> int:
         count = 0
         for item in items[parent_index + 1:]:
@@ -28825,7 +28889,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             self._schedule_action_list_refresh()
             return
 
-        deleted_index = self._find_visible_action_item_index(deleted_action.action_id)
+        deleted_index = self._find_visible_action_item_index_by_object(deleted_action)
         if deleted_index < 0:
             if parent_action is not None:
                 if not self._update_action_parent_summary(parent_action):
@@ -29279,9 +29343,10 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         def visit(items, parent):
             for item in items or []:
+                cache[("object", id(item))] = parent
                 action_id = getattr(item, "action_id", None)
                 if action_id is not None:
-                    cache[action_id] = parent
+                    cache.setdefault(("id", action_id), parent)
                 visit(getattr(item, "children", []) or [], item)
 
         visit(getattr(self._sequence, "actions", []) or [], None)
@@ -29290,10 +29355,16 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
     def _find_parent_action(self, target: Action) -> Optional[Action]:
         """대상 액션의 부모 액션 찾기"""
+        if target is None:
+            return None
+        cache = self._get_action_parent_cache()
+        exact_key = ("object", id(target))
+        if exact_key in cache:
+            return cache.get(exact_key)
         target_id = getattr(target, "action_id", None)
         if target_id is None:
             return None
-        return self._get_action_parent_cache().get(target_id)
+        return cache.get(("id", target_id))
 
     def _find_parent_in_tree_action(self, action: Action, target: Action) -> Optional[Action]:
         """트리에서 대상의 부모 찾기 (재귀)"""

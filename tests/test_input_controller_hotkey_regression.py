@@ -25,6 +25,25 @@ def test_hotkey_single_key_delegates_to_press(monkeypatch):
     assert pressed == ["up"]
 
 
+def test_press_single_key_uses_explicit_down_up_tap(monkeypatch):
+    controller = InputController()
+    events = []
+    sleeps = []
+
+    monkeypatch.setattr(controller, "_use_arduino", lambda: False)
+    monkeypatch.setattr(controller, "_strict_mode", lambda: False)
+    monkeypatch.setattr(input_controller.pyautogui, "PAUSE", 0.25)
+    monkeypatch.setattr(input_controller.pyautogui, "keyDown", lambda key: events.append(("down", key)))
+    monkeypatch.setattr(input_controller.pyautogui, "keyUp", lambda key: events.append(("up", key)))
+    monkeypatch.setattr(input_controller.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert controller.press("enter") is True
+    assert events == [("down", "enter"), ("up", "enter")]
+    assert input_controller._KEY_TAP_HOLD_DELAY in sleeps
+    assert input_controller._KEY_TAP_POST_DELAY in sleeps
+    assert input_controller.pyautogui.PAUSE == 0.25
+
+
 def test_press_plus_separated_combo_delegates_to_hotkey(monkeypatch):
     controller = InputController()
     calls = []
@@ -137,6 +156,15 @@ def test_arduino_combo_tap_uses_single_firmware_command(monkeypatch):
 
     assert hid.key_combo_tap("shift", "up") is True
     assert sent == [("KQ,129,218", True)]
+
+
+def test_arduino_key_tap_does_not_hide_press_failure(monkeypatch):
+    hid = ArduinoHID()
+
+    monkeypatch.setattr(hid, "key_press", lambda key: False)
+    monkeypatch.setattr(hid, "key_release", lambda key: (_ for _ in ()).throw(AssertionError("release used")))
+
+    assert hid.key_tap("enter") is False
 
 
 def test_replay_key_events_preserves_down_up_order_and_delay(monkeypatch):

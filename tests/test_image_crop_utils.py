@@ -96,3 +96,16 @@ def test_auto_extract_foreground_mask_keeps_center_object():
 
     assert mask.shape == (60, 60)
     assert int(mask[30, 30]) == 255
+
+
+def test_auto_extract_foreground_mask_prefers_colored_ui_text():
+    image = np.full((24, 84, 3), np.array([34, 28, 18], dtype=np.uint8), dtype=np.uint8)
+    cv2.putText(image, "GET", (4, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 184, 42), 2, cv2.LINE_AA)
+
+    mask = auto_extract_foreground_mask(image)
+    kept_ratio = float(np.count_nonzero(mask) / mask.size)
+
+    assert mask.shape == image.shape[:2]
+    assert int(mask[0, 0]) == 0
+    assert int(mask[12, 12]) == 255
+    assert 0.03 < kept_ratio < 0.65

@@ -64,8 +64,9 @@ def test_analyzer_and_monitoring_views_truncate_file_and_plan_names():
     assert "text=truncate_ui_text(plan.name, 38)" in analyzer_text
     assert "text=truncate_ui_text(recording.name, 38)" in analyzer_text
     assert "text=truncate_ui_text(\"  |  \".join(details), 76)" in analyzer_text
-    assert "truncate_ui_text(Path(current_condition).name, 30)" in monitoring_text
-    assert "truncate_ui_text(ma_detail, 34)" in monitoring_text
+    assert "truncate_ui_text(image_name, 42)" in monitoring_text
+    assert "truncate_ui_text(self._action_detail(action), 28)" in monitoring_text
+    assert "truncate_ui_text(self._action_options_summary(action), 38)" in monitoring_text
 
 
 def test_settings_auto_run_group_editor_truncates_visible_names_only():

@@ -857,7 +857,9 @@ class ActionPlayer:
                         return False, "기록 키 실행 실패"
                 elif action.keys:
                     keys = [k.lower() for k in action.keys]
-                    input_ctrl.hotkey(*keys)
+                    ok = input_ctrl.hotkey(*keys)
+                    if ok is False:
+                        return False, "hotkey send failed"
                 else:
                     return False, "단축키가 없습니다"
 
@@ -869,9 +871,13 @@ class ActionPlayer:
                 elif action.keys:
                     keys = [str(key).lower().strip() for key in action.keys if str(key).strip()]
                     if len(keys) == 1:
-                        input_ctrl.press(keys[0])
+                        ok = input_ctrl.press(keys[0])
                     elif keys:
-                        input_ctrl.hotkey(*keys)
+                        ok = input_ctrl.hotkey(*keys)
+                    else:
+                        ok = False
+                    if ok is False:
+                        return False, "key press send failed"
                 else:
                     return False, "키가 없습니다"
 

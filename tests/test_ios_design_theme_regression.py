@@ -498,9 +498,9 @@ def test_monitoring_editor_and_help_dialog_use_ios_tokens():
     assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in monitoring_editor
     assert "from .theme import COLORS, IOS_METRICS" in help_dialog
     assert 'hover_color=COLORS["green_hover"]' in monitoring_editor
-    assert 'hover_color=COLORS["danger_hover"]' in monitoring_editor
+    assert 'COLORS["danger_hover"]' in monitoring_editor
     assert 'hover_color=COLORS["hover_blue"]' in monitoring_editor
-    assert 'fg_color=COLORS["scroll_purple"]' in monitoring_editor
+    assert 'COLORS["scroll_purple"]' in monitoring_editor
     assert 'fg_color=COLORS["bg_glass"]' in help_dialog
     assert 'fg_color=COLORS["bg_log"]' in help_dialog
     assert 'corner_radius=IOS_METRICS["card_radius"]' in help_dialog

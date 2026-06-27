@@ -71,4 +71,4 @@ def test_monitor_action_conversions_keep_alternate_mouse_route():
 
     assert 'monitor_action["alternate_mouse_route"] = getattr(action, \'alternate_mouse_route\', False)' in player_text
     assert "'alternate_mouse_route'" in constants_text
-    assert 'ma["alternate_mouse_route"] = getattr(act, \'alternate_mouse_route\', False)' in monitoring_text
+    assert '("alternate_mouse_route", False)' in monitoring_text

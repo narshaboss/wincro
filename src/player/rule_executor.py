@@ -540,6 +540,7 @@ class RuleExecutionResult:
     skip_current_playlist: bool = False
     rewind_previous_action: bool = False
     rewind_delay: float = 0.0
+    monitoring_jump_index: int = -1
 
 
 @dataclass
@@ -549,6 +550,7 @@ class ExecutionProgress:
     current_rule: Optional[str] = None
     current_action_number: str = ""
     current_action_name: str = ""
+    current_action_is_monitoring: bool = False
     initial_total: int = 0
     initial_completed: int = 0
     monitoring_rules_active: int = 0
@@ -946,6 +948,28 @@ class RuleExecutor:
                 result.extend(self._flatten_rules_with_step(rule.children, step))
         return result
 
+    def _rules_match_for_jump(self, candidate: AutomationRule, target: AutomationRule) -> bool:
+        """부분실행 복사본과 원본 액션을 같은 점프 대상으로 매칭한다."""
+        if candidate is target:
+            return True
+        if candidate is None or target is None:
+            return False
+        return bool(
+            getattr(candidate, "rule_id", None) == getattr(target, "rule_id", None)
+            and getattr(candidate, "action_type", None) == getattr(target, "action_type", None)
+            and (getattr(candidate, "description", "") or "") == (getattr(target, "description", "") or "")
+        )
+
+    def _find_jump_target_index(
+        self,
+        rules_with_step: List[Tuple[AutomationRule, str]],
+        target_rule: AutomationRule,
+    ) -> int:
+        for candidate_index, (candidate_rule, _candidate_step) in enumerate(rules_with_step or []):
+            if self._rules_match_for_jump(candidate_rule, target_rule):
+                return candidate_index
+        return -1
+
     def _execution_loop(self) -> None:
         """메인 실행 루프"""
         try:
@@ -1018,15 +1042,16 @@ class RuleExecutor:
                         text_preview = rule.action_text[:30] + "..." if len(rule.action_text) > 30 else rule.action_text
                         logger.info(f"  입력: {text_preview}")
 
-                    self._progress.current_rule = rule.rule_id
-                    self._progress.current_action_number = str(step_num)
-                    self._progress.current_action_name = action_name
-                    self._update_progress(f"[{step_num}] {action_name}")
-
                     # 모니터링 모드인 경우 별도 처리
                     # is_monitoring_mode가 True이거나, monitoring_watches가 있으면 모니터링 모드로 실행
                     has_monitoring_watches = len(getattr(rule, 'monitoring_watches', []) or []) > 0
                     is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
+                    self._progress.current_rule = rule.rule_id
+                    self._progress.current_action_number = str(step_num)
+                    self._progress.current_action_name = action_name
+                    self._progress.current_action_is_monitoring = bool(is_monitoring)
+                    self._update_progress(f"[{step_num}] {action_name}")
+
                     logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
                     if is_monitoring:
                         trigger_result = self._handle_trigger_gate(
@@ -1078,6 +1103,56 @@ class RuleExecutor:
                         self._update_progress(f"[{step_num}] 트리거 미감지 → 이전 액션으로 이동")
                         if rewind_delay > 0 and self._stop_event.wait(rewind_delay):
                             break
+                        i = target_index
+                        continue
+
+                    monitoring_jump_index = self._safe_int(getattr(result, "monitoring_jump_index", -1), -1)
+                    if monitoring_jump_index >= 0:
+                        target_rule = None
+                        original_initial_rules = []
+                        try:
+                            original_initial_rules = list(getattr(plan, "_original_initial_rules", None) or [])
+                            runtime_initial_rules = list(getattr(plan, "initial_rules", []) or [])
+                            lookup_rules = original_initial_rules or runtime_initial_rules
+                            if 0 <= monitoring_jump_index < len(lookup_rules):
+                                target_rule = lookup_rules[monitoring_jump_index]
+                        except Exception:
+                            target_rule = None
+
+                        target_index = -1
+                        if target_rule is not None:
+                            target_index = self._find_jump_target_index(all_rules_with_step, target_rule)
+                            if target_index < 0 and original_initial_rules:
+                                original_rules_with_step = (
+                                    self._flatten_rules_with_step(original_initial_rules)
+                                    + self._flatten_rules_with_step(getattr(plan, "monitoring_rules", []) or [])
+                                )
+                                original_target_index = self._find_jump_target_index(original_rules_with_step, target_rule)
+                                if original_target_index >= 0:
+                                    logger.info(
+                                        f"{_CYAN}↪ [{step_num}] 모니터링 점프 대상이 부분실행 범위 밖임 → "
+                                        f"원본 플랜 범위로 전환{_RESET}"
+                                    )
+                                    all_rules_with_step = original_rules_with_step
+                                    all_rules = [rule for rule, _ in all_rules_with_step]
+                                    target_index = original_target_index
+                        if target_index < 0:
+                            message = f"모니터링 점프 대상 액션을 현재 실행 목록에서 찾지 못함: 액션 {monitoring_jump_index + 1}"
+                            logger.error(f"{_RED}✗ [{step_num}] {message}{_RESET}")
+                            self._state = ExecutionState.FAILED
+                            self._update_progress(message)
+                            if self._on_error:
+                                self._on_error(message, rule)
+                            if self._on_complete:
+                                self._on_complete(False, message)
+                            return
+
+                        target_step = all_rules_with_step[target_index][1] if all_rules_with_step else str(monitoring_jump_index + 1)
+                        logger.info(
+                            f"{_CYAN}↪ [{step_num}] 모니터링 점프 → 액션 [{target_step}]부터 재생 계속: "
+                            f"{result.message}{_RESET}"
+                        )
+                        self._update_progress(f"[{step_num}] 모니터링 점프 → 액션 {target_step}")
                         i = target_index
                         continue
 
@@ -1692,7 +1767,10 @@ class RuleExecutor:
                     return self._make_result(rule, True, "기록 키 실행 완료", start_time)
                 if rule.action_keys:
                     keys = [k.lower() for k in rule.action_keys]
-                    input_ctrl.hotkey(*keys)
+                    ok = input_ctrl.hotkey(*keys)
+                    if ok is False:
+                        logger.warning(f"{_YELLOW}{step_prefix}⚠ 단축키 전송 실패: {'+'.join(keys)}{_RESET}")
+                        return self._make_result(rule, False, "단축키 전송 실패", start_time)
                     return self._make_result(rule, True, "단축키 실행 완료", start_time)
                 else:
                     return self._make_result(rule, False, "단축키 없음", start_time)
@@ -1973,8 +2051,11 @@ class RuleExecutor:
                     return self._make_result(rule, True, "기록 키 완료", start_time)
                 if rule.action_keys:
                     keys = [k.lower() for k in rule.action_keys]
-                    input_ctrl.hotkey(*keys)
-                    logger.info(f"{_GREEN}{self._step_prefix}✓ 단축키 완료{_RESET}")
+                    ok = input_ctrl.hotkey(*keys)
+                    if ok is False:
+                        logger.warning(f"{_YELLOW}{self._step_prefix}⚠ 단축키 전송 실패: {'+'.join(keys)}{_RESET}")
+                        return self._make_result(rule, False, "단축키 전송 실패", start_time)
+                    logger.info(f"{_GREEN}{self._step_prefix}✓ 단축키 완료: {'+'.join(keys).upper()}{_RESET}")
                     return self._make_result(rule, True, f"단축키 완료", start_time)
                 return self._make_result(rule, False, "단축키 없음", start_time)
 
@@ -1989,10 +2070,16 @@ class RuleExecutor:
                 if rule.action_keys:
                     keys = [str(key).lower().strip() for key in rule.action_keys if str(key).strip()]
                     if len(keys) == 1:
-                        input_ctrl.press(keys[0])
+                        ok = input_ctrl.press(keys[0])
                     elif keys:
-                        input_ctrl.hotkey(*keys)
-                    logger.info(f"{_GREEN}{self._step_prefix}✓ 키 입력 완료{_RESET}")
+                        ok = input_ctrl.hotkey(*keys)
+                    else:
+                        ok = False
+                    key_label = "+".join(keys).upper()
+                    if ok is False:
+                        logger.warning(f"{_YELLOW}{self._step_prefix}⚠ 키 입력 전송 실패: {key_label}{_RESET}")
+                        return self._make_result(rule, False, "키 입력 전송 실패", start_time)
+                    logger.info(f"{_GREEN}{self._step_prefix}✓ 키 입력 완료: {key_label}{_RESET}")
                     return self._make_result(rule, True, f"키 입력 완료", start_time)
                 return self._make_result(rule, False, "키 없음", start_time)
 
@@ -2887,13 +2974,14 @@ class RuleExecutor:
         action_name = rule.description if rule.description else rule.action_type
         logger.info(f"{_CYAN}[{step_num}] 반복묶음 하위: {action_name}{_RESET}")
 
+        has_monitoring_watches = len(getattr(rule, "monitoring_watches", []) or []) > 0
+        is_monitoring = getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches
         self._progress.current_rule = rule.rule_id
         self._progress.current_action_number = str(step_num)
         self._progress.current_action_name = action_name
+        self._progress.current_action_is_monitoring = bool(is_monitoring)
         self._update_progress(f"[{step_num}] {action_name}")
 
-        has_monitoring_watches = len(getattr(rule, "monitoring_watches", []) or []) > 0
-        is_monitoring = getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches
         if is_monitoring:
             trigger_result = self._handle_trigger_gate(rule, datetime.now(), step_num)
             if trigger_result is not None:
@@ -3153,356 +3241,382 @@ class RuleExecutor:
         current_index: int,
         step_num: str = "",
     ) -> RuleExecutionResult:
-        """
-        모니터링 모드 실행
+        """Run monitoring until the action's final image appears or a route jumps out.
 
-        최종 이미지가 나타날 때까지 대기하면서,
-        감시 이미지가 나타나면 해당 액션으로 점프 후 복귀
+        A route watch executes its dedicated monitor actions first, then returns a
+        jump index to the main execution loop. The target action is not executed
+        inside monitoring mode; jumping ends monitoring immediately.
         """
+        del current_index
         start_time = datetime.now()
-
-        # 타겟 이미지를 최종 이미지로 사용
-        final_image = rule.target_image
-        watches = getattr(rule, 'monitoring_watches', []) or []
-        confidence = rule.confidence if rule.confidence > 0 else 0.65
-
-        # 디버그: 실제 사용되는 인식률 로그
         step_prefix = f"[{step_num}] " if step_num else ""
-        logger.debug(f"모니터링 설정: 인식률={confidence:.0%}, rule_id={rule.rule_id}")
+        base_confidence = rule.confidence if getattr(rule, "confidence", 0) > 0 else 0.8
+        watches = self._normalise_monitoring_watches(rule, base_confidence)
+        final_images = self._monitoring_final_images_for_rule(rule)
+        final_search_region = self._image_search_region_for_rule(rule)
 
-        if not final_image:
-            return self._make_result(rule, False, "타겟 이미지가 설정되지 않음", start_time)
+        if not watches:
+            return self._make_result(rule, False, "모니터링 이미지가 설정되지 않음", start_time)
 
-        if not Path(final_image).exists():
-            return self._make_result(rule, False, f"타겟 이미지 파일 없음: {final_image}", start_time)
-
-        # 유효한 감시 이미지만 필터링
-        valid_watches = []
-        for watch in watches:
-            img_path = watch.get('image')
-            goto_idx = watch.get('goto_index')
-            if img_path and Path(img_path).exists() and goto_idx is not None:
-                valid_watches.append(watch)
-
-        final_name = Path(final_image).name
-
-        # 최종 이미지 검색 범위 계산 (search_region 우선, 없으면 search_radius)
-        final_search_region = None
-        rule_sr = getattr(rule, 'search_region', None)
-        if rule_sr and len(rule_sr) == 4:
-            final_search_region = list(rule_sr)
-        elif rule.search_radius > 0 and rule.action_x is not None and rule.action_y is not None:
-            final_search_region = self._radius_to_region(rule.action_x, rule.action_y, rule.search_radius)
-
-        # 모니터링 시작 시 최종 이미지가 이미 화면에 있는지 확인
-        initial_check = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
-        final_ever_absent = (initial_check is None)  # 시작 시 없으면 바로 True
-        absent_grace_start = time.time() if not final_ever_absent else None  # 사라짐 대기 시작 시각
-        ABSENT_GRACE_SECONDS = 15  # 시작부터 존재 시 최대 대기 시간
-
-        if initial_check:
-            logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 이미 존재 → 최대 {ABSENT_GRACE_SECONDS}초 대기 후 감시 (감시 {len(valid_watches)}개){_RESET}")
-        else:
-            logger.info(f"{_CYAN}{step_prefix}▶ 모니터링 시작: {final_name} 대기 중 (감시 {len(valid_watches)}개){_RESET}")
+        configured_actions = sum(len(watch.get("monitor_actions", []) or []) for watch in watches)
+        logger.info(
+            f"{_CYAN}{step_prefix}▶ 모니터링 시작: 이미지 {len(watches)}개, "
+            f"전용 액션 {configured_actions}개, 최종이미지 {len(final_images)}개{_RESET}"
+        )
+        self._update_progress(f"{step_prefix}모니터링 이미지 대기 중")
 
         wait_count = 0
-        monitoring_start = time.time()
-        # 조건 대기 중인 watch 추적 (모니터링 액션 중복 실행 방지)
-        condition_pending_watch = None  # 조건 미충족으로 대기 중인 watch 이미지 경로
-
+        last_status = 0.0
         while True:
-            # 중지 체크
             if self._stop_event.is_set():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
-
-            # 일시정지 대기
             if self._wait_for_resume():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
-            # 1. 감시 이미지들 검색 (감시이미지 우선 처리)
-            watch_found = False
-            for watch in valid_watches:
-                if self._stop_event.is_set():
-                    return self._make_result(rule, False, "실행 중지됨", start_time)
-
-                watch_image = watch.get('image')
-                goto_index = watch.get('goto_index')
-                if not watch_image:
-                    logger.warning(f"{_YELLOW}  ⚠ 감시 이미지 경로가 설정되지 않음 - 건너뜀{_RESET}")
-                    continue
-                watch_name = Path(watch_image).name
-                search_region = watch.get('search_region')
-                # watch별 개별 인식률 사용, 없으면 rule의 confidence 폴백
-                watch_confidence = watch.get('confidence', confidence)
-
-                # search_radius가 있고 search_region이 없으면 변환
-                watch_search_radius = watch.get('search_radius', 0)
-                if not search_region and watch_search_radius > 0:
-                    watch_center_x = watch.get('center_x')
-                    if watch_center_x is None:
-                        watch_center_x = watch.get('x')
-                    watch_center_y = watch.get('center_y')
-                    if watch_center_y is None:
-                        watch_center_y = watch.get('y')
-                    if watch_center_x is not None and watch_center_y is not None:
-                        search_region = self._radius_to_region(watch_center_x, watch_center_y, watch_search_radius)
-
-                watch_result = self._find_image_on_screen(
-                    watch_image, watch_confidence,
-                    search_region=search_region
+            final_result = self._find_monitoring_final_image(rule, final_images, final_search_region, base_confidence)
+            if final_result is not None:
+                final_image, found = final_result
+                final_confidence = found[2] if len(found) > 2 else 0
+                logger.info(
+                    f"{_GREEN}{step_prefix}✓ 모니터링 최종이미지 발견: {Path(final_image).name} "
+                    f"({int(final_confidence * 100)}%) - 모니터링 종료{_RESET}"
                 )
-                if watch_result:
-                    watch_found = True
-                    watch_x, watch_y, found_conf = watch_result
-                    conf_pct = int(found_conf * 100)
-                    has_condition = bool(watch.get('condition_image'))
+                return self._make_result(rule, True, "모니터링 완료 - 최종이미지 발견", start_time)
 
-                    # 조건 대기 중인 watch면 모니터링 액션 건너뛰고 조건만 재확인
-                    skip_monitor_actions = (condition_pending_watch == watch_image)
+            for watch in sorted(watches, key=self._monitoring_watch_priority):
+                image_path = watch.get("image")
+                if not image_path:
+                    continue
+                if not Path(image_path).exists():
+                    logger.warning(f"{_YELLOW}{step_prefix}⚠ 모니터링 이미지 파일 없음: {image_path}{_RESET}")
+                    continue
 
-                    if skip_monitor_actions:
-                        elapsed = time.time() - monitoring_start
-                        logger.debug(f"조건 대기 중 [{watch_name}] ({elapsed:.0f}초) - 조건 재확인")
-                    else:
-                        condition_pending_watch = None  # 새로운 watch이므로 초기화
-                        if goto_index >= 0:
-                            if has_condition:
-                                logger.info(f"{_YELLOW}  ⚡ {watch_name} 감지 ({conf_pct}%) → 액션 실행 후 조건 확인{_RESET}")
-                            else:
-                                logger.info(f"{_YELLOW}  ⚡ {watch_name} 감지 ({conf_pct}%) → 액션 {goto_index + 1} 실행{_RESET}")
-                            self._update_progress(f"감시 이미지 발견 → 액션 {goto_index + 1}")
-                        else:
-                            logger.info(f"{_YELLOW}  ⚡ {watch_name} 감지 ({conf_pct}%) → 모니터링 액션 실행{_RESET}")
-                            self._update_progress(f"감시 이미지 발견 → 모니터링 액션 실행")
+                confidence = watch.get("confidence", base_confidence) or base_confidence
+                search_region = watch.get("search_region")
+                jump_enabled = bool(watch.get("jump_enabled", True))
+                result = self._find_image_on_screen(
+                    image_path,
+                    confidence,
+                    search_region=search_region,
+                    verify_color=bool(watch.get("verify_image_color", False)),
+                    verify_brightness=bool(watch.get("verify_image_brightness", False)),
+                )
+                if not result:
+                    continue
 
-                    # 모니터링 액션들 가져오기
-                    monitor_actions = watch.get('monitor_actions', [])
-                    # 하위 호환: 단수형 monitor_action도 지원
-                    if not monitor_actions and watch.get('monitor_action'):
-                        monitor_actions = [watch.get('monitor_action')]
+                found_confidence = result[2] if len(result) > 2 else 0
+                image_name = Path(image_path).name
+                monitor_actions = watch.get("monitor_actions", []) or []
+                goto_index = self._safe_int(watch.get("goto_index", -1), -1)
+                if goto_index < 0:
+                    logger.debug(
+                        f"{step_prefix}모니터링 기본 감시 무시: {image_name} "
+                        "(이미지별 이동 대상 없음)"
+                    )
+                    continue
+                if goto_index >= 0:
+                    logger.info(
+                        f"{_GREEN}{step_prefix}✓ 라우팅 이미지 발견: {image_name} "
+                        f"({int(found_confidence * 100)}%) - 전용 액션 {len(monitor_actions)}개 후 액션 {goto_index + 1} 이동{_RESET}"
+                    )
+                    self._update_progress(f"{step_prefix}라우팅 이미지 발견 → 전용 액션/액션 {goto_index + 1}")
+                    if monitor_actions:
+                        action_result = self._execute_monitor_action_sequence(
+                            rule,
+                            monitor_actions,
+                            base_confidence,
+                            start_time,
+                            step_prefix,
+                        )
+                        if action_result is not None:
+                            return action_result
 
-                    # 모니터링 액션 실행 (조건 대기 중이면 건너뜀)
-                    if not skip_monitor_actions:
-                        if monitor_actions:
-                            logger.info(f"{_CYAN}  ▶▶ 모니터링 액션 {len(monitor_actions)}개 실행 시작 [{watch_name}]{_RESET}")
-                        else:
-                            logger.warning(f"{_YELLOW}  ⚠ {watch_name}: 모니터링 액션 없음{_RESET}")
-
-                    for monitor_action in ([] if skip_monitor_actions else monitor_actions):
-                        if self._stop_event.is_set():
-                            break
-                        if monitor_action and monitor_action.get('type') and monitor_action.get('type') != '없음':
-                            # 반복 횟수
-                            repeat_count = monitor_action.get('repeat_count', 1)
-                            if not isinstance(repeat_count, int) or repeat_count < 1:
-                                repeat_count = 1
-                            repeat_delay = monitor_action.get('repeat_delay', 0.5)
-                            repeat_delay_random = monitor_action.get('repeat_delay_random', False)
-                            repeat_delay_range = monitor_action.get('repeat_delay_random_range', 0.3)
-
-                            for repeat_i in range(repeat_count):
-                                if self._stop_event.is_set():
-                                    break
-
-                                action_type = monitor_action.get('type', '알수없음')
-                                action_detail = ""
-                                if action_type == '이미지 클릭':
-                                    img = monitor_action.get('image', '')
-                                    action_detail = f" [{Path(img).name}]" if img else ""
-                                elif action_type == '키 입력':
-                                    keys = monitor_action.get('keys', [])
-                                    action_detail = f" [{'+'.join(keys)}]" if keys else ""
-                                logger.info(f"{_CYAN}    ▷ 모니터링 액션 실행: {action_type}{action_detail}{_RESET}")
-                                action_result = self._execute_monitor_action(monitor_action, confidence)
-                                if action_result:
-                                    if repeat_count > 1:
-                                        logger.info(f"{_GREEN}    ✓✓ 모니터링 액션 성공: {action_result} ({repeat_i+1}/{repeat_count}){_RESET}")
-                                    else:
-                                        logger.info(f"{_GREEN}    ✓✓ 모니터링 액션 성공: {action_result}{_RESET}")
-                                else:
-                                    if repeat_count > 1:
-                                        logger.warning(f"{_YELLOW}    ✗✗ 모니터링 액션 실패: {action_type}{action_detail} ({repeat_i+1}/{repeat_count}){_RESET}")
-                                    else:
-                                        logger.warning(f"{_YELLOW}    ✗✗ 모니터링 액션 실패: {action_type}{action_detail}{_RESET}")
-
-                                # 반복 사이 대기 (마지막 반복 제외)
-                                if repeat_i < repeat_count - 1:
-                                    delay = repeat_delay
-                                    if repeat_delay_random:
-                                        delay += random.uniform(-repeat_delay_range, repeat_delay_range)
-                                    time.sleep(max(0.05, delay))
-
-                            if self._stop_event.is_set():
-                                break
-
-                            # 액션 후 대기시간
-                            wait_after = monitor_action.get('wait_after', 0.5)
-                            wait_random = monitor_action.get('wait_random', False)
-                            wait_range = monitor_action.get('wait_random_range', 0.3)
-
-                            if wait_random:
-                                wait_after += random.uniform(-wait_range, wait_range)
-                            time.sleep(max(0.05, wait_after))
-
-                    if not skip_monitor_actions and monitor_actions:
-                        time.sleep(0.1)  # 모든 액션 완료 후 대기
-
-                    # 중지 체크 - 모니터링 액션 후 goto 실행 전
-                    if self._stop_event.is_set():
-                        return self._make_result(rule, False, "실행 중지됨", start_time)
-
-                    # 점프 조건 이미지 체크 (모니터링 액션 실행 후, 점프 전에 확인)
-                    # 조건 이미지 발견 = 점프 차단 (아직 조건 상태임)
-                    # 조건 이미지 없음 = 점프 실행 (조건 해소됨)
-                    condition_image = watch.get('condition_image')
-                    condition_search_region = watch.get('condition_search_region')
-                    condition_confidence = watch.get('condition_confidence', 0.80)
-                    condition_met = True  # 조건 없으면 항상 충족
-                    if condition_image and Path(condition_image).exists():
-                        condition_result = self._find_image_on_screen(condition_image, condition_confidence, search_region=condition_search_region)
-                        if condition_result:
-                            _, _, actual_conf = condition_result
-                            logger.info(f"{_YELLOW}  ⏳ 조건 미충족: {Path(condition_image).name} ({actual_conf:.0%}) → 점프 대기{_RESET}")
-                            condition_met = False
-                        else:
-                            logger.info(f"{_GREEN}  ✓ 조건 충족: {Path(condition_image).name} 해소 → 점프 실행{_RESET}")
-                            condition_met = True
-
-                    logger.debug(f"  [점프판정] condition_image={Path(condition_image).name if condition_image else '없음'}, goto_index={goto_index}, condition_met={condition_met}")
-
-                    # 조건 미충족 시 점프만 건너뜀 (모니터링 액션은 이미 실행됨)
-                    if not condition_met:
-                        wait_count = 0
-                        condition_pending_watch = watch_image  # 다음 루프에서 액션 건너뛰기
-                        # 쿨다운 중에도 stop 즉시 반응
-                        if self._stop_event.wait(timeout=3.0):
+                    if not jump_enabled:
+                        logger.info(
+                            f"{_YELLOW}{step_prefix}↷ 모니터링 점프 비활성: {image_name} "
+                            f"전용 액션만 처리하고 최종이미지 대기로 복귀{_RESET}"
+                        )
+                        self._update_progress(f"{step_prefix}모니터링 점프 비활성 → 대기 계속")
+                        if self._stop_event.wait(timeout=0.5):
                             return self._make_result(rule, False, "실행 중지됨", start_time)
-                        break  # 감시 루프 탈출, 다시 검색
+                        break
 
-                    # 조건 충족 → 조건 대기 상태 해제
-                    condition_pending_watch = None
+                    if self._monitoring_route_condition_blocks_jump(watch, base_confidence, step_prefix):
+                        if self._stop_event.wait(timeout=0.5):
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+                        break
 
-                    # 해당 부모 액션 + 자식들 실행 (goto_index가 유효할 때)
-                    logger.info(f"  [점프실행] condition_met={condition_met}, goto_index={goto_index}")
-                    if goto_index >= 0:
-                        plan = self._current_plan
-                        if not plan:
-                            logger.error(f"  실행 계획이 없음 - 점프 건너뜀")
-                        else:
-                            # 부분 실행 시 원본 rules 사용 (goto_index는 원본 기준)
-                            goto_rules = getattr(plan, '_original_initial_rules', None) or plan.initial_rules
-                            if goto_index < len(goto_rules):
-                                parent_rule = goto_rules[goto_index]
-                                # 부모 + 자식 평탄화
-                                rules_to_execute = self._flatten_rules([parent_rule])
-                                children_count = len(rules_to_execute) - 1
+                    target_rules = []
+                    plan = self._current_plan
+                    if plan is not None:
+                        target_rules = list(
+                            getattr(plan, "_original_initial_rules", None)
+                            or getattr(plan, "initial_rules", [])
+                            or []
+                        )
+                    if not target_rules:
+                        target_rules = list(all_rules or [])
+                    if goto_index < 0 or goto_index >= len(target_rules):
+                        return self._make_result(
+                            rule,
+                            False,
+                            f"모니터링 점프 대상 액션 번호 오류: {goto_index + 1}",
+                            start_time,
+                        )
+                    target_rule = target_rules[goto_index]
+                    if getattr(target_rule, "rule_id", None) == getattr(rule, "rule_id", None):
+                        return self._make_result(rule, False, "모니터링 점프 자기 자신 실행 차단", start_time)
+                    if not getattr(target_rule, "enabled", True):
+                        return self._make_result(rule, False, f"모니터링 점프 대상 비활성: 액션 {goto_index + 1}", start_time)
 
-                                logger.debug(f"goto 실행: 액션 {goto_index + 1} ({parent_rule.action_type}) - {parent_rule.description or ''}")
-                                logger.debug(f"goto 액션 인식률: {parent_rule.confidence if parent_rule.confidence > 0 else 0.65:.0%}")
-                                if children_count > 0:
-                                    logger.debug(f"부모 액션 + 하위 {children_count}개 실행")
+                    action_name = getattr(target_rule, "description", "") or getattr(target_rule, "action_type", "동작")
+                    logger.info(
+                        f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {goto_index + 1} {action_name}{_RESET}"
+                    )
+                    self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {goto_index + 1}")
+                    return self._make_result(
+                        rule,
+                        True,
+                        f"모니터링 점프 - 액션 {goto_index + 1}",
+                        start_time,
+                        monitoring_jump_index=goto_index,
+                    )
 
-                                for exec_rule in rules_to_execute:
-                                    if self._stop_event.is_set():
-                                        break
-                                    jump_result = self._execute_rule_with_retry(exec_rule)
-                                    if not jump_result.success:
-                                        logger.warning(f"{_YELLOW}  ✗ 액션 {goto_index + 1} 실패: {jump_result.message}{_RESET}")
-                                        break
-                                    # 대기 시간 적용 (stop 즉시 반응)
-                                    wait_time = getattr(exec_rule, 'wait_after', 0.5)
-                                    if wait_time > 0:
-                                        if self._stop_event.wait(timeout=wait_time):
-                                            break
-                                else:
-                                    logger.info(f"{_GREEN}{step_prefix}✓ 점프 액션 완료 → 모니터링 복귀{_RESET}")
-                            else:
-                                logger.error(f"{_RED}  ✗ 잘못된 액션 번호: {goto_index + 1} (전체 {len(goto_rules)}개){_RESET}")
-                    # goto_index가 -1이면 점프 없이 모니터링 액션만 실행 (정상 케이스)
-
-                    # 다시 모니터링으로 복귀 (wait_count 초기화)
-                    wait_count = 0
-                    self._update_progress(f"{step_prefix}모니터링 복귀: {final_name} 대기 중")
-                    break  # 감시 루프 탈출하고 처음부터 다시 검색
-
-            # 감시 이미지 미발견 → 조건 대기 상태 해제
-            if not watch_found:
-                condition_pending_watch = None
-            # 2. 최종 이미지 검색 (감시이미지가 없을 때만)
-            if not watch_found:
-                final_result = self._find_image_on_screen(final_image, confidence, search_region=final_search_region)
-                if final_result:
-                    _, _, final_conf = final_result
-                    # 최종 이미지가 시작부터 있었고 아직 사라진 적 없으면 → 일정 시간 대기
-                    if not final_ever_absent:
-                        # 대기 시간 초과 시 강제로 absent 처리
-                        if absent_grace_start and (time.time() - absent_grace_start) >= ABSENT_GRACE_SECONDS:
-                            final_ever_absent = True
-                            absent_grace_start = None
-                            logger.info(f"{_CYAN}{step_prefix}▶ {final_name} {ABSENT_GRACE_SECONDS}초간 유지 → 재출현 대기 해제{_RESET}")
-                        else:
-                            logger.debug(f"{step_prefix}{final_name} 존재 중 (시작부터 유지) - 사라질 때까지 대기")
-                    else:
-                        # 사라졌다 재출현 → 진짜 종료 조건
-                        logger.info(f"{_YELLOW}{step_prefix}⏳ {final_name} 감지 ({int(final_conf * 100)}%) - 감시 이미지 재확인 중...{_RESET}")
-                        time.sleep(0.5)
-                        # 감시이미지 재확인: 뒤늦게 나타난 감시이미지가 있으면 감시 우선 처리
-                        recheck_watch_found = False
-                        for watch in valid_watches:
-                            if self._stop_event.is_set():
-                                return self._make_result(rule, False, "실행 중지됨", start_time)
-                            watch_image = watch.get('image')
-                            if not watch_image:
-                                continue
-                            # 조건 대기 중인 watch는 재확인에서 제외 (어차피 점프 불가)
-                            if watch_image == condition_pending_watch:
-                                continue
-                            search_region = watch.get('search_region')
-                            watch_search_radius = watch.get('search_radius', 0)
-                            if not search_region and watch_search_radius > 0:
-                                watch_center_x = watch.get('center_x')
-                                if watch_center_x is None:
-                                    watch_center_x = watch.get('x')
-                                watch_center_y = watch.get('center_y')
-                                if watch_center_y is None:
-                                    watch_center_y = watch.get('y')
-                                if watch_center_x is not None and watch_center_y is not None:
-                                    search_region = self._radius_to_region(watch_center_x, watch_center_y, watch_search_radius)
-                            recheck_confidence = watch.get('confidence', confidence)
-                            recheck_result = self._find_image_on_screen(watch_image, recheck_confidence, search_region=search_region)
-                            if recheck_result:
-                                recheck_watch_found = True
-                                logger.info(f"{_YELLOW}{step_prefix}⚡ {Path(watch_image).name} 뒤늦게 감지 → 모니터링 계속{_RESET}")
-                                break
-                        if not recheck_watch_found:
-                            logger.info(f"{_GREEN}{step_prefix}✓ {final_name} 확인 완료 ({int(final_conf * 100)}%) - 모니터링 종료{_RESET}")
-                            return self._make_result(rule, True, "모니터링 완료 - 최종 이미지 발견", start_time)
-                        # 감시이미지 발견됨 → 루프 처음으로 돌아가서 정상 감시 처리
-                        wait_count = 0
-                        time.sleep(0.5)
-                        continue
+            wait_count += 1
+            now = time.time()
+            if now - last_status >= 10.0:
+                last_status = now
+                elapsed = (datetime.now() - start_time).total_seconds()
+                if elapsed >= 60:
+                    logger.info(
+                        f"{_YELLOW}{step_prefix}⏳ 모니터링 이미지 대기 중... "
+                        f"{int(elapsed) // 60}분 {int(elapsed) % 60}초{_RESET}"
+                    )
                 else:
-                    # 최종 이미지가 화면에 없음 → 사라진 적 있음 표시
-                    if not final_ever_absent:
-                        final_ever_absent = True
-                        absent_grace_start = None
-                        logger.info(f"{_CYAN}{step_prefix}▶ {final_name} 사라짐 → 재출현 시 모니터링 종료{_RESET}")
+                    logger.info(f"{_YELLOW}{step_prefix}⏳ 모니터링 이미지 대기 중... {elapsed:.0f}초{_RESET}")
+                self._update_progress(f"{step_prefix}모니터링 이미지 대기 중 ({wait_count}회)")
 
-            # 감시 이미지 처리 완료 (조건 충족 → 점프 등), 다음 반복으로
-            if watch_found:
-                time.sleep(0.5)
+            if self._stop_event.wait(timeout=0.5):
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+
+    def _monitoring_final_images_for_rule(self, rule: AutomationRule) -> List[str]:
+        """Return final images that stop monitoring without mixing them with watch images."""
+        images: List[str] = []
+        seen = set()
+        watch_images = {
+            str(watch.get("image") or watch.get("image_path"))
+            for watch in (getattr(rule, "monitoring_watches", None) or [])
+            if isinstance(watch, dict) and (watch.get("image") or watch.get("image_path"))
+        }
+        legacy_final = getattr(rule, "monitoring_final_image", None)
+        raw_images = []
+        if legacy_final:
+            raw_images.append(legacy_final)
+        raw_images.extend(self._target_images_for_rule(rule))
+
+        for image_path in raw_images:
+            if not image_path:
+                continue
+            text_path = str(image_path)
+            if text_path in watch_images:
+                continue
+            if text_path in seen:
+                continue
+            seen.add(text_path)
+            images.append(text_path)
+        return images
+
+    def _find_monitoring_final_image(
+        self,
+        rule: AutomationRule,
+        final_images: List[str],
+        search_region,
+        confidence: float,
+    ) -> Optional[Tuple[str, tuple]]:
+        """Find the action's final image; this is the only normal monitoring stop condition."""
+        verify_color = bool(getattr(rule, "verify_image_color", False))
+        verify_brightness = bool(getattr(rule, "verify_image_brightness", False))
+        for image_path in final_images:
+            if not Path(image_path).exists():
+                continue
+            result = self._find_image_on_screen(
+                image_path,
+                confidence,
+                search_region=search_region,
+                verify_color=verify_color,
+                verify_brightness=verify_brightness,
+            )
+            if result:
+                return image_path, result
+        return None
+
+    def _normalise_monitoring_watches(
+        self,
+        rule: AutomationRule,
+        base_confidence: float,
+    ) -> List[Dict[str, Any]]:
+        """Return monitoring watches in the new single-purpose shape."""
+        watches: List[Dict[str, Any]] = []
+        raw_watches = getattr(rule, "monitoring_watches", None) or []
+
+        for watch_order, raw in enumerate(raw_watches):
+            if not isinstance(raw, dict):
+                continue
+            image = raw.get("image") or raw.get("image_path")
+            if not image:
+                continue
+            goto_index = self._safe_int(raw.get("goto_index", -1), -1)
+            if goto_index < 0:
+                continue
+            monitor_actions = list(raw.get("monitor_actions") or [])
+            if not monitor_actions and raw.get("monitor_action"):
+                monitor_actions = [raw.get("monitor_action")]
+            watches.append(
+                {
+                    "image": image,
+                    "search_region": raw.get("search_region") or getattr(rule, "search_region", None),
+                    "confidence": raw.get("confidence", base_confidence),
+                    "goto_index": goto_index,
+                    "jump_enabled": bool(raw.get("jump_enabled", True)),
+                    "verify_image_color": raw.get("verify_image_color", False),
+                    "verify_image_brightness": raw.get("verify_image_brightness", False),
+                    "monitor_actions": [item for item in monitor_actions if isinstance(item, dict)],
+                    "condition_image": raw.get("condition_image"),
+                    "condition_search_region": raw.get("condition_search_region"),
+                    "condition_confidence": raw.get("condition_confidence", 0.8),
+                    "condition_jump_when_visible": bool(raw.get("condition_jump_when_visible", False)),
+                    "condition_verify_image_color": bool(raw.get("condition_verify_image_color", False)),
+                    "condition_verify_image_brightness": bool(raw.get("condition_verify_image_brightness", False)),
+                    "_watch_order": watch_order,
+                }
+            )
+        return watches
+
+    @staticmethod
+    def _monitoring_watch_priority(watch: dict) -> tuple[int, int]:
+        try:
+            goto_index = int(watch.get("goto_index", -1))
+        except (TypeError, ValueError):
+            goto_index = -1
+        try:
+            watch_order = int(watch.get("_watch_order", 0))
+        except (TypeError, ValueError):
+            watch_order = 0
+        return (0 if goto_index >= 0 else 1, watch_order)
+
+    def _monitoring_route_condition_blocks_jump(self, watch: dict, base_confidence: float, step_prefix: str = "") -> bool:
+        condition_image = watch.get("condition_image")
+        if not condition_image:
+            return False
+        if not Path(condition_image).exists():
+            logger.warning(f"{_YELLOW}{step_prefix}⚠ 모니터링 조건이미지 파일 없음: {condition_image}{_RESET}")
+            return False
+        jump_when_visible = bool(watch.get("condition_jump_when_visible", False))
+        condition_confidence = self._safe_float(watch.get("condition_confidence", 0.8), 0.8)
+        condition_region = watch.get("condition_search_region")
+        result = self._find_image_on_screen(
+            condition_image,
+            condition_confidence or base_confidence,
+            search_region=condition_region,
+            verify_color=bool(watch.get("condition_verify_image_color", False)),
+            verify_brightness=bool(watch.get("condition_verify_image_brightness", False)),
+        )
+        if not result:
+            if jump_when_visible:
+                logger.info(
+                    f"{_YELLOW}{step_prefix}⏳ 모니터링 조건 미충족: {Path(condition_image).name} 없음 "
+                    f"→ 점프 대기{_RESET}"
+                )
+                self._update_progress(f"{step_prefix}모니터링 조건 대기 중")
+                return True
+            logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 조건 해소: {Path(condition_image).name} 없음 → 점프 실행{_RESET}")
+            return False
+        actual_confidence = result[2] if len(result) > 2 else 0
+        if jump_when_visible:
+            logger.info(
+                f"{_GREEN}{step_prefix}✓ 모니터링 조건 충족: {Path(condition_image).name} "
+                f"({int(actual_confidence * 100)}%) → 점프 실행{_RESET}"
+            )
+            return False
+        logger.info(
+            f"{_YELLOW}{step_prefix}⏳ 모니터링 조건 유지: {Path(condition_image).name} "
+            f"({int(actual_confidence * 100)}%) → 점프 대기{_RESET}"
+        )
+        self._update_progress(f"{step_prefix}모니터링 조건 대기 중")
+        return True
+
+    def _execute_monitor_action_sequence(
+        self,
+        rule: AutomationRule,
+        monitor_actions: List[dict],
+        confidence: float,
+        start_time: datetime,
+        step_prefix: str = "",
+    ) -> Optional[RuleExecutionResult]:
+        for action_index, monitor_action in enumerate(monitor_actions, start=1):
+            if self._stop_event.is_set():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+            if not monitor_action or monitor_action.get("type") in {None, "", "없음"}:
                 continue
 
-            # 3. 대기
-            wait_count += 1
-            if wait_count % 20 == 1:  # 10초마다 로그
-                elapsed = time.time() - monitoring_start
-                if elapsed >= 60:
-                    logger.info(f"{_YELLOW}{step_prefix}⏳ 모니터링 대기 중... {int(elapsed)//60}분 {int(elapsed)%60}초{_RESET}")
-                else:
-                    logger.info(f"{_YELLOW}{step_prefix}⏳ 모니터링 대기 중... {elapsed:.0f}초{_RESET}")
-            time.sleep(0.5)
+            repeat_count = self._safe_positive_int(monitor_action.get("repeat_count", 1), 1)
+            repeat_delay = self._safe_float(monitor_action.get("repeat_delay", 0.5), 0.5)
+            repeat_delay_random = bool(monitor_action.get("repeat_delay_random", False))
+            repeat_delay_range = self._safe_float(monitor_action.get("repeat_delay_random_range", 0.3), 0.3)
+            action_type = monitor_action.get("type", "알수없음")
 
+            for repeat_index in range(repeat_count):
+                if self._stop_event.is_set():
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+                logger.info(
+                    f"{_CYAN}{step_prefix}  ▷ 모니터링 전용 액션 {action_index}/{len(monitor_actions)} "
+                    f"실행: {action_type} ({repeat_index + 1}/{repeat_count}){_RESET}"
+                )
+                action_message = self._execute_monitor_action(monitor_action, confidence)
+                if not action_message:
+                    return self._make_result(
+                        rule,
+                        False,
+                        f"모니터링 전용 액션 실패: {action_type}",
+                        start_time,
+                    )
+                logger.info(f"{_GREEN}{step_prefix}  ✓ {action_message}{_RESET}")
+
+                if repeat_index < repeat_count - 1:
+                    delay = repeat_delay
+                    if repeat_delay_random:
+                        delay += random.uniform(-repeat_delay_range, repeat_delay_range)
+                    if self._stop_event.wait(timeout=max(0.05, delay)):
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            wait_after = self._safe_float(monitor_action.get("wait_after", 0.5), 0.5)
+            if bool(monitor_action.get("wait_random", False)):
+                wait_range = self._safe_float(monitor_action.get("wait_random_range", 0.3), 0.3)
+                wait_after += random.uniform(-wait_range, wait_range)
+            if wait_after > 0 and self._stop_event.wait(timeout=max(0.05, wait_after)):
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+        return None
+
+    @staticmethod
+    def _safe_positive_int(value, default: int = 1) -> int:
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
     def _execute_monitor_action(
         self,
         monitor_action: dict,
@@ -3554,14 +3668,18 @@ class RuleExecutor:
                 key_events = monitor_action.get('key_events', []) or []
                 input_ctrl = get_input_controller()
                 if key_events:
-                    input_ctrl.replay_key_events(key_events)
+                    ok = input_ctrl.replay_key_events(key_events)
+                    if ok is False:
+                        return None
                     return "기록 키 입력"
                 if keys:
                     key_list = [k.lower().strip() for k in keys if k.strip()]
                     if len(key_list) == 1:
-                        input_ctrl.press(key_list[0])
+                        ok = input_ctrl.press(key_list[0])
                     else:
-                        input_ctrl.hotkey(*key_list)
+                        ok = input_ctrl.hotkey(*key_list)
+                    if ok is False:
+                        return None
                     return f"키 입력: {'+'.join(key_list)}"
 
             elif action_type == '마우스 클릭':
@@ -3614,7 +3732,23 @@ class RuleExecutor:
                     logger.warning(f"{_YELLOW}⚠ 이미지 파일 없음: {Path(image_path).name}{_RESET}")
                     return None
 
-                location = self._find_image_on_screen(image_path, search_confidence, search_region=search_region)
+                if monitor_action.get("click_until_image_disappears", False):
+                    return self._execute_monitor_image_click_until_disappears(
+                        monitor_action,
+                        image_path,
+                        click_type,
+                        search_confidence,
+                        search_region,
+                        alternate_route,
+                    )
+
+                location = self._find_image_on_screen(
+                    image_path,
+                    search_confidence,
+                    search_region=search_region,
+                    verify_color=bool(monitor_action.get("verify_image_color", False)),
+                    verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
+                )
                 if location:
                     x, y = location[0], location[1]
                     conf = location[2] if len(location) > 2 else 0
@@ -3659,6 +3793,77 @@ class RuleExecutor:
         except Exception as e:
             logger.error(f"{_RED}✗ 모니터링 액션 오류: {e}{_RESET}")
             return None
+
+        return None
+
+    def _execute_monitor_image_click_until_disappears(
+        self,
+        monitor_action: dict,
+        image_path: str,
+        click_type: str,
+        search_confidence: float,
+        search_region,
+        alternate_route: bool,
+    ) -> Optional[str]:
+        """Click a monitor-action image until it disappears, using normal action limits."""
+        try:
+            configured_count = int(monitor_action.get("repeat_count", 1) or 1)
+        except (TypeError, ValueError):
+            configured_count = 1
+        max_clicks = max(IMAGE_CLICK_UNTIL_DISAPPEAR_MIN_CLICKS, configured_count)
+        delay = self._safe_float(
+            monitor_action.get(
+                "click_until_image_disappears_delay",
+                monitor_action.get("repeat_delay", 0.5),
+            ),
+            0.5,
+        )
+        started = time.time()
+        clicks = 0
+        misses = 0
+        input_ctrl = get_input_controller()
+        image_name = Path(image_path).name
+
+        while not self._stop_event.is_set():
+            if time.time() - started >= IMAGE_CLICK_UNTIL_DISAPPEAR_MAX_SECONDS:
+                return f"이미지 반복 클릭 시간초과: {image_name} ({clicks}회)"
+            if clicks >= max_clicks:
+                return f"이미지 반복 클릭 한도 도달: {image_name} ({clicks}회)"
+
+            location = self._find_image_on_screen(
+                image_path,
+                search_confidence,
+                search_region=search_region,
+                verify_color=bool(monitor_action.get("verify_image_color", False)),
+                verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
+            )
+            if not location:
+                misses += 1
+                if misses >= IMAGE_CLICK_UNTIL_DISAPPEAR_MISS_CONFIRM:
+                    return f"이미지 사라짐: {image_name} ({clicks}회)"
+                if self._stop_event.wait(timeout=0.15):
+                    return None
+                continue
+
+            misses = 0
+            x, y = int(location[0]), int(location[1])
+            if alternate_route:
+                if not self._move_mouse_to(x, y, alternate_route=True):
+                    return None
+            else:
+                input_ctrl.move_to(x, y, duration=self._mouse_duration)
+            time.sleep(0.05)
+
+            if click_type == "double_click":
+                input_ctrl.double_click()
+            elif click_type == "right_click":
+                input_ctrl.right_click()
+            else:
+                input_ctrl.click()
+
+            clicks += 1
+            if self._stop_event.wait(timeout=max(0.05, delay)):
+                return None
 
         return None
 
@@ -3831,6 +4036,7 @@ class RuleExecutor:
         skip_current_playlist: bool = False,
         rewind_previous_action: bool = False,
         rewind_delay: float = 0.0,
+        monitoring_jump_index: int = -1,
     ) -> RuleExecutionResult:
         """실행 결과 생성"""
         execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -3843,6 +4049,7 @@ class RuleExecutor:
             skip_current_playlist=skip_current_playlist,
             rewind_previous_action=rewind_previous_action,
             rewind_delay=rewind_delay,
+            monitoring_jump_index=monitoring_jump_index,
         )
 
     def _update_progress(self, message: str) -> None:

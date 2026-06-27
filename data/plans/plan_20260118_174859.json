@@ -2362,9 +2362,9 @@
               "trigger_missing_rewind_key_repeat_delay": 0.5,
               "trigger_missing_rewind_key_repeat_delay_random": false,
               "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-              "repeat_count": 1,
+              "repeat_count": 2,
               "repeat_delay": 0.5,
-              "repeat_delay_random": false,
+              "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
               "timestamp": 0.0,
               "parent_id": "rule_41a59d7d",
@@ -2413,7 +2413,7 @@
               "move_mouse_before_search": false,
               "alternate_mouse_route": false,
               "click_until_image_disappears": false,
-              "click_until_image_disappears_delay": 0.5,
+              "click_until_image_disappears_delay": 1.2,
               "wait_after": 0.9,
               "wait_random": true,
               "enabled": true,
@@ -2440,7 +2440,7 @@
               "trigger_missing_rewind_key_repeat_delay_random": false,
               "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
               "repeat_count": 4,
-              "repeat_delay": 0.5,
+              "repeat_delay": 1.2,
               "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
               "timestamp": 0.0,
@@ -2508,9 +2508,9 @@
               "trigger_missing_rewind_key_repeat_delay": 0.5,
               "trigger_missing_rewind_key_repeat_delay_random": false,
               "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-              "repeat_count": 1,
+              "repeat_count": 2,
               "repeat_delay": 0.5,
-              "repeat_delay_random": false,
+              "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
               "timestamp": 0.0,
               "parent_id": "rule_41a59d7d",
@@ -2559,7 +2559,7 @@
               "move_mouse_before_search": false,
               "alternate_mouse_route": false,
               "click_until_image_disappears": false,
-              "click_until_image_disappears_delay": 0.5,
+              "click_until_image_disappears_delay": 1.1,
               "wait_after": 0.9,
               "wait_random": true,
               "enabled": true,
@@ -2586,7 +2586,7 @@
               "trigger_missing_rewind_key_repeat_delay_random": false,
               "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
               "repeat_count": 4,
-              "repeat_delay": 0.5,
+              "repeat_delay": 1.1,
               "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
               "timestamp": 0.0,
@@ -6658,17 +6658,19 @@
         }
       ],
       "is_monitoring_mode": true,
-      "monitoring_final_image": null,
+      "monitoring_final_image": "img_3859fcac.png",
       "monitoring_watches": [
         {
           "image": "trigger_20260121_183524_166.png",
-          "goto_index": 5,
           "search_region": [
             0,
             0,
             841,
             756
           ],
+          "confidence": 0.8,
+          "goto_index": 5,
+          "jump_enabled": true,
           "monitor_actions": [
             {
               "type": "이미지 클릭",
@@ -6712,20 +6714,24 @@
               "search_radius": 0
             }
           ],
-          "confidence": 0.8,
           "condition_image": null,
           "condition_search_region": null,
-          "condition_confidence": 0.65
+          "condition_confidence": 0.65,
+          "condition_jump_when_visible": false,
+          "condition_verify_image_color": false,
+          "condition_verify_image_brightness": false
         },
         {
           "image": "trigger_20260121_183524_166.png",
-          "goto_index": 6,
           "search_region": [
             899,
             0,
             1723,
             742
           ],
+          "confidence": 0.8,
+          "goto_index": 6,
+          "jump_enabled": true,
           "monitor_actions": [
             {
               "type": "이미지 클릭",
@@ -6769,102 +6775,61 @@
               "search_radius": 0
             }
           ],
-          "confidence": 0.8,
           "condition_image": null,
           "condition_search_region": null,
-          "condition_confidence": 0.65
+          "condition_confidence": 0.65,
+          "condition_jump_when_visible": false,
+          "condition_verify_image_color": false,
+          "condition_verify_image_brightness": false
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": 5,
           "search_region": [
             0,
             0,
             833,
             750
           ],
+          "confidence": 0.8,
+          "goto_index": 5,
+          "jump_enabled": true,
           "monitor_actions": [
             {
               "type": "이미지 클릭",
               "image": "trigger_20260121_231533_002.png",
               "click_type": "double_click",
-              "wait_after": 3.0,
-              "wait_random": true,
-              "wait_random_range": 0.3,
-              "repeat_count": 1,
-              "repeat_delay": 1.0,
-              "repeat_delay_random": true,
-              "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
               "confidence": 0.65,
-              "search_radius": 0,
               "search_region": [
                 1,
                 0,
                 830,
                 751
-              ]
-            },
-            {
-              "type": "키 입력",
-              "keys": [
-                "esc"
               ],
-              "wait_after": 1.1,
-              "wait_random": true,
-              "wait_random_range": 0.3,
-              "repeat_count": 2,
-              "repeat_delay": 0.8,
-              "repeat_delay_random": true,
-              "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0
-            },
-            {
-              "type": "이미지 클릭",
-              "image": "trigger_20260121_231533_002.png",
-              "click_type": "double_click",
-              "wait_after": 3.0,
-              "wait_random": true,
-              "wait_random_range": 0.3,
               "repeat_count": 1,
               "repeat_delay": 1.0,
-              "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0,
-              "search_region": [
-                1,
-                0,
-                830,
-                751
-              ]
+              "wait_after": 3.0,
+              "wait_random_range": 0.3,
+              "click_until_image_disappears_delay": 0.5,
+              "repeat_delay_random": true,
+              "wait_random": true,
+              "alternate_mouse_route": false,
+              "verify_image_color": false,
+              "verify_image_brightness": false,
+              "click_until_image_disappears": false
             },
             {
               "type": "키 입력",
               "keys": [
                 "enter"
               ],
-              "wait_after": 2.5,
-              "wait_random": true,
-              "wait_random_range": 0.3,
               "repeat_count": 3,
-              "repeat_delay": 0.5,
-              "repeat_delay_random": true,
+              "repeat_delay": 1.0,
               "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0
+              "wait_after": 2.5,
+              "wait_random_range": 0.3,
+              "repeat_delay_random": true,
+              "wait_random": true
             },
             {
               "type": "키 입력",
@@ -6907,103 +6872,62 @@
               "keys": [
                 "esc"
               ],
-              "wait_after": 0.5,
-              "wait_random": true,
-              "wait_random_range": 0.3,
-              "repeat_count": 2,
+              "repeat_count": 4,
               "repeat_delay": 0.8,
-              "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0
+              "wait_after": 0.5,
+              "wait_random_range": 0.3,
+              "repeat_delay_random": true,
+              "wait_random": true
             }
           ],
-          "confidence": 0.8,
-          "condition_image": "condition_trigger_20260210_132538_210_crop_6dc1ac.png",
+          "condition_image": "trigger_20260622_142136_483_crop_ee7fa8.png",
           "condition_search_region": [
-            267,
-            551,
-            365,
-            624
+            0,
+            0,
+            827,
+            795
           ],
-          "condition_confidence": 0.8
+          "condition_confidence": 0.8,
+          "condition_jump_when_visible": false,
+          "condition_verify_image_color": true,
+          "condition_verify_image_brightness": true
         },
         {
           "image": "trigger_20260121_231533_002.png",
-          "goto_index": 6,
           "search_region": [
             901,
             0,
             1713,
             774
           ],
+          "confidence": 0.8,
+          "goto_index": 6,
+          "jump_enabled": true,
           "monitor_actions": [
             {
               "type": "이미지 클릭",
               "image": "trigger_20260121_231533_002.png",
               "click_type": "double_click",
-              "wait_after": 3.0,
-              "wait_random": true,
-              "wait_random_range": 0.3,
-              "repeat_count": 1,
-              "repeat_delay": 1.0,
-              "repeat_delay_random": true,
-              "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
               "confidence": 0.65,
-              "search_radius": 0,
               "search_region": [
                 897,
                 3,
                 1720,
                 755
-              ]
-            },
-            {
-              "type": "키 입력",
-              "keys": [
-                "esc"
               ],
-              "wait_after": 1.1,
-              "wait_random": true,
-              "wait_random_range": 0.3,
-              "repeat_count": 2,
-              "repeat_delay": 0.8,
-              "repeat_delay_random": true,
-              "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0
-            },
-            {
-              "type": "이미지 클릭",
-              "image": "trigger_20260121_231533_002.png",
-              "click_type": "double_click",
-              "wait_after": 3.0,
-              "wait_random": true,
-              "wait_random_range": 0.3,
               "repeat_count": 1,
               "repeat_delay": 1.0,
-              "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0,
-              "search_region": [
-                897,
-                3,
-                1720,
-                755
-              ]
+              "wait_after": 3.0,
+              "wait_random_range": 0.3,
+              "click_until_image_disappears_delay": 0.5,
+              "repeat_delay_random": true,
+              "wait_random": true,
+              "alternate_mouse_route": false,
+              "verify_image_color": false,
+              "verify_image_brightness": false,
+              "click_until_image_disappears": false
             },
             {
               "type": "키 입력",
@@ -7064,29 +6988,26 @@
               "keys": [
                 "esc"
               ],
-              "wait_after": 0.5,
-              "wait_random": true,
-              "wait_random_range": 0.3,
-              "repeat_count": 2,
+              "repeat_count": 4,
               "repeat_delay": 0.8,
-              "repeat_delay_random": true,
               "repeat_delay_random_range": 0.3,
-              "typing_random": false,
-              "typing_delay": 0.1,
-              "typing_delay_range": 0.05,
-              "confidence": 0.65,
-              "search_radius": 0
+              "wait_after": 0.5,
+              "wait_random_range": 0.3,
+              "repeat_delay_random": true,
+              "wait_random": true
             }
           ],
-          "confidence": 0.8,
-          "condition_image": "condition_trigger_20260210_132538_210_crop_6dc1ac.png",
+          "condition_image": "trigger_20260622_142136_483_crop_ee7fa8.png",
           "condition_search_region": [
-            1147,
-            562,
-            1252,
-            641
+            897,
+            1,
+            1715,
+            795
           ],
-          "condition_confidence": 0.8
+          "condition_confidence": 0.8,
+          "condition_jump_when_visible": false,
+          "condition_verify_image_color": true,
+          "condition_verify_image_brightness": true
         }
       ]
     },
@@ -9703,7 +9624,7 @@
               "click_until_image_disappears_delay": 5.0,
               "wait_after": 2.5,
               "wait_random": true,
-              "enabled": false,
+              "enabled": true,
               "wait_random_range": 0.3,
               "typing_random": false,
               "typing_delay": 0.1,
@@ -15638,7 +15559,7 @@
           "click_until_image_disappears_delay": 5.0,
           "wait_after": 2.5,
           "wait_random": true,
-          "enabled": false,
+          "enabled": true,
           "wait_random_range": 0.3,
           "typing_random": false,
           "typing_delay": 0.1,

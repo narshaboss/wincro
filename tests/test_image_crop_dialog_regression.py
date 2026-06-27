@@ -58,6 +58,8 @@ def test_image_crop_dialog_uses_sidecar_mask_pipeline():
     assert "preview_resized, _ = fit_image_to_box(preview_source, 180, 180)" in text
     assert "normalize_binary_mask(self._crop_mask, cropped.shape[:2])" in text
     assert "def _background_cutout_enabled(self) -> bool:" in text
+    assert "self._crop_mask_needs_refresh = True" in text
+    assert "checker = ((yy // tile + xx // tile) % 2)" in text
     assert "cropped_bgra = cv2.cvtColor(cropped, cv2.COLOR_RGB2BGRA)" in text
     assert "cropped_bgra[:, :, 3] = crop_mask" in text
 

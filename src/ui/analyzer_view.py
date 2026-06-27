@@ -1077,6 +1077,8 @@ class ImageCropDialog(ctk.CTkToplevel):
 
     def _on_background_cutout_changed(self):
         if self._crop_coords is not None:
+            if self._background_cutout_enabled():
+                self._crop_mask_needs_refresh = True
             self._ensure_current_crop_mask(refresh_view=False)
             self._refresh_preview()
 
@@ -1086,8 +1088,12 @@ class ImageCropDialog(ctk.CTkToplevel):
         if preview.size == 0:
             return preview
         normalized = normalize_binary_mask(mask, preview.shape[:2])
-        background = np.array([26, 27, 38], dtype=np.uint8)
-        preview[normalized == 0] = background
+        height, width = preview.shape[:2]
+        tile = 8
+        yy, xx = np.indices((height, width))
+        checker = ((yy // tile + xx // tile) % 2).astype(bool)
+        checker_bg = np.where(checker[..., None], 232, 172).astype(np.uint8)
+        preview[normalized == 0] = checker_bg[normalized == 0]
         return preview
 
     def _canvas_to_original_point(self, canvas_x: int, canvas_y: int) -> Optional[tuple[int, int]]:

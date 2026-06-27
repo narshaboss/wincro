@@ -6,7 +6,7 @@
     {
       "rule_id": "rule_c5a4ceff",
       "rule_type": "fixed_sequence",
-      "description": "",
+      "description": "다이쇼 시작",
       "action_type": "double_click",
       "action_x": 413,
       "action_y": 397,
@@ -23,6 +23,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.65,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 413,
       "search_region": [
         0,
@@ -90,6 +92,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.8081818181818181,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -152,6 +156,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.8052272727272727,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -216,6 +222,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.65,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -276,6 +284,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -356,6 +366,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.65,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -427,6 +439,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -502,6 +516,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -577,6 +593,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -652,6 +670,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -719,6 +739,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.8,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -781,6 +803,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -848,6 +872,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.8052272727272727,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -908,6 +934,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -951,9 +979,156 @@
           "monitoring_watches": []
         }
       ],
-      "is_monitoring_mode": false,
-      "monitoring_final_image": null,
-      "monitoring_watches": []
+      "is_monitoring_mode": true,
+      "monitoring_final_image": "img_79ec15a9.png",
+      "monitoring_watches": [
+        {
+          "image": "trigger_20260121_231533_002.png",
+          "search_region": [
+            0,
+            0,
+            827,
+            795
+          ],
+          "confidence": 0.8,
+          "goto_index": 0,
+          "jump_enabled": true,
+          "monitor_actions": [
+            {
+              "type": "이미지 클릭",
+              "image": "trigger_20260121_231533_002.png",
+              "click_type": "double_click",
+              "confidence": 0.8,
+              "search_region": [
+                0,
+                0,
+                827,
+                795
+              ],
+              "repeat_count": 1,
+              "repeat_delay": 0.5,
+              "repeat_delay_random_range": 0.3,
+              "wait_after": 2.0,
+              "wait_random_range": 0.3,
+              "click_until_image_disappears_delay": 0.5,
+              "repeat_delay_random": true,
+              "wait_random": true,
+              "alternate_mouse_route": false,
+              "verify_image_color": false,
+              "verify_image_brightness": false,
+              "click_until_image_disappears": false
+            },
+            {
+              "type": "키 입력",
+              "keys": [
+                "enter"
+              ],
+              "key_events": [
+                {
+                  "event": "down",
+                  "key": "enter",
+                  "delay": 0.0
+                },
+                {
+                  "event": "up",
+                  "key": "enter",
+                  "delay": 0.0741
+                }
+              ],
+              "repeat_count": 4,
+              "repeat_delay": 1.0,
+              "repeat_delay_random_range": 0.3,
+              "wait_after": 2.5,
+              "wait_random_range": 0.3,
+              "click_until_image_disappears_delay": 0.5,
+              "repeat_delay_random": true,
+              "wait_random": true
+            },
+            {
+              "type": "키 입력",
+              "keys": [
+                "o"
+              ],
+              "key_events": [
+                {
+                  "event": "down",
+                  "key": "o",
+                  "delay": 0.0
+                },
+                {
+                  "event": "up",
+                  "key": "o",
+                  "delay": 0.1423
+                }
+              ],
+              "repeat_count": 4,
+              "repeat_delay": 0.5,
+              "repeat_delay_random_range": 0.3,
+              "wait_after": 1.5,
+              "wait_random_range": 0.3,
+              "click_until_image_disappears_delay": 0.5,
+              "repeat_delay_random": true,
+              "wait_random": true
+            },
+            {
+              "type": "키 입력",
+              "keys": [
+                "enter"
+              ],
+              "key_events": [
+                {
+                  "event": "down",
+                  "key": "enter",
+                  "delay": 0.0
+                },
+                {
+                  "event": "up",
+                  "key": "enter",
+                  "delay": 0.087
+                }
+              ],
+              "repeat_count": 6,
+              "repeat_delay": 0.5,
+              "repeat_delay_random_range": 0.3,
+              "wait_after": 2.0,
+              "wait_random_range": 0.3,
+              "repeat_delay_random": true,
+              "wait_random": true
+            },
+            {
+              "type": "키 입력",
+              "keys": [
+                "esc"
+              ],
+              "key_events": [
+                {
+                  "event": "down",
+                  "key": "esc",
+                  "delay": 0.0
+                },
+                {
+                  "event": "up",
+                  "key": "esc",
+                  "delay": 0.1054
+                }
+              ],
+              "repeat_count": 4,
+              "repeat_delay": 0.5,
+              "repeat_delay_random_range": 0.3,
+              "wait_after": 2.0,
+              "wait_random_range": 0.3,
+              "repeat_delay_random": true,
+              "wait_random": true
+            }
+          ],
+          "condition_image": null,
+          "condition_search_region": null,
+          "condition_confidence": 0.8,
+          "condition_jump_when_visible": false,
+          "condition_verify_image_color": false,
+          "condition_verify_image_brightness": false
+        }
+      ]
     },
     {
       "rule_id": "rule_8e5a8602",
@@ -975,6 +1150,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.8,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -1039,6 +1216,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.65,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,
@@ -1099,6 +1278,8 @@
           "trigger_x": null,
           "trigger_y": null,
           "confidence": 0.65,
+          "verify_image_color": false,
+          "verify_image_brightness": false,
           "search_radius": 0,
           "search_region": null,
           "move_mouse_before_search": false,
@@ -1166,6 +1347,8 @@
       "trigger_x": null,
       "trigger_y": null,
       "confidence": 0.65,
+      "verify_image_color": false,
+      "verify_image_brightness": false,
       "search_radius": 0,
       "search_region": null,
       "move_mouse_before_search": false,

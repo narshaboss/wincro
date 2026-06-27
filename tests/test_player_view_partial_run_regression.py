@@ -11,7 +11,7 @@ from src.ui.player_view import (
 )
 
 
-def test_manual_partial_run_enters_monitor_parent_children():
+def test_manual_partial_run_keeps_monitor_parent_start():
     child = AutomationRule(rule_id="child", action_type="double_click", description="real action")
     parent = AutomationRule(
         rule_id="parent",
@@ -24,7 +24,26 @@ def test_manual_partial_run_enters_monitor_parent_children():
     after = AutomationRule(rule_id="after", action_type="click")
     flat_rules = [parent, child, after]
 
-    assert _manual_partial_start_index(flat_rules, parent, 0) == 1
+    assert _manual_partial_start_index(flat_rules, parent, 0) == 0
+
+
+def test_manual_partial_run_from_monitor_parent_runs_parent_before_child():
+    child = AutomationRule(rule_id="child", action_type="double_click", description="child action")
+    parent = AutomationRule(
+        rule_id="parent",
+        action_type="double_click",
+        description="monitor parent",
+        is_monitoring_mode=True,
+        monitoring_watches=[{"image": "watch.png", "goto_index": 0}],
+        children=[child],
+    )
+    after = AutomationRule(rule_id="after", action_type="click")
+    flat_rules = [parent, child, after]
+
+    rules_to_run = _build_manual_partial_rules(flat_rules, _manual_partial_start_index(flat_rules, parent, 0))
+
+    assert [rule.rule_id for rule in rules_to_run] == ["parent", "child", "after"]
+    assert rules_to_run[0].children == []
 
 
 def test_manual_partial_run_keeps_non_monitor_parent_start():

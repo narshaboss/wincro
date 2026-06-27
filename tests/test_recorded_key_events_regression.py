@@ -39,6 +39,17 @@ def test_rule_executor_prefers_recorded_key_events():
     assert "input_ctrl.replay_key_events(key_events)" in source
 
 
+def test_monitoring_key_action_prefers_recorded_key_events():
+    source = open("src/player/rule_executor.py", encoding="utf-8").read()
+    start = source.index("elif action_type == '키 입력':")
+    end = source.index("elif action_type == '마우스 클릭':", start)
+    method = source[start:end]
+
+    assert "key_events = monitor_action.get('key_events', []) or []" in method
+    assert "input_ctrl.replay_key_events(key_events)" in method
+    assert "return \"기록 키 입력\"" in method
+
+
 def test_key_input_dialog_exposes_recorded_result_api():
     source = open("src/ui/key_input_dialog.py", encoding="utf-8").read()
 

@@ -13,6 +13,8 @@ from .logger import get_logger
 from .config import get_config
 
 logger = get_logger(__name__)
+_KEY_TAP_HOLD_DELAY = 0.055
+_KEY_TAP_POST_DELAY = 0.045
 
 
 # 키보드 키코드 매핑 (Arduino Keyboard 라이브러리 호환)
@@ -364,9 +366,13 @@ class ArduinoHID:
 
     def key_tap(self, key: str) -> bool:
         """키 한번 누르고 떼기"""
-        self.key_press(key)
-        time.sleep(0.05)
-        return self.key_release(key)
+        pressed = self.key_press(key)
+        if not pressed:
+            return False
+        time.sleep(_KEY_TAP_HOLD_DELAY)
+        released = self.key_release(key)
+        time.sleep(_KEY_TAP_POST_DELAY)
+        return bool(released)
 
     def key_combo_tap(self, *keys: str) -> bool:
         """Press modifiers, tap final key, and release modifiers with minimum host-side delay."""

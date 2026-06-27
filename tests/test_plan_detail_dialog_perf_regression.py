@@ -614,9 +614,11 @@ def test_detail_dialog_parent_lookup_uses_lazy_cache_instead_of_recursive_scan()
         "def _find_parent_in_tree_action(self, action: Action, target: Action)",
     )
 
-    assert "return self._get_rule_parent_cache().get(target_id)" in plan_method
+    assert 'exact_key = ("object", id(target))' in plan_method
+    assert 'return cache.get(("id", target_id))' in plan_method
     assert "_find_parent_in_tree" not in plan_method
-    assert "return self._get_action_parent_cache().get(target_id)" in sequence_method
+    assert 'exact_key = ("object", id(target))' in sequence_method
+    assert 'return cache.get(("id", target_id))' in sequence_method
     assert "_find_parent_in_tree_action" not in sequence_method
 
 
@@ -649,6 +651,56 @@ def test_parent_lookup_cache_is_invalidated_after_attach_operations():
     assert sequence_dialog._find_parent_action(sequence_child) is None
     sequence_dialog._move_action_to_target(sequence_child, sequence_parent)
     assert sequence_dialog._find_parent_action(sequence_child) is sequence_parent
+
+
+def test_plan_delete_duplicate_rule_id_removes_exact_child(monkeypatch):
+    import tkinter.messagebox as messagebox
+
+    parent_a = AutomationRule(action_type="click", rule_id="parent_a")
+    parent_b = AutomationRule(action_type="click", rule_id="parent_b")
+    child_a = AutomationRule(action_type="key_press", rule_id="dup_child", parent_id="parent_a")
+    child_b = AutomationRule(action_type="type", rule_id="dup_child", parent_id="parent_b")
+    parent_a.children.append(child_a)
+    parent_b.children.append(child_b)
+    dialog = _make_plan_dialog_stub([parent_a, parent_b], set())
+    dialog._selected_rule = None
+    dialog._modified = False
+    refreshed = []
+    dialog._invalidate_rule_tree_cache = lambda: None
+    dialog._refresh_after_rule_deleted = lambda deleted, parent: refreshed.append((deleted, parent))
+    monkeypatch.setattr(messagebox, "askyesno", lambda *_args, **_kwargs: True)
+
+    dialog._delete_rule(child_b)
+
+    assert parent_a.children == [child_a]
+    assert parent_b.children == []
+    assert refreshed == [(child_b, parent_b)]
+    assert dialog._modified is True
+
+
+def test_sequence_delete_duplicate_action_id_removes_exact_child(monkeypatch):
+    import tkinter.messagebox as messagebox
+
+    parent_a = Action(action_type="click", action_id="parent_a")
+    parent_b = Action(action_type="click", action_id="parent_b")
+    child_a = Action(action_type="key_press", action_id="dup_child", parent_id="parent_a")
+    child_b = Action(action_type="type", action_id="dup_child", parent_id="parent_b")
+    parent_a.children.append(child_a)
+    parent_b.children.append(child_b)
+    dialog = _make_sequence_dialog_stub(Sequence(name="seq", actions=[parent_a, parent_b]), set())
+    dialog._selected_action = None
+    dialog._modified = False
+    refreshed = []
+    dialog._invalidate_action_tree_cache = lambda: None
+    dialog._refresh_after_action_deleted = lambda deleted, parent: refreshed.append((deleted, parent))
+    monkeypatch.setattr(messagebox, "askyesno", lambda *_args, **_kwargs: True)
+
+    dialog._delete_action(child_b)
+
+    assert parent_a.children == [child_a]
+    assert parent_b.children == []
+    assert refreshed == [(child_b, parent_b)]
+    assert dialog._modified is True
 
 
 def test_dialog_refresh_keeps_widget_maps_for_reused_virtual_rows():
@@ -1095,12 +1147,12 @@ def test_delete_visible_block_uses_virtual_index_cache_instead_of_linear_scan():
         "def _build_visible_action_subtree_items(",
     )
 
-    assert "deleted_index = self._find_visible_rule_item_index(deleted_rule.rule_id)" in plan_method
+    assert "deleted_index = self._find_visible_rule_item_index_by_object(deleted_rule)" in plan_method
     assert "self._scrollable.splice_items(deleted_index, remove_count, [])" in plan_method
     assert "self._refresh_rule_numbering_after_patch()" in plan_method
     assert "self._scrollable.set_items(" not in plan_method
     assert "for index, item in enumerate(items):" not in plan_method
-    assert "deleted_index = self._find_visible_action_item_index(deleted_action.action_id)" in sequence_method
+    assert "deleted_index = self._find_visible_action_item_index_by_object(deleted_action)" in sequence_method
     assert "self._scrollable.splice_items(deleted_index, remove_count, [])" in sequence_method
     assert "self._refresh_action_numbering_after_patch()" in sequence_method
     assert "self._scrollable.set_items(" not in sequence_method
@@ -1327,7 +1379,11 @@ def test_plan_dialog_modal_edits_refresh_only_changed_rule_row():
     assert "self._update_rule_buttons(rule)" in trigger_method
     assert "if not self._update_rule_row_in_place(rule):" in trigger_method
     assert "self._refresh_rule_row(rule.rule_id)" in trigger_method
-    assert "if editor.was_saved:" in monitoring_method
+    assert "def apply_editor_save() -> bool:" in monitoring_method
+    assert "on_save=apply_editor_save" in monitoring_method
+    assert "if not self._save_plan(show_message=False):" in monitoring_method
+    assert "self._update_rule_buttons(rule)" in monitoring_method
+    assert 'if editor.was_saved and not save_applied["value"]:' in monitoring_method
     assert "if not self._update_rule_row_in_place(rule):" in monitoring_method
     assert "self._refresh_rule_row(rule.rule_id)" in monitoring_method
     assert "if not self._update_rule_row_in_place(rule):" in monitor_delete_method

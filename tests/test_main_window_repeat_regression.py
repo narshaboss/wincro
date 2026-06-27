@@ -6,6 +6,7 @@ MAIN_WINDOW = ROOT / "src" / "ui" / "main_window.py"
 SETTINGS_VIEW = ROOT / "src" / "ui" / "settings_view.py"
 APP = ROOT / "src" / "app.py"
 RULE_EXECUTOR = ROOT / "src" / "player" / "rule_executor.py"
+PLAYER_VIEW = ROOT / "src" / "ui" / "player_view.py"
 
 
 def _read_text() -> str:
@@ -22,6 +23,10 @@ def _read_app_text() -> str:
 
 def _read_rule_executor_text() -> str:
     return RULE_EXECUTOR.read_text(encoding="utf-8")
+
+
+def _read_player_view_text() -> str:
+    return PLAYER_VIEW.read_text(encoding="utf-8")
 
 
 def test_main_window_reloads_single_plan_before_repeat():
@@ -359,6 +364,12 @@ def test_play_mode_discord_stuck_alert_uses_action_identity_without_version_fiel
     formatter_start = text.index("    def _mini_format_notification_progress(self, progress) -> str:")
     formatter_end = text.index("    def _mini_record_notification_progress", formatter_start)
     formatter_body = text[formatter_start:formatter_end]
+    record_start = text.index("    def _mini_record_notification_progress", formatter_end)
+    record_end = text.index("    def _mini_record_game_mode_notification_activity", record_start)
+    record_body = text[record_start:record_end]
+    watchdog_start = text.index("    def _mini_check_notification_watchdog")
+    watchdog_end = text.index("    def _mini_send_discord_alert(", watchdog_start)
+    watchdog_body = text[watchdog_start:watchdog_end]
     send_start = text.index("    def _mini_send_discord_alert(")
     send_end = text.index("        def _on_complete(result) -> None:", send_start)
     send_body = text[send_start:send_end]
@@ -366,8 +377,49 @@ def test_play_mode_discord_stuck_alert_uses_action_identity_without_version_fiel
     assert 'getattr(progress, "current_action_number", "")' in formatter_body
     assert 'getattr(progress, "current_action_name", "")' in formatter_body
     assert 'parts.append(f"액션 [{action_number}] {action_name}")' in formatter_body
+    assert 'getattr(progress, "current_action_is_monitoring", False)' in record_body
+    assert "self._mini_notification_last_progress_is_monitoring = False" in text
+    assert 'getattr(self, "_mini_notification_last_progress_is_monitoring", False)' in watchdog_body
     assert "self._mini_notification_last_progress_text = truncate_ui_text(message, 160)" in text
+    assert '("버전", APP_VERSION)' not in watchdog_body
+    assert '("버전",' not in watchdog_body
     assert '("버전", APP_VERSION)' not in send_body
+    assert 'if event_key == "stuck":' in send_body
+    assert '{"버전", "version", "app_version", "앱 버전"}' in send_body
+
+
+def test_play_mode_discord_stuck_watchdog_uses_hidden_special_mode_activity():
+    text = _read_text()
+    player_text = _read_player_view_text()
+    helper_start = text.index("    def _mini_record_game_mode_notification_activity")
+    helper_end = text.index("    def _mini_cancel_notification_watchdog", helper_start)
+    helper_body = text[helper_start:helper_end]
+    watchdog_start = text.index("    def _mini_check_notification_watchdog")
+    watchdog_end = text.index("    def _mini_send_discord_alert(", watchdog_start)
+    watchdog_body = text[watchdog_start:watchdog_end]
+    gm_start = text.index("    def _mini_run_game_mode(")
+    gm_end = text.index("    def _mini_on_game_mode_complete", gm_start)
+    gm_body = text[gm_start:gm_end]
+    dialog_init = player_text[
+        player_text.index("class GameModeDialog"):
+        player_text.index("        self._stop_event = threading.Event()")
+    ]
+    append_log = player_text[
+        player_text.index("    def _append_log(self, message: str, force: bool = False):"):
+        player_text.index("            # 일반 로그에도 출력", player_text.index("    def _append_log"))
+    ]
+
+    assert "def _mini_record_game_mode_notification_activity" in text
+    assert "getattr(gm, \"_last_runtime_activity_at\", 0.0)" in helper_body
+    assert "getattr(gm, \"_last_runtime_activity_text\", \"\")" in helper_body
+    assert "self._mini_notification_last_progress_at = activity_at" in helper_body
+    assert "특화모드 진행:" in helper_body
+    assert "self._mini_record_game_mode_notification_activity()" in watchdog_body
+    assert "self._mini_record_game_mode_notification_activity(gm)" in gm_body
+    assert 'self._last_runtime_activity_at = time.monotonic()' in dialog_init
+    assert 'self._last_runtime_activity_text = "특화모드 준비 중"' in dialog_init
+    assert 'self._last_runtime_activity_at = time.monotonic()' in append_log
+    assert 'self._last_runtime_activity_text = str(message or "").strip()' in append_log
 
 
 def test_rule_executor_progress_keeps_current_action_number_and_name():
@@ -375,5 +427,7 @@ def test_rule_executor_progress_keeps_current_action_number_and_name():
 
     assert 'current_action_number: str = ""' in text
     assert 'current_action_name: str = ""' in text
+    assert "current_action_is_monitoring: bool = False" in text
     assert "self._progress.current_action_number = str(step_num)" in text
     assert "self._progress.current_action_name = action_name" in text
+    assert "self._progress.current_action_is_monitoring = bool(is_monitoring)" in text

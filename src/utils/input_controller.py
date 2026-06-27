@@ -36,6 +36,8 @@ _COMBO_PRE_RELEASE_DELAY = 0.002
 _COMBO_MODIFIER_SETTLE_DELAY = 0.016
 _COMBO_PRIMARY_TAP_DELAY = 0.006
 _COMBO_POST_RELEASE_DELAY = 0.006
+_KEY_TAP_HOLD_DELAY = 0.055
+_KEY_TAP_POST_DELAY = 0.045
 _MODIFIER_KEYS = {"shift", "ctrl", "alt", "win", "cmd", "command", "option"}
 _DIRECTION_KEYS = {"up", "down", "left", "right"}
 _KEY_EVENT_MAX_DELAY = 5.0
@@ -484,13 +486,36 @@ class InputController:
     # Keyboard operations
     def press(self, key: str) -> bool:
         key_text = str(key).strip().lower()
+        if not key_text:
+            return False
         key_parts = [part.strip() for part in key_text.split("+") if part.strip()]
         if len(key_parts) > 1:
             return self.hotkey(*key_parts)
+
+        def _software_key_tap() -> bool:
+            pressed = False
+            previous_pause = getattr(pyautogui, "PAUSE", 0)
+            try:
+                pyautogui.PAUSE = 0
+                pyautogui.keyDown(key_text)
+                pressed = True
+                time.sleep(_KEY_TAP_HOLD_DELAY)
+                pyautogui.keyUp(key_text)
+                pressed = False
+                time.sleep(_KEY_TAP_POST_DELAY)
+                return True
+            finally:
+                if pressed:
+                    try:
+                        pyautogui.keyUp(key_text)
+                    except Exception:
+                        pass
+                pyautogui.PAUSE = previous_pause
+
         return self._with_arduino_fallback(
             f"press:{key_text}",
             lambda a: a.key_tap(key_text),
-            lambda: pyautogui.press(key_text),
+            _software_key_tap,
         )
 
     def tap_combo_once(self, *keys) -> bool:

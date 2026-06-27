@@ -67,7 +67,8 @@ def test_playback_and_monitor_conversions_keep_search_region():
     assert 'monitor_action["search_region"] = getattr(clipboard, \'search_region\', None)' in player_text
     assert "rule=action" in player_text
     assert 'search_region=getattr(action, "search_region", None),' in player_text
-    assert 'ma["search_region"] = getattr(act, \'search_region\', None)' in monitoring_text
+    assert 'action["search_region"] = copy.deepcopy(self._search_region)' in monitoring_text
+    assert '"search_region": copy.deepcopy(route.get("search_region"))' in monitoring_text
 
 
 def test_next_screen_wait_checks_multi_target_images(monkeypatch):

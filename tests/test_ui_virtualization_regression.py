@@ -214,92 +214,262 @@ def test_main_window_defers_hidden_view_refreshes():
     assert 'if view_id in self._dirty_views:' in text
 
 
-def test_monitoring_editor_single_watch_changes_do_not_rebuild_entire_list():
+def test_monitoring_editor_uses_single_image_action_flow():
     text = _read_text(MONITORING_EDITOR)
 
-    assert "def _create_watch_item(self, idx: int, watch: dict, before_widget=None):" in text
-    assert "def _refresh_watch_item(self, idx: int) -> None:" in text
-    assert "self._watch_action_card_widgets = {}" in text
-    assert "def _append_monitor_action_card(self, watch_idx):" in text
-    assert "def _refresh_monitor_action_card(self, watch_idx, action_idx):" in text
-    assert "if not self._append_monitor_action_card(i):" in text
-    assert "if not self._refresh_monitor_action_card(i, a):" in text
-    assert "self._watch_widgets[idx] = self._create_watch_item" in text
-    assert "self._refresh_watch_item(i)" in text
-    assert "self._refresh_watch_list()" in text
+    assert "self._monitor_image" not in text
+    assert "self._monitor_region" not in text
+    assert "self._monitor_actions" not in text
+    assert "def _build_image_card" not in text
+    assert "def _build_actions_card" not in text
+    assert "command=self._add_monitor_action" not in text
+    assert "def _edit_monitor_action" not in text
+    assert "self._route_watches" in text
+    assert "class MonitorActionEditorDialog" in text
+    assert "def _add_route_action" in text
+    assert "def _edit_route_action" in text
+    assert "복사한 일반 액션 붙여넣기" not in text
+    assert "액션붙여넣기" not in text
+    assert "1. 최종이미지 대기   →   2. 이동 이미지 발견" in text
+    assert "이미지별 이동" not in text
+    assert "모니터링 이미지 액션" in text
+    assert "def _build_routes_card" in text
+    assert "goto_index" in text
+    assert "def _default_route_goto_index" in text
+    assert "def _build_route_separator" in text
+    assert "self._build_route_separator()" in text
+    assert "root = ctk.CTkScrollableFrame(self" in text
+    assert 'self._routes_frame = ctk.CTkFrame(card, fg_color="transparent")' in text
+    assert 'self._routes_frame = ctk.CTkScrollableFrame(card' not in text
+    assert 'text=f"R{idx + 1}"' not in text
+    assert "condition_image" in text
+    assert "def _image_quality_warning" in text
+    assert "def _open_route_condition_settings" in text
+    assert "조건 이미지 설정" in text
+    assert "조건 인식률" in text
+    assert "warning_var = tk.StringVar()" in text
+    assert "조건 이미지 재캡처 필요" in text
+    assert "condition_jump_when_visible" in text
+    assert "jump_enabled" in text
+    assert "condition_verify_image_color" in text
+    assert "condition_verify_image_brightness" in text
+    assert "CTkSegmentedButton" in text
+    assert "안 보일 때 점프" in text
+    assert "보일 때 점프" in text
+    assert "색상 확인" in text
+    assert "밝기 확인" in text
+    assert "def _on_route_condition_jump_mode_changed" in text
+    assert "def _on_route_jump_enabled_changed" in text
+    assert "def _on_route_condition_confidence_changed" in text
+    assert 'target == "condition"' in text
+    assert "전용액션" in text
+    assert "점프액션" in text
+    assert 'values=["활성", "비활성"]' in text
+    assert text.index("action_row = ctk.CTkFrame(inner, fg_color=\"transparent\")") < text.index("jump_row = ctk.CTkFrame(inner, fg_color=\"transparent\")")
+    assert text.index("self._build_route_actions_preview(inner, idx, monitor_actions)") < text.index("jump_row = ctk.CTkFrame(inner, fg_color=\"transparent\")")
+    assert "def _show_region_options" in text
+    assert 'build_preset_row("a", "A영역", COLORS["accent_blue"])' in text
+    assert 'build_preset_row("b", "B영역", COLORS["accent_orange"])' in text
+    assert "self._expanded_route_actions" in text
+    assert "def _toggle_route_actions" in text
+    assert "def _build_route_actions_preview" in text
+    assert "_MONITORING_SETTINGS_CLIPBOARD" in text
+    assert "def _copy_monitoring_settings" in text
+    assert "def _paste_monitoring_settings" in text
+    assert "def _normalize_pasted_route" in text
+    assert 'text="설정 복사"' in text
+    assert 'text="붙여넣기"' in text
+    assert "전용액션 없음: + 추가를 눌러 이 이미지가 감지됐을 때 먼저 실행할 액션을 등록하세요." in text
+    assert "조건해제" in text
+    assert "watch_thumb = ctk.CTkLabel(" in text
+    assert "condition_thumb = ctk.CTkLabel(" in text
+    assert "self._schedule_thumbnail(watch_thumb, image_path, size=(52, 38))" in text
+    assert "def _build_monitor_action_thumbnail" in text
+    assert 'image_path = action.get("image") if action.get("type") == "이미지 클릭" else None' in text
+    assert "self._schedule_thumbnail(thumb, image_path, size=(30, 22))" in text
+    assert 'height=2,' in text
+    assert 'fg_color=COLORS["accent"]' in text
+    assert "separator.pack_propagate(False)" in text
+    assert "self._schedule_thumbnail(condition_thumb, condition_image, size=(44, 30))" in text
+    assert "self._schedule_thumbnail(preview, image_path, size=(88, 64))" in text
+    assert "def _refresh_watch_list" not in text
+    assert "def _create_watch_item" not in text
 
 
-def test_monitoring_editor_watch_list_full_refresh_renders_in_batches():
+def test_monitoring_settings_clipboard_replaces_routes_without_auto_saving():
     text = _read_text(MONITORING_EDITOR)
-    refresh_method = text[
-        text.index("def _refresh_watch_list(self):"):
-        text.index("def _create_watch_item(self, idx: int, watch: dict, before_widget=None):")
+    editor_text = text[text.index("class MonitoringModeEditor"):]
+    copy_method = editor_text[
+        editor_text.index("def _copy_monitoring_settings(self) -> None:"):
+        editor_text.index("def _normalize_pasted_route(self, route: dict) -> dict:")
     ]
-    destroy_method = text[
-        text.index("def destroy(self):"):
-        text.index("# ------------------------------------------------------------------", text.index("def destroy(self):"))
+    paste_method = editor_text[
+        editor_text.index("def _paste_monitoring_settings(self) -> None:"):
+        editor_text.index("def _delete_route_watch(self, idx: int) -> None:")
     ]
 
-    assert "self._watch_render_after_id = None" in text
-    assert "self._watch_render_generation = 0" in text
-    assert "self._watch_render_batch_size = 12" in text
-    assert "self._cancel_watch_list_render_batch()" in refresh_method
-    assert "self._watch_widgets = [None] * len(self._watches_data)" in refresh_method
-    assert "def _render_watch_list_batch(self, start: int, generation: int):" in refresh_method
-    assert "start + self._watch_render_batch_size" in refresh_method
-    assert "self._schedule_watch_list_render_batch(" in refresh_method
-    assert "self.after_cancel(after_id)" in refresh_method
-    assert "self._cancel_watch_list_render_batch()" in destroy_method
-    assert "super().destroy()" in destroy_method
+    assert "global _MONITORING_SETTINGS_CLIPBOARD" in copy_method
+    assert "_MONITORING_SETTINGS_CLIPBOARD = self._route_clipboard_snapshot()" in copy_method
+    assert '"enabled": enabled' in editor_text
+    assert '"route_watches": copy.deepcopy(self._route_watches)' in editor_text
+    assert "messagebox.askyesno(" in paste_method
+    assert "self._normalize_pasted_route(route)" in paste_method
+    assert "self._route_watches = routes" in paste_method
+    assert 'self._enabled_var.set(bool(_MONITORING_SETTINGS_CLIPBOARD.get("enabled", bool(routes))))' in paste_method
+    assert "self._refresh_route_list()" in paste_method
+    assert "저장을 눌러 적용" in paste_method
+    assert "_complete_save(" not in paste_method
 
 
-def test_monitoring_editor_watch_list_thumbnails_do_not_decode_on_ui_thread():
+def test_monitoring_editor_persists_only_compat_watch_shape():
+    text = _read_text(MONITORING_EDITOR)
+    editor_text = text[text.index("class MonitoringModeEditor"):]
+    save_method = editor_text[editor_text.index("def _save(self) -> None:"):]
+
+    assert "def _complete_save(self, status_text: str) -> None:" in editor_text
+    assert "self._on_save = on_save" in editor_text
+    assert "rule.monitoring_final_image = None" in save_method
+    assert "final_image = getattr(rule, \"target_image\", None)" in save_method
+    assert "rule.is_monitoring_mode = False" not in save_method[:save_method.index("if not enabled:")]
+    assert "rule.target_image = self._monitor_image" not in save_method
+    assert "rule.confidence = self._monitor_confidence" not in save_method
+    assert "rule.search_region = copy.deepcopy(self._monitor_region)" not in save_method
+    assert "rule.monitoring_final_image = final_image" in save_method
+    assert "valid_watches.append(" in save_method
+    assert '"image": self._monitor_image' not in save_method
+    assert '"search_region": copy.deepcopy(self._monitor_region)' not in save_method
+    assert '"confidence": self._monitor_confidence' not in save_method
+    assert '"monitor_actions": copy.deepcopy(self._monitor_actions)' not in save_method
+    assert '"goto_index": -1' not in save_method
+    assert '"goto_index": goto_index' in save_method
+    assert '"image": image' in save_method
+    assert '"search_region": copy.deepcopy(route.get("search_region"))' in save_method
+    assert '"confidence": self._safe_confidence(route.get("confidence", self._monitor_confidence))' in save_method
+    assert '"jump_enabled": bool(route.get("jump_enabled", True))' in save_method
+    assert '"monitor_actions": copy.deepcopy(route.get("monitor_actions", []) or [])' in save_method
+    assert '"condition_image": route.get("condition_image")' in save_method
+    assert '"condition_search_region": copy.deepcopy(route.get("condition_search_region"))' in save_method
+    assert '"condition_confidence": self._safe_confidence(route.get("condition_confidence", 0.8))' in save_method
+    assert '"condition_jump_when_visible": bool(route.get("condition_jump_when_visible", False))' in save_method
+    assert '"condition_verify_image_color": bool(route.get("condition_verify_image_color", False))' in save_method
+    assert '"condition_verify_image_brightness": bool(route.get("condition_verify_image_brightness", False))' in save_method
+    assert "self.destroy()" not in save_method
+    assert "self._complete_save(\"저장됨: 모니터링 OFF\")" in save_method
+    assert "self._complete_save(\"저장됨\")" in save_method
+    assert save_method.index("valid_watches = []") < save_method.index("if not valid_watches:")
+    assert save_method.index("if not valid_watches:") < save_method.index("rule.is_monitoring_mode = True")
+    assert "모니터링 이미지 액션을 하나 이상 설정하세요." in save_method
+
+
+def test_monitoring_action_editor_exposes_normal_image_action_options():
+    text = _read_text(MONITORING_EDITOR)
+    dialog_text = text[
+        text.index("class MonitorActionEditorDialog"):
+        text.index("class MonitoringModeEditor")
+    ]
+
+    assert "이미지 클릭" in dialog_text
+    assert "마우스 클릭" in dialog_text
+    assert "키 입력" in dialog_text
+    assert "텍스트 입력" in dialog_text
+    assert "스크롤" in dialog_text
+    assert "드래그" in dialog_text
+    assert "색상 확인" in dialog_text
+    assert "밝기 확인" in dialog_text
+    assert "직각 이동" in dialog_text
+    assert "사라질 때까지 반복" in dialog_text
+    assert "repeat_count" in dialog_text
+    assert "repeat_delay" in dialog_text
+    assert "wait_after" in dialog_text
+    assert "wait_random_range" in dialog_text
+    assert "typing_random" in dialog_text
+    assert "A영역" in dialog_text
+    assert "B영역" in dialog_text
+    assert "자유영역 선택" in dialog_text
+    assert 'action["confidence"] = self._confidence' in dialog_text
+    assert 'action["search_region"] = copy.deepcopy(self._search_region)' in dialog_text
+
+
+def test_monitoring_action_key_input_uses_capture_dialog_and_filters_image_options():
+    text = _read_text(MONITORING_EDITOR)
+    dialog_text = text[
+        text.index("class MonitorActionEditorDialog"):
+        text.index("class MonitoringModeEditor")
+    ]
+    key_fields = dialog_text[
+        dialog_text.index("def _build_key_fields(self) -> None:"):
+        dialog_text.index("def _build_text_fields(self) -> None:")
+    ]
+    save_common = dialog_text[
+        dialog_text.index("def _save_common_options(self, action: dict, action_type: str) -> None:"):
+        dialog_text.index("def _save(self) -> None:")
+    ]
+    save_method = dialog_text[dialog_text.index("def _save(self) -> None:"):]
+    summary_method = text[
+        text.index("def _action_options_summary(action: dict) -> str:"):
+        text.index("def _run_monitor_action_test", text.index("def _action_options_summary(action: dict) -> str:"))
+    ]
+
+    assert "from .key_input_dialog import KeyInputDialog, format_key_combo" in text
+    assert "KeyInputDialog(self)" in dialog_text
+    assert "def _capture_key_input(self) -> None:" in dialog_text
+    assert "def _clear_key_input(self) -> None:" in dialog_text
+    assert 'text="키 입력 등록"' in key_fields
+    assert 'self._entry(row, "keys_text"' not in key_fields
+    assert 'action["key_events"] = [dict(event) for event in self._key_events if isinstance(event, dict)]' in save_method
+    assert 'if action_type == "텍스트 입력":' in save_common
+    assert 'if action_type in ("이미지 클릭", "마우스 클릭"):' in save_common
+    assert 'if action_type == "이미지 클릭":' in save_common
+    assert '"verify_image_color"' in save_common
+    assert '"verify_image_brightness"' in save_common
+    assert '"click_until_image_disappears"' in save_common
+    assert summary_method.index('if action_type == "이미지 클릭":') < summary_method.index('confidence = action.get("confidence")')
+
+
+def test_monitoring_editor_thumbnails_do_not_decode_on_ui_thread():
     text = _read_text(MONITORING_EDITOR)
     helper = text[
-        text.index("def _schedule_watch_thumbnail(self, label, path, size=(28, 28)):"):
-        text.index("@staticmethod\n    def _convert_rule_to_monitor_action", text.index("def _schedule_watch_thumbnail"))
-    ]
-    header = text[
-        text.index("def _build_watch_header(self, item_frame, idx, watch, is_collapsed):"):
-        text.index("def _build_watch_play_button(self, header_row, idx):")
+        text.index("def _schedule_thumbnail(self, label, path: str, size=(56, 56)) -> None:"):
+        text.index("def _show_region_options(self, target: str, idx: int | None = None) -> None:")
     ]
 
     assert "from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail, submit_thumbnail_task" in text
+    assert "monitor_thumb_v2" in helper
+    assert "cv2.IMREAD_UNCHANGED" in helper
+    assert "img.shape[2] == 4" in helper
+    assert "alpha = img[:, :, 3:4]" in helper
     assert "submit_thumbnail_task(load_thumbnail)" in helper
     assert "ctk.CTkImage(" in helper
     assert helper.index("def load_thumbnail(") < helper.index("ctk.CTkImage(")
     assert "self.after(0, apply_thumbnail)" in helper
-    assert "self._schedule_watch_thumbnail(thumb_label, watch.get(\"image\"), size=(28, 28))" in header
-    assert "self._load_thumbnail(watch" not in header
+    assert "self._schedule_thumbnail(watch_thumb, image_path, size=(52, 38))" in text
+    assert "self._schedule_thumbnail(thumb, image_path, size=(30, 22))" in text
+    assert "self._schedule_thumbnail(condition_thumb, condition_image, size=(44, 30))" in text
+    assert "self._schedule_thumbnail(preview, image_path, size=(88, 64))" in text
 
 
-def test_monitoring_editor_reuses_fonts_in_frequently_rebuilt_watch_rows():
+def test_monitoring_editor_reuses_fonts_in_rebuilt_action_rows():
     text = _read_text(MONITORING_EDITOR)
+    editor_text = text[text.index("class MonitoringModeEditor"):]
     init_method = text[
-        text.index("def __init__(self, owner, rule, plan_rules):"):
-        text.index("def destroy(self):")
+        text.index("def __init__(self, owner, rule, plan_rules, on_save: Callable[[], bool] | None = None):", text.index("class MonitoringModeEditor")):
+        text.index("def _font(self, size: int, weight: str | None = None):", text.index("class MonitoringModeEditor"))
     ]
-    font_method = text[
-        text.index("def _font(self, size, weight=None):"):
-        text.index("# ------------------------------------------------------------------", text.index("def _font(self, size, weight=None):"))
+    font_method = editor_text[
+        editor_text.index("def _font(self, size: int, weight: str | None = None):"):
+        editor_text.index("def _setup_dialog(self) -> None:")
     ]
-    header = text[
-        text.index("def _build_watch_header(self, item_frame, idx, watch, is_collapsed):"):
-        text.index("def _build_watch_play_button(self, header_row, idx):")
-    ]
-    detail = text[
-        text.index("def _build_watch_detail(self, item_frame, idx, watch):"):
-        text.index("def _bind_context_menu(self, item_frame, idx):")
+    action_row = editor_text[
+        editor_text.index("def _build_route_actions_preview(self, parent, route_idx: int, actions: list[dict]) -> None:"):
+        editor_text.index("def _small_button(self, parent, text, color, hover, command, width=54):")
     ]
 
     assert "from .theme import COLORS, IOS_FONTS, IOS_METRICS" in text
-    assert "self._font_cache = {}" in init_method
+    assert "self._font_cache: dict[tuple[int, str], ctk.CTkFont] = {}" in init_method
     assert 'kwargs = {"family": IOS_FONTS["family"], "size": size}' in font_method
     assert "self._font_cache[key] = cached" in font_method
-    assert "font=self._font(13, \"bold\")" in header
-    assert "font=self._font(11)" in header
-    assert "font=self._font(11)" in detail
-    assert "dropdown_font=self._font(10)" in detail
+    assert "font=self._font(11, \"bold\")" in action_row
+    assert "font=self._font(10)" in action_row
 
 
 def test_player_sequence_picker_uses_virtual_scroll_instead_of_full_rebuild():

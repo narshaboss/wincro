@@ -665,6 +665,7 @@ class MainWindow(ctk.CTk):
         self._mini_notification_after_id = None
         self._mini_notification_last_progress_at = time.monotonic()
         self._mini_notification_last_progress_text = ""
+        self._mini_notification_last_progress_is_monitoring = False
         self._mini_notification_last_sent_at = {}
 
         # UI 먼저 생성 (빠르게)
@@ -1173,6 +1174,7 @@ class MainWindow(ctk.CTk):
     def _mini_reset_notification_runtime(self) -> None:
         self._mini_notification_last_progress_at = time.monotonic()
         self._mini_notification_last_progress_text = ""
+        self._mini_notification_last_progress_is_monitoring = False
 
     def _mini_format_notification_progress(self, progress) -> str:
         raw_message = (
@@ -1214,8 +1216,33 @@ class MainWindow(ctk.CTk):
             message = self._mini_format_notification_progress(progress)
             self._mini_notification_last_progress_at = time.monotonic()
             self._mini_notification_last_progress_text = truncate_ui_text(message, 160)
+            self._mini_notification_last_progress_is_monitoring = bool(
+                getattr(progress, "current_action_is_monitoring", False)
+            )
         except Exception:
             self._mini_notification_last_progress_at = time.monotonic()
+            self._mini_notification_last_progress_is_monitoring = False
+
+    def _mini_record_game_mode_notification_activity(self, gm=None) -> None:
+        """Treat hidden special-mode runtime logs as playback progress for stuck alerts."""
+        gm = gm if gm is not None else getattr(self, "_mini_gm_dialog", None)
+        if gm is None:
+            return
+        try:
+            if not gm.winfo_exists() or not getattr(gm, "_is_running", False):
+                return
+            activity_at = float(getattr(gm, "_last_runtime_activity_at", 0.0) or 0.0)
+            if activity_at <= 0:
+                activity_at = time.monotonic()
+            last_progress_at = float(getattr(self, "_mini_notification_last_progress_at", 0.0) or 0.0)
+            if activity_at < last_progress_at:
+                return
+            activity_text = str(getattr(gm, "_last_runtime_activity_text", "") or "특화모드 실행 중").strip()
+            self._mini_notification_last_progress_at = activity_at
+            self._mini_notification_last_progress_text = truncate_ui_text(f"특화모드 진행: {activity_text}", 160)
+            self._mini_notification_last_progress_is_monitoring = False
+        except (tk.TclError, RuntimeError, ValueError, TypeError):
+            return
 
     def _mini_cancel_notification_watchdog(self) -> None:
         after_id = getattr(self, "_mini_notification_after_id", None)
@@ -1255,8 +1282,13 @@ class MainWindow(ctk.CTk):
         if not self._mini_notification_enabled("stuck"):
             return
 
+        self._mini_record_game_mode_notification_activity()
+
         config = self._mini_notification_config()
         threshold = max(10, int(getattr(config, "discord_stuck_seconds", 120) or 120))
+        if bool(getattr(self, "_mini_notification_last_progress_is_monitoring", False)):
+            self._mini_start_notification_watchdog(playback_generation)
+            return
         elapsed = time.monotonic() - float(getattr(self, "_mini_notification_last_progress_at", time.monotonic()))
         if elapsed >= threshold:
             self._mini_send_discord_alert(
@@ -1308,6 +1340,12 @@ class MainWindow(ctk.CTk):
             ("재생목록", plan_name or "알 수 없음"),
         ]
         alert_fields.extend(fields)
+        if event_key == "stuck":
+            alert_fields = [
+                (key, value)
+                for key, value in alert_fields
+                if str(key).strip().lower() not in {"버전", "version", "app_version", "앱 버전"}
+            ]
 
         alert = DiscordAlert(
             title=title,
@@ -2557,6 +2595,7 @@ class MainWindow(ctk.CTk):
                         rewind_delay=rewind_delay,
                     )
                     return
+                self._mini_record_game_mode_notification_activity(gm)
                 self._mini_gm_after_id = self.after(500, _check_gm_done)
             except Exception:
                 self._mini_gm_dialog = None
