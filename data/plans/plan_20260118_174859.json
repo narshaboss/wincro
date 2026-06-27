@@ -6666,36 +6666,42 @@
             {
               "image": "trigger_20260627_121536_068_crop_2ec1bd.png",
               "priority": 1,
+              "confidence": 0.9,
               "verify_image_color": true,
               "verify_image_brightness": true
             },
             {
               "image": "trigger_20260627_121544_319_crop_7e9c0d.png",
               "priority": 2,
+              "confidence": 0.9,
               "verify_image_color": true,
               "verify_image_brightness": true
             },
             {
               "image": "trigger_20260627_121558_927_crop_460b31.png",
               "priority": 3,
+              "confidence": 0.9,
               "verify_image_color": true,
               "verify_image_brightness": true
             },
             {
               "image": "trigger_20260627_121618_309_crop_8746eb.png",
               "priority": 4,
+              "confidence": 0.9,
               "verify_image_color": true,
               "verify_image_brightness": true
             },
             {
               "image": "trigger_20260627_121657_167_crop_0ebc47.png",
               "priority": 5,
+              "confidence": 0.9,
               "verify_image_color": true,
               "verify_image_brightness": true
             },
             {
               "image": "trigger_20260627_121705_101_crop_32d281.png",
               "priority": 6,
+              "confidence": 0.9,
               "verify_image_color": true,
               "verify_image_brightness": true
             }
@@ -6706,7 +6712,7 @@
             1258,
             626
           ],
-          "confidence": 0.8022727272727272,
+          "confidence": 0.9,
           "goto_index": 0,
           "goto_rule_id": "",
           "goto_step": "",
