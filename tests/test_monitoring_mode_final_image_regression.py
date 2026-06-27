@@ -60,6 +60,51 @@ def test_monitoring_jump_from_partial_run_can_switch_to_original_plan_target(mon
     assert executed == ["다이쇼 시작"]
 
 
+def test_monitoring_jump_rule_id_can_continue_from_child_action(monkeypatch):
+    executor = RuleExecutor()
+    child = AutomationRule(rule_id="child", action_type="hotkey", description="하위 시작", wait_after=0)
+    parent = AutomationRule(rule_id="parent", action_type="click", description="상위", children=[child], wait_after=0)
+    monitor = AutomationRule(
+        rule_id="monitor_child",
+        action_type="click",
+        description="모니터",
+        is_monitoring_mode=True,
+        monitoring_watches=[{"image": "watch.png", "goto_index": 1, "goto_rule_id": "child"}],
+        wait_after=0,
+    )
+    partial_plan = AutomationPlan(name="partial", initial_rules=[monitor], monitoring_rules=[])
+    partial_plan._original_initial_rules = [parent, monitor]
+    executor._current_plan = partial_plan
+    executor._state = ExecutionState.RUNNING_INITIAL
+    executor._progress = ExecutionProgress(state=ExecutionState.RUNNING_INITIAL)
+    executor._stop_event.clear()
+    executor._pause_event.set()
+    executed = []
+
+    def fake_monitoring(rule, all_rules, current_index, step_num=""):
+        return RuleExecutionResult(
+            rule_id=rule.rule_id,
+            success=True,
+            message="jump child",
+            monitoring_jump_index=1,
+            monitoring_jump_rule_id="child",
+        )
+
+    def fake_execute(rule, *args, **kwargs):
+        executed.append(rule.description)
+        executor._stop_event.set()
+        return RuleExecutionResult(rule_id=rule.rule_id, success=True, message="ok")
+
+    monkeypatch.setattr(executor, "_execute_monitoring_mode", fake_monitoring)
+    monkeypatch.setattr(executor, "_execute_rule_with_retry", fake_execute)
+    monkeypatch.setattr(executor, "_update_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+
+    executor._execution_loop()
+
+    assert executed == ["하위 시작"]
+
+
 def test_monitoring_mode_stops_when_final_image_is_found(tmp_path, monkeypatch):
     executor = RuleExecutor()
     final_image = _touch(tmp_path / "final.png")
@@ -481,3 +526,247 @@ def test_monitoring_route_priority_follows_user_order_not_target_index(tmp_path,
     assert result.message == "모니터링 점프 - 액션 2"
     assert route_runs == []
     assert checks[:2] == ["final.png", "first_route.png"]
+
+
+def test_monitoring_route_supports_multiple_images_with_priority(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    final_image = _touch(tmp_path / "final.png")
+    slow_image = _touch(tmp_path / "slow.png")
+    fast_image = _touch(tmp_path / "fast.png")
+    legacy_image = _touch(tmp_path / "legacy.png")
+    route_target = AutomationRule(action_type="hotkey", description="multi target")
+    monitor_action = {"type": "키 입력", "keys": ["esc"]}
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "image": legacy_image,
+                "images": [
+                    {"image": slow_image, "priority": 5},
+                    {"image": fast_image, "priority": 1},
+                ],
+                "goto_index": 0,
+                "monitor_actions": [monitor_action],
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[route_target])
+    checks = []
+    monitor_runs = []
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        name = Path(image_path).name
+        checks.append(name)
+        if name == "final.png":
+            return None
+        if name == "fast.png":
+            return (11, 22, 0.91)
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr(executor, "_execute_monitor_action_sequence", lambda *args, **kwargs: monitor_runs.append(args) or None)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="10")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
+    assert checks[:2] == ["final.png", "fast.png"]
+    assert "slow.png" not in checks
+    assert "legacy.png" not in checks
+    assert len(monitor_runs) == 1
+    assert monitor_runs[0][1] == [monitor_action]
+
+
+def test_monitoring_watch_order_has_priority_over_inner_image_priority(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    final_image = _touch(tmp_path / "final.png")
+    first_watch_image = _touch(tmp_path / "first_watch.png")
+    second_watch_image = _touch(tmp_path / "second_watch.png")
+    targets = [
+        AutomationRule(action_type="hotkey", description="first target"),
+        AutomationRule(action_type="hotkey", description="second target"),
+    ]
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "images": [{"image": first_watch_image, "priority": 9}],
+                "goto_index": 0,
+            },
+            {
+                "images": [{"image": second_watch_image, "priority": 1}],
+                "goto_index": 1,
+            },
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=targets)
+    checks = []
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        name = Path(image_path).name
+        checks.append(name)
+        if name == "final.png":
+            return None
+        return (11, 22, 0.91)
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="10")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
+    assert checks[:2] == ["final.png", "first_watch.png"]
+    assert "second_watch.png" not in checks
+
+
+def test_monitoring_multi_image_uses_image_specific_options(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    route_target = AutomationRule(action_type="hotkey", description="option target")
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        confidence=0.65,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "images": [
+                    {
+                        "image": route_image,
+                        "priority": 1,
+                        "confidence": 0.97,
+                        "search_region": [1, 2, 30, 40],
+                        "verify_image_color": True,
+                        "verify_image_brightness": True,
+                    }
+                ],
+                "confidence": 0.72,
+                "search_region": [9, 9, 99, 99],
+                "goto_index": 0,
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[route_target])
+    calls = []
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        name = Path(image_path).name
+        calls.append((name, confidence, search_region, verify_color, verify_brightness))
+        if name == "route.png":
+            return (11, 22, 0.99)
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="11")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
+    assert calls == [
+        ("final.png", 0.65, None, False, False),
+        ("route.png", 0.97, [1, 2, 30, 40], True, True),
+    ]
+
+
+def test_monitoring_route_can_jump_to_child_action_by_rule_id(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    child_target = AutomationRule(rule_id="child_target", action_type="hotkey", description="child target")
+    parent_target = AutomationRule(rule_id="parent_target", action_type="click", description="parent", children=[child_target])
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "image": route_image,
+                "goto_index": 1,
+                "goto_rule_id": "child_target",
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[parent_target])
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        if Path(image_path).name == "route.png":
+            return (11, 22, 0.9)
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="12")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 1
+    assert result.monitoring_jump_rule_id == "child_target"
+
+
+def test_monitoring_route_limits_multi_images_to_ten(tmp_path):
+    executor = RuleExecutor()
+    image_paths = [_touch(tmp_path / f"candidate_{idx}.png") for idx in range(12)]
+    watch = {
+        "images": [
+            {"image": image_path, "priority": idx + 1}
+            for idx, image_path in enumerate(image_paths)
+        ]
+    }
+
+    normalized = executor._normalise_monitoring_watch_images(watch)
+
+    assert len(normalized) == 10
+    assert [Path(item["image"]).name for item in normalized] == [f"candidate_{idx}.png" for idx in range(10)]
+
+
+def test_monitoring_multi_images_are_saved_and_restored_relative(tmp_path):
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    first = _touch(templates_dir / "first.png")
+    second = _touch(templates_dir / "second.png")
+    rule = AutomationRule(
+        action_type="click",
+        monitoring_watches=[
+            {
+                "image": first,
+                "images": [
+                    {
+                        "image": first,
+                        "priority": 1,
+                        "confidence": 0.91,
+                        "search_region": [1, 2, 3, 4],
+                        "verify_image_color": True,
+                    },
+                    {"image": second, "priority": 2, "verify_image_brightness": True},
+                ],
+                "goto_index": 0,
+                "goto_rule_id": "target_rule",
+            }
+        ],
+    )
+
+    saved = rule.to_dict()
+    restored = AutomationRule.from_dict(saved, templates_dir=templates_dir)
+
+    assert saved["monitoring_watches"][0]["image"] == "first.png"
+    assert saved["monitoring_watches"][0]["images"] == [
+        {
+            "image": "first.png",
+            "priority": 1,
+            "confidence": 0.91,
+            "search_region": [1, 2, 3, 4],
+            "verify_image_color": True,
+        },
+        {"image": "second.png", "priority": 2, "verify_image_brightness": True},
+    ]
+    assert saved["monitoring_watches"][0]["goto_rule_id"] == "target_rule"
+    restored_images = restored.monitoring_watches[0]["images"]
+    assert restored_images[0]["image"] == str(templates_dir / "first.png")
+    assert restored_images[1]["image"] == str(templates_dir / "second.png")
+    assert restored_images[0]["search_region"] == [1, 2, 3, 4]
+    assert restored_images[0]["verify_image_color"] is True
+    assert restored_images[1]["verify_image_brightness"] is True

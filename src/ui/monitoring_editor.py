@@ -34,6 +34,7 @@ from .theme import COLORS, IOS_FONTS, IOS_METRICS
 logger = get_logger(__name__)
 
 _MONITORING_SETTINGS_CLIPBOARD: dict | None = None
+_MAX_MONITORING_IMAGES_PER_ROUTE = 10
 
 
 class MonitorActionEditorDialog(ctk.CTkToplevel):
@@ -859,12 +860,15 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             goto_index = self._watch_goto_index(watch)
             if goto_index < 0:
                 continue
+            images = self._normalise_route_images(watch)
             self._route_watches.append(
                 {
-                    "image": watch.get("image") or watch.get("image_path"),
+                    "image": images[0]["image"] if images else (watch.get("image") or watch.get("image_path")),
+                    "images": images,
                     "search_region": copy.deepcopy(watch.get("search_region")),
                     "confidence": self._safe_confidence(watch.get("confidence", self._monitor_confidence)),
                     "goto_index": goto_index,
+                    "goto_rule_id": str(watch.get("goto_rule_id") or ""),
                     "jump_enabled": bool(watch.get("jump_enabled", True)),
                     "monitor_actions": copy.deepcopy(watch.get("monitor_actions", []) or []),
                     "condition_image": watch.get("condition_image"),
@@ -876,15 +880,36 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 }
             )
 
-    def _build_action_options(self) -> list[tuple[str, int]]:
-        options = [("액션 선택", -1)]
-        for idx, action in enumerate(self._plan_rules):
+    def _build_action_options(self) -> list[dict]:
+        options = [{"label": "액션 선택", "index": -1, "rule_id": "", "depth": 0, "step": "", "rule": None}]
+        flat_index = 0
+
+        def add_rule(action, step: str, depth: int) -> None:
+            nonlocal flat_index
             action_type = ACTION_NAMES_SHORT.get(getattr(action, "action_type", ""), getattr(action, "action_type", "") or "동작")
             desc = getattr(action, "description", "") or ""
             desc_text = f" - {truncate_ui_text(desc, 22)}" if desc else ""
             disabled_text = " (비활성)" if not getattr(action, "enabled", True) else ""
-            child_text = f" +하위{len(action.children)}" if getattr(action, "children", None) else ""
-            options.append((f"{idx + 1}. {action_type}{child_text}{disabled_text}{desc_text}", idx))
+            child_count = len(getattr(action, "children", []) or [])
+            child_text = f" +하위{child_count}" if child_count else ""
+            indent = "  " * depth
+            options.append(
+                {
+                    "label": f"{indent}{step}. {action_type}{child_text}{disabled_text}{desc_text}",
+                    "index": flat_index,
+                    "rule_id": getattr(action, "rule_id", "") or "",
+                    "depth": depth,
+                    "step": step,
+                    "rule": action,
+                    "has_children": child_count > 0,
+                }
+            )
+            flat_index += 1
+            for child_idx, child in enumerate(getattr(action, "children", []) or [], start=1):
+                add_rule(child, f"{step}-{child_idx}", depth + 1)
+
+        for idx, action in enumerate(self._plan_rules, start=1):
+            add_rule(action, str(idx), 0)
         return options
 
     @staticmethod
@@ -900,6 +925,89 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return min(1.0, max(0.3, float(value)))
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _safe_priority(value, default: int = 1) -> int:
+        try:
+            return max(1, min(_MAX_MONITORING_IMAGES_PER_ROUTE, int(value)))
+        except (TypeError, ValueError):
+            return default
+
+    def _normalise_route_images(self, route: dict) -> list[dict]:
+        images: list[dict] = []
+        seen: set[str] = set()
+
+        def add_image(image_path, priority=None) -> None:
+            source_item = image_path if isinstance(image_path, dict) else None
+            actual_path = (
+                source_item.get("image") or source_item.get("image_path")
+                if source_item is not None
+                else image_path
+            )
+            if not actual_path:
+                return
+            text_path = str(actual_path)
+            if text_path in seen:
+                return
+            seen.add(text_path)
+            image_info = {
+                "image": text_path,
+                "priority": self._safe_priority(priority, len(images) + 1),
+                "_order": len(images),
+            }
+            if source_item is not None:
+                if source_item.get("confidence") is not None:
+                    image_info["confidence"] = self._safe_confidence(source_item.get("confidence"), self._monitor_confidence)
+                if source_item.get("search_region") is not None:
+                    image_info["search_region"] = copy.deepcopy(source_item.get("search_region"))
+                if source_item.get("verify_image_color") is not None:
+                    image_info["verify_image_color"] = bool(source_item.get("verify_image_color"))
+                if source_item.get("verify_image_brightness") is not None:
+                    image_info["verify_image_brightness"] = bool(source_item.get("verify_image_brightness"))
+            images.append(image_info)
+
+        raw_images = route.get("images")
+        if isinstance(raw_images, list):
+            for item in raw_images:
+                if isinstance(item, dict):
+                    image_item = dict(item)
+                    image_item["image"] = item.get("image") or item.get("image_path")
+                    add_image(image_item, item.get("priority"))
+                else:
+                    add_image(item)
+
+        add_image(route.get("image") or route.get("image_path"), len(images) + 1)
+        images.sort(key=lambda item: (item["priority"], item.get("_order", 0)))
+        return [
+            {
+                key: copy.deepcopy(value)
+                for key, value in {**item, "priority": idx + 1}.items()
+                if key != "_order"
+            }
+            for idx, item in enumerate(images[:_MAX_MONITORING_IMAGES_PER_ROUTE])
+        ]
+
+    def _set_route_images(self, idx: int, images: list[dict]) -> None:
+        if not 0 <= idx < len(self._route_watches):
+            return
+        normalized = []
+        seen: set[str] = set()
+        for item in images[:_MAX_MONITORING_IMAGES_PER_ROUTE]:
+            image_path = item.get("image") if isinstance(item, dict) else item
+            if not image_path:
+                continue
+            text_path = str(image_path)
+            if text_path in seen:
+                continue
+            seen.add(text_path)
+            normalized_item = {"image": text_path, "priority": len(normalized) + 1}
+            if isinstance(item, dict):
+                for key in ("confidence", "search_region", "verify_image_color", "verify_image_brightness"):
+                    if item.get(key) is not None:
+                        normalized_item[key] = copy.deepcopy(item.get(key))
+            normalized.append(normalized_item)
+        self._route_watches[idx]["images"] = normalized
+        self._route_watches[idx]["image"] = normalized[0]["image"] if normalized else None
 
     def _build_ui(self) -> None:
         root = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -1457,31 +1565,53 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ScreenRegionSelector(self._owner, on_region_select, on_cancel, existing_region=existing_region)
 
-    def _action_label_for_index(self, goto_index: int) -> str:
-        for label, idx in self._action_options:
-            if idx == goto_index:
-                return label
-        return self._action_options[0][0] if self._action_options else "액션 선택"
+    def _action_option_by_rule_id(self, rule_id: str | None) -> dict | None:
+        if not rule_id:
+            return None
+        for option in self._action_options:
+            if option.get("rule_id") == rule_id:
+                return option
+        return None
 
-    def _action_index_for_label(self, label: str) -> int:
-        for option_label, idx in self._action_options:
-            if option_label == label:
-                return idx
-        return -1
+    def _top_level_option_by_index(self, goto_index: int) -> dict | None:
+        top_seen = -1
+        for option in self._action_options:
+            if option.get("index", -1) < 0 or option.get("depth", 0) != 0:
+                continue
+            top_seen += 1
+            if top_seen == goto_index:
+                return option
+        return None
+
+    def _action_label_for_route(self, route: dict) -> str:
+        option = self._action_option_by_rule_id(route.get("goto_rule_id"))
+        if option is None:
+            option = self._top_level_option_by_index(self._watch_goto_index(route))
+        if option is None:
+            return "액션 선택"
+        return option.get("label") or "액션 선택"
 
     def _default_route_goto_index(self) -> int:
-        for _, idx in self._action_options:
-            if idx >= 0:
-                return idx
+        for option in self._action_options:
+            if option.get("index", -1) >= 0:
+                return int(option.get("index", -1))
         return -1
+
+    def _default_route_goto_rule_id(self) -> str:
+        for option in self._action_options:
+            if option.get("index", -1) >= 0:
+                return str(option.get("rule_id") or "")
+        return ""
 
     def _add_route_watch(self) -> None:
         self._route_watches.append(
             {
                 "image": None,
+                "images": [],
                 "search_region": None,
                 "confidence": self._monitor_confidence,
                 "goto_index": self._default_route_goto_index(),
+                "goto_rule_id": self._default_route_goto_rule_id(),
                 "jump_enabled": True,
                 "monitor_actions": [],
                 "condition_image": None,
@@ -1513,14 +1643,22 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._set_status_text(f"모니터링 설정 복사됨 ({route_count}개)")
 
     def _normalize_pasted_route(self, route: dict) -> dict:
+        goto_rule_id = str(route.get("goto_rule_id") or "")
+        option = self._action_option_by_rule_id(goto_rule_id)
         goto_index = self._watch_goto_index(route)
-        if goto_index < 0 or goto_index >= len(self._plan_rules):
+        if option is not None:
+            goto_index = int(option.get("index", -1))
+        elif goto_index < 0 or goto_index >= len(self._plan_rules):
             goto_index = self._default_route_goto_index()
+            goto_rule_id = self._default_route_goto_rule_id()
+        images = self._normalise_route_images(route)
         return {
-            "image": route.get("image") or route.get("image_path"),
+            "image": images[0]["image"] if images else (route.get("image") or route.get("image_path")),
+            "images": images,
             "search_region": copy.deepcopy(route.get("search_region")),
             "confidence": self._safe_confidence(route.get("confidence", self._monitor_confidence)),
             "goto_index": goto_index,
+            "goto_rule_id": goto_rule_id,
             "jump_enabled": bool(route.get("jump_enabled", True)),
             "monitor_actions": copy.deepcopy(route.get("monitor_actions", []) or []),
             "condition_image": route.get("condition_image"),
@@ -1563,20 +1701,339 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             }
             self._refresh_route_list()
 
+    def _move_route_watch(self, idx: int, delta: int) -> None:
+        target_idx = idx + delta
+        if not 0 <= idx < len(self._route_watches) or not 0 <= target_idx < len(self._route_watches):
+            return
+        self._route_watches[idx], self._route_watches[target_idx] = self._route_watches[target_idx], self._route_watches[idx]
+        remapped = set()
+        for expanded in self._expanded_route_actions:
+            if expanded == idx:
+                remapped.add(target_idx)
+            elif expanded == target_idx:
+                remapped.add(idx)
+            else:
+                remapped.add(expanded)
+        self._expanded_route_actions = remapped
+        self._refresh_route_list()
+
     def _select_route_image(self, idx: int) -> None:
+        self._open_route_images_dialog(idx)
+
+    def _add_route_images(self, idx: int, on_change: Callable[[], None] | None = None) -> None:
         if not 0 <= idx < len(self._route_watches):
             return
         templates_dir = DATA_DIR / "templates"
         templates_dir.mkdir(parents=True, exist_ok=True)
-        path = filedialog.askopenfilename(
-            title="이동 감지 이미지 선택",
+        paths = filedialog.askopenfilenames(
+            title="모니터링 이미지 선택",
             initialdir=str(templates_dir),
             filetypes=[("이미지 파일", "*.png *.jpg *.jpeg *.bmp")],
         )
-        if not path:
+        if not paths:
             return
-        self._route_watches[idx]["image"] = self._copy_image_to_templates(path, prefix="route")
+        current = self._normalise_route_images(self._route_watches[idx])
+        current_paths = {item["image"] for item in current}
+        added = 0
+        skipped = 0
+        for path in paths:
+            if len(current) >= _MAX_MONITORING_IMAGES_PER_ROUTE:
+                skipped += 1
+                continue
+            copied = self._copy_image_to_templates(path, prefix="route")
+            if copied in current_paths:
+                skipped += 1
+                continue
+            current_paths.add(copied)
+            current.append({"image": copied, "priority": len(current) + 1})
+            added += 1
+        self._set_route_images(idx, current)
+        if skipped:
+            self._set_status_text(
+                f"이미지 {added}개 추가, {skipped}개 제외 - 최대 {_MAX_MONITORING_IMAGES_PER_ROUTE}개",
+                COLORS["accent_text"],
+            )
+        elif added:
+            self._set_status_text(f"이미지 {added}개 추가")
         self._refresh_route_list()
+        if on_change is not None:
+            on_change()
+
+    def _move_route_image(self, route_idx: int, image_idx: int, delta: int, on_change: Callable[[], None] | None = None) -> None:
+        if not 0 <= route_idx < len(self._route_watches):
+            return
+        images = self._normalise_route_images(self._route_watches[route_idx])
+        target_idx = image_idx + delta
+        if not 0 <= image_idx < len(images) or not 0 <= target_idx < len(images):
+            return
+        images[image_idx], images[target_idx] = images[target_idx], images[image_idx]
+        self._set_route_images(route_idx, images)
+        self._refresh_route_list()
+        if on_change is not None:
+            on_change()
+
+    def _delete_route_image(self, route_idx: int, image_idx: int, on_change: Callable[[], None] | None = None) -> None:
+        if not 0 <= route_idx < len(self._route_watches):
+            return
+        images = self._normalise_route_images(self._route_watches[route_idx])
+        if not 0 <= image_idx < len(images):
+            return
+        images.pop(image_idx)
+        self._set_route_images(route_idx, images)
+        self._refresh_route_list()
+        if on_change is not None:
+            on_change()
+
+    def _open_route_images_dialog(self, idx: int) -> None:
+        if not 0 <= idx < len(self._route_watches):
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("모니터링 이미지 관리")
+        dialog.geometry("700x620")
+        dialog.minsize(640, 520)
+        dialog.configure(fg_color=COLORS["bg_content"])
+        dialog.transient(self)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = self.winfo_x() + max(0, (self.winfo_width() - 700) // 2)
+        y = self.winfo_y() + max(0, (self.winfo_height() - 620) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        root = ctk.CTkFrame(dialog, fg_color="transparent")
+        root.pack(fill="both", expand=True, padx=18, pady=16)
+        ctk.CTkLabel(
+            root,
+            text=f"{idx + 1}번 모니터링 이미지",
+            font=self._font(18, "bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            root,
+            text=f"같은 전용액션을 공유하는 이미지를 최대 {_MAX_MONITORING_IMAGES_PER_ROUTE}개까지 등록합니다. 위쪽 이미지가 먼저 검색됩니다.",
+            font=self._font(12),
+            text_color=COLORS["text_secondary"],
+            wraplength=640,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 12))
+
+        count_var = tk.StringVar()
+        list_frame = ctk.CTkScrollableFrame(root, fg_color=COLORS["bg_card"], height=400)
+        list_frame.pack(fill="both", expand=True, pady=(0, 12))
+
+        def refresh() -> None:
+            for child in list_frame.winfo_children():
+                child.destroy()
+            images = self._normalise_route_images(self._route_watches[idx])
+            count_var.set(f"등록 {len(images)}/{_MAX_MONITORING_IMAGES_PER_ROUTE}개")
+            if not images:
+                ctk.CTkLabel(
+                    list_frame,
+                    text="이미지를 추가하세요.",
+                    font=self._font(12),
+                    text_color=COLORS["text_muted"],
+                ).pack(fill="x", pady=24)
+                return
+
+            def set_image_option(image_index: int, key: str, value, refresh_after: bool = False) -> None:
+                current_images = self._normalise_route_images(self._route_watches[idx])
+                if not 0 <= image_index < len(current_images):
+                    return
+                current_images[image_index][key] = copy.deepcopy(value)
+                self._set_route_images(idx, current_images)
+                if refresh_after:
+                    refresh()
+
+            def clear_image_region(image_index: int) -> None:
+                current_images = self._normalise_route_images(self._route_watches[idx])
+                if not 0 <= image_index < len(current_images):
+                    return
+                current_images[image_index].pop("search_region", None)
+                self._set_route_images(idx, current_images)
+                refresh()
+
+            def open_image_region(image_index: int) -> None:
+                from .analyzer_view import ScreenRegionSelector
+
+                current_images = self._normalise_route_images(self._route_watches[idx])
+                existing_region = None
+                if 0 <= image_index < len(current_images):
+                    existing_region = self._normalize_search_region_value(current_images[image_index].get("search_region"))
+
+                try:
+                    dialog.grab_release()
+                    dialog.withdraw()
+                except tk.TclError:
+                    pass
+
+                def on_region_select(x1, y1, x2, y2):
+                    region = self._normalize_search_region_value([x1, y1, x2, y2])
+                    if region is not None:
+                        set_image_option(image_index, "search_region", region)
+                    try:
+                        dialog.deiconify()
+                        dialog.grab_set()
+                        dialog.focus_force()
+                    except tk.TclError:
+                        pass
+                    refresh()
+
+                def on_cancel():
+                    try:
+                        dialog.deiconify()
+                        dialog.grab_set()
+                        dialog.focus_force()
+                    except tk.TclError:
+                        pass
+
+                ScreenRegionSelector(self._owner, on_region_select, on_cancel, existing_region=existing_region)
+
+            for image_idx, item in enumerate(images):
+                item_row = ctk.CTkFrame(
+                    list_frame,
+                    fg_color=COLORS["bg_glass"],
+                    corner_radius=IOS_METRICS["control_radius_small"],
+                )
+                item_row.pack(fill="x", padx=8, pady=6)
+                thumb = ctk.CTkLabel(
+                    item_row,
+                    text="IMG",
+                    width=70,
+                    height=48,
+                    fg_color=COLORS["bg_elevated"],
+                    corner_radius=IOS_METRICS["control_radius_small"],
+                    text_color=COLORS["text_muted"],
+                )
+                thumb.pack(side="left", padx=(10, 10), pady=8)
+                self._schedule_thumbnail(thumb, item.get("image"), size=(66, 44))
+                info = ctk.CTkFrame(item_row, fg_color="transparent")
+                info.pack(side="left", fill="x", expand=True, pady=8)
+                ctk.CTkLabel(
+                    info,
+                    text=f"우선순위 {image_idx + 1}",
+                    font=self._font(11, "bold"),
+                    text_color=COLORS["accent_text"],
+                    anchor="w",
+                ).pack(fill="x")
+                ctk.CTkLabel(
+                    info,
+                    text=truncate_ui_text(Path(item.get("image", "")).name, 48),
+                    font=self._font(12, "bold"),
+                    text_color=COLORS["text_primary"],
+                    anchor="w",
+                ).pack(fill="x", pady=(2, 0))
+                option_row = ctk.CTkFrame(info, fg_color="transparent")
+                option_row.pack(fill="x", pady=(6, 0))
+                conf = self._safe_confidence(item.get("confidence", self._route_watches[idx].get("confidence", self._monitor_confidence)))
+                conf_label = ctk.CTkLabel(
+                    option_row,
+                    text=f"{int(conf * 100)}%",
+                    width=42,
+                    font=self._font(10, "bold"),
+                    text_color=COLORS["accent_text"],
+                )
+                conf_label.pack(side="left", padx=(0, 6))
+                slider = ctk.CTkSlider(
+                    option_row,
+                    from_=0.3,
+                    to=1.0,
+                    number_of_steps=70,
+                    width=105,
+                    command=lambda value, i=image_idx, lbl=conf_label: (
+                        set_image_option(i, "confidence", self._safe_confidence(value)),
+                        lbl.configure(text=f"{int(float(value) * 100)}%"),
+                    ),
+                )
+                slider.set(conf)
+                slider.pack(side="left", padx=(0, 8))
+                region_text = self._region_source_name(item.get("search_region")) if item.get("search_region") else "공통범위"
+                self._small_button(
+                    option_row,
+                    f"범위:{region_text}",
+                    COLORS["bg_elevated"],
+                    COLORS["bg_card_hover"],
+                    lambda i=image_idx: open_image_region(i),
+                    width=90,
+                ).pack(side="left", padx=(0, 5))
+                self._small_button(
+                    option_row,
+                    "범위×",
+                    COLORS["bg_elevated"],
+                    COLORS["bg_card_hover"],
+                    lambda i=image_idx: clear_image_region(i),
+                    width=54,
+                ).pack(side="left", padx=(0, 8))
+                color_var = tk.BooleanVar(value=bool(item.get("verify_image_color", False)))
+                bright_var = tk.BooleanVar(value=bool(item.get("verify_image_brightness", False)))
+                ctk.CTkCheckBox(
+                    option_row,
+                    text="색상",
+                    variable=color_var,
+                    command=lambda i=image_idx, v=color_var: set_image_option(i, "verify_image_color", bool(v.get())),
+                    font=self._font(10, "bold"),
+                    checkbox_width=16,
+                    checkbox_height=16,
+                ).pack(side="left", padx=(0, 8))
+                ctk.CTkCheckBox(
+                    option_row,
+                    text="밝기",
+                    variable=bright_var,
+                    command=lambda i=image_idx, v=bright_var: set_image_option(i, "verify_image_brightness", bool(v.get())),
+                    font=self._font(10, "bold"),
+                    checkbox_width=16,
+                    checkbox_height=16,
+                ).pack(side="left", padx=(0, 4))
+                self._small_button(
+                    item_row,
+                    "▲",
+                    COLORS["bg_elevated"],
+                    COLORS["bg_card_hover"],
+                    lambda i=image_idx: self._move_route_image(idx, i, -1, refresh),
+                    width=40,
+                ).pack(side="left", padx=(6, 4))
+                self._small_button(
+                    item_row,
+                    "▼",
+                    COLORS["bg_elevated"],
+                    COLORS["bg_card_hover"],
+                    lambda i=image_idx: self._move_route_image(idx, i, 1, refresh),
+                    width=40,
+                ).pack(side="left", padx=(0, 4))
+                self._small_button(
+                    item_row,
+                    "×",
+                    COLORS["danger"],
+                    COLORS["danger_hover"],
+                    lambda i=image_idx: self._delete_route_image(idx, i, refresh),
+                    width=40,
+                ).pack(side="left", padx=(0, 10))
+
+        footer = ctk.CTkFrame(root, fg_color="transparent")
+        footer.pack(fill="x")
+        ctk.CTkLabel(
+            footer,
+            textvariable=count_var,
+            font=self._font(12, "bold"),
+            text_color=COLORS["accent_text"],
+        ).pack(side="left")
+        self._small_button(
+            footer,
+            "+ 이미지 추가",
+            COLORS["accent_blue"],
+            COLORS["hover_blue"],
+            lambda: self._add_route_images(idx, refresh),
+            width=112,
+        ).pack(side="right", padx=(8, 0))
+        self._small_button(
+            footer,
+            "닫기",
+            COLORS["bg_elevated"],
+            COLORS["bg_card_hover"],
+            dialog.destroy,
+            width=82,
+        ).pack(side="right")
+        refresh()
 
     def _select_route_region(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
@@ -1867,9 +2324,164 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._expanded_route_actions.discard(idx)
         self._refresh_route_list()
 
-    def _on_route_action_select(self, idx: int, label: str) -> None:
-        if 0 <= idx < len(self._route_watches):
-            self._route_watches[idx]["goto_index"] = self._action_index_for_label(label)
+    def _set_route_jump_target(self, idx: int, option: dict) -> None:
+        if not 0 <= idx < len(self._route_watches):
+            return
+        target_index = int(option.get("index", -1))
+        if target_index < 0:
+            return
+        self._route_watches[idx]["goto_index"] = target_index
+        self._route_watches[idx]["goto_rule_id"] = str(option.get("rule_id") or "")
+        self._route_watches[idx]["goto_step"] = str(option.get("step") or "")
+        self._refresh_route_list()
+
+    def _open_jump_target_dialog(self, idx: int) -> None:
+        if not 0 <= idx < len(self._route_watches):
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("점프 액션 선택")
+        dialog.geometry("720x620")
+        dialog.minsize(660, 520)
+        dialog.configure(fg_color=COLORS["bg_content"])
+        dialog.transient(self)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = self.winfo_x() + max(0, (self.winfo_width() - 720) // 2)
+        y = self.winfo_y() + max(0, (self.winfo_height() - 620) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        expanded: set[str] = set()
+        current_rule_id = str(self._route_watches[idx].get("goto_rule_id") or "")
+        list_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+        list_frame.pack(fill="both", expand=True, padx=18, pady=(16, 10))
+
+        ctk.CTkLabel(
+            list_frame,
+            text="점프할 액션 선택",
+            font=self._font(18, "bold"),
+            text_color=COLORS["text_primary"],
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            list_frame,
+            text="상위 액션은 기본 접힘입니다. ▸ 버튼을 눌러 하위액션을 펼친 뒤 바로 선택할 수 있습니다.",
+            font=self._font(12),
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+            wraplength=660,
+            justify="left",
+        ).pack(fill="x", pady=(0, 12))
+
+        rows_frame = ctk.CTkFrame(list_frame, fg_color="transparent")
+        rows_frame.pack(fill="both", expand=True)
+
+        def child_options(parent_option: dict) -> list[dict]:
+            parent_step = str(parent_option.get("step") or "")
+            parent_depth = int(parent_option.get("depth", 0))
+            prefix = f"{parent_step}-"
+            result = []
+            for option in self._action_options:
+                if option.get("index", -1) < 0:
+                    continue
+                step = str(option.get("step") or "")
+                depth = int(option.get("depth", 0))
+                if step.startswith(prefix) and depth == parent_depth + 1:
+                    result.append(option)
+            return result
+
+        def select_option(option: dict) -> None:
+            self._set_route_jump_target(idx, option)
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+        def render() -> None:
+            for child in rows_frame.winfo_children():
+                child.destroy()
+            for option in self._action_options:
+                if option.get("index", -1) < 0 or option.get("depth", 0) != 0:
+                    continue
+                children = child_options(option)
+                option_key = str(option.get("rule_id") or option.get("step"))
+                row = ctk.CTkFrame(
+                    rows_frame,
+                    fg_color=COLORS["bg_glass"],
+                    corner_radius=IOS_METRICS["control_radius_small"],
+                )
+                row.pack(fill="x", pady=5)
+                if children:
+                    self._small_button(
+                        row,
+                        "▾" if option_key in expanded else "▸",
+                        COLORS["bg_elevated"],
+                        COLORS["bg_card_hover"],
+                        lambda key=option_key: (expanded.remove(key) if key in expanded else expanded.add(key), render()),
+                        width=36,
+                    ).pack(side="left", padx=(10, 8), pady=8)
+                else:
+                    ctk.CTkLabel(row, text="", width=36).pack(side="left", padx=(10, 8), pady=8)
+                selected = current_rule_id and option.get("rule_id") == current_rule_id
+                ctk.CTkLabel(
+                    row,
+                    text=truncate_ui_text(option.get("label", ""), 70),
+                    font=self._font(12, "bold"),
+                    text_color=COLORS["accent_text"] if selected else COLORS["text_primary"],
+                    anchor="w",
+                ).pack(side="left", fill="x", expand=True, pady=8)
+                self._small_button(
+                    row,
+                    "선택",
+                    COLORS["success"] if selected else COLORS["accent_blue"],
+                    COLORS["green_hover"] if selected else COLORS["hover_blue"],
+                    lambda opt=option: select_option(opt),
+                    width=60,
+                ).pack(side="left", padx=(8, 10), pady=8)
+
+                if option_key in expanded:
+                    for child_option in children:
+                        child_row = ctk.CTkFrame(
+                            rows_frame,
+                            fg_color=COLORS["bg_card"],
+                            corner_radius=IOS_METRICS["control_radius_small"],
+                        )
+                        child_row.pack(fill="x", padx=(42, 0), pady=3)
+                        child_selected = current_rule_id and child_option.get("rule_id") == current_rule_id
+                        ctk.CTkLabel(
+                            child_row,
+                            text="└",
+                            width=24,
+                            font=self._font(12, "bold"),
+                            text_color=COLORS["text_muted"],
+                        ).pack(side="left", padx=(10, 6), pady=7)
+                        ctk.CTkLabel(
+                            child_row,
+                            text=truncate_ui_text(child_option.get("label", "").strip(), 68),
+                            font=self._font(12, "bold"),
+                            text_color=COLORS["accent_text"] if child_selected else COLORS["text_primary"],
+                            anchor="w",
+                        ).pack(side="left", fill="x", expand=True, pady=7)
+                        self._small_button(
+                            child_row,
+                            "선택",
+                            COLORS["success"] if child_selected else COLORS["accent_blue"],
+                            COLORS["green_hover"] if child_selected else COLORS["hover_blue"],
+                            lambda opt=child_option: select_option(opt),
+                            width=60,
+                        ).pack(side="left", padx=(8, 10), pady=7)
+
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.pack(fill="x", padx=18, pady=(0, 16))
+        self._small_button(
+            footer,
+            "닫기",
+            COLORS["bg_elevated"],
+            COLORS["bg_card_hover"],
+            dialog.destroy,
+            width=90,
+        ).pack(side="right")
+        render()
 
     def _on_route_jump_enabled_changed(self, idx: int, value: str) -> None:
         if 0 <= idx < len(self._route_watches):
@@ -1892,7 +2504,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
     def _refresh_route_list(self) -> None:
         if self._route_count_label is not None:
-            self._route_count_label.configure(text=f"등록 {len(self._route_watches)}개")
+            image_count = sum(len(self._normalise_route_images(route)) for route in self._route_watches)
+            self._route_count_label.configure(text=f"등록 {len(self._route_watches)}개 / 이미지 {image_count}개")
         if self._routes_frame is None:
             return
         for child in self._routes_frame.winfo_children():
@@ -1927,8 +2540,13 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         inner = ctk.CTkFrame(row, fg_color="transparent")
         inner.pack(fill="x", padx=10, pady=8)
 
-        image_path = route.get("image")
+        route_images = self._normalise_route_images(route)
+        image_path = route_images[0]["image"] if route_images else route.get("image")
         image_name = Path(image_path).name if image_path else "이미지 없음"
+        image_label_text = truncate_ui_text(image_name, 42)
+        image_count_text = f"외 {len(route_images) - 1}개" if len(route_images) > 1 else ""
+        if image_count_text:
+            image_label_text = truncate_ui_text(f"{image_label_text} {image_count_text}", 42)
         region = route.get("search_region")
         region_text = f"범위 {region[0]},{region[1]}~{region[2]},{region[3]}" if region and len(region) == 4 else "전체 화면"
         monitor_actions = route.get("monitor_actions", []) or []
@@ -1967,13 +2585,15 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._schedule_thumbnail(watch_thumb, image_path, size=(52, 38))
         ctk.CTkLabel(
             top,
-            text=truncate_ui_text(image_name, 42),
+            text=image_label_text,
             anchor="w",
             font=self._font(12, "bold"),
             text_color=COLORS["text_primary"] if image_path else COLORS["text_muted"],
         ).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self._small_button(top, "이미지", COLORS["accent_blue"], COLORS["hover_blue"], lambda i=idx: self._select_route_image(i), width=54).pack(side="left", padx=(0, 5))
+        self._small_button(top, "이미지관리", COLORS["accent_blue"], COLORS["hover_blue"], lambda i=idx: self._select_route_image(i), width=78).pack(side="left", padx=(0, 5))
         self._small_button(top, "범위", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._select_route_region(i), width=46).pack(side="left", padx=(0, 5))
+        self._small_button(top, "▲", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._move_route_watch(i, -1), width=34).pack(side="left", padx=(0, 4))
+        self._small_button(top, "▼", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._move_route_watch(i, 1), width=34).pack(side="left", padx=(0, 4))
         self._small_button(top, "삭제", COLORS["danger"], COLORS["danger_hover"], lambda i=idx: self._delete_route_watch(i), width=48).pack(side="left")
 
         controls = ctk.CTkFrame(inner, fg_color="transparent")
@@ -2088,22 +2708,24 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text_color=COLORS["accent_text"],
         ).pack(side="left", padx=(40, 8))
 
-        values = [label for label, _ in self._action_options] or ["액션 선택"]
-        combo = ctk.CTkComboBox(
+        ctk.CTkLabel(
             jump_row,
-            values=values,
-            width=360,
+            text=truncate_ui_text(self._action_label_for_route(route), 58),
             height=30,
             font=self._font(11),
-            dropdown_font=self._font(11),
             fg_color=COLORS["bg_elevated"],
-            button_color=COLORS["accent_blue"],
-            button_hover_color=COLORS["hover_blue"],
             text_color=COLORS["text_primary"],
-            command=lambda value, i=idx: self._on_route_action_select(i, value),
-        )
-        combo.set(self._action_label_for_index(self._watch_goto_index(route)))
-        combo.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            corner_radius=IOS_METRICS["control_radius_small"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._small_button(
+            jump_row,
+            "선택",
+            COLORS["accent_blue"],
+            COLORS["hover_blue"],
+            lambda i=idx: self._open_jump_target_dialog(i),
+            width=60,
+        ).pack(side="left", padx=(0, 8))
         jump_enabled_var = tk.StringVar(value="활성" if route.get("jump_enabled", True) else "비활성")
 
         def update_jump_enabled(value: str, button=None, route_index: int = idx) -> None:
@@ -2214,7 +2836,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(side="right", padx=(5, 0))
             self._small_button(
                 item,
-                "↓",
+                "▼",
                 COLORS["bg_elevated"],
                 COLORS["bg_card_hover"],
                 lambda r=route_idx, a=action_idx: self._move_route_action(r, a, 1),
@@ -2222,7 +2844,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(side="right", padx=(5, 0))
             self._small_button(
                 item,
-                "↑",
+                "▲",
                 COLORS["bg_elevated"],
                 COLORS["bg_card_hover"],
                 lambda r=route_idx, a=action_idx: self._move_route_action(r, a, -1),
@@ -2428,7 +3050,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         valid_watches = []
         for idx, route in enumerate(self._route_watches, start=1):
-            image = route.get("image")
+            images = self._normalise_route_images(route)
+            image = images[0]["image"] if images else route.get("image")
             goto_index = self._watch_goto_index(route)
             if not image and goto_index < 0:
                 continue
@@ -2441,9 +3064,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             valid_watches.append(
                 {
                     "image": image,
+                    "images": copy.deepcopy(images),
                     "search_region": copy.deepcopy(route.get("search_region")),
                     "confidence": self._safe_confidence(route.get("confidence", self._monitor_confidence)),
                     "goto_index": goto_index,
+                    "goto_rule_id": str(route.get("goto_rule_id") or ""),
+                    "goto_step": str(route.get("goto_step") or ""),
                     "jump_enabled": bool(route.get("jump_enabled", True)),
                     "monitor_actions": copy.deepcopy(route.get("monitor_actions", []) or []),
                     "condition_image": route.get("condition_image"),

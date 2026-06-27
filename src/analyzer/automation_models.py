@@ -217,6 +217,18 @@ class AutomationRule:
             watch_copy = watch.copy()
             if "image" in watch_copy and watch_copy["image"]:
                 watch_copy["image"] = _to_relative_path(watch_copy["image"])
+            if isinstance(watch_copy.get("images"), list):
+                images_copy = []
+                for image_item in watch_copy["images"]:
+                    if not isinstance(image_item, dict):
+                        continue
+                    image_copy = image_item.copy()
+                    if image_copy.get("image"):
+                        image_copy["image"] = _to_relative_path(image_copy["image"])
+                    elif image_copy.get("image_path"):
+                        image_copy["image_path"] = _to_relative_path(image_copy["image_path"])
+                    images_copy.append(image_copy)
+                watch_copy["images"] = images_copy
             # condition_image ????????
             if "condition_image" in watch_copy and watch_copy["condition_image"]:
                 watch_copy["condition_image"] = _to_relative_path(watch_copy["condition_image"])
@@ -317,6 +329,18 @@ class AutomationRule:
             watch_copy = watch.copy()
             if "image" in watch_copy and watch_copy["image"]:
                 watch_copy["image"] = _to_absolute_path(watch_copy["image"], templates_dir)
+            if isinstance(watch_copy.get("images"), list):
+                images_copy = []
+                for image_item in watch_copy["images"]:
+                    if not isinstance(image_item, dict):
+                        continue
+                    image_copy = image_item.copy()
+                    if image_copy.get("image"):
+                        image_copy["image"] = _to_absolute_path(image_copy["image"], templates_dir)
+                    elif image_copy.get("image_path"):
+                        image_copy["image_path"] = _to_absolute_path(image_copy["image_path"], templates_dir)
+                    images_copy.append(image_copy)
+                watch_copy["images"] = images_copy
             # condition_image ???????? ????????
             if "condition_image" in watch_copy and watch_copy["condition_image"]:
                 watch_copy["condition_image"] = _to_absolute_path(watch_copy["condition_image"], templates_dir)

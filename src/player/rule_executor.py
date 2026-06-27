@@ -541,6 +541,7 @@ class RuleExecutionResult:
     rewind_previous_action: bool = False
     rewind_delay: float = 0.0
     monitoring_jump_index: int = -1
+    monitoring_jump_rule_id: str = ""
 
 
 @dataclass
@@ -1107,14 +1108,20 @@ class RuleExecutor:
                         continue
 
                     monitoring_jump_index = self._safe_int(getattr(result, "monitoring_jump_index", -1), -1)
-                    if monitoring_jump_index >= 0:
+                    monitoring_jump_rule_id = str(getattr(result, "monitoring_jump_rule_id", "") or "")
+                    if monitoring_jump_index >= 0 or monitoring_jump_rule_id:
                         target_rule = None
                         original_initial_rules = []
                         try:
                             original_initial_rules = list(getattr(plan, "_original_initial_rules", None) or [])
                             runtime_initial_rules = list(getattr(plan, "initial_rules", []) or [])
                             lookup_rules = original_initial_rules or runtime_initial_rules
-                            if 0 <= monitoring_jump_index < len(lookup_rules):
+                            if monitoring_jump_rule_id:
+                                for candidate in self._flatten_rules(lookup_rules):
+                                    if getattr(candidate, "rule_id", None) == monitoring_jump_rule_id:
+                                        target_rule = candidate
+                                        break
+                            elif 0 <= monitoring_jump_index < len(lookup_rules):
                                 target_rule = lookup_rules[monitoring_jump_index]
                         except Exception:
                             target_rule = None
@@ -1137,7 +1144,8 @@ class RuleExecutor:
                                     all_rules = [rule for rule, _ in all_rules_with_step]
                                     target_index = original_target_index
                         if target_index < 0:
-                            message = f"모니터링 점프 대상 액션을 현재 실행 목록에서 찾지 못함: 액션 {monitoring_jump_index + 1}"
+                            target_label = monitoring_jump_rule_id or f"액션 {monitoring_jump_index + 1}"
+                            message = f"모니터링 점프 대상 액션을 현재 실행 목록에서 찾지 못함: {target_label}"
                             logger.error(f"{_RED}✗ [{step_num}] {message}{_RESET}")
                             self._state = ExecutionState.FAILED
                             self._update_progress(message)
@@ -3251,14 +3259,21 @@ class RuleExecutor:
         start_time = datetime.now()
         step_prefix = f"[{step_num}] " if step_num else ""
         base_confidence = rule.confidence if getattr(rule, "confidence", 0) > 0 else 0.8
-        watches = self._normalise_monitoring_watches(rule, base_confidence)
+        watches = sorted(self._normalise_monitoring_watches(rule, base_confidence), key=self._monitoring_watch_priority)
         final_images = self._monitoring_final_images_for_rule(rule)
         final_search_region = self._image_search_region_for_rule(rule)
 
         if not watches:
             return self._make_result(rule, False, "모니터링 이미지가 설정되지 않음", start_time)
 
-        configured_actions = sum(len(watch.get("monitor_actions", []) or []) for watch in watches)
+        configured_actions_by_watch: Dict[int, int] = {}
+        for watch in watches:
+            try:
+                watch_order = int(watch.get("_watch_order", 0))
+            except (TypeError, ValueError):
+                watch_order = len(configured_actions_by_watch)
+            configured_actions_by_watch.setdefault(watch_order, len(watch.get("monitor_actions", []) or []))
+        configured_actions = sum(configured_actions_by_watch.values())
         logger.info(
             f"{_CYAN}{step_prefix}▶ 모니터링 시작: 이미지 {len(watches)}개, "
             f"전용 액션 {configured_actions}개, 최종이미지 {len(final_images)}개{_RESET}"
@@ -3283,7 +3298,7 @@ class RuleExecutor:
                 )
                 return self._make_result(rule, True, "모니터링 완료 - 최종이미지 발견", start_time)
 
-            for watch in sorted(watches, key=self._monitoring_watch_priority):
+            for watch in watches:
                 image_path = watch.get("image")
                 if not image_path:
                     continue
@@ -3308,6 +3323,8 @@ class RuleExecutor:
                 image_name = Path(image_path).name
                 monitor_actions = watch.get("monitor_actions", []) or []
                 goto_index = self._safe_int(watch.get("goto_index", -1), -1)
+                goto_rule_id = str(watch.get("goto_rule_id") or "")
+                goto_label = str(watch.get("goto_step") or f"{goto_index + 1}")
                 if goto_index < 0:
                     logger.debug(
                         f"{step_prefix}모니터링 기본 감시 무시: {image_name} "
@@ -3317,9 +3334,9 @@ class RuleExecutor:
                 if goto_index >= 0:
                     logger.info(
                         f"{_GREEN}{step_prefix}✓ 라우팅 이미지 발견: {image_name} "
-                        f"({int(found_confidence * 100)}%) - 전용 액션 {len(monitor_actions)}개 후 액션 {goto_index + 1} 이동{_RESET}"
+                        f"({int(found_confidence * 100)}%) - 전용 액션 {len(monitor_actions)}개 후 액션 {goto_label} 이동{_RESET}"
                     )
-                    self._update_progress(f"{step_prefix}라우팅 이미지 발견 → 전용 액션/액션 {goto_index + 1}")
+                    self._update_progress(f"{step_prefix}라우팅 이미지 발견 → 전용 액션/액션 {goto_label}")
                     if monitor_actions:
                         action_result = self._execute_monitor_action_sequence(
                             rule,
@@ -3356,30 +3373,41 @@ class RuleExecutor:
                         )
                     if not target_rules:
                         target_rules = list(all_rules or [])
-                    if goto_index < 0 or goto_index >= len(target_rules):
+                    flat_target_rules = self._flatten_rules(target_rules)
+                    target_rule = None
+                    target_index = goto_index
+                    if goto_rule_id:
+                        for flat_index, candidate in enumerate(flat_target_rules):
+                            if getattr(candidate, "rule_id", None) == goto_rule_id:
+                                target_rule = candidate
+                                target_index = flat_index
+                                break
+                    elif 0 <= goto_index < len(target_rules):
+                        target_rule = target_rules[goto_index]
+                    if target_rule is None:
                         return self._make_result(
                             rule,
                             False,
                             f"모니터링 점프 대상 액션 번호 오류: {goto_index + 1}",
                             start_time,
                         )
-                    target_rule = target_rules[goto_index]
                     if getattr(target_rule, "rule_id", None) == getattr(rule, "rule_id", None):
                         return self._make_result(rule, False, "모니터링 점프 자기 자신 실행 차단", start_time)
                     if not getattr(target_rule, "enabled", True):
-                        return self._make_result(rule, False, f"모니터링 점프 대상 비활성: 액션 {goto_index + 1}", start_time)
+                        return self._make_result(rule, False, f"모니터링 점프 대상 비활성: 액션 {target_index + 1}", start_time)
 
                     action_name = getattr(target_rule, "description", "") or getattr(target_rule, "action_type", "동작")
                     logger.info(
-                        f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {goto_index + 1} {action_name}{_RESET}"
+                        f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {target_index + 1} {action_name}{_RESET}"
                     )
-                    self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {goto_index + 1}")
+                    self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {target_index + 1}")
                     return self._make_result(
                         rule,
                         True,
-                        f"모니터링 점프 - 액션 {goto_index + 1}",
+                        f"모니터링 점프 - 액션 {target_index + 1}",
                         start_time,
-                        monitoring_jump_index=goto_index,
+                        monitoring_jump_index=target_index,
+                        monitoring_jump_rule_id=goto_rule_id,
                     )
 
             wait_count += 1
@@ -3404,9 +3432,10 @@ class RuleExecutor:
         images: List[str] = []
         seen = set()
         watch_images = {
-            str(watch.get("image") or watch.get("image_path"))
+            image_path
             for watch in (getattr(rule, "monitoring_watches", None) or [])
-            if isinstance(watch, dict) and (watch.get("image") or watch.get("image_path"))
+            if isinstance(watch, dict)
+            for image_path in self._monitoring_watch_image_paths(watch)
         }
         legacy_final = getattr(rule, "monitoring_final_image", None)
         raw_images = []
@@ -3462,47 +3491,114 @@ class RuleExecutor:
         for watch_order, raw in enumerate(raw_watches):
             if not isinstance(raw, dict):
                 continue
-            image = raw.get("image") or raw.get("image_path")
-            if not image:
-                continue
             goto_index = self._safe_int(raw.get("goto_index", -1), -1)
             if goto_index < 0:
                 continue
             monitor_actions = list(raw.get("monitor_actions") or [])
             if not monitor_actions and raw.get("monitor_action"):
                 monitor_actions = [raw.get("monitor_action")]
-            watches.append(
-                {
-                    "image": image,
-                    "search_region": raw.get("search_region") or getattr(rule, "search_region", None),
-                    "confidence": raw.get("confidence", base_confidence),
-                    "goto_index": goto_index,
-                    "jump_enabled": bool(raw.get("jump_enabled", True)),
-                    "verify_image_color": raw.get("verify_image_color", False),
-                    "verify_image_brightness": raw.get("verify_image_brightness", False),
-                    "monitor_actions": [item for item in monitor_actions if isinstance(item, dict)],
-                    "condition_image": raw.get("condition_image"),
-                    "condition_search_region": raw.get("condition_search_region"),
-                    "condition_confidence": raw.get("condition_confidence", 0.8),
-                    "condition_jump_when_visible": bool(raw.get("condition_jump_when_visible", False)),
-                    "condition_verify_image_color": bool(raw.get("condition_verify_image_color", False)),
-                    "condition_verify_image_brightness": bool(raw.get("condition_verify_image_brightness", False)),
-                    "_watch_order": watch_order,
-                }
-            )
+            watch_images = self._normalise_monitoring_watch_images(raw)
+            if not watch_images:
+                continue
+            for image_order, image_item in enumerate(watch_images):
+                watches.append(
+                    {
+                        "image": image_item["image"],
+                        "search_region": image_item.get("search_region") or raw.get("search_region") or getattr(rule, "search_region", None),
+                        "confidence": image_item.get("confidence", raw.get("confidence", base_confidence)),
+                        "goto_index": goto_index,
+                        "goto_rule_id": str(raw.get("goto_rule_id") or ""),
+                        "jump_enabled": bool(raw.get("jump_enabled", True)),
+                        "verify_image_color": image_item.get("verify_image_color", raw.get("verify_image_color", False)),
+                        "verify_image_brightness": image_item.get("verify_image_brightness", raw.get("verify_image_brightness", False)),
+                        "monitor_actions": [item for item in monitor_actions if isinstance(item, dict)],
+                        "condition_image": raw.get("condition_image"),
+                        "condition_search_region": raw.get("condition_search_region"),
+                        "condition_confidence": raw.get("condition_confidence", 0.8),
+                        "condition_jump_when_visible": bool(raw.get("condition_jump_when_visible", False)),
+                        "condition_verify_image_color": bool(raw.get("condition_verify_image_color", False)),
+                        "condition_verify_image_brightness": bool(raw.get("condition_verify_image_brightness", False)),
+                        "_watch_order": watch_order,
+                        "_image_order": image_order,
+                        "_image_priority": image_item["priority"],
+                    }
+                )
         return watches
 
+    def _monitoring_watch_image_paths(self, raw: dict) -> List[str]:
+        return [item["image"] for item in self._normalise_monitoring_watch_images(raw)]
+
+    def _normalise_monitoring_watch_images(self, raw: dict) -> List[Dict[str, Any]]:
+        """Return up to 10 monitoring image candidates for one route watch."""
+        images: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add_image(image_path, priority=None) -> None:
+            source_item = image_path if isinstance(image_path, dict) else None
+            actual_path = (
+                source_item.get("image") or source_item.get("image_path")
+                if source_item is not None
+                else image_path
+            )
+            if not actual_path:
+                return
+            text_path = str(actual_path)
+            if text_path in seen:
+                return
+            seen.add(text_path)
+            try:
+                priority_value = int(priority)
+            except (TypeError, ValueError):
+                priority_value = len(images) + 1
+            image_info = {
+                "image": text_path,
+                "priority": max(1, min(10, priority_value)),
+                "_input_order": len(images),
+            }
+            if source_item is not None:
+                if source_item.get("confidence") is not None:
+                    image_info["confidence"] = source_item.get("confidence")
+                if source_item.get("search_region") is not None:
+                    image_info["search_region"] = source_item.get("search_region")
+                if source_item.get("verify_image_color") is not None:
+                    image_info["verify_image_color"] = bool(source_item.get("verify_image_color"))
+                if source_item.get("verify_image_brightness") is not None:
+                    image_info["verify_image_brightness"] = bool(source_item.get("verify_image_brightness"))
+            images.append(image_info)
+
+        raw_images = raw.get("images")
+        if isinstance(raw_images, list):
+            for item in raw_images:
+                if isinstance(item, dict):
+                    image_item = dict(item)
+                    image_item["image"] = item.get("image") or item.get("image_path")
+                    add_image(image_item, item.get("priority"))
+                else:
+                    add_image(item)
+
+        add_image(raw.get("image") or raw.get("image_path"), len(images) + 1)
+        images.sort(key=lambda item: (item["priority"], item["_input_order"]))
+        return images[:10]
+
     @staticmethod
-    def _monitoring_watch_priority(watch: dict) -> tuple[int, int]:
+    def _monitoring_watch_priority(watch: dict) -> tuple[int, int, int, int]:
         try:
             goto_index = int(watch.get("goto_index", -1))
         except (TypeError, ValueError):
             goto_index = -1
         try:
+            image_priority = int(watch.get("_image_priority", 999))
+        except (TypeError, ValueError):
+            image_priority = 999
+        try:
             watch_order = int(watch.get("_watch_order", 0))
         except (TypeError, ValueError):
             watch_order = 0
-        return (0 if goto_index >= 0 else 1, watch_order)
+        try:
+            image_order = int(watch.get("_image_order", 0))
+        except (TypeError, ValueError):
+            image_order = 0
+        return (0 if goto_index >= 0 else 1, watch_order, image_priority, image_order)
 
     def _monitoring_route_condition_blocks_jump(self, watch: dict, base_confidence: float, step_prefix: str = "") -> bool:
         condition_image = watch.get("condition_image")
@@ -4037,6 +4133,7 @@ class RuleExecutor:
         rewind_previous_action: bool = False,
         rewind_delay: float = 0.0,
         monitoring_jump_index: int = -1,
+        monitoring_jump_rule_id: str = "",
     ) -> RuleExecutionResult:
         """실행 결과 생성"""
         execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -4050,6 +4147,7 @@ class RuleExecutor:
             rewind_previous_action=rewind_previous_action,
             rewind_delay=rewind_delay,
             monitoring_jump_index=monitoring_jump_index,
+            monitoring_jump_rule_id=monitoring_jump_rule_id,
         )
 
     def _update_progress(self, message: str) -> None:
