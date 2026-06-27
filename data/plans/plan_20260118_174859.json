@@ -7012,10 +7012,11 @@
               "keys": [
                 "esc"
               ],
+              "key_events": [],
               "repeat_count": 4,
               "repeat_delay": 0.8,
               "repeat_delay_random_range": 0.3,
-              "wait_after": 0.5,
+              "wait_after": 5.0,
               "wait_random_range": 0.3,
               "repeat_delay_random": true,
               "wait_random": true
@@ -7136,10 +7137,11 @@
               "keys": [
                 "esc"
               ],
+              "key_events": [],
               "repeat_count": 4,
               "repeat_delay": 0.8,
               "repeat_delay_random_range": 0.3,
-              "wait_after": 0.5,
+              "wait_after": 5.0,
               "wait_random_range": 0.3,
               "repeat_delay_random": true,
               "wait_random": true
