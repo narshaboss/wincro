@@ -14573,7 +14573,9 @@
       "drag_duration": null,
       "scroll_amount": 0,
       "target_image": "trigger_20260623_214803_393_crop_e180fd.png",
-      "target_images": [],
+      "target_images": [
+        "trigger_20260622_140911_922_crop_29eed0.png"
+      ],
       "trigger_image": null,
       "trigger_x": null,
       "trigger_y": null,
