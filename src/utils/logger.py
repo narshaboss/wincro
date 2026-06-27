@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler, QueueHandler, QueueListener
 from typing import Optional
+from uuid import uuid4
 
 from .app_identity import PRIMARY_PACKAGE_DIR_NAME
 
@@ -229,13 +230,21 @@ class LoggerManager:
         Returns:
             logging.Logger: 실행 로거
         """
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid4().hex[:8]}"
         safe_name = "".join(c if c.isalnum() or c in '-_' else '_' for c in sequence_name)
         logger_name = f"execution.{safe_name}_{timestamp}"
         log_filename = f"execution_{safe_name}_{timestamp}.log"
 
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+
+        for existing_handler in list(logger.handlers):
+            logger.removeHandler(existing_handler)
+            try:
+                existing_handler.close()
+            except Exception:
+                pass
 
         # 실행 로그용 파일 핸들러
         log_file = LOGS_DIR / log_filename

@@ -237,7 +237,15 @@ def test_monitoring_editor_uses_single_image_action_flow():
     assert "goto_index" in text
     assert "def _default_route_goto_index" in text
     assert "def _build_route_separator" in text
-    assert "self._build_route_separator()" in text
+    assert "self._route_slots: dict[int, ctk.CTkFrame] = {}" in text
+    assert "self._route_action_slots: dict[tuple[int, int], ctk.CTkFrame] = {}" in text
+    assert "self._route_action_preview_hosts: dict[int, ctk.CTkFrame] = {}" in text
+    assert "self._route_jump_rows: dict[int, ctk.CTkFrame] = {}" in text
+    assert "self._route_action_toggle_buttons: dict[int, ctk.CTkButton] = {}" in text
+    assert "self._route_render_generation = 0" in text
+    assert "def _refresh_route_row(self, idx: int) -> None:" in text
+    assert "def _refresh_route_action_slot(self, route_idx: int, action_idx: int) -> bool:" in text
+    assert "self._build_route_separator(parent=slot)" in text
     assert "root = ctk.CTkScrollableFrame(self" in text
     assert 'self._routes_frame = ctk.CTkFrame(card, fg_color="transparent")' in text
     assert 'self._routes_frame = ctk.CTkScrollableFrame(card' not in text
@@ -265,8 +273,14 @@ def test_monitoring_editor_uses_single_image_action_flow():
     assert "전용액션" in text
     assert "점프액션" in text
     assert 'values=["활성", "비활성"]' in text
-    assert text.index("action_row = ctk.CTkFrame(inner, fg_color=\"transparent\")") < text.index("jump_row = ctk.CTkFrame(inner, fg_color=\"transparent\")")
-    assert text.index("self._build_route_actions_preview(inner, idx, monitor_actions)") < text.index("jump_row = ctk.CTkFrame(inner, fg_color=\"transparent\")")
+    build_route_row = text[
+        text.index("def _build_route_row(self, idx: int, route: dict, parent=None) -> None:"):
+        text.index("def _toggle_route_actions(self, idx: int) -> None:")
+    ]
+    assert build_route_row.index("action_row = ctk.CTkFrame(inner, fg_color=\"transparent\")") < build_route_row.index("jump_row = ctk.CTkFrame(inner, fg_color=\"transparent\")")
+    assert "self._route_jump_rows[idx] = jump_row" in build_route_row
+    assert "preview_host.pack(fill=\"x\", before=jump_row)" in build_route_row
+    assert build_route_row.index("jump_row = ctk.CTkFrame(inner, fg_color=\"transparent\")") < build_route_row.index("preview_host.pack(fill=\"x\", before=jump_row)")
     assert "def _show_region_options" in text
     assert 'build_preset_row("a", "A영역", COLORS["accent_blue"])' in text
     assert 'build_preset_row("b", "B영역", COLORS["accent_orange"])' in text
@@ -435,10 +449,15 @@ def test_monitoring_editor_thumbnails_do_not_decode_on_ui_thread():
 
     assert "from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail, submit_thumbnail_task" in text
     assert "monitor_thumb_v2" in helper
+    assert "pending_key = (cache_source, size)" in helper
+    assert "self._pending_thumbnail_labels[pending_key] = waiters" in helper
+    assert "if len(waiters) > 1:" in helper
+    assert "self._pending_thumbnail_labels.pop(pending_key, [])" in helper
     assert "cv2.IMREAD_UNCHANGED" in helper
     assert "img.shape[2] == 4" in helper
     assert "alpha = img[:, :, 3:4]" in helper
     assert "submit_thumbnail_task(load_thumbnail)" in helper
+    assert "def _widget_exists(widget) -> bool:" in text
     assert "ctk.CTkImage(" in helper
     assert helper.index("def load_thumbnail(") < helper.index("ctk.CTkImage(")
     assert "self.after(0, apply_thumbnail)" in helper
@@ -470,6 +489,77 @@ def test_monitoring_editor_reuses_fonts_in_rebuilt_action_rows():
     assert "self._font_cache[key] = cached" in font_method
     assert "font=self._font(11, \"bold\")" in action_row
     assert "font=self._font(10)" in action_row
+
+
+def test_monitoring_editor_refreshes_single_route_for_local_edits():
+    text = _read_text(MONITORING_EDITOR)
+    editor_text = text[text.index("class MonitoringModeEditor"):]
+
+    def method_body(name: str, next_name: str) -> str:
+        start = editor_text.index(f"def {name}")
+        end = editor_text.index(f"def {next_name}", start)
+        return editor_text[start:end]
+
+    local_edit_methods = [
+        ("_add_route_images", "_move_route_image", "idx"),
+        ("_move_route_image", "_delete_route_image", "route_idx"),
+        ("_delete_route_image", "_open_route_images_dialog", "route_idx"),
+        ("_clear_route_region", "_select_route_condition_image", "idx"),
+        ("_select_route_condition_image", "_open_route_condition_settings", "idx"),
+        ("_clear_route_condition_image", "_clear_route_actions", "idx"),
+        ("_clear_route_actions", "_set_route_jump_target", "idx"),
+        ("_set_route_jump_target", "_open_jump_target_dialog", "idx"),
+        ("_toggle_route_actions", "_build_route_actions_preview", "idx"),
+        ("_add_route_action", "_edit_route_action", "route_idx"),
+        ("_edit_route_action", "_delete_route_action", "route_idx"),
+        ("_delete_route_action", "_move_route_action", "route_idx"),
+        ("_move_route_action", "_test_route_action", "route_idx"),
+    ]
+
+    for name, next_name, index_name in local_edit_methods:
+        body = method_body(name, next_name)
+        assert f"self._refresh_route_row({index_name})" in body, name
+        assert "self._refresh_route_list()" not in body, name
+
+
+def test_monitoring_editor_batches_large_monitor_action_preview():
+    text = _read_text(MONITORING_EDITOR)
+    editor_text = text[text.index("class MonitoringModeEditor"):]
+    preview_method = editor_text[
+        editor_text.index("def _build_route_actions_preview("):
+        editor_text.index("def _build_monitor_action_thumbnail(", editor_text.index("def _build_route_actions_preview("))
+    ]
+    move_method = editor_text[
+        editor_text.index("def _move_route_action("):
+        editor_text.index("def _test_route_action(", editor_text.index("def _move_route_action("))
+    ]
+    edit_method = editor_text[
+        editor_text.index("def _edit_route_action("):
+        editor_text.index("def _delete_route_action(", editor_text.index("def _edit_route_action("))
+    ]
+
+    assert "_MONITORING_ACTION_RENDER_BATCH_SIZE = 2" in text
+    assert "_MONITORING_ROUTE_RENDER_BATCH_SIZE = 2" in text
+    assert "_MONITORING_RENDER_BATCH_DELAY_MS = 12" in text
+    assert "def _render_route_batch(" in text
+    assert "def _append_route_slot(" in text
+    assert "generation != self._route_render_generation" in text
+    assert "actions[:_MONITORING_ACTION_RENDER_BATCH_SIZE]" in preview_method
+    assert "def _render_route_action_batch(" in preview_method
+    assert "def _append_route_action_slot(" in preview_method
+    assert "self._refresh_route_action_slot(route_idx, action_idx)" in edit_method
+    assert "self._refresh_route_action_slot(route_idx, action_idx)" in move_method
+    assert "self._refresh_route_action_slot(route_idx, new_idx)" in move_method
+    toggle_method = editor_text[
+        editor_text.index("def _toggle_route_actions("):
+        editor_text.index("def _build_route_actions_preview(", editor_text.index("def _toggle_route_actions("))
+    ]
+    assert "self._route_action_preview_hosts.get(idx)" in toggle_method
+    assert "self._route_jump_rows.get(idx)" in toggle_method
+    assert "host.pack_forget()" in toggle_method
+    assert "host.pack(fill=\"x\", before=jump_row)" in toggle_method
+    assert "self._build_route_actions_preview(host, idx" in toggle_method
+    assert "self._refresh_route_row(idx)" in toggle_method
 
 
 def test_player_sequence_picker_uses_virtual_scroll_instead_of_full_rebuild():

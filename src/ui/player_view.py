@@ -6590,6 +6590,28 @@ class GameModeDialog(ctk.CTkToplevel):
         if self._auto_run:
             self.after(300, self._start_execution)
 
+    def _close_runtime_ui_queues(self) -> None:
+        """Stop dialog-local UI pumps even when destroy() bypasses _on_close()."""
+        for attr in ("_ui_log_pump", "_ui_dispatcher"):
+            pump = getattr(self, attr, None)
+            if pump is None:
+                continue
+            try:
+                pump.close()
+            except Exception:
+                pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+
+        try:
+            with self._ui_call_queue_lock:
+                self._ui_call_queue.clear()
+        except Exception:
+            pass
+        self._ui_log_flush_scheduled = False
+
     def destroy(self):
         _unregister_game_mode_dialog(self)
         self._cancel_waypoint_parent_build()
@@ -6598,6 +6620,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 self.request_hard_stop(reason="dialog_destroy", detail="destroy called", schedule_ui_stop=False)
             except Exception:
                 pass
+        self._close_runtime_ui_queues()
         return super().destroy()
 
     def after(self, ms, func=None, *args):
@@ -26004,14 +26027,7 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception as e:
                 logger.error(f"[특화모드] 닫기 시 리프레시 실패: {e}")
 
-        try:
-            self._ui_log_pump.close()
-        except Exception:
-            pass
-        try:
-            self._ui_dispatcher.close()
-        except Exception:
-            pass
+        self._close_runtime_ui_queues()
         self.destroy()
 
 

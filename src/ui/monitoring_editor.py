@@ -35,6 +35,9 @@ logger = get_logger(__name__)
 
 _MONITORING_SETTINGS_CLIPBOARD: dict | None = None
 _MAX_MONITORING_IMAGES_PER_ROUTE = 10
+_MONITORING_ROUTE_RENDER_BATCH_SIZE = 2
+_MONITORING_ACTION_RENDER_BATCH_SIZE = 2
+_MONITORING_RENDER_BATCH_DELAY_MS = 12
 
 
 class MonitorActionEditorDialog(ctk.CTkToplevel):
@@ -808,11 +811,18 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._monitor_confidence: float = 0.8
         self._route_watches: list[dict] = []
         self._routes_frame = None
+        self._route_slots: dict[int, ctk.CTkFrame] = {}
+        self._route_action_slots: dict[tuple[int, int], ctk.CTkFrame] = {}
+        self._route_action_preview_hosts: dict[int, ctk.CTkFrame] = {}
+        self._route_jump_rows: dict[int, ctk.CTkFrame] = {}
+        self._route_action_toggle_buttons: dict[int, ctk.CTkButton] = {}
+        self._route_render_generation = 0
         self._route_count_label = None
         self._save_status_label = None
         self._action_options: list[tuple[str, int]] = []
         self._font_cache: dict[tuple[int, str], ctk.CTkFont] = {}
         self._expanded_route_actions: set[int] = set()
+        self._pending_thumbnail_labels: dict[tuple[str, tuple[int, int]], list] = {}
 
         self._setup_dialog()
         self._init_data()
@@ -831,16 +841,16 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
     def _setup_dialog(self) -> None:
         self.title("모니터링 모드 설정")
-        self.geometry("980x920")
-        self.minsize(900, 820)
+        self.geometry("1080x940")
+        self.minsize(960, 840)
         self.resizable(True, True)
         self.configure(fg_color=COLORS["bg_dark"])
         self.transient(self._owner)
         self.grab_set()
 
         self.update_idletasks()
-        x = max(0, (self.winfo_screenwidth() - 980) // 2)
-        y = max(0, (self.winfo_screenheight() - 920) // 2)
+        x = max(0, (self.winfo_screenwidth() - 1080) // 2)
+        y = max(0, (self.winfo_screenheight() - 940) // 2)
         self.geometry(f"+{x}+{y}")
 
     def _init_data(self) -> None:
@@ -1030,7 +1040,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text="최종이미지를 기다리다가 등록한 이동 이미지가 먼저 보이면 전용액션을 실행한 뒤 지정 액션으로 점프하고 모니터링을 끝냅니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
-            wraplength=800,
+            wraplength=920,
             justify="left",
         ).pack(anchor="w", pady=(3, 0))
 
@@ -1052,7 +1062,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text="1. 최종이미지 대기   →   2. 이동 이미지 발견   →   3. 전용액션 실행 후 지정 액션으로 점프",
             font=self._font(13, "bold"),
             text_color=COLORS["accent_text"],
-            wraplength=880,
+            wraplength=980,
             justify="left",
         ).pack(anchor="w", padx=14, pady=10)
 
@@ -1121,7 +1131,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             font=self._font(11),
             text_color=COLORS["text_secondary"],
             anchor="w",
-            wraplength=880,
+            wraplength=980,
             justify="left",
         ).pack(fill="x", padx=14, pady=(0, 8))
 
@@ -1235,12 +1245,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if target == "route" and idx is not None and 0 <= idx < len(self._route_watches):
             self._route_watches[idx]["search_region"] = normalized
             logger.info("[모니터링] R%s %s 적용: %s", idx + 1, source_label, normalized)
-            self._refresh_route_list()
+            self._refresh_route_row(idx)
             return True
         if target == "condition" and idx is not None and 0 <= idx < len(self._route_watches):
             self._route_watches[idx]["condition_search_region"] = normalized
             logger.info("[모니터링] R%s 조건 %s 적용: %s", idx + 1, source_label, normalized)
-            self._refresh_route_list()
+            self._refresh_route_row(idx)
             return True
         return False
 
@@ -1310,6 +1320,16 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return
 
         label.configure(image=None, text="IMG", text_color=COLORS["text_muted"])
+        pending_key = (cache_source, size)
+        waiters = [
+            waiter
+            for waiter in self._pending_thumbnail_labels.get(pending_key, [])
+            if self._widget_exists(waiter)
+        ]
+        waiters.append(label)
+        self._pending_thumbnail_labels[pending_key] = waiters
+        if len(waiters) > 1:
+            return
 
         def load_thumbnail():
             try:
@@ -1336,22 +1356,35 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
                 def apply_thumbnail():
                     try:
-                        if not label.winfo_exists():
-                            return
-                        if getattr(label, "_thumb_source", None) != (source, size):
-                            return
                         ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(new_w, new_h))
                         set_cached_thumbnail(cache_source, size, ctk_img)
-                        label.configure(image=ctk_img, text="")
-                        label._thumb_img = ctk_img
+                        waiters = self._pending_thumbnail_labels.pop(pending_key, [])
+                        for waiter in waiters:
+                            if not self._widget_exists(waiter):
+                                continue
+                            if getattr(waiter, "_thumb_source", None) != (source, size):
+                                continue
+                            waiter.configure(image=ctk_img, text="")
+                            waiter._thumb_img = ctk_img
                     except (tk.TclError, RuntimeError):
                         pass
 
-                self.after(0, apply_thumbnail)
+                try:
+                    self.after(0, apply_thumbnail)
+                except (tk.TclError, RuntimeError):
+                    self._pending_thumbnail_labels.pop(pending_key, None)
             except Exception as exc:
+                self._pending_thumbnail_labels.pop(pending_key, None)
                 logger.warning("monitoring thumbnail load failed: %s - %s", source, exc)
 
         submit_thumbnail_task(load_thumbnail)
+
+    @staticmethod
+    def _widget_exists(widget) -> bool:
+        try:
+            return bool(widget.winfo_exists())
+        except (tk.TclError, RuntimeError):
+            return False
 
     def _show_region_options(self, target: str, idx: int | None = None) -> None:
         if target in {"route", "condition"} and (idx is None or not 0 <= idx < len(self._route_watches)):
@@ -1755,7 +1788,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             )
         elif added:
             self._set_status_text(f"이미지 {added}개 추가")
-        self._refresh_route_list()
+        self._refresh_route_row(idx)
         if on_change is not None:
             on_change()
 
@@ -1768,7 +1801,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return
         images[image_idx], images[target_idx] = images[target_idx], images[image_idx]
         self._set_route_images(route_idx, images)
-        self._refresh_route_list()
+        self._refresh_route_row(route_idx)
         if on_change is not None:
             on_change()
 
@@ -1780,7 +1813,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return
         images.pop(image_idx)
         self._set_route_images(route_idx, images)
-        self._refresh_route_list()
+        self._refresh_route_row(route_idx)
         if on_change is not None:
             on_change()
 
@@ -1790,15 +1823,15 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("모니터링 이미지 관리")
-        dialog.geometry("700x620")
-        dialog.minsize(640, 520)
+        dialog.geometry("780x660")
+        dialog.minsize(720, 560)
         dialog.configure(fg_color=COLORS["bg_content"])
         dialog.transient(self)
         dialog.grab_set()
 
         dialog.update_idletasks()
-        x = self.winfo_x() + max(0, (self.winfo_width() - 700) // 2)
-        y = self.winfo_y() + max(0, (self.winfo_height() - 620) // 2)
+        x = self.winfo_x() + max(0, (self.winfo_width() - 780) // 2)
+        y = self.winfo_y() + max(0, (self.winfo_height() - 660) // 2)
         dialog.geometry(f"+{x}+{y}")
 
         root = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -1814,12 +1847,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text=f"같은 전용액션을 공유하는 이미지를 최대 {_MAX_MONITORING_IMAGES_PER_ROUTE}개까지 등록합니다. 위쪽 이미지가 먼저 검색됩니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
-            wraplength=640,
+            wraplength=720,
             justify="left",
         ).pack(anchor="w", pady=(4, 12))
 
         count_var = tk.StringVar()
-        list_frame = ctk.CTkScrollableFrame(root, fg_color=COLORS["bg_card"], height=400)
+        list_frame = ctk.CTkScrollableFrame(root, fg_color=COLORS["bg_card"], height=430)
         list_frame.pack(fill="both", expand=True, pady=(0, 12))
 
         def refresh() -> None:
@@ -2046,7 +2079,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _clear_route_region(self, idx: int) -> None:
         if 0 <= idx < len(self._route_watches):
             self._route_watches[idx]["search_region"] = None
-            self._refresh_route_list()
+            self._refresh_route_row(idx)
 
     def _select_route_condition_image(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
@@ -2061,7 +2094,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if not path:
             return
         self._route_watches[idx]["condition_image"] = self._copy_image_to_templates(path, prefix="condition")
-        self._refresh_route_list()
+        self._refresh_route_row(idx)
 
     def _open_route_condition_settings(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
@@ -2069,15 +2102,15 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("조건 이미지 설정")
-        dialog.geometry("560x540")
-        dialog.minsize(520, 500)
+        dialog.geometry("620x580")
+        dialog.minsize(580, 530)
         dialog.configure(fg_color=COLORS["bg_content"])
         dialog.transient(self)
         dialog.grab_set()
 
         dialog.update_idletasks()
-        x = self.winfo_x() + max(0, (self.winfo_width() - 560) // 2)
-        y = self.winfo_y() + max(0, (self.winfo_height() - 540) // 2)
+        x = self.winfo_x() + max(0, (self.winfo_width() - 620) // 2)
+        y = self.winfo_y() + max(0, (self.winfo_height() - 580) // 2)
         dialog.geometry(f"+{x}+{y}")
 
         route = self._route_watches[idx]
@@ -2105,7 +2138,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             text="조건 이미지가 계속 보이면 전용액션 후 점프를 보류합니다. 이미지, 검색범위, 인식률을 여기서 설정하세요.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
-            wraplength=500,
+            wraplength=560,
             justify="left",
         ).pack(anchor="w", pady=(4, 12))
 
@@ -2153,7 +2186,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             font=self._font(11, "bold"),
             text_color=COLORS["error"],
             anchor="w",
-            wraplength=400,
+            wraplength=470,
         ).pack(fill="x", pady=(4, 0))
 
         def refresh_dialog() -> None:
@@ -2177,7 +2210,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         def clear_region() -> None:
             if 0 <= idx < len(self._route_watches):
                 self._route_watches[idx]["condition_search_region"] = None
-                self._refresh_route_list()
+                self._refresh_route_row(idx)
                 refresh_dialog()
 
         def open_region() -> None:
@@ -2311,7 +2344,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             self._route_watches[idx]["condition_jump_when_visible"] = False
             self._route_watches[idx]["condition_verify_image_color"] = False
             self._route_watches[idx]["condition_verify_image_brightness"] = False
-            self._refresh_route_list()
+            self._refresh_route_row(idx)
 
     def _clear_route_actions(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
@@ -2322,7 +2355,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return
         self._route_watches[idx]["monitor_actions"] = []
         self._expanded_route_actions.discard(idx)
-        self._refresh_route_list()
+        self._refresh_route_row(idx)
 
     def _set_route_jump_target(self, idx: int, option: dict) -> None:
         if not 0 <= idx < len(self._route_watches):
@@ -2333,22 +2366,22 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._route_watches[idx]["goto_index"] = target_index
         self._route_watches[idx]["goto_rule_id"] = str(option.get("rule_id") or "")
         self._route_watches[idx]["goto_step"] = str(option.get("step") or "")
-        self._refresh_route_list()
+        self._refresh_route_row(idx)
 
     def _open_jump_target_dialog(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
             return
         dialog = ctk.CTkToplevel(self)
         dialog.title("점프 액션 선택")
-        dialog.geometry("720x620")
-        dialog.minsize(660, 520)
+        dialog.geometry("800x660")
+        dialog.minsize(720, 560)
         dialog.configure(fg_color=COLORS["bg_content"])
         dialog.transient(self)
         dialog.grab_set()
 
         dialog.update_idletasks()
-        x = self.winfo_x() + max(0, (self.winfo_width() - 720) // 2)
-        y = self.winfo_y() + max(0, (self.winfo_height() - 620) // 2)
+        x = self.winfo_x() + max(0, (self.winfo_width() - 800) // 2)
+        y = self.winfo_y() + max(0, (self.winfo_height() - 660) // 2)
         dialog.geometry(f"+{x}+{y}")
 
         expanded: set[str] = set()
@@ -2369,7 +2402,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             anchor="w",
-            wraplength=660,
+            wraplength=720,
             justify="left",
         ).pack(fill="x", pady=(0, 12))
 
@@ -2503,11 +2536,16 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             self._route_watches[idx]["condition_jump_when_visible"] = value == "보일 때 점프"
 
     def _refresh_route_list(self) -> None:
-        if self._route_count_label is not None:
-            image_count = sum(len(self._normalise_route_images(route)) for route in self._route_watches)
-            self._route_count_label.configure(text=f"등록 {len(self._route_watches)}개 / 이미지 {image_count}개")
+        self._update_route_count_label()
         if self._routes_frame is None:
             return
+        self._route_render_generation += 1
+        generation = self._route_render_generation
+        self._route_slots.clear()
+        self._route_action_slots.clear()
+        self._route_action_preview_hosts.clear()
+        self._route_jump_rows.clear()
+        self._route_action_toggle_buttons.clear()
         for child in self._routes_frame.winfo_children():
             child.destroy()
         if not self._route_watches:
@@ -2519,14 +2557,65 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(fill="x", pady=16)
             return
 
-        for idx, route in enumerate(self._route_watches):
-            self._build_route_row(idx, route)
-            if idx < len(self._route_watches) - 1:
-                self._build_route_separator()
+        end_idx = min(len(self._route_watches), _MONITORING_ROUTE_RENDER_BATCH_SIZE)
+        for idx in range(end_idx):
+            self._append_route_slot(idx)
+        if end_idx < len(self._route_watches):
+            self.after(_MONITORING_RENDER_BATCH_DELAY_MS, lambda: self._render_route_batch(end_idx, generation))
 
-    def _build_route_separator(self) -> None:
+    def _render_route_batch(self, start_idx: int, generation: int) -> None:
+        if generation != self._route_render_generation:
+            return
+        if self._routes_frame is None or not self._widget_exists(self._routes_frame):
+            return
+        end_idx = min(len(self._route_watches), start_idx + _MONITORING_ROUTE_RENDER_BATCH_SIZE)
+        for idx in range(start_idx, end_idx):
+            if idx not in self._route_slots:
+                self._append_route_slot(idx)
+        if end_idx < len(self._route_watches):
+            self.after(_MONITORING_RENDER_BATCH_DELAY_MS, lambda: self._render_route_batch(end_idx, generation))
+
+    def _append_route_slot(self, idx: int) -> None:
+        if self._routes_frame is None or not 0 <= idx < len(self._route_watches):
+            return
+        slot = ctk.CTkFrame(self._routes_frame, fg_color="transparent")
+        slot.pack(fill="x")
+        self._route_slots[idx] = slot
+        self._build_route_row(idx, self._route_watches[idx], parent=slot)
+        if idx < len(self._route_watches) - 1:
+            self._build_route_separator(parent=slot)
+
+    def _update_route_count_label(self) -> None:
+        if self._route_count_label is not None:
+            image_count = sum(len(self._normalise_route_images(route)) for route in self._route_watches)
+            self._route_count_label.configure(text=f"등록 {len(self._route_watches)}개 / 이미지 {image_count}개")
+
+    def _refresh_route_row(self, idx: int) -> None:
+        self._update_route_count_label()
+        if not 0 <= idx < len(self._route_watches):
+            self._refresh_route_list()
+            return
+        slot = self._route_slots.get(idx)
+        if slot is None or not getattr(slot, "winfo_exists", lambda: False)():
+            self._refresh_route_list()
+            return
+        self._route_action_slots = {
+            key: value
+            for key, value in self._route_action_slots.items()
+            if key[0] != idx
+        }
+        self._route_action_preview_hosts.pop(idx, None)
+        self._route_jump_rows.pop(idx, None)
+        self._route_action_toggle_buttons.pop(idx, None)
+        for child in slot.winfo_children():
+            child.destroy()
+        self._build_route_row(idx, self._route_watches[idx], parent=slot)
+        if idx < len(self._route_watches) - 1:
+            self._build_route_separator(parent=slot)
+
+    def _build_route_separator(self, parent=None) -> None:
         separator = ctk.CTkFrame(
-            self._routes_frame,
+            parent or self._routes_frame,
             height=2,
             fg_color=COLORS["accent"],
             corner_radius=1,
@@ -2534,8 +2623,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         separator.pack(fill="x", padx=16, pady=(8, 10))
         separator.pack_propagate(False)
 
-    def _build_route_row(self, idx: int, route: dict) -> None:
-        row = ctk.CTkFrame(self._routes_frame, fg_color=COLORS["bg_glass"], corner_radius=IOS_METRICS["control_radius_small"])
+    def _build_route_row(self, idx: int, route: dict, parent=None) -> None:
+        row = ctk.CTkFrame(parent or self._routes_frame, fg_color=COLORS["bg_glass"], corner_radius=IOS_METRICS["control_radius_small"])
         row.pack(fill="x", pady=4)
         inner = ctk.CTkFrame(row, fg_color="transparent")
         inner.pack(fill="x", padx=10, pady=8)
@@ -2657,6 +2746,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             lambda i=idx: self._toggle_route_actions(i),
             width=46,
         ).pack(side="left", padx=(0, 5))
+        self._route_action_toggle_buttons[idx] = action_row.winfo_children()[-1]
         self._small_button(
             action_row,
             "+ 추가",
@@ -2694,11 +2784,15 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._small_button(action_row, "조건", COLORS["scroll_purple"], COLORS["search_radius_purple_hover"], lambda i=idx: self._open_route_condition_settings(i), width=48).pack(side="left", padx=(0, 5))
         self._small_button(action_row, "조건해제", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._clear_route_condition_image(i), width=68).pack(side="left")
 
-        if idx in self._expanded_route_actions:
-            self._build_route_actions_preview(inner, idx, monitor_actions)
+        preview_host = ctk.CTkFrame(inner, fg_color="transparent")
+        self._route_action_preview_hosts[idx] = preview_host
 
         jump_row = ctk.CTkFrame(inner, fg_color="transparent")
         jump_row.pack(fill="x", pady=(7, 0))
+        self._route_jump_rows[idx] = jump_row
+        if idx in self._expanded_route_actions:
+            preview_host.pack(fill="x", before=jump_row)
+            self._build_route_actions_preview(preview_host, idx, monitor_actions)
         ctk.CTkLabel(
             jump_row,
             text="점프액션",
@@ -2757,11 +2851,40 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _toggle_route_actions(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
             return
+        host = self._route_action_preview_hosts.get(idx)
+        jump_row = self._route_jump_rows.get(idx)
+        button = self._route_action_toggle_buttons.get(idx)
         if idx in self._expanded_route_actions:
             self._expanded_route_actions.discard(idx)
+            if host is not None and self._widget_exists(host):
+                for child in host.winfo_children():
+                    child.destroy()
+                host.pack_forget()
+                self._route_action_slots = {
+                    key: value
+                    for key, value in self._route_action_slots.items()
+                    if key[0] != idx
+                }
+                if button is not None and self._widget_exists(button):
+                    button.configure(text="보기")
+                return
         else:
             self._expanded_route_actions.add(idx)
-        self._refresh_route_list()
+            if (
+                host is not None
+                and self._widget_exists(host)
+                and jump_row is not None
+                and self._widget_exists(jump_row)
+            ):
+                for child in host.winfo_children():
+                    child.destroy()
+                if not host.winfo_ismapped():
+                    host.pack(fill="x", before=jump_row)
+                self._build_route_actions_preview(host, idx, self._route_watches[idx].get("monitor_actions", []) or [])
+                if button is not None and self._widget_exists(button):
+                    button.configure(text="접기")
+                return
+        self._refresh_route_row(idx)
 
     def _build_route_actions_preview(self, parent, route_idx: int, actions: list[dict]) -> None:
         preview = ctk.CTkFrame(
@@ -2783,8 +2906,11 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(fill="x", padx=10, pady=8)
             return
 
-        for action_idx, action in enumerate(actions):
-            item = ctk.CTkFrame(preview, fg_color="transparent")
+        for action_idx, action in enumerate(actions[:_MONITORING_ACTION_RENDER_BATCH_SIZE]):
+            slot = ctk.CTkFrame(preview, fg_color="transparent")
+            slot.pack(fill="x")
+            self._route_action_slots[(route_idx, action_idx)] = slot
+            item = ctk.CTkFrame(slot, fg_color="transparent")
             item.pack(fill="x", padx=10, pady=(8 if action_idx == 0 else 6, 4))
             action_type = str(action.get("type", "종류 없음"))
             ctk.CTkLabel(
@@ -2860,13 +2986,241 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(side="right", padx=(5, 0))
             if action_idx < len(actions) - 1:
                 separator = ctk.CTkFrame(
-                    preview,
+                    slot,
                     height=2,
                     fg_color=COLORS["accent"],
                     corner_radius=1,
                 )
                 separator.pack(fill="x", padx=10, pady=(4, 0))
                 separator.pack_propagate(False)
+        if len(actions) > _MONITORING_ACTION_RENDER_BATCH_SIZE:
+            self.after(
+                _MONITORING_RENDER_BATCH_DELAY_MS,
+                lambda: self._render_route_action_batch(
+                    preview,
+                    route_idx,
+                    actions,
+                    _MONITORING_ACTION_RENDER_BATCH_SIZE,
+                ),
+            )
+
+    def _render_route_action_batch(self, preview, route_idx: int, actions: list[dict], start_idx: int) -> None:
+        if not self._widget_exists(preview):
+            return
+        if not 0 <= route_idx < len(self._route_watches):
+            return
+        current_actions = self._route_watches[route_idx].get("monitor_actions", []) or []
+        if current_actions is not actions:
+            return
+
+        end_idx = min(len(actions), start_idx + _MONITORING_ACTION_RENDER_BATCH_SIZE)
+        for action_idx in range(start_idx, end_idx):
+            self._append_route_action_slot(preview, route_idx, action_idx, actions[action_idx], len(actions))
+
+        if end_idx < len(actions):
+            self.after(
+                _MONITORING_RENDER_BATCH_DELAY_MS,
+                lambda: self._render_route_action_batch(preview, route_idx, actions, end_idx),
+            )
+
+    def _append_route_action_slot(self, preview, route_idx: int, action_idx: int, action: dict, total_actions: int) -> None:
+        if not self._widget_exists(preview):
+            return
+        slot = ctk.CTkFrame(preview, fg_color="transparent")
+        slot.pack(fill="x")
+        self._route_action_slots[(route_idx, action_idx)] = slot
+        self._build_route_action_content(slot, route_idx, action_idx, action, total_actions)
+
+    def _build_route_action_content(
+        self,
+        slot,
+        route_idx: int,
+        action_idx: int,
+        action: dict,
+        total_actions: int,
+    ) -> None:
+        item = ctk.CTkFrame(slot, fg_color="transparent")
+        item.pack(fill="x", padx=10, pady=(8 if action_idx == 0 else 6, 4))
+        action_type = str(action.get("type", "종류 없음"))
+        ctk.CTkLabel(
+            item,
+            text=f"{route_idx + 1}-{action_idx + 1}",
+            width=42,
+            font=self._font(11, "bold"),
+            text_color=COLORS["accent_text"],
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(
+            item,
+            text=truncate_ui_text(action_type, 13),
+            width=86,
+            anchor="w",
+            font=self._font(11, "bold"),
+            text_color=self._action_color(action_type),
+        ).pack(side="left", padx=(0, 8))
+        self._build_monitor_action_thumbnail(item, action)
+        ctk.CTkLabel(
+            item,
+            text=truncate_ui_text(self._action_detail(action), 28),
+            width=170,
+            anchor="w",
+            font=self._font(10),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            item,
+            text=truncate_ui_text(self._action_options_summary(action), 38),
+            anchor="w",
+            font=self._font(10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", fill="x", expand=True)
+        self._small_button(
+            item,
+            "수정",
+            COLORS["accent_blue"],
+            COLORS["hover_blue"],
+            lambda r=route_idx, a=action_idx: self._edit_route_action(r, a),
+            width=44,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "삭제",
+            COLORS["danger"],
+            COLORS["danger_hover"],
+            lambda r=route_idx, a=action_idx: self._delete_route_action(r, a),
+            width=44,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "▼",
+            COLORS["bg_elevated"],
+            COLORS["bg_card_hover"],
+            lambda r=route_idx, a=action_idx: self._move_route_action(r, a, 1),
+            width=30,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "▲",
+            COLORS["bg_elevated"],
+            COLORS["bg_card_hover"],
+            lambda r=route_idx, a=action_idx: self._move_route_action(r, a, -1),
+            width=30,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "테스트",
+            COLORS["accent_orange"],
+            COLORS["confidence_amber_hover"],
+            lambda r=route_idx, a=action_idx: self._test_route_action(r, a),
+            width=52,
+        ).pack(side="right", padx=(5, 0))
+        if action_idx < total_actions - 1:
+            separator = ctk.CTkFrame(
+                slot,
+                height=2,
+                fg_color=COLORS["accent"],
+                corner_radius=1,
+            )
+            separator.pack(fill="x", padx=10, pady=(4, 0))
+            separator.pack_propagate(False)
+
+    def _refresh_route_action_slot(self, route_idx: int, action_idx: int) -> bool:
+        if not 0 <= route_idx < len(self._route_watches):
+            return False
+        actions = self._route_watches[route_idx].get("monitor_actions", []) or []
+        if not 0 <= action_idx < len(actions):
+            return False
+        slot = self._route_action_slots.get((route_idx, action_idx))
+        if slot is None or not self._widget_exists(slot):
+            return False
+
+        for child in slot.winfo_children():
+            child.destroy()
+
+        action = actions[action_idx]
+        item = ctk.CTkFrame(slot, fg_color="transparent")
+        item.pack(fill="x", padx=10, pady=(8 if action_idx == 0 else 6, 4))
+        action_type = str(action.get("type", "종류 없음"))
+        ctk.CTkLabel(
+            item,
+            text=f"{route_idx + 1}-{action_idx + 1}",
+            width=42,
+            font=self._font(11, "bold"),
+            text_color=COLORS["accent_text"],
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(
+            item,
+            text=truncate_ui_text(action_type, 13),
+            width=86,
+            anchor="w",
+            font=self._font(11, "bold"),
+            text_color=self._action_color(action_type),
+        ).pack(side="left", padx=(0, 8))
+        self._build_monitor_action_thumbnail(item, action)
+        ctk.CTkLabel(
+            item,
+            text=truncate_ui_text(self._action_detail(action), 28),
+            width=170,
+            anchor="w",
+            font=self._font(10),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            item,
+            text=truncate_ui_text(self._action_options_summary(action), 38),
+            anchor="w",
+            font=self._font(10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", fill="x", expand=True)
+        self._small_button(
+            item,
+            "수정",
+            COLORS["accent_blue"],
+            COLORS["hover_blue"],
+            lambda r=route_idx, a=action_idx: self._edit_route_action(r, a),
+            width=44,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "삭제",
+            COLORS["danger"],
+            COLORS["danger_hover"],
+            lambda r=route_idx, a=action_idx: self._delete_route_action(r, a),
+            width=44,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "▼",
+            COLORS["bg_elevated"],
+            COLORS["bg_card_hover"],
+            lambda r=route_idx, a=action_idx: self._move_route_action(r, a, 1),
+            width=30,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "▲",
+            COLORS["bg_elevated"],
+            COLORS["bg_card_hover"],
+            lambda r=route_idx, a=action_idx: self._move_route_action(r, a, -1),
+            width=30,
+        ).pack(side="right", padx=(5, 0))
+        self._small_button(
+            item,
+            "테스트",
+            COLORS["accent_orange"],
+            COLORS["confidence_amber_hover"],
+            lambda r=route_idx, a=action_idx: self._test_route_action(r, a),
+            width=52,
+        ).pack(side="right", padx=(5, 0))
+        if action_idx < len(actions) - 1:
+            separator = ctk.CTkFrame(
+                slot,
+                height=2,
+                fg_color=COLORS["accent"],
+                corner_radius=1,
+            )
+            separator.pack(fill="x", padx=10, pady=(4, 0))
+            separator.pack_propagate(False)
+        return True
 
     def _build_monitor_action_thumbnail(self, parent, action: dict) -> None:
         image_path = action.get("image") if action.get("type") == "이미지 클릭" else None
@@ -2893,7 +3247,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             self._route_watches[route_idx].setdefault("monitor_actions", [])
             self._route_watches[route_idx]["monitor_actions"].append(action)
             self._expanded_route_actions.add(route_idx)
-            self._refresh_route_list()
+            self._refresh_route_row(route_idx)
 
         MonitorActionEditorDialog(self, None, on_save)
 
@@ -2909,7 +3263,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             if 0 <= action_idx < len(current):
                 current[action_idx] = action
                 self._expanded_route_actions.add(route_idx)
-                self._refresh_route_list()
+                if not self._refresh_route_action_slot(route_idx, action_idx):
+                    self._refresh_route_row(route_idx)
 
         MonitorActionEditorDialog(self, actions[action_idx], on_save)
 
@@ -2920,7 +3275,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if 0 <= action_idx < len(actions):
             actions.pop(action_idx)
             self._expanded_route_actions.add(route_idx)
-            self._refresh_route_list()
+            self._refresh_route_row(route_idx)
 
     def _move_route_action(self, route_idx: int, action_idx: int, delta: int) -> None:
         if not 0 <= route_idx < len(self._route_watches):
@@ -2930,7 +3285,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if 0 <= action_idx < len(actions) and 0 <= new_idx < len(actions):
             actions[action_idx], actions[new_idx] = actions[new_idx], actions[action_idx]
             self._expanded_route_actions.add(route_idx)
-            self._refresh_route_list()
+            updated = (
+                self._refresh_route_action_slot(route_idx, action_idx)
+                and self._refresh_route_action_slot(route_idx, new_idx)
+            )
+            if not updated:
+                self._refresh_route_row(route_idx)
 
     def _test_route_action(self, route_idx: int, action_idx: int) -> None:
         if not 0 <= route_idx < len(self._route_watches):
@@ -2945,7 +3305,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             parent,
             text=text,
             width=width,
-            height=26,
+            height=30,
             font=self._font(11, "bold"),
             fg_color=color,
             hover_color=hover,

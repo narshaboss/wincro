@@ -319,6 +319,30 @@ class ActionPlayer:
         """실행 중 여부"""
         return self._state in [PlayerState.RUNNING, PlayerState.PAUSED]
 
+    def _close_execution_logger(self) -> None:
+        """Close per-run file handlers so repeated playback does not leak handles."""
+        execution_logger = getattr(self, "_execution_logger", None)
+        if execution_logger is None:
+            return
+
+        try:
+            handlers = list(getattr(execution_logger, "handlers", []) or [])
+            for handler in handlers:
+                try:
+                    execution_logger.removeHandler(handler)
+                except Exception:
+                    pass
+                try:
+                    handler.flush()
+                except Exception:
+                    pass
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+        finally:
+            self._execution_logger = None
+
     def set_callbacks(
         self,
         on_progress: Optional[Callable[[PlaybackProgress], None]] = None,
@@ -384,6 +408,7 @@ class ActionPlayer:
         self._execution_log.id = log_id
 
         # 실행 로거 생성
+        self._close_execution_logger()
         self._execution_logger = create_execution_logger(sequence.name)
 
         # 긴급 중지 핸들러 시작
@@ -1061,6 +1086,7 @@ class ActionPlayer:
             self._on_complete(success, message)
 
         logger.info(f"실행 완료: {'성공' if success else '실패'} - {message}")
+        self._close_execution_logger()
 
 
     def play_automation_plan(
