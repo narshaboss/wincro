@@ -214,7 +214,7 @@ def test_monitoring_route_image_requests_main_loop_jump_and_exits_monitoring(tmp
     final_image = _touch(tmp_path / "final.png")
     base_image = _touch(tmp_path / "base.png")
     route_image = _touch(tmp_path / "route.png")
-    route_target = AutomationRule(action_type="hotkey", description="복구 액션")
+    route_target = AutomationRule(rule_id="route_target", action_type="hotkey", description="복구 액션")
     rule = AutomationRule(
         action_type="click",
         target_image=final_image,
@@ -261,6 +261,7 @@ def test_monitoring_route_image_requests_main_loop_jump_and_exits_monitoring(tmp
 
     assert result.success is True
     assert result.monitoring_jump_index == 0
+    assert result.monitoring_jump_rule_id == "route_target"
     assert result.message == "모니터링 점프 - 액션 1"
     assert route_runs == []
     assert monitor_runs == []
@@ -299,7 +300,7 @@ def test_monitoring_route_runs_watch_actions_before_target_jump(tmp_path, monkey
             return (11, 22, 0.86) if final_checks == 1 else None
         return None
 
-    def fake_action_sequence(rule_arg, monitor_actions, confidence, start_time, step_prefix=""):
+    def fake_action_sequence(rule_arg, monitor_actions, confidence, start_time, step_prefix="", **kwargs):
         calls.append(("monitor", list(monitor_actions)))
         return None
 
@@ -320,6 +321,66 @@ def test_monitoring_route_runs_watch_actions_before_target_jump(tmp_path, monkey
     assert calls == [
         ("monitor", [monitor_action]),
     ]
+
+
+def test_monitoring_route_image_click_reuses_detected_location(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    route_target = AutomationRule(rule_id="target", action_type="hotkey", description="점프 액션")
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "image": route_image,
+                "goto_index": 0,
+                "monitor_actions": [
+                    {
+                        "type": "이미지 클릭",
+                        "image": route_image,
+                        "click_type": "double_click",
+                        "wait_after": 0,
+                    }
+                ],
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[route_target])
+    route_searches = 0
+    clicked = []
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        nonlocal route_searches
+        name = Path(image_path).name
+        if name == "final.png":
+            return None
+        if name == "route.png":
+            route_searches += 1
+            return (111, 222, 0.99) if route_searches == 1 else None
+        return None
+
+    class FakeInputController:
+        def move_to(self, x, y, duration=0):
+            clicked.append(("move", x, y))
+            return True
+
+        def double_click(self):
+            clicked.append(("double_click",))
+            return True
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr("src.player.rule_executor.get_input_controller", lambda: FakeInputController())
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: False)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="8")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
+    assert result.monitoring_jump_rule_id == "target"
+    assert route_searches == 1
+    assert clicked == [("move", 111, 222), ("double_click",)]
 
 
 def test_monitoring_route_jump_disabled_runs_actions_without_target_jump(tmp_path, monkeypatch):

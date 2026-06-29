@@ -3344,6 +3344,8 @@ class RuleExecutor:
                             base_confidence,
                             start_time,
                             step_prefix,
+                            matched_image=image_path,
+                            matched_location=result,
                         )
                         if action_result is not None:
                             return action_result
@@ -3401,13 +3403,14 @@ class RuleExecutor:
                         f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {target_index + 1} {action_name}{_RESET}"
                     )
                     self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {target_index + 1}")
+                    resolved_goto_rule_id = goto_rule_id or str(getattr(target_rule, "rule_id", "") or "")
                     return self._make_result(
                         rule,
                         True,
                         f"모니터링 점프 - 액션 {target_index + 1}",
                         start_time,
                         monitoring_jump_index=target_index,
-                        monitoring_jump_rule_id=goto_rule_id,
+                        monitoring_jump_rule_id=resolved_goto_rule_id,
                     )
 
             wait_count += 1
@@ -3601,11 +3604,12 @@ class RuleExecutor:
         return (0 if goto_index >= 0 else 1, watch_order, image_priority, image_order)
 
     def _monitoring_route_condition_blocks_jump(self, watch: dict, base_confidence: float, step_prefix: str = "") -> bool:
-        condition_image = watch.get("condition_image")
+        condition_image = str(watch.get("condition_image") or "").strip()
         if not condition_image:
+            logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 조건 없음 → 점프 실행{_RESET}")
             return False
         if not Path(condition_image).exists():
-            logger.warning(f"{_YELLOW}{step_prefix}⚠ 모니터링 조건이미지 파일 없음: {condition_image}{_RESET}")
+            logger.warning(f"{_YELLOW}{step_prefix}⚠ 모니터링 조건이미지 파일 없음: {condition_image} → 점프 실행{_RESET}")
             return False
         jump_when_visible = bool(watch.get("condition_jump_when_visible", False))
         condition_confidence = self._safe_float(watch.get("condition_confidence", 0.8), 0.8)
@@ -3648,6 +3652,8 @@ class RuleExecutor:
         confidence: float,
         start_time: datetime,
         step_prefix: str = "",
+        matched_image: Optional[str] = None,
+        matched_location: Optional[tuple] = None,
     ) -> Optional[RuleExecutionResult]:
         for action_index, monitor_action in enumerate(monitor_actions, start=1):
             if self._stop_event.is_set():
@@ -3668,7 +3674,19 @@ class RuleExecutor:
                     f"{_CYAN}{step_prefix}  ▷ 모니터링 전용 액션 {action_index}/{len(monitor_actions)} "
                     f"실행: {action_type} ({repeat_index + 1}/{repeat_count}){_RESET}"
                 )
-                action_message = self._execute_monitor_action(monitor_action, confidence)
+                prelocated_image = None
+                if (
+                    action_index == 1
+                    and repeat_index == 0
+                    and matched_location is not None
+                    and self._monitor_action_matches_detected_image(monitor_action, matched_image)
+                ):
+                    prelocated_image = matched_location
+                action_message = self._execute_monitor_action(
+                    monitor_action,
+                    confidence,
+                    prelocated_image=prelocated_image,
+                )
                 if not action_message:
                     return self._make_result(
                         rule,
@@ -3694,6 +3712,22 @@ class RuleExecutor:
         return None
 
     @staticmethod
+    def _monitor_action_matches_detected_image(monitor_action: dict, matched_image: Optional[str]) -> bool:
+        if not matched_image or monitor_action.get("type") != "이미지 클릭":
+            return False
+        action_image = monitor_action.get("image")
+        if not action_image:
+            return False
+        try:
+            action_path = Path(str(action_image))
+            matched_path = Path(str(matched_image))
+            if action_path == matched_path:
+                return True
+            return bool(action_path.name and action_path.name == matched_path.name)
+        except Exception:
+            return str(action_image) == str(matched_image)
+
+    @staticmethod
     def _safe_positive_int(value, default: int = 1) -> int:
         try:
             return max(1, int(value))
@@ -3713,10 +3747,12 @@ class RuleExecutor:
             return float(value)
         except (TypeError, ValueError):
             return default
+
     def _execute_monitor_action(
         self,
         monitor_action: dict,
         confidence: float = 0.65,
+        prelocated_image: Optional[tuple] = None,
     ) -> Optional[str]:
         """
         모니터링 액션 실행
@@ -3838,13 +3874,21 @@ class RuleExecutor:
                         alternate_route,
                     )
 
-                location = self._find_image_on_screen(
-                    image_path,
-                    search_confidence,
-                    search_region=search_region,
-                    verify_color=bool(monitor_action.get("verify_image_color", False)),
-                    verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
-                )
+                location = prelocated_image
+                if location is not None:
+                    conf = location[2] if len(location) > 2 else 0
+                    logger.debug(
+                        f"[이미지 클릭] 모니터링 감지 위치 재사용: 위치=({location[0]}, {location[1]}), "
+                        f"인식률={conf:.0%}"
+                    )
+                else:
+                    location = self._find_image_on_screen(
+                        image_path,
+                        search_confidence,
+                        search_region=search_region,
+                        verify_color=bool(monitor_action.get("verify_image_color", False)),
+                        verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
+                    )
                 if location:
                     x, y = location[0], location[1]
                     conf = location[2] if len(location) > 2 else 0

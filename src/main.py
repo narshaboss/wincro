@@ -72,6 +72,9 @@ def check_admin_elevation() -> bool:
         if is_admin():
             return False
 
+        if os.environ.get("WINCRO_DEV_NO_ADMIN") == "1":
+            return False
+
         # 설정 확인
         config = get_config()
         if not config.ui.run_as_admin:
