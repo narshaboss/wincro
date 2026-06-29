@@ -1260,7 +1260,7 @@ class MainWindow(ctk.CTk):
         if playback_generation is None:
             playback_generation = getattr(self, "_mini_playback_generation", 0)
         config = self._mini_notification_config()
-        threshold = max(10, int(getattr(config, "discord_stuck_seconds", 120) or 120))
+        threshold = max(10, int(getattr(config, "discord_stuck_seconds", 180) or 180))
         delay_ms = max(5000, min(30000, threshold * 1000 // 2))
         try:
             self._mini_notification_after_id = self.after(
@@ -1285,7 +1285,7 @@ class MainWindow(ctk.CTk):
         self._mini_record_game_mode_notification_activity()
 
         config = self._mini_notification_config()
-        threshold = max(10, int(getattr(config, "discord_stuck_seconds", 120) or 120))
+        threshold = max(10, int(getattr(config, "discord_stuck_seconds", 180) or 180))
         if bool(getattr(self, "_mini_notification_last_progress_is_monitoring", False)):
             self._mini_start_notification_watchdog(playback_generation)
             return

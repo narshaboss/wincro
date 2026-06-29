@@ -1,9 +1,9 @@
 {
-  "profile_version": "discord_alerts_v1",
+  "profile_version": "discord_alerts_stuck180_v2",
   "discord_enabled": true,
   "discord_webhook_url": "https://discordapp.com/api/webhooks/1519886201430081768/2wFgwMB8LOB9zWoJDMnaFPgvY9w2ONICKpctAuU1FHok72K_KAJfrWVID8ZHNFRlIjm8",
   "discord_notify_on_stuck": true,
   "discord_notify_on_failure": true,
-  "discord_stuck_seconds": 120,
+  "discord_stuck_seconds": 180,
   "discord_cooldown_seconds": 300
 }

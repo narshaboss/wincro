@@ -41,6 +41,7 @@ def test_notification_config_roundtrips_and_defaults():
     missing = manager._dict_to_config({})
     assert missing.notification.discord_enabled is False
     assert missing.notification.discord_notify_on_stuck is True
+    assert missing.notification.discord_stuck_seconds == 180
 
 
 def test_packaged_notification_defaults_preserve_pc_number(monkeypatch, tmp_path):
@@ -74,6 +75,35 @@ def test_packaged_notification_defaults_preserve_pc_number(monkeypatch, tmp_path
     config.notification.discord_enabled = False
     assert manager._apply_packaged_notification_defaults(config) is False
     assert config.notification.discord_enabled is False
+
+
+def test_packaged_notification_profile_upgrade_sets_180_second_stuck_threshold(monkeypatch, tmp_path):
+    defaults_path = tmp_path / "notification_defaults.json"
+    defaults_path.write_text(
+        json.dumps(
+            {
+                "profile_version": "discord_alerts_stuck180_v2",
+                "discord_enabled": True,
+                "discord_webhook_url": "https://discord.com/api/webhooks/1234567890/token-token-token-token",
+                "discord_notify_on_stuck": True,
+                "discord_notify_on_failure": True,
+                "discord_stuck_seconds": 180,
+                "discord_cooldown_seconds": 300,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "PACKAGED_NOTIFICATION_DEFAULTS_FILE", defaults_path)
+    manager = ConfigManager()
+    config = AppConfig()
+    config.system.pc_number = "4"
+    config.notification.discord_profile_version = "discord_alerts_v1"
+    config.notification.discord_stuck_seconds = 120
+
+    assert manager._apply_packaged_notification_defaults(config) is True
+    assert config.system.pc_number == "4"
+    assert config.notification.discord_stuck_seconds == 180
+    assert config.notification.discord_profile_version == "discord_alerts_stuck180_v2"
 
 
 def test_persist_loaded_notification_preserves_pc_local_system(monkeypatch, tmp_path):

@@ -35,8 +35,8 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 PACKAGED_NOTIFICATION_DEFAULTS_FILE = DATA_DIR / "notification_defaults.json"
 
-APP_VERSION = "1.0.264"
-NOTIFICATION_PROFILE_VERSION = "discord_alerts_v1"
+APP_VERSION = "1.0.265"
+NOTIFICATION_PROFILE_VERSION = "discord_alerts_stuck180_v2"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
 # When APP_VERSION changes on the next release, this guard stops touching PC-local settings.
@@ -164,7 +164,7 @@ class NotificationConfig:
     discord_webhook_url: str = ""
     discord_notify_on_stuck: bool = True
     discord_notify_on_failure: bool = True
-    discord_stuck_seconds: int = 120
+    discord_stuck_seconds: int = 180
     discord_cooldown_seconds: int = 300
     discord_profile_version: str = ""
 
@@ -371,9 +371,9 @@ class ConfigManager:
         notification.discord_notify_on_stuck = bool(defaults.get("discord_notify_on_stuck", True))
         notification.discord_notify_on_failure = bool(defaults.get("discord_notify_on_failure", True))
         try:
-            notification.discord_stuck_seconds = max(10, int(defaults.get("discord_stuck_seconds", 120) or 120))
+            notification.discord_stuck_seconds = max(10, int(defaults.get("discord_stuck_seconds", 180) or 180))
         except (TypeError, ValueError):
-            notification.discord_stuck_seconds = 120
+            notification.discord_stuck_seconds = 180
         try:
             notification.discord_cooldown_seconds = max(10, int(defaults.get("discord_cooldown_seconds", 300) or 300))
         except (TypeError, ValueError):

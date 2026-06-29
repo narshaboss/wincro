@@ -670,7 +670,7 @@ class SettingsView(BaseView):
             font=ctk.CTkFont(size=12),
             text_color=COLORS["text_secondary"],
         ).pack(side="left", padx=(0, 6))
-        self._discord_stuck_seconds_var = ctk.StringVar(value="120")
+        self._discord_stuck_seconds_var = ctk.StringVar(value="180")
         ctk.CTkEntry(
             option_row,
             textvariable=self._discord_stuck_seconds_var,
@@ -2662,7 +2662,7 @@ del "%~f0"
             self._discord_webhook_var.set(str(getattr(notification, "discord_webhook_url", "") or ""))
             self._discord_notify_stuck_var.set(bool(getattr(notification, "discord_notify_on_stuck", True)))
             self._discord_notify_failure_var.set(bool(getattr(notification, "discord_notify_on_failure", True)))
-            self._discord_stuck_seconds_var.set(str(getattr(notification, "discord_stuck_seconds", 120) or 120))
+            self._discord_stuck_seconds_var.set(str(getattr(notification, "discord_stuck_seconds", 180) or 180))
             self._discord_cooldown_seconds_var.set(str(getattr(notification, "discord_cooldown_seconds", 300) or 300))
             if hasattr(self, "_discord_test_status_label"):
                 self._discord_test_status_label.configure(
