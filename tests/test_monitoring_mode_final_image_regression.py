@@ -156,7 +156,46 @@ def test_monitoring_route_goto_index_uses_original_plan_not_partial_remainder(tm
     assert "partial_first" not in result.monitoring_jump_rule_id
     assert "rule_id=original_first" in caplog.text
     assert "goto_index=0" in caplog.text
+    assert "[모니터링점프상세]" in caplog.text
+    assert "monitor_image=route.png" in caplog.text
+    assert "target_rule_id=original_first" in caplog.text
     assert "현재목록=범위밖" in caplog.text
+
+
+def test_monitoring_stop_logs_current_wait_and_last_jump_context(tmp_path, monkeypatch, caplog):
+    executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
+    final_image = _touch(tmp_path / "final.png")
+    wait_image = _touch(tmp_path / "wait.png")
+    rule = AutomationRule(
+        rule_id="monitor_wait",
+        action_type="click",
+        description="wait target",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[{"image": wait_image, "goto_index": 0}],
+    )
+    executor._last_monitoring_route_detail = {
+        "monitor_image": "trigger.png",
+        "target_step": "80",
+        "target_rule_id": "target_rule",
+        "target_name": "target action",
+    }
+    executor._current_plan = SimpleNamespace(initial_rules=[AutomationRule(rule_id="target_rule", action_type="click")])
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: True)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="8")
+
+    assert result.success is False
+    assert result.message == "실행 중지됨"
+    assert "[모니터링중단상세]" in caplog.text
+    assert "reason=monitoring_wait_stop" in caplog.text
+    assert "current_wait=(action=[8] wait target" in caplog.text
+    assert "last_jump=(monitor_image=trigger.png" in caplog.text
+    assert "target_step=80" in caplog.text
 
 
 def test_monitoring_mode_stops_when_final_image_is_found(tmp_path, monkeypatch):

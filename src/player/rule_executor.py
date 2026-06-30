@@ -627,6 +627,8 @@ class RuleExecutor:
 
         # 현재 실행 중인 액션 번호 (로깅용)
         self._current_step_num = ""
+        self._last_monitoring_route_detail: Dict[str, Any] = {}
+        self._current_monitoring_wait_detail: Dict[str, Any] = {}
 
 
     @property
@@ -755,6 +757,8 @@ class RuleExecutor:
 
         self._current_plan = plan
         self._results.clear()
+        self._last_monitoring_route_detail = {}
+        self._current_monitoring_wait_detail = {}
         unblock_automation_input()
         self._stop_event.clear()
         self._pause_event.set()
@@ -834,6 +838,7 @@ class RuleExecutor:
                 self._update_progress("실행 중지됨")
             except Exception as e:
                 logger.debug(f"중지 UI 업데이트 실패: {e}")
+            self._log_monitoring_stop_context("stop_called", self._step_prefix)
 
             # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
             def _join_threads():
@@ -978,6 +983,54 @@ class RuleExecutor:
         if original_step and runtime_step and original_step != runtime_step:
             return f"{original_step} (현재목록 {runtime_step})"
         return original_step or runtime_step or "?"
+
+    def _format_monitoring_detail(self, detail: Dict[str, Any]) -> str:
+        if not detail:
+            return "-"
+        ordered_keys = (
+            "action",
+            "rule_id",
+            "watch",
+            "image",
+            "priority",
+            "monitor_image",
+            "matched",
+            "threshold",
+            "search_region",
+            "monitor_actions",
+            "goto_index",
+            "goto_step",
+            "goto_rule_id",
+            "target_step",
+            "target_rule_id",
+            "target_name",
+            "watches",
+            "final_images",
+            "elapsed",
+        )
+        parts = []
+        for key in ordered_keys:
+            if key not in detail:
+                continue
+            value = detail.get(key)
+            if value is None or value == "":
+                value = "-"
+            parts.append(f"{key}={value}")
+        return " ".join(parts) if parts else "-"
+
+    def _log_monitoring_stop_context(self, reason: str, step_prefix: str = "", start_time: Optional[datetime] = None) -> None:
+        wait_detail = dict(self._current_monitoring_wait_detail or {})
+        if start_time is not None:
+            try:
+                wait_detail["elapsed"] = f"{(datetime.now() - start_time).total_seconds():.1f}s"
+            except Exception:
+                pass
+        route_detail = dict(self._last_monitoring_route_detail or {})
+        logger.warning(
+            f"{_YELLOW}{step_prefix}[모니터링중단상세] reason={reason} "
+            f"current_wait=({self._format_monitoring_detail(wait_detail)}) "
+            f"last_jump=({self._format_monitoring_detail(route_detail)}){_RESET}"
+        )
 
     def _rules_match_for_jump(self, candidate: AutomationRule, target: AutomationRule) -> bool:
         """부분실행 복사본과 원본 액션을 같은 점프 대상으로 매칭한다."""
@@ -3314,6 +3367,14 @@ class RuleExecutor:
         if not watches:
             return self._make_result(rule, False, "모니터링 이미지가 설정되지 않음", start_time)
 
+        monitor_rule_name = getattr(rule, "description", "") or getattr(rule, "action_type", "동작")
+        self._current_monitoring_wait_detail = {
+            "action": f"[{step_num}] {monitor_rule_name}" if step_num else monitor_rule_name,
+            "rule_id": getattr(rule, "rule_id", "") or "-",
+            "watches": len(watches),
+            "final_images": ",".join(Path(image_path).name for image_path in final_images) or "-",
+        }
+
         configured_actions_by_watch: Dict[int, int] = {}
         for watch in watches:
             try:
@@ -3332,8 +3393,10 @@ class RuleExecutor:
         last_status = 0.0
         while True:
             if self._stop_event.is_set():
+                self._log_monitoring_stop_context("stop_event_before_scan", step_prefix, start_time)
                 return self._make_result(rule, False, "실행 중지됨", start_time)
             if self._wait_for_resume():
+                self._log_monitoring_stop_context("wait_for_resume_stopped", step_prefix, start_time)
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
             final_result = self._find_monitoring_final_image(rule, final_images, final_search_region, base_confidence)
@@ -3344,6 +3407,7 @@ class RuleExecutor:
                     f"{_GREEN}{step_prefix}✓ 모니터링 최종이미지 발견: {Path(final_image).name} "
                     f"({int(final_confidence * 100)}%) - 모니터링 종료{_RESET}"
                 )
+                self._current_monitoring_wait_detail = {}
                 return self._make_result(rule, True, "모니터링 완료 - 최종이미지 발견", start_time)
 
             for watch in watches:
@@ -3380,9 +3444,15 @@ class RuleExecutor:
                     )
                     continue
                 if goto_index >= 0:
+                    watch_no = self._safe_int(watch.get("_watch_order", 0), 0) + 1
+                    image_no = self._safe_int(watch.get("_image_order", 0), 0) + 1
+                    image_priority = self._safe_int(watch.get("_image_priority", 999), 999)
+                    threshold_pct = int(float(confidence or 0) * 100)
+                    matched_pct = int(float(found_confidence or 0) * 100)
                     logger.info(
                         f"{_GREEN}{step_prefix}✓ 라우팅 이미지 발견: {image_name} "
-                        f"({int(found_confidence * 100)}%) - 전용 액션 {len(monitor_actions)}개 후 액션 {goto_label} 이동{_RESET}"
+                        f"({matched_pct}%) - 전용 액션 {len(monitor_actions)}개 후 액션 {goto_label} 이동 "
+                        f"[watch={watch_no} image={image_no} priority={image_priority} threshold={threshold_pct}%]{_RESET}"
                     )
                     self._update_progress(f"{step_prefix}라우팅 이미지 발견 → 전용 액션/액션 {goto_label}")
                     if monitor_actions:
@@ -3405,11 +3475,13 @@ class RuleExecutor:
                         )
                         self._update_progress(f"{step_prefix}모니터링 점프 비활성 → 대기 계속")
                         if self._stop_event.wait(timeout=0.5):
+                            self._log_monitoring_stop_context("jump_disabled_wait_stop", step_prefix, start_time)
                             return self._make_result(rule, False, "실행 중지됨", start_time)
                         break
 
                     if self._monitoring_route_condition_blocks_jump(watch, base_confidence, step_prefix):
                         if self._stop_event.wait(timeout=0.5):
+                            self._log_monitoring_stop_context("condition_block_wait_stop", step_prefix, start_time)
                             return self._make_result(rule, False, "실행 중지됨", start_time)
                         break
 
@@ -3458,11 +3530,35 @@ class RuleExecutor:
                     runtime_note = ""
                     if target_original_step and not target_runtime_step:
                         runtime_note = " 현재목록=범위밖"
+                    route_detail = {
+                        "action": f"[{step_num}] {monitor_rule_name}" if step_num else monitor_rule_name,
+                        "rule_id": getattr(rule, "rule_id", "") or "-",
+                        "watch": watch_no,
+                        "image": image_no,
+                        "priority": image_priority,
+                        "monitor_image": image_name,
+                        "matched": f"{matched_pct}%",
+                        "threshold": f"{threshold_pct}%",
+                        "search_region": search_region or "-",
+                        "monitor_actions": len(monitor_actions),
+                        "goto_index": goto_index,
+                        "goto_step": goto_label,
+                        "goto_rule_id": goto_rule_id or "-",
+                        "target_step": target_step_label,
+                        "target_rule_id": resolved_goto_rule_id or "-",
+                        "target_name": action_name,
+                    }
+                    self._last_monitoring_route_detail = route_detail
                     logger.info(
                         f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {target_step_label} {action_name} "
                         f"rule_id={resolved_goto_rule_id or '-'} goto_index={goto_index}{runtime_note}{_RESET}"
                     )
+                    logger.info(
+                        f"{_CYAN}{step_prefix}[모니터링점프상세] "
+                        f"{self._format_monitoring_detail(route_detail)}{runtime_note}{_RESET}"
+                    )
                     self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {target_step_label}")
+                    self._current_monitoring_wait_detail = {}
                     return self._make_result(
                         rule,
                         True,
@@ -3487,6 +3583,7 @@ class RuleExecutor:
                 self._update_progress(f"{step_prefix}모니터링 이미지 대기 중 ({wait_count}회)")
 
             if self._stop_event.wait(timeout=0.5):
+                self._log_monitoring_stop_context("monitoring_wait_stop", step_prefix, start_time)
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
     def _monitoring_final_images_for_rule(self, rule: AutomationRule) -> List[str]:

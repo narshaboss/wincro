@@ -35,7 +35,7 @@ else:
 CONFIG_FILE = DATA_DIR / "config.json"
 PACKAGED_NOTIFICATION_DEFAULTS_FILE = DATA_DIR / "notification_defaults.json"
 
-APP_VERSION = "1.0.266"
+APP_VERSION = "1.0.267"
 NOTIFICATION_PROFILE_VERSION = "discord_alerts_stuck180_v2"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
