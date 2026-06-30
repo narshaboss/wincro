@@ -949,6 +949,36 @@ class RuleExecutor:
                 result.extend(self._flatten_rules_with_step(rule.children, step))
         return result
 
+    def _rule_id_step_map(self, rules: List[AutomationRule]) -> Dict[str, str]:
+        """rule_id별 원본 단계 번호를 만든다."""
+        mapping: Dict[str, str] = {}
+        for rule, step in self._flatten_rules_with_step(rules or []):
+            rule_id = str(getattr(rule, "rule_id", "") or "")
+            if rule_id and rule_id not in mapping:
+                mapping[rule_id] = str(step)
+        return mapping
+
+    def _rule_step_in_rules(self, rules: List[AutomationRule], target_rule: Optional[AutomationRule]) -> str:
+        """대상 액션이 주어진 규칙 목록에서 몇 번으로 보이는지 찾는다."""
+        if target_rule is None:
+            return ""
+        target_rule_id = str(getattr(target_rule, "rule_id", "") or "")
+        for candidate, step in self._flatten_rules_with_step(rules or []):
+            candidate_rule_id = str(getattr(candidate, "rule_id", "") or "")
+            if target_rule_id and candidate_rule_id == target_rule_id:
+                return str(step)
+            if candidate is target_rule:
+                return str(step)
+        return ""
+
+    def _format_step_alias(self, runtime_step: str, original_step: str) -> str:
+        """부분실행 번호와 원본 플랜 번호가 다를 때 로그에 둘 다 표시한다."""
+        runtime_step = str(runtime_step or "")
+        original_step = str(original_step or "")
+        if original_step and runtime_step and original_step != runtime_step:
+            return f"{original_step} (현재목록 {runtime_step})"
+        return original_step or runtime_step or "?"
+
     def _rules_match_for_jump(self, candidate: AutomationRule, target: AutomationRule) -> bool:
         """부분실행 복사본과 원본 액션을 같은 점프 대상으로 매칭한다."""
         if candidate is target:
@@ -992,6 +1022,8 @@ class RuleExecutor:
             # 하위 항목(children) 포함해서 평탄화 + 단계 번호 추적
             all_rules_with_step = self._flatten_rules_with_step(plan.initial_rules) + self._flatten_rules_with_step(plan.monitoring_rules)
             all_rules = [rule for rule, _ in all_rules_with_step]
+            original_initial_rules_for_steps = list(getattr(plan, "_original_initial_rules", None) or [])
+            original_step_by_rule_id = self._rule_id_step_map(original_initial_rules_for_steps)
             logger.info(f"{_CYAN}  총 {len(all_rules_with_step)}개 액션{_RESET}")
             logger.info(f"{_CYAN}{'═'*50}{_RESET}")
 
@@ -1012,12 +1044,16 @@ class RuleExecutor:
                 # 모든 규칙 순차 실행 (룰과 스텝 번호를 함께 순회)
                 i = 0
                 while i < len(all_rules_with_step):
-                    rule, step_num = all_rules_with_step[i]
+                    rule, runtime_step_num = all_rules_with_step[i]
                     if self._stop_event.is_set():
                         break
 
                     if rule.rule_id in self._child_rules_executed_with_parent:
-                        logger.debug(f"[반복묶음] 부모 반복에서 실행된 하위 액션 스킵: {step_num} {rule.description or rule.action_type}")
+                        skip_step_label = self._format_step_alias(
+                            str(runtime_step_num or i + 1),
+                            original_step_by_rule_id.get(str(getattr(rule, "rule_id", "") or ""), ""),
+                        )
+                        logger.debug(f"[반복묶음] 부모 반복에서 실행된 하위 액션 스킵: {skip_step_label} {rule.description or rule.action_type}")
                         self._progress.initial_completed = i + 1
                         i += 1
                         continue
@@ -1027,8 +1063,12 @@ class RuleExecutor:
                         break
 
                     # 단계 번호와 이름 구성 (step_num이 없으면 인덱스 사용)
-                    step_num = step_num if step_num else str(i + 1)
-                    self._current_step_num = step_num  # 현재 액션 번호 저장 (로깅용)
+                    runtime_step_num = runtime_step_num if runtime_step_num else str(i + 1)
+                    rule_id_for_step = str(getattr(rule, "rule_id", "") or "")
+                    original_step_num = original_step_by_rule_id.get(rule_id_for_step, "")
+                    display_step_num = original_step_num or str(runtime_step_num)
+                    step_num = self._format_step_alias(str(runtime_step_num), original_step_num)
+                    self._current_step_num = display_step_num  # 현재 액션 번호 저장 (로깅용)
                     action_name = rule.description if rule.description else rule.action_type
 
                     # 액션 헤더 (단계 번호 + 이름)
@@ -1048,7 +1088,7 @@ class RuleExecutor:
                     has_monitoring_watches = len(getattr(rule, 'monitoring_watches', []) or []) > 0
                     is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
                     self._progress.current_rule = rule.rule_id
-                    self._progress.current_action_number = str(step_num)
+                    self._progress.current_action_number = str(display_step_num)
                     self._progress.current_action_name = action_name
                     self._progress.current_action_is_monitoring = bool(is_monitoring)
                     self._update_progress(f"[{step_num}] {action_name}")
@@ -1155,7 +1195,15 @@ class RuleExecutor:
                                 self._on_complete(False, message)
                             return
 
-                        target_step = all_rules_with_step[target_index][1] if all_rules_with_step else str(monitoring_jump_index + 1)
+                        if all_rules_with_step:
+                            target_rule_for_log, target_runtime_step = all_rules_with_step[target_index]
+                            target_original_step = original_step_by_rule_id.get(
+                                str(getattr(target_rule_for_log, "rule_id", "") or ""),
+                                "",
+                            )
+                            target_step = self._format_step_alias(str(target_runtime_step), target_original_step)
+                        else:
+                            target_step = str(monitoring_jump_index + 1)
                         logger.info(
                             f"{_CYAN}↪ [{step_num}] 모니터링 점프 → 액션 [{target_step}]부터 재생 계속: "
                             f"{result.message}{_RESET}"
@@ -3366,15 +3414,19 @@ class RuleExecutor:
                         break
 
                     target_rules = []
+                    runtime_target_rules = []
                     plan = self._current_plan
                     if plan is not None:
+                        runtime_target_rules = list(getattr(plan, "initial_rules", []) or [])
                         target_rules = list(
                             getattr(plan, "_original_initial_rules", None)
-                            or getattr(plan, "initial_rules", [])
+                            or runtime_target_rules
                             or []
                         )
                     if not target_rules:
                         target_rules = list(all_rules or [])
+                    if not runtime_target_rules:
+                        runtime_target_rules = list(all_rules or [])
                     flat_target_rules = self._flatten_rules(target_rules)
                     target_rule = None
                     target_index = goto_index
@@ -3399,11 +3451,18 @@ class RuleExecutor:
                         return self._make_result(rule, False, f"모니터링 점프 대상 비활성: 액션 {target_index + 1}", start_time)
 
                     action_name = getattr(target_rule, "description", "") or getattr(target_rule, "action_type", "동작")
-                    logger.info(
-                        f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {target_index + 1} {action_name}{_RESET}"
-                    )
-                    self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {target_index + 1}")
+                    target_original_step = self._rule_step_in_rules(target_rules, target_rule)
+                    target_runtime_step = self._rule_step_in_rules(runtime_target_rules, target_rule)
+                    target_step_label = self._format_step_alias(target_runtime_step, target_original_step)
                     resolved_goto_rule_id = goto_rule_id or str(getattr(target_rule, "rule_id", "") or "")
+                    runtime_note = ""
+                    if target_original_step and not target_runtime_step:
+                        runtime_note = " 현재목록=범위밖"
+                    logger.info(
+                        f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {target_step_label} {action_name} "
+                        f"rule_id={resolved_goto_rule_id or '-'} goto_index={goto_index}{runtime_note}{_RESET}"
+                    )
+                    self._update_progress(f"{step_prefix}모니터링 점프 → 액션 {target_step_label}")
                     return self._make_result(
                         rule,
                         True,

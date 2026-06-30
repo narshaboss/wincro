@@ -666,6 +666,8 @@ class MainWindow(ctk.CTk):
         self._mini_notification_last_progress_at = time.monotonic()
         self._mini_notification_last_progress_text = ""
         self._mini_notification_last_progress_is_monitoring = False
+        self._mini_notification_last_progress_snapshot = {}
+        self._mini_notification_started_at = time.monotonic()
         self._mini_notification_last_sent_at = {}
 
         # UI 먼저 생성 (빠르게)
@@ -1172,9 +1174,12 @@ class MainWindow(ctk.CTk):
         return True
 
     def _mini_reset_notification_runtime(self) -> None:
-        self._mini_notification_last_progress_at = time.monotonic()
+        now = time.monotonic()
+        self._mini_notification_last_progress_at = now
         self._mini_notification_last_progress_text = ""
         self._mini_notification_last_progress_is_monitoring = False
+        self._mini_notification_last_progress_snapshot = {}
+        self._mini_notification_started_at = now
 
     def _mini_format_notification_progress(self, progress) -> str:
         raw_message = (
@@ -1219,9 +1224,45 @@ class MainWindow(ctk.CTk):
             self._mini_notification_last_progress_is_monitoring = bool(
                 getattr(progress, "current_action_is_monitoring", False)
             )
+            self._mini_notification_last_progress_snapshot = self._mini_build_notification_snapshot(progress, message)
         except Exception:
             self._mini_notification_last_progress_at = time.monotonic()
             self._mini_notification_last_progress_is_monitoring = False
+
+    def _mini_build_notification_snapshot(self, progress, message: str) -> dict:
+        """Capture enough playback context to explain a later stuck alert."""
+        try:
+            state = getattr(progress, "state", "")
+            if hasattr(state, "value"):
+                state = state.value
+            current = int(getattr(progress, "initial_completed", 0) or 0)
+            total = int(getattr(progress, "initial_total", 0) or 0)
+        except (TypeError, ValueError):
+            current = 0
+            total = 0
+            state = ""
+
+        plan_name = getattr(getattr(self, "_mini_active_plan", None), "name", "") or ""
+        return {
+            "source": "progress",
+            "state": str(state or ""),
+            "message": str(message or ""),
+            "raw_message": str(getattr(progress, "message", "") or ""),
+            "action_number": str(getattr(progress, "current_action_number", "") or ""),
+            "action_name": str(getattr(progress, "current_action_name", "") or ""),
+            "current": current,
+            "total": total,
+            "monitoring": bool(getattr(progress, "current_action_is_monitoring", False)),
+            "plan_name": plan_name,
+            "sequence_mode": bool(getattr(self, "_sequence_mode", False)),
+            "sequence_index": int(getattr(self, "_sequence_index", 0) or 0),
+            "sequence_total": len(getattr(self, "_sequence_plans", []) or []),
+            "sequence_group_name": str(getattr(self, "_sequence_group_name", "") or ""),
+            "sequence_group_repeat": int(getattr(self, "_sequence_group_repeat_count", 1) or 1),
+            "repeat_current": int(getattr(self, "_mini_current_repeat", 0) or 0) + 1,
+            "repeat_total": int(getattr(self, "_mini_total_repeat", 1) or 1),
+            "playback_generation": int(getattr(self, "_mini_playback_generation", 0) or 0),
+        }
 
     def _mini_record_game_mode_notification_activity(self, gm=None) -> None:
         """Treat hidden special-mode runtime logs as playback progress for stuck alerts."""
@@ -1241,8 +1282,102 @@ class MainWindow(ctk.CTk):
             self._mini_notification_last_progress_at = activity_at
             self._mini_notification_last_progress_text = truncate_ui_text(f"특화모드 진행: {activity_text}", 160)
             self._mini_notification_last_progress_is_monitoring = False
+            self._mini_notification_last_progress_snapshot = {
+                "source": "game_mode",
+                "state": "game_mode_running",
+                "message": f"특화모드 진행: {activity_text}",
+                "raw_message": activity_text,
+                "action_number": "",
+                "action_name": "특화모드",
+                "current": 0,
+                "total": 0,
+                "monitoring": False,
+                "plan_name": getattr(getattr(self, "_mini_active_plan", None), "name", "") or "",
+                "sequence_mode": bool(getattr(self, "_sequence_mode", False)),
+                "sequence_index": int(getattr(self, "_sequence_index", 0) or 0),
+                "sequence_total": len(getattr(self, "_sequence_plans", []) or []),
+                "sequence_group_name": str(getattr(self, "_sequence_group_name", "") or ""),
+                "sequence_group_repeat": int(getattr(self, "_sequence_group_repeat_count", 1) or 1),
+                "repeat_current": int(getattr(self, "_mini_current_repeat", 0) or 0) + 1,
+                "repeat_total": int(getattr(self, "_mini_total_repeat", 1) or 1),
+                "playback_generation": int(getattr(self, "_mini_playback_generation", 0) or 0),
+            }
         except (tk.TclError, RuntimeError, ValueError, TypeError):
             return
+
+    def _mini_infer_stuck_reason(self, snapshot: dict, elapsed: float) -> str:
+        message = " ".join(
+            str(snapshot.get(key, "") or "")
+            for key in ("message", "raw_message", "action_name", "state")
+        ).lower()
+        if not snapshot:
+            return "진행 콜백 없음: 시작/로드 단계에서 멈췄거나 실행 스레드가 시작 전 정지됐을 가능성"
+        if bool(snapshot.get("monitoring")):
+            return "모니터링 액션 대기 중: 최종/라우팅 이미지가 아직 안 보이거나 검색범위가 맞지 않을 가능성"
+        if "game_mode" in message or "특화모드" in message:
+            return "특화모드 런타임 갱신 없음: 좌표/OCR/경로 루프 또는 특화모드 스레드 정체 가능성"
+        if any(token in message for token in ("트리거", "trigger")):
+            return "트리거 대기/전환 구간: 트리거 이미지 미감지 또는 이전 액션 복귀 조건 확인 필요"
+        if any(token in message for token in ("이미지", "image", "target", "대상")):
+            return "이미지 검색/클릭 구간: 대상 이미지 미감지, 인식률/범위/화면전환 지연 가능성"
+        if any(token in message for token in ("hotkey", "key", "키", "입력")):
+            return "키 입력 이후 진행 없음: 입력 후 다음 화면 확인 또는 포커스/아두이노 입력 지연 가능성"
+        if elapsed < 240:
+            return "초기 화면 전환 지연 가능성: 앱/게임 실행 시간이 감지 기준보다 길 수 있음"
+        return "일반 액션 이후 진행 콜백 없음: 현재 액션 완료/다음 액션 진입 사이 상태 동기화 확인 필요"
+
+    def _mini_build_stuck_diagnostic_fields(self, elapsed: float, threshold: int) -> tuple[tuple[str, str], ...]:
+        snapshot = dict(getattr(self, "_mini_notification_last_progress_snapshot", {}) or {})
+        reason = self._mini_infer_stuck_reason(snapshot, elapsed)
+        sequence_mode = bool(getattr(self, "_sequence_mode", False))
+        sequence_total = len(getattr(self, "_sequence_plans", []) or [])
+        sequence_index = int(getattr(self, "_sequence_index", 0) or 0) + 1 if sequence_mode else 0
+        repeat_current = int(getattr(self, "_mini_current_repeat", 0) or 0) + 1
+        repeat_total = int(getattr(self, "_mini_total_repeat", 1) or 1)
+        started_at = float(getattr(self, "_mini_notification_started_at", 0.0) or 0.0)
+        runtime_elapsed = max(0, int(time.monotonic() - started_at)) if started_at > 0 else 0
+        action_number = str(snapshot.get("action_number", "") or "").strip()
+        action_name = str(snapshot.get("action_name", "") or "").strip()
+        action_text = ""
+        if action_number and action_name:
+            action_text = f"[{action_number}] {action_name}"
+        elif action_number:
+            action_text = f"[{action_number}]"
+        elif action_name:
+            action_text = action_name
+
+        fields: list[tuple[str, str]] = [
+            ("마지막 진행", getattr(self, "_mini_notification_last_progress_text", "") or "없음"),
+            ("원인 후보", reason),
+            ("진행 지연", f"{int(elapsed)}초 / 기준 {threshold}초"),
+            ("실행 경과", f"{runtime_elapsed}초"),
+            (
+                "실행 상태",
+                (
+                    f"running={'Y' if getattr(self, '_is_running', False) else 'N'} "
+                    f"paused={'Y' if getattr(self, '_is_paused', False) else 'N'} "
+                    f"stop={'Y' if getattr(self, '_mini_stop_requested', False) else 'N'} "
+                    f"gen={getattr(self, '_mini_playback_generation', 0)}"
+                ),
+            ),
+        ]
+        if action_text:
+            fields.append(("현재 액션", truncate_ui_text(action_text, 180)))
+        if sequence_mode:
+            fields.append(
+                (
+                    "그룹 진행",
+                    f"{sequence_index}/{sequence_total} | 그룹반복 {getattr(self, '_sequence_group_repeat_count', 1)}회",
+                )
+            )
+        else:
+            fields.append(("그룹 진행", "단일 재생목록"))
+        fields.append(("반복 진행", f"{repeat_current}/{repeat_total}회"))
+        raw_message = str(snapshot.get("raw_message", "") or "").strip()
+        if raw_message and raw_message != getattr(self, "_mini_notification_last_progress_text", ""):
+            fields.append(("원본 상태", truncate_ui_text(raw_message, 180)))
+        fields.append(("감지 기준", f"{threshold}초"))
+        return tuple(fields)
 
     def _mini_cancel_notification_watchdog(self) -> None:
         after_id = getattr(self, "_mini_notification_after_id", None)
@@ -1291,14 +1426,16 @@ class MainWindow(ctk.CTk):
             return
         elapsed = time.monotonic() - float(getattr(self, "_mini_notification_last_progress_at", time.monotonic()))
         if elapsed >= threshold:
+            diagnostic_fields = self._mini_build_stuck_diagnostic_fields(elapsed, threshold)
+            logger.warning(
+                "[디스코드진단] 장시간 진행 없음: "
+                + " | ".join(f"{key}={value}" for key, value in diagnostic_fields)
+            )
             self._mini_send_discord_alert(
                 "stuck",
                 "WinCro 장시간 진행 없음",
                 f"{int(elapsed)}초 동안 진행 로그가 갱신되지 않았습니다.",
-                fields=(
-                    ("마지막 진행", getattr(self, "_mini_notification_last_progress_text", "") or "없음"),
-                    ("감지 기준", f"{threshold}초"),
-                ),
+                fields=diagnostic_fields,
                 playback_generation=playback_generation,
             )
         self._mini_start_notification_watchdog(playback_generation)
@@ -2712,6 +2849,10 @@ class MainWindow(ctk.CTk):
             description=f"partial {len(rules_to_run)} rules",
             initial_rules=list(rules_to_run),
             monitoring_rules=[],
+        )
+        partial_plan._original_initial_rules = (
+            getattr(active_plan, "_original_initial_rules", None)
+            or active_plan.initial_rules
         )
         partial_plan.game_modes = active_plan.game_modes
         partial_plan.total_repeat_count = 1

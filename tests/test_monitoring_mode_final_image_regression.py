@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -103,6 +104,59 @@ def test_monitoring_jump_rule_id_can_continue_from_child_action(monkeypatch):
     executor._execution_loop()
 
     assert executed == ["하위 시작"]
+
+
+def test_monitoring_route_goto_index_uses_original_plan_not_partial_remainder(tmp_path, monkeypatch, caplog):
+    executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    original_first = AutomationRule(
+        rule_id="original_first",
+        action_type="double_click",
+        description="다이쇼 시작",
+        wait_after=0,
+    )
+    partial_first = AutomationRule(
+        rule_id="partial_first",
+        action_type="hotkey",
+        description="특화모드 하위 9번",
+        action_keys=["9"],
+        wait_after=0,
+    )
+    monitor = AutomationRule(
+        rule_id="monitor",
+        action_type="double_click",
+        description="클리어 확인버튼",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[{"image": route_image, "goto_index": 0}],
+        wait_after=0,
+    )
+    executor._current_plan = SimpleNamespace(
+        initial_rules=[partial_first, monitor],
+        _original_initial_rules=[original_first, partial_first, monitor],
+    )
+    executor._current_step_num = "7"
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        name = Path(image_path).name
+        if name == "route.png":
+            return (11, 22, 0.96)
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: False)
+
+    result = executor._execute_monitoring_mode(monitor, [partial_first, monitor], 1, step_num="7")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
+    assert result.monitoring_jump_rule_id == "original_first"
+    assert "partial_first" not in result.monitoring_jump_rule_id
+    assert "rule_id=original_first" in caplog.text
+    assert "goto_index=0" in caplog.text
+    assert "현재목록=범위밖" in caplog.text
 
 
 def test_monitoring_mode_stops_when_final_image_is_found(tmp_path, monkeypatch):

@@ -388,6 +388,37 @@ def test_play_mode_discord_stuck_alert_uses_action_identity_without_version_fiel
     assert '{"버전", "version", "app_version", "앱 버전"}' in send_body
 
 
+def test_play_mode_discord_stuck_alert_includes_diagnostic_context():
+    text = _read_text()
+    record_start = text.index("    def _mini_record_notification_progress")
+    record_end = text.index("    def _mini_build_notification_snapshot", record_start)
+    record_body = text[record_start:record_end]
+    snapshot_start = text.index("    def _mini_build_notification_snapshot")
+    snapshot_end = text.index("    def _mini_record_game_mode_notification_activity", snapshot_start)
+    snapshot_body = text[snapshot_start:snapshot_end]
+    infer_start = text.index("    def _mini_infer_stuck_reason")
+    infer_end = text.index("    def _mini_build_stuck_diagnostic_fields", infer_start)
+    infer_body = text[infer_start:infer_end]
+    diagnostic_start = text.index("    def _mini_build_stuck_diagnostic_fields")
+    diagnostic_end = text.index("    def _mini_cancel_notification_watchdog", diagnostic_start)
+    diagnostic_body = text[diagnostic_start:diagnostic_end]
+    watchdog_start = text.index("    def _mini_check_notification_watchdog")
+    watchdog_end = text.index("    def _mini_send_discord_alert(", watchdog_start)
+    watchdog_body = text[watchdog_start:watchdog_end]
+
+    assert "self._mini_notification_last_progress_snapshot = self._mini_build_notification_snapshot(progress, message)" in record_body
+    assert '"action_number": str(getattr(progress, "current_action_number", "") or "")' in snapshot_body
+    assert '"sequence_index": int(getattr(self, "_sequence_index", 0) or 0)' in snapshot_body
+    assert "return \"이미지 검색/클릭 구간:" in infer_body
+    assert '("원인 후보", reason)' in diagnostic_body
+    assert '("실행 경과", f"{runtime_elapsed}초")' in diagnostic_body
+    assert '"실행 상태"' in diagnostic_body
+    assert '"그룹 진행"' in diagnostic_body
+    assert '("반복 진행", f"{repeat_current}/{repeat_total}회")' in diagnostic_body
+    assert "diagnostic_fields = self._mini_build_stuck_diagnostic_fields(elapsed, threshold)" in watchdog_body
+    assert "[디스코드진단] 장시간 진행 없음:" in watchdog_body
+
+
 def test_play_mode_discord_stuck_watchdog_uses_hidden_special_mode_activity():
     text = _read_text()
     player_text = _read_player_view_text()
@@ -431,3 +462,14 @@ def test_rule_executor_progress_keeps_current_action_number_and_name():
     assert "self._progress.current_action_number = str(step_num)" in text
     assert "self._progress.current_action_name = action_name" in text
     assert "self._progress.current_action_is_monitoring = bool(is_monitoring)" in text
+
+
+def test_mini_partial_executor_preserves_original_plan_for_monitoring_jump():
+    text = _read_text()
+    start = text.index("    def _mini_run_rules_via_executor(self, rules_to_run, chain_remaining=None):")
+    end = text.index("    def _mini_run_plan_via_executor(self, plan_to_run, chain_remaining=None):", start)
+    body = text[start:end]
+
+    assert "partial_plan._original_initial_rules = (" in body
+    assert 'getattr(active_plan, "_original_initial_rules", None)' in body
+    assert "or active_plan.initial_rules" in body

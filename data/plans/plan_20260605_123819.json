@@ -989,6 +989,12 @@
       "monitoring_watches": [
         {
           "image": "trigger_20260121_231533_002.png",
+          "images": [
+            {
+              "image": "trigger_20260121_231533_002.png",
+              "priority": 1
+            }
+          ],
           "search_region": [
             0,
             0,
@@ -997,6 +1003,8 @@
           ],
           "confidence": 0.8,
           "goto_index": 0,
+          "goto_rule_id": "rule_c5a4ceff",
+          "goto_step": "1",
           "jump_enabled": true,
           "monitor_actions": [
             {
