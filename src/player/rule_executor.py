@@ -1004,6 +1004,13 @@ class RuleExecutor:
             "target_step",
             "target_rule_id",
             "target_name",
+            "condition_image",
+            "condition_mode",
+            "condition_result",
+            "condition_matched",
+            "condition_threshold",
+            "condition_region",
+            "condition_decision",
             "watches",
             "final_images",
             "elapsed",
@@ -1030,6 +1037,15 @@ class RuleExecutor:
             f"{_YELLOW}{step_prefix}[모니터링중단상세] reason={reason} "
             f"current_wait=({self._format_monitoring_detail(wait_detail)}) "
             f"last_jump=({self._format_monitoring_detail(route_detail)}){_RESET}"
+        )
+
+    def _log_monitoring_condition_detail(self, watch: dict, detail: Dict[str, Any], step_prefix: str = "") -> None:
+        watch["_condition_detail"] = dict(detail)
+        if detail.get("condition_decision") == "wait":
+            self._current_monitoring_wait_detail.update(detail)
+        logger.info(
+            f"{_CYAN}{step_prefix}[모니터링조건상세] "
+            f"{self._format_monitoring_detail(detail)}{_RESET}"
         )
 
     def _rules_match_for_jump(self, candidate: AutomationRule, target: AutomationRule) -> bool:
@@ -3548,6 +3564,7 @@ class RuleExecutor:
                         "target_rule_id": resolved_goto_rule_id or "-",
                         "target_name": action_name,
                     }
+                    route_detail.update(dict(watch.get("_condition_detail") or {}))
                     self._last_monitoring_route_detail = route_detail
                     logger.info(
                         f"{_CYAN}{step_prefix}↪ 모니터링 점프 요청: 액션 {target_step_label} {action_name} "
@@ -3760,16 +3777,51 @@ class RuleExecutor:
         return (0 if goto_index >= 0 else 1, watch_order, image_priority, image_order)
 
     def _monitoring_route_condition_blocks_jump(self, watch: dict, base_confidence: float, step_prefix: str = "") -> bool:
+        watch["_condition_detail"] = {}
         condition_image = str(watch.get("condition_image") or "").strip()
         if not condition_image:
+            self._log_monitoring_condition_detail(
+                watch,
+                {
+                    "condition_image": "-",
+                    "condition_mode": "조건 없음",
+                    "condition_result": "none",
+                    "condition_matched": "-",
+                    "condition_threshold": "-",
+                    "condition_region": "-",
+                    "condition_decision": "jump",
+                },
+                step_prefix,
+            )
             logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 조건 없음 → 점프 실행{_RESET}")
             return False
         if not Path(condition_image).exists():
+            self._log_monitoring_condition_detail(
+                watch,
+                {
+                    "condition_image": Path(condition_image).name,
+                    "condition_mode": "보이면 점프" if bool(watch.get("condition_jump_when_visible", False)) else "안 보이면 점프",
+                    "condition_result": "file_missing",
+                    "condition_matched": "-",
+                    "condition_threshold": "-",
+                    "condition_region": watch.get("condition_search_region") or "-",
+                    "condition_decision": "jump",
+                },
+                step_prefix,
+            )
             logger.warning(f"{_YELLOW}{step_prefix}⚠ 모니터링 조건이미지 파일 없음: {condition_image} → 점프 실행{_RESET}")
             return False
         jump_when_visible = bool(watch.get("condition_jump_when_visible", False))
         condition_confidence = self._safe_float(watch.get("condition_confidence", 0.8), 0.8)
         condition_region = watch.get("condition_search_region")
+        threshold_pct = int(float(condition_confidence or base_confidence or 0) * 100)
+        mode_text = "보이면 점프" if jump_when_visible else "안 보이면 점프"
+        base_detail = {
+            "condition_image": Path(condition_image).name,
+            "condition_mode": mode_text,
+            "condition_threshold": f"{threshold_pct}%",
+            "condition_region": condition_region or "-",
+        }
         result = self._find_image_on_screen(
             condition_image,
             condition_confidence or base_confidence,
@@ -3779,24 +3831,65 @@ class RuleExecutor:
         )
         if not result:
             if jump_when_visible:
+                self._log_monitoring_condition_detail(
+                    watch,
+                    {
+                        **base_detail,
+                        "condition_result": "not_found",
+                        "condition_matched": "0%",
+                        "condition_decision": "wait",
+                    },
+                    step_prefix,
+                )
                 logger.info(
                     f"{_YELLOW}{step_prefix}⏳ 모니터링 조건 미충족: {Path(condition_image).name} 없음 "
                     f"→ 점프 대기{_RESET}"
                 )
                 self._update_progress(f"{step_prefix}모니터링 조건 대기 중")
                 return True
+            self._log_monitoring_condition_detail(
+                watch,
+                {
+                    **base_detail,
+                    "condition_result": "not_found",
+                    "condition_matched": "0%",
+                    "condition_decision": "jump",
+                },
+                step_prefix,
+            )
             logger.info(f"{_GREEN}{step_prefix}✓ 모니터링 조건 해소: {Path(condition_image).name} 없음 → 점프 실행{_RESET}")
             return False
         actual_confidence = result[2] if len(result) > 2 else 0
+        matched_pct = int(float(actual_confidence or 0) * 100)
         if jump_when_visible:
+            self._log_monitoring_condition_detail(
+                watch,
+                {
+                    **base_detail,
+                    "condition_result": "visible",
+                    "condition_matched": f"{matched_pct}%",
+                    "condition_decision": "jump",
+                },
+                step_prefix,
+            )
             logger.info(
                 f"{_GREEN}{step_prefix}✓ 모니터링 조건 충족: {Path(condition_image).name} "
-                f"({int(actual_confidence * 100)}%) → 점프 실행{_RESET}"
+                f"({matched_pct}%) → 점프 실행{_RESET}"
             )
             return False
+        self._log_monitoring_condition_detail(
+            watch,
+            {
+                **base_detail,
+                "condition_result": "visible",
+                "condition_matched": f"{matched_pct}%",
+                "condition_decision": "wait",
+            },
+            step_prefix,
+        )
         logger.info(
             f"{_YELLOW}{step_prefix}⏳ 모니터링 조건 유지: {Path(condition_image).name} "
-            f"({int(actual_confidence * 100)}%) → 점프 대기{_RESET}"
+            f"({matched_pct}%) → 점프 대기{_RESET}"
         )
         self._update_progress(f"{step_prefix}모니터링 조건 대기 중")
         return True

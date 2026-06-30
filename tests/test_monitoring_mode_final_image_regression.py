@@ -159,6 +159,8 @@ def test_monitoring_route_goto_index_uses_original_plan_not_partial_remainder(tm
     assert "[모니터링점프상세]" in caplog.text
     assert "monitor_image=route.png" in caplog.text
     assert "target_rule_id=original_first" in caplog.text
+    assert "condition_result=none" in caplog.text
+    assert "condition_decision=jump" in caplog.text
     assert "현재목록=범위밖" in caplog.text
 
 
@@ -522,8 +524,9 @@ def test_monitoring_route_jump_disabled_runs_actions_without_target_jump(tmp_pat
     assert monitor_runs[0][1] == [monitor_action]
 
 
-def test_monitoring_route_condition_blocks_target_jump_until_condition_disappears(tmp_path, monkeypatch):
+def test_monitoring_route_condition_blocks_target_jump_until_condition_disappears(tmp_path, monkeypatch, caplog):
     executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
     final_image = _touch(tmp_path / "final.png")
     route_image = _touch(tmp_path / "route.png")
     condition_image = _touch(tmp_path / "condition.png")
@@ -571,10 +574,16 @@ def test_monitoring_route_condition_blocks_target_jump_until_condition_disappear
     assert result.message == "모니터링 완료 - 최종이미지 발견"
     assert len(monitor_runs) == 1
     assert route_runs == []
+    assert "condition_image=condition.png" in caplog.text
+    assert "condition_result=visible" in caplog.text
+    assert "condition_matched=90%" in caplog.text
+    assert "condition_threshold=81%" in caplog.text
+    assert "condition_decision=wait" in caplog.text
 
 
-def test_monitoring_route_can_jump_when_condition_image_is_visible(tmp_path, monkeypatch):
+def test_monitoring_route_can_jump_when_condition_image_is_visible(tmp_path, monkeypatch, caplog):
     executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
     final_image = _touch(tmp_path / "final.png")
     route_image = _touch(tmp_path / "route.png")
     condition_image = _touch(tmp_path / "condition.png")
@@ -627,6 +636,11 @@ def test_monitoring_route_can_jump_when_condition_image_is_visible(tmp_path, mon
     ]
     assert len(monitor_runs) == 1
     assert monitor_runs[0][1] == [monitor_action]
+    assert "condition_image=condition.png" in caplog.text
+    assert "condition_result=visible" in caplog.text
+    assert "condition_matched=90%" in caplog.text
+    assert "condition_threshold=81%" in caplog.text
+    assert "condition_decision=jump" in caplog.text
 
 
 def test_monitoring_route_priority_follows_user_order_not_target_index(tmp_path, monkeypatch):
