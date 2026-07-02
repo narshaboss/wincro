@@ -45,6 +45,15 @@ def test_packaged_custom_ctk_theme_is_bundled_and_has_startup_fallback():
     assert "_apply_ctk_theme()" in main_window
 
 
+def test_shortcut_scripts_use_wincro_icon():
+    vbs = (ROOT / "create_shortcut.vbs").read_text(encoding="utf-8")
+    ps1 = (ROOT / "create_shortcut.ps1").read_text(encoding="utf-8")
+
+    assert "C:\\Projects\\wincro\\icon.ico" in vbs
+    assert "C:\\Projects\\wincro\\icon.ico" in ps1
+    assert "shell32.dll,76" not in vbs
+
+
 def test_database_keeps_legacy_korean_name_as_fallback():
     db_manager = (ROOT / "src" / "database" / "db_manager.py").read_text(encoding="utf-8")
 

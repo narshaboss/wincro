@@ -149,7 +149,10 @@ def test_main_window_uses_desktop_icon_symbol_in_both_modes():
 
     assert 'APP_ICON_FILE = PROJECT_ROOT / "icon.ico"' in text
     assert 'APP_ICON_PREVIEW_FILE = PROJECT_ROOT / "icon_preview.png"' in text
+    assert 'APP_USER_MODEL_ID = "WinCro.BusinessSupportTool"' in text
+    assert "SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)" in text
     assert "self.iconbitmap(str(APP_ICON_FILE))" in text
+    assert "self.iconphoto(True, image)" in text
     assert "def _create_brand_lockup(" in text
     assert "brand_bar = ctk.CTkFrame(" not in mini_slice
     assert "self._create_brand_lockup(brand_bar" not in mini_slice

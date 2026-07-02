@@ -8,7 +8,7 @@ Set oShortcut = WshShell.CreateShortcut(strDesktop & "\WinCro.lnk")
 oShortcut.TargetPath = "pythonw.exe"
 oShortcut.Arguments = "-m src.main"
 oShortcut.WorkingDirectory = "C:\Projects\wincro"
-oShortcut.IconLocation = "C:\Windows\System32\shell32.dll,76"
+oShortcut.IconLocation = "C:\Projects\wincro\icon.ico,0"
 oShortcut.Description = "WinCro RPA Automation"
 oShortcut.Save
 

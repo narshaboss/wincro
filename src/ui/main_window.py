@@ -6,6 +6,7 @@ WinCro 메인 윈도우 모듈
 
 import customtkinter as ctk
 import tkinter as tk
+import ctypes
 import logging
 import os
 import re
@@ -53,6 +54,7 @@ MINI_GROUP_PREFIX = "그룹: "
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ICON_FILE = PROJECT_ROOT / "icon.ico"
 APP_ICON_PREVIEW_FILE = PROJECT_ROOT / "icon_preview.png"
+APP_USER_MODEL_ID = "WinCro.BusinessSupportTool"
 
 logger = get_logger(__name__)
 
@@ -478,6 +480,7 @@ class MainWindow(ctk.CTk):
     """메인 윈도우 - 프리미엄 디자인"""
 
     def __init__(self):
+        self._apply_windows_app_user_model_id()
         super().__init__()
 
         self._config = get_config()
@@ -573,6 +576,22 @@ class MainWindow(ctk.CTk):
                 self.iconbitmap(str(APP_ICON_FILE))
         except Exception as e:
             logger.debug(f"윈도우 아이콘 적용 생략: {e}")
+        try:
+            if APP_ICON_PREVIEW_FILE.exists():
+                image = tk.PhotoImage(file=str(APP_ICON_PREVIEW_FILE))
+                self.iconphoto(True, image)
+                self._window_icon_photo = image
+        except Exception as e:
+            logger.debug(f"윈도우 아이콘 이미지 적용 생략: {e}")
+
+    @staticmethod
+    def _apply_windows_app_user_model_id() -> None:
+        if os.name != "nt":
+            return
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except Exception as e:
+            logger.debug(f"Windows AppUserModelID 적용 생략: {e}")
 
     def _get_brand_image(self, size: tuple[int, int]) -> Optional[ctk.CTkImage]:
         cached = self._brand_image_cache.get(size)

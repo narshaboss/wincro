@@ -25,6 +25,14 @@ from PIL import Image
 
 from ..utils.config import DATA_DIR, get_config, save_config
 from ..utils.logger import get_logger
+from ..player.rule_executor import (
+    _MULTISCALE_FACTORS,
+    _get_cached_template,
+    _get_cached_template_bgr,
+    _grab_screen_bgr,
+    _passes_image_visual_verification,
+    _resize_template_gray,
+)
 from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail, submit_thumbnail_task
 from .constants import ACTION_NAMES_SHORT
 from .key_input_dialog import KeyInputDialog, format_key_combo
@@ -2207,6 +2215,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             self._clear_route_condition_image(idx)
             refresh_dialog()
 
+        def test_condition() -> None:
+            self._test_route_condition_image(idx, dialog)
+
         def clear_region() -> None:
             if 0 <= idx < len(self._route_watches):
                 self._route_watches[idx]["condition_search_region"] = None
@@ -2226,7 +2237,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._small_button(button_row, "이미지 선택", COLORS["accent_blue"], COLORS["hover_blue"], choose_image, width=92).pack(side="left", padx=(0, 6))
         self._small_button(button_row, "검색범위", COLORS["bg_elevated"], COLORS["bg_card_hover"], open_region, width=82).pack(side="left", padx=(0, 6))
         self._small_button(button_row, "범위해제", COLORS["bg_elevated"], COLORS["bg_card_hover"], clear_region, width=82).pack(side="left", padx=(0, 6))
-        self._small_button(button_row, "조건해제", COLORS["danger"], COLORS["danger_hover"], clear_condition, width=82).pack(side="left")
+        self._small_button(button_row, "조건해제", COLORS["danger"], COLORS["danger_hover"], clear_condition, width=82).pack(side="left", padx=(0, 6))
+        self._small_button(button_row, "조건 테스트", COLORS["success"], COLORS["green_hover"], test_condition, width=92).pack(side="left")
 
         confidence_row = ctk.CTkFrame(root, fg_color=COLORS["bg_card"], corner_radius=IOS_METRICS["control_radius_small"])
         confidence_row.pack(fill="x", pady=(0, 12))
@@ -2335,6 +2347,177 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="e")
 
         refresh_dialog()
+
+    def _test_route_condition_image(self, idx: int, parent=None) -> None:
+        if not 0 <= idx < len(self._route_watches):
+            return
+        route = self._route_watches[idx]
+        image_path = str(route.get("condition_image") or "").strip()
+        if not image_path:
+            messagebox.showwarning("조건 테스트", "조건 이미지가 설정되지 않았습니다.", parent=parent or self)
+            return
+        if not Path(image_path).exists():
+            messagebox.showerror("조건 테스트", f"조건 이미지 파일이 없습니다.\n{image_path}", parent=parent or self)
+            return
+
+        def worker() -> None:
+            try:
+                result = self._match_condition_image_for_test(route)
+            except Exception as exc:
+                logger.exception("[모니터링] 조건 이미지 테스트 오류")
+                result = {"ok": False, "error": str(exc)}
+
+            def show_result() -> None:
+                try:
+                    target_parent = parent if parent is not None and parent.winfo_exists() else self
+                except tk.TclError:
+                    target_parent = self
+                if not result.get("ok"):
+                    messagebox.showerror("조건 테스트", f"테스트 실패: {result.get('error', '알 수 없는 오류')}", parent=target_parent)
+                    return
+                score_pct = int(round(float(result.get("score", 0.0)) * 100))
+                threshold_pct = int(round(float(result.get("threshold", 0.0)) * 100))
+                found = bool(result.get("found"))
+                status = "발견" if found else "미발견"
+                detail = [
+                    f"결과: {status}",
+                    f"인식률: {score_pct}% / 기준 {threshold_pct}%",
+                    f"검색범위: {result.get('region_label', '-')}",
+                ]
+                if result.get("position"):
+                    x, y = result["position"]
+                    detail.append(f"위치: ({x}, {y})")
+                if result.get("visual_failed"):
+                    detail.append("추가확인: 점수는 기준 이상이지만 색상/밝기 검증 실패")
+                if result.get("verify"):
+                    detail.append(f"검증옵션: {result.get('verify')}")
+                messagebox.showinfo("조건 테스트", "\n".join(detail), parent=target_parent)
+
+            try:
+                self.after(0, show_result)
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _match_condition_image_for_test(self, route: dict) -> dict:
+        image_path = str(route.get("condition_image") or "").strip()
+        confidence = self._safe_confidence(route.get("condition_confidence", 0.8))
+        verify_color = bool(route.get("condition_verify_image_color", False))
+        verify_brightness = bool(route.get("condition_verify_image_brightness", False))
+        verify_visual = verify_color or verify_brightness
+        screenshot_bgr = _grab_screen_bgr()
+        if screenshot_bgr is None:
+            return {"ok": False, "error": "화면 캡처 실패"}
+
+        screen_h, screen_w = screenshot_bgr.shape[:2]
+        normalized_region = self._normalize_search_region_value(route.get("condition_search_region"))
+        region_label = self._region_label_text(normalized_region)
+        offset_x = 0
+        offset_y = 0
+        if normalized_region:
+            x1, y1, x2, y2 = normalized_region
+            x1 = max(0, min(screen_w, int(x1)))
+            x2 = max(0, min(screen_w, int(x2)))
+            y1 = max(0, min(screen_h, int(y1)))
+            y2 = max(0, min(screen_h, int(y2)))
+            if x2 <= x1 or y2 <= y1:
+                return {"ok": False, "error": "조건 검색범위가 화면 밖이거나 비어 있습니다."}
+            screenshot_bgr = screenshot_bgr[y1:y2, x1:x2]
+            offset_x = x1
+            offset_y = y1
+            region_label = self._region_label_text([x1, y1, x2, y2])
+
+        cached = _get_cached_template(image_path)
+        if cached is None:
+            return {"ok": False, "error": "조건 템플릿 로드 실패"}
+        template_gray, _template_h, _template_w = cached
+        template_bgr = _get_cached_template_bgr(image_path) if verify_visual else None
+        if verify_visual and template_bgr is None:
+            return {"ok": False, "error": "색상/밝기 검증용 템플릿 로드 실패"}
+
+        screen_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
+        sh, sw = screen_gray.shape[:2]
+        best_score = 0.0
+        best_position = None
+        best_size = None
+        visual_failed = False
+
+        for scale in _MULTISCALE_FACTORS:
+            scaled_template = _resize_template_gray(template_gray, scale)
+            if scaled_template is None:
+                continue
+            th, tw = scaled_template.shape[:2]
+            if tw > sw or th > sh or tw < 4 or th < 4:
+                continue
+            result = cv2.matchTemplate(screen_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            max_val = float(max_val)
+            if max_val > best_score:
+                best_score = max_val
+                best_position = (int(max_loc[0]) + tw // 2 + offset_x, int(max_loc[1]) + th // 2 + offset_y)
+                best_size = (tw, th)
+
+            if max_val < confidence:
+                continue
+            if verify_visual:
+                candidate_points = np.argwhere(result >= confidence)
+                if candidate_points.size:
+                    scores = result[candidate_points[:, 0], candidate_points[:, 1]]
+                    for order in np.argsort(scores)[::-1][:25]:
+                        row, col = candidate_points[order]
+                        if _passes_image_visual_verification(
+                            screenshot_bgr,
+                            template_bgr,
+                            int(col),
+                            int(row),
+                            tw,
+                            th,
+                            verify_color=verify_color,
+                            verify_brightness=verify_brightness,
+                        ):
+                            score = float(scores[order])
+                            return {
+                                "ok": True,
+                                "found": True,
+                                "score": score,
+                                "threshold": confidence,
+                                "region_label": region_label,
+                                "position": (int(col) + tw // 2 + offset_x, int(row) + th // 2 + offset_y),
+                                "verify": self._condition_verify_label(verify_color, verify_brightness),
+                            }
+                visual_failed = True
+                continue
+            return {
+                "ok": True,
+                "found": True,
+                "score": max_val,
+                "threshold": confidence,
+                "region_label": region_label,
+                "position": (int(max_loc[0]) + tw // 2 + offset_x, int(max_loc[1]) + th // 2 + offset_y),
+                "verify": "",
+            }
+
+        return {
+            "ok": True,
+            "found": False,
+            "score": best_score,
+            "threshold": confidence,
+            "region_label": region_label,
+            "position": best_position if best_score > 0 else None,
+            "size": best_size,
+            "visual_failed": visual_failed,
+            "verify": self._condition_verify_label(verify_color, verify_brightness),
+        }
+
+    @staticmethod
+    def _condition_verify_label(verify_color: bool, verify_brightness: bool) -> str:
+        parts = []
+        if verify_color:
+            parts.append("색상")
+        if verify_brightness:
+            parts.append("밝기")
+        return "/".join(parts)
 
     def _clear_route_condition_image(self, idx: int) -> None:
         if 0 <= idx < len(self._route_watches):
