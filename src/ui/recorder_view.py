@@ -1,4 +1,4 @@
-﻿"""
+"""
 WinCro 녹화 화면 모듈
 
 프리미엄 카드 기반 UI 디자인
@@ -9,11 +9,17 @@ import customtkinter as ctk
 import threading
 import time
 import ctypes
+import os
+import cv2
+import numpy as np
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 from datetime import datetime
+from PIL import Image
 
 from ..utils.logger import get_logger
-from ..utils.config import get_config
+from ..utils.config import DATA_DIR, TEMPLATES_DIR, get_config
 from ..i18n import RECORDER, BUTTONS
 from ..recorder import RecordingSession, get_screen_recorder
 from ..database import Recording, get_db
@@ -23,6 +29,19 @@ from .ui_batcher import UiCallbackDispatcher
 from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class TemplateMediaItem:
+    path: str
+    name: str
+    media_type: str
+    size_bytes: int
+    modified_at: datetime
+
+    @property
+    def id(self) -> str:
+        return self.path
 
 
 class RecorderView(BaseView):
@@ -50,6 +69,8 @@ class RecorderView(BaseView):
         self._async_result_name = None
         self._recordings_load_generation = 0
         self._recording_items = []
+        self._media_thumbnail_cache = {}
+        self._media_thumbnail_refs = []
         self._label_text_cache = {}
         self._label_color_cache = {}
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=48)
@@ -325,7 +346,7 @@ class RecorderView(BaseView):
 
     def _setup_recordings_card(self, parent):
         """?? ?? ??"""
-        card = self.create_card(parent, title="??? ??")
+        card = self.create_card(parent, title="템플릿 미디어")
         card.pack(fill="both", expand=True)
 
         header = ctk.CTkFrame(card, fg_color="transparent")
@@ -340,9 +361,16 @@ class RecorderView(BaseView):
             height=28,
         ).pack(side="right")
 
+        ctk.CTkLabel(
+            header,
+            text="이미지/동영상 최신순",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
         self._recordings_empty_label = ctk.CTkLabel(
             card,
-            text="저장된 녹화가 없습니다\n녹화를 시작해보세요",
+            text="템플릿 폴더에 이미지/동영상이 없습니다",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
             text_color=COLORS["text_muted"],
             justify="center",
@@ -362,25 +390,72 @@ class RecorderView(BaseView):
 
         self.after(0, self._refresh_recordings_list_async)
 
-    def _refresh_recordings_list(self):
+    def _refresh_recordings_list(self, preserve_scroll: bool = True):
         """?? ?? ????"""
-        self._refresh_recordings_list_async()
+        self._refresh_recordings_list_async(preserve_scroll=preserve_scroll)
 
-    def _refresh_recordings_list_async(self):
+    def _refresh_recordings_list_async(self, preserve_scroll: bool = True):
         self._recordings_load_generation += 1
         current_gen = self._recordings_load_generation
 
         def _load():
-            recordings = self._db.get_all_recordings()
-            self._recorder_ui_post(lambda: self._apply_recordings_list(recordings, current_gen))
+            media_items = self._load_template_media_items()
+            self._recorder_ui_post(lambda: self._apply_recordings_list(
+                media_items,
+                current_gen,
+                preserve_scroll=preserve_scroll,
+            ))
 
         threading.Thread(target=_load, daemon=True).start()
 
-    def _apply_recordings_list(self, recordings, generation=None):
+    def _load_template_media_items(self):
+        """템플릿 폴더의 이미지/동영상 파일을 최신순으로 로드."""
+        media_exts = {
+            ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
+            ".mp4", ".avi", ".mov", ".mkv", ".webm",
+        }
+        items = []
+        search_dirs = [TEMPLATES_DIR]
+
+        # 이전 버전에서 저장된 녹화도 놓치지 않도록 읽기 전용으로 같이 표시한다.
+        legacy_recordings_dir = DATA_DIR / "recordings"
+        if legacy_recordings_dir.exists():
+            search_dirs.append(legacy_recordings_dir)
+
+        for directory in search_dirs:
+            if not directory.exists():
+                continue
+            try:
+                files = list(directory.iterdir())
+            except OSError as exc:
+                logger.warning(f"미디어 목록 로드 실패: {directory} ({exc})")
+                continue
+            for path in files:
+                if not path.is_file() or path.suffix.lower() not in media_exts:
+                    continue
+                try:
+                    stat = path.stat()
+                    modified_at = datetime.fromtimestamp(stat.st_mtime)
+                    media_type = "video" if path.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".webm"} else "image"
+                    items.append(TemplateMediaItem(
+                        path=str(path),
+                        name=path.name,
+                        media_type=media_type,
+                        size_bytes=int(stat.st_size),
+                        modified_at=modified_at,
+                    ))
+                except OSError as exc:
+                    logger.warning(f"미디어 파일 정보 읽기 실패: {path} ({exc})")
+
+        items.sort(key=lambda item: (item.modified_at, item.name), reverse=True)
+        return items
+
+    def _apply_recordings_list(self, recordings, generation=None, preserve_scroll: bool = True):
         if generation is not None and generation < self._recordings_load_generation:
             return
 
         self._recording_items = list(recordings)
+        self._media_thumbnail_refs.clear()
         if not self._recording_items:
             self._recordings_scroll.pack_forget()
             self._recordings_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -388,13 +463,16 @@ class RecorderView(BaseView):
 
         self._recordings_empty_label.pack_forget()
         self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)
+        self._recordings_scroll.set_items(self._recording_items, preserve_scroll=preserve_scroll)
 
     def _render_recording_item(self, parent, recording: Recording, index: int):
         return self._create_recording_item(recording, parent=parent)
 
-    def _create_recording_item(self, recording: Recording, parent=None):
+    def _create_recording_item(self, recording, parent=None):
         """?? ?? ??"""
+        if isinstance(recording, TemplateMediaItem):
+            return self._create_media_item(recording, parent=parent)
+
         item = ctk.CTkFrame(
             parent or self._recordings_scroll,
             fg_color=COLORS["bg_elevated"],
@@ -438,6 +516,225 @@ class RecorderView(BaseView):
         ).pack(side="right")
 
         return item
+
+    def _create_media_item(self, media: TemplateMediaItem, parent=None):
+        item = ctk.CTkFrame(
+            parent or self._recordings_scroll,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=IOS_METRICS["control_radius"],
+            height=66,
+        )
+        item.pack_propagate(False)
+        if parent is None:
+            item.pack(fill="x", pady=3)
+
+        content = ctk.CTkFrame(item, fg_color="transparent")
+        content.pack(fill="x", padx=12, pady=9)
+
+        thumb = self._get_media_thumbnail(media)
+        if thumb is not None:
+            thumb_btn = ctk.CTkButton(
+                content,
+                image=thumb,
+                text="",
+                width=58,
+                height=58,
+                fg_color="transparent",
+                hover_color=COLORS["bg_card_hover"],
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda p=media.path: self._open_media_editor(p),
+            )
+            thumb_btn.pack(side="left", padx=(0, 10))
+            self._media_thumbnail_refs.append(thumb)
+        else:
+            icon = "🎬" if media.media_type == "video" else "🖼"
+            icon_color = COLORS["accent_text"] if media.media_type == "video" else COLORS["accent"]
+            ctk.CTkLabel(
+                content,
+                text=icon,
+                font=ctk.CTkFont(family=IOS_FONTS["family"], size=22, weight="bold"),
+                text_color=icon_color,
+                width=52,
+            ).pack(side="left", padx=(0, 8))
+
+        info = ctk.CTkFrame(content, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkLabel(
+            info,
+            text=media.name,
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+            anchor="w",
+        ).pack(fill="x")
+
+        path = Path(media.path)
+        location = "templates" if path.parent.resolve() == TEMPLATES_DIR.resolve() else path.parent.name
+        detail = (
+            f"{media.modified_at.strftime('%Y-%m-%d %H:%M:%S')}  |  "
+            f"{self._format_file_size(media.size_bytes)}  |  {location}"
+        )
+        ctk.CTkLabel(
+            info,
+            text=detail,
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+        ).pack(fill="x")
+
+        self.create_button(
+            content,
+            text="편집",
+            command=lambda p=media.path: self._open_media_editor(p),
+            style="secondary",
+            width=50,
+            height=28,
+        ).pack(side="right", padx=(6, 0))
+
+        self.create_button(
+            content,
+            text="위치",
+            command=lambda p=media.path: self._open_media_location(p),
+            style="ghost",
+            width=50,
+            height=28,
+        ).pack(side="right")
+
+        return item
+
+    def _get_media_thumbnail(self, media: TemplateMediaItem):
+        cache_key = f"{media.path}|58"
+        cached = self._media_thumbnail_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        path = Path(media.path)
+        try:
+            if media.media_type == "video":
+                cap = cv2.VideoCapture(str(path))
+                try:
+                    if not cap.isOpened():
+                        return None
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        return None
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                finally:
+                    cap.release()
+            else:
+                img_arr = np.fromfile(str(path), np.uint8)
+                image = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                if image is None:
+                    return None
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            h, w = rgb.shape[:2]
+            if w <= 0 or h <= 0:
+                return None
+            scale = min(54 / w, 54 / h)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            pil_image = Image.fromarray(resized)
+            ctk_image = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_w, new_h))
+            if len(self._media_thumbnail_cache) > 160:
+                self._media_thumbnail_cache.clear()
+            self._media_thumbnail_cache[cache_key] = ctk_image
+            return ctk_image
+        except Exception as exc:
+            logger.debug(f"미디어 썸네일 로드 실패: {path} ({exc})")
+            return None
+
+    @staticmethod
+    def _format_file_size(size_bytes: int) -> str:
+        size = float(max(0, size_bytes))
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                if unit == "B":
+                    return f"{int(size)}{unit}"
+                return f"{size:.1f}{unit}"
+            size /= 1024
+        return f"{size_bytes}B"
+
+    def _open_media_file(self, path: str) -> None:
+        try:
+            os.startfile(path)
+        except Exception as exc:
+            logger.error(f"미디어 파일 열기 실패: {path} ({exc})")
+
+    def _open_media_editor(self, path: str) -> None:
+        try:
+            from .analyzer_view import ImageCropDialog, TemplateMediaSettings, is_supported_media_path
+
+            if not is_supported_media_path(path):
+                self._open_media_file(path)
+                return
+
+            media_items = [item for item in self._recording_items if isinstance(item, TemplateMediaItem)]
+            media_items = [item for item in media_items if is_supported_media_path(item.path) and Path(item.path).exists()]
+            current_index = next((idx for idx, item in enumerate(media_items) if item.path == path), -1)
+            if current_index < 0:
+                current_index = 0
+                media_items.insert(0, TemplateMediaItem(
+                    path=path,
+                    name=Path(path).name,
+                    media_type="video" if Path(path).suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".webm"} else "image",
+                    size_bytes=Path(path).stat().st_size if Path(path).exists() else 0,
+                    modified_at=datetime.fromtimestamp(Path(path).stat().st_mtime) if Path(path).exists() else datetime.now(),
+                ))
+
+            nav_items = [
+                {"path": item.path, "rule": TemplateMediaSettings(item.path)}
+                for item in media_items
+            ]
+            settings = nav_items[current_index]["rule"] if nav_items else TemplateMediaSettings(path)
+            changed = {"value": False}
+
+            def mark_changed(*args):
+                changed["value"] = True
+                saved = False
+                for arg in args:
+                    if hasattr(arg, "save"):
+                        arg.save()
+                        saved = True
+                        break
+                if not saved and hasattr(settings, "save"):
+                    settings.save()
+
+            def save_target_settings(target=None):
+                changed["value"] = True
+                if hasattr(target, "save"):
+                    target.save()
+                elif hasattr(settings, "save"):
+                    settings.save()
+
+            dialog = ImageCropDialog(
+                self,
+                path,
+                on_crop=mark_changed,
+                on_delete=mark_changed,
+                on_change=mark_changed,
+                rule=settings,
+                on_search_radius_change=save_target_settings,
+                image_list=nav_items,
+                current_index=current_index,
+            )
+            self.wait_window(dialog)
+            if changed["value"]:
+                self._media_thumbnail_cache.clear()
+                self._refresh_recordings_list_async()
+        except Exception as exc:
+            logger.error(f"미디어 편집 열기 실패: {path} ({exc})", exc_info=True)
+
+    def _open_media_location(self, path: str) -> None:
+        try:
+            target = Path(path)
+            if target.exists():
+                os.startfile(str(target.parent))
+            else:
+                os.startfile(str(TEMPLATES_DIR))
+        except Exception as exc:
+            logger.error(f"미디어 위치 열기 실패: {path} ({exc})")
 
     def _delete_recording(self, recording: Recording):
         """녹화 삭제"""
@@ -1104,7 +1401,8 @@ class RecorderView(BaseView):
 
     def refresh(self):
         """뷰 새로고침"""
-        self._refresh_recordings_list()
+        self._media_thumbnail_cache.clear()
+        self._refresh_recordings_list(preserve_scroll=False)
 
     def cleanup(self):
         """cleanup"""

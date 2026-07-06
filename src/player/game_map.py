@@ -312,6 +312,16 @@ class GameMap:
         logger.debug(f"[Map] {pos} ?")
         return True
 
+    def clear_blocked(self, x: int, y: int):
+        """Remove a blocked tile without marking it passable."""
+        pos = (int(x), int(y))
+        with self._lock:
+            if pos in self.blocked:
+                self.blocked.discard(pos)
+                logger.debug(f"[Map] clear blocked: {pos}")
+                return True
+        return False
+
     def mark_soft_blocked(self, x: int, y: int, allow_promote: bool = True):
         """?? ? ??? ?????."""
         pos = (int(x), int(y))

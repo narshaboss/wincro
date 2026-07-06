@@ -56,6 +56,7 @@ from .rule_executor import (
     _passes_image_visual_verification,
     get_rule_executor,
 )
+from .random_key_sequence import execute_random_key_sequence
 
 logger = get_logger(__name__)
 
@@ -905,6 +906,16 @@ class ActionPlayer:
                         return False, "key press send failed"
                 else:
                     return False, "키가 없습니다"
+
+            elif action_type == ActionType.RANDOM_KEY_SEQUENCE.value:
+                ok, message, _selected_index, _selected_label = execute_random_key_sequence(
+                    input_ctrl,
+                    getattr(action, "random_key_sequences", []),
+                    step_delay=getattr(action, "random_key_step_delay", 0.8),
+                    speed_multiplier=speed_multiplier,
+                )
+                if not ok:
+                    return False, message
 
             elif action_type == ActionType.WAIT.value:
                 time.sleep(action.duration / speed_multiplier)

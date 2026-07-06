@@ -96,3 +96,25 @@ def test_settings_arduino_firmware_check_requires_kq_capability():
     assert 'return True, "current"' in check_body
     assert 'return False, "outdated"' in check_body
     assert "arduino_hid._supports_key_combo_tap = firmware_ok" in connect_body
+
+
+def test_settings_background_threads_post_ui_safely():
+    text = SETTINGS_VIEW.read_text(encoding="utf-8")
+
+    assert "def _post_ui(self, callback, delay_ms: int = 0) -> None:" in text
+
+    for start_marker, end_marker in [
+        ("    def _check_version_thread", "    def _compare_versions"),
+        ("    def _download_update_thread", "    def _start_update_and_exit"),
+        ("    def _connect_arduino_thread", "    def _check_firmware"),
+        ("    def _upload_arduino_firmware", None),
+    ]:
+        start = text.index(start_marker)
+        if end_marker is None:
+            next_method = text.find("\n    def ", start + len(start_marker))
+            end = next_method if next_method != -1 else len(text)
+        else:
+            end = text.index(end_marker, start)
+        body = text[start:end]
+        assert "self.after(0," not in body
+        assert "self._post_ui(" in body

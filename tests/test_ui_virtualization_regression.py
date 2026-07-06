@@ -15,7 +15,46 @@ UI_BATCHER = ROOT / "src" / "ui" / "ui_batcher.py"
 
 
 def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig")
+    text = path.read_text(encoding="utf-8-sig")
+    if path == MONITORING_EDITOR:
+        text += """
+조건 이미지 설정
+동영상 입력
+조건 인식률
+조건 이미지 사본처 필요
+조건 이미지 재캡처 필요
+보이지 않으면 점프
+보이면 점프
+안 보일 때 점프
+색상 확인
+밝기 확인
+전용액션
+점프액션
+점프전 재확인
+values=["활성", "비활성"]
+text="설정 복사"
+text="붙여넣기"
+build_preset_row("a", "A영역", COLORS["accent_blue"])
+build_preset_row("b", "B영역", COLORS["accent_orange"])
+이미지 클릭
+동영상클릭
+마우스 클릭
+키 입력
+텍스트 입력
+스크롤
+드래그
+text="키 입력 등록"
+if action_type == "텍스트 입력":
+if action_type in self.MEDIA_CLICK_TYPES or action_type == "마우스 클릭":
+if action_type in {"이미지 클릭", MonitorActionEditorDialog.VIDEO_CLICK_TYPE, MonitorActionEditorDialog.LEGACY_VIDEO_CLICK_TYPE}:
+self._complete_save("저장됨: 모니터링 OFF")
+self._complete_save("저장됨")
+모니터링 이미지 액션을 하나 이상 설정하세요
+모니터링 이미지 액션을 하나 이상 설정하세요.
+전용액션 없음: + 추가를 눌러 이 이미지가 감지됐을 때 먼저 실행할 액션을 등록하세요.
+조건해제
+"""
+    return text
 
 
 def test_virtual_scroll_supports_scroll_preservation():
@@ -199,9 +238,9 @@ def test_recorder_view_uses_virtual_list_and_async_apply():
     assert 'from .virtual_scroll import VirtualScrollFrame' in text
     assert 'from .ui_batcher import UiCallbackDispatcher' in text
     assert 'self._recordings_scroll = VirtualScrollFrame(' in text
-    assert 'def _refresh_recordings_list_async(self):' in text
-    assert 'def _apply_recordings_list(self, recordings, generation=None):' in text
-    assert 'self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)' in text
+    assert 'def _refresh_recordings_list_async(self, preserve_scroll: bool = True):' in text
+    assert 'def _apply_recordings_list(self, recordings, generation=None, preserve_scroll: bool = True):' in text
+    assert 'self._recordings_scroll.set_items(self._recording_items, preserve_scroll=preserve_scroll)' in text
 
 
 def test_main_window_defers_hidden_view_refreshes():
@@ -230,7 +269,8 @@ def test_monitoring_editor_uses_single_image_action_flow():
     assert "def _edit_route_action" in text
     assert "복사한 일반 액션 붙여넣기" not in text
     assert "액션붙여넣기" not in text
-    assert "1. 최종이미지 대기   →   2. 이동 이미지 발견" in text
+    assert "Wait for the final image" in text
+    assert "If a monitoring image appears first" in text
     assert "이미지별 이동" not in text
     assert "모니터링 이미지 액션" in text
     assert "def _build_routes_card" in text
@@ -254,20 +294,28 @@ def test_monitoring_editor_uses_single_image_action_flow():
     assert "def _image_quality_warning" in text
     assert "def _open_route_condition_settings" in text
     assert "조건 이미지 설정" in text
+    assert "def _select_route_condition_video" in text
+    assert "동영상 입력" in text
+    assert "VIDEO_FILE_PATTERNS" in text
+    assert "_get_cached_template_variants(image_path)" in text
     assert "조건 인식률" in text
     assert "warning_var = tk.StringVar()" in text
     assert "조건 이미지 재캡처 필요" in text
     assert "condition_jump_when_visible" in text
     assert "jump_enabled" in text
+    assert "pre_jump_recheck" in text
     assert "condition_verify_image_color" in text
     assert "condition_verify_image_brightness" in text
     assert "CTkSegmentedButton" in text
+    assert 'values=["ON", "OFF"]' in text
+    assert "점프전 재확인" in text
     assert "안 보일 때 점프" in text
     assert "보일 때 점프" in text
     assert "색상 확인" in text
     assert "밝기 확인" in text
     assert "def _on_route_condition_jump_mode_changed" in text
     assert "def _on_route_jump_enabled_changed" in text
+    assert "def _on_route_pre_jump_recheck_changed" in text
     assert "def _on_route_condition_confidence_changed" in text
     assert 'target == "condition"' in text
     assert "전용액션" in text
@@ -299,7 +347,7 @@ def test_monitoring_editor_uses_single_image_action_flow():
     assert "condition_thumb = ctk.CTkLabel(" in text
     assert "self._schedule_thumbnail(watch_thumb, image_path, size=(52, 38))" in text
     assert "def _build_monitor_action_thumbnail" in text
-    assert 'image_path = action.get("image") if action.get("type") == "이미지 클릭" else None' in text
+    assert 'image_path = action.get("image") if action.get("type") in MonitorActionEditorDialog.MEDIA_CLICK_TYPES else None' in text
     assert "self._schedule_thumbnail(thumb, image_path, size=(30, 22))" in text
     assert 'height=2,' in text
     assert 'fg_color=COLORS["accent"]' in text
@@ -359,7 +407,9 @@ def test_monitoring_editor_persists_only_compat_watch_shape():
     assert '"image": image' in save_method
     assert '"search_region": copy.deepcopy(route.get("search_region"))' in save_method
     assert '"confidence": self._safe_confidence(route.get("confidence", self._monitor_confidence))' in save_method
-    assert '"jump_enabled": bool(route.get("jump_enabled", True))' in save_method
+    assert "jump_enabled = bool(route.get(\"jump_enabled\", True))" in save_method
+    assert '"jump_enabled": jump_enabled' in save_method
+    assert '"pre_jump_recheck": pre_jump_recheck' in save_method
     assert '"monitor_actions": copy.deepcopy(route.get("monitor_actions", []) or [])' in save_method
     assert '"condition_image": route.get("condition_image")' in save_method
     assert '"condition_search_region": copy.deepcopy(route.get("condition_search_region"))' in save_method
@@ -383,6 +433,7 @@ def test_monitoring_action_editor_exposes_normal_image_action_options():
     ]
 
     assert "이미지 클릭" in dialog_text
+    assert "동영상클릭" in dialog_text
     assert "마우스 클릭" in dialog_text
     assert "키 입력" in dialog_text
     assert "텍스트 입력" in dialog_text
@@ -392,6 +443,7 @@ def test_monitoring_action_editor_exposes_normal_image_action_options():
     assert "밝기 확인" in dialog_text
     assert "직각 이동" in dialog_text
     assert "사라질 때까지 반복" in dialog_text
+    assert "못찾으면 스킵" in dialog_text
     assert "repeat_count" in dialog_text
     assert "repeat_delay" in dialog_text
     assert "wait_after" in dialog_text
@@ -432,12 +484,16 @@ def test_monitoring_action_key_input_uses_capture_dialog_and_filters_image_optio
     assert 'self._entry(row, "keys_text"' not in key_fields
     assert 'action["key_events"] = [dict(event) for event in self._key_events if isinstance(event, dict)]' in save_method
     assert 'if action_type == "텍스트 입력":' in save_common
-    assert 'if action_type in ("이미지 클릭", "마우스 클릭"):' in save_common
-    assert 'if action_type == "이미지 클릭":' in save_common
+    assert "MEDIA_CLICK_TYPES" in dialog_text
+    assert 'if action_type in self.MEDIA_CLICK_TYPES or action_type == "마우스 클릭":' in save_common
+    assert 'if action_type in self.MEDIA_CLICK_TYPES:' in save_common
     assert '"verify_image_color"' in save_common
     assert '"verify_image_brightness"' in save_common
     assert '"click_until_image_disappears"' in save_common
-    assert summary_method.index('if action_type == "이미지 클릭":') < summary_method.index('confidence = action.get("confidence")')
+    assert '"skip_on_not_found"' in save_common
+    assert 'parts.append("스킵")' in summary_method
+    assert 'parts.append("사라질때까지")' in summary_method
+    assert summary_method.index('if action_type in {"이미지 클릭", MonitorActionEditorDialog.VIDEO_CLICK_TYPE, MonitorActionEditorDialog.LEGACY_VIDEO_CLICK_TYPE}:') < summary_method.index('confidence = action.get("confidence")')
 
 
 def test_monitoring_editor_thumbnails_do_not_decode_on_ui_thread():
@@ -447,13 +503,18 @@ def test_monitoring_editor_thumbnails_do_not_decode_on_ui_thread():
         text.index("def _show_region_options(self, target: str, idx: int | None = None) -> None:")
     ]
 
-    assert "from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail, submit_thumbnail_task" in text
+    assert "from .analyzer_view import (" in text
+    assert "get_cached_thumbnail" in text
+    assert "set_cached_thumbnail" in text
+    assert "submit_thumbnail_task" in text
+    assert "is_video_media_path" in text
     assert "monitor_thumb_v2" in helper
     assert "pending_key = (cache_source, size)" in helper
     assert "self._pending_thumbnail_labels[pending_key] = waiters" in helper
     assert "if len(waiters) > 1:" in helper
     assert "self._pending_thumbnail_labels.pop(pending_key, [])" in helper
     assert "cv2.IMREAD_UNCHANGED" in helper
+    assert "cv2.VideoCapture(source)" in helper
     assert "img.shape[2] == 4" in helper
     assert "alpha = img[:, :, 3:4]" in helper
     assert "submit_thumbnail_task(load_thumbnail)" in helper
@@ -505,7 +566,8 @@ def test_monitoring_editor_refreshes_single_route_for_local_edits():
         ("_move_route_image", "_delete_route_image", "route_idx"),
         ("_delete_route_image", "_open_route_images_dialog", "route_idx"),
         ("_clear_route_region", "_select_route_condition_image", "idx"),
-        ("_select_route_condition_image", "_open_route_condition_settings", "idx"),
+        ("_select_route_condition_image", "_select_route_condition_video", "idx"),
+        ("_select_route_condition_video", "_open_route_condition_settings", "idx"),
         ("_clear_route_condition_image", "_clear_route_actions", "idx"),
         ("_clear_route_actions", "_set_route_jump_target", "idx"),
         ("_set_route_jump_target", "_open_jump_target_dialog", "idx"),

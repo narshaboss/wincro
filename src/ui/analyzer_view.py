@@ -43,6 +43,15 @@ from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
 
+IMAGE_FILE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+VIDEO_FILE_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+MEDIA_FILE_EXTS = IMAGE_FILE_EXTS | VIDEO_FILE_EXTS
+IMAGE_FILE_PATTERNS = "*.png *.jpg *.jpeg *.bmp *.gif *.webp"
+VIDEO_FILE_PATTERNS = "*.mp4 *.avi *.mov *.mkv *.webm"
+MEDIA_FILE_PATTERNS = f"{IMAGE_FILE_PATTERNS} {VIDEO_FILE_PATTERNS}"
+UI_ASSETS_DIR = Path(__file__).with_name("assets")
+VIDEO_PLAY_ICON_FILE = UI_ASSETS_DIR / "bootstrap_play_circle_fill.png"
+
 # 썸네일 캐시 (성능 최적화)
 _thumbnail_cache = {}  # {cache_key: CTkImage}
 _thumbnail_cache_lock = threading.Lock()
@@ -141,6 +150,32 @@ def sanitize_template_filename(raw_name: str, fallback_suffix: str = ".png") -> 
     return f"{stem}{suffix}"
 
 
+def sanitize_template_media_filename(raw_name: str, fallback_suffix: str = ".mp4") -> Optional[str]:
+    """Return a safe template media filename for cropped video outputs."""
+    name = (raw_name or "").strip()
+    if not name:
+        return None
+
+    name = Path(name).name
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if not name:
+        return None
+
+    path = Path(name)
+    suffix = path.suffix.lower()
+    if suffix in VIDEO_FILE_EXTS:
+        stem = path.stem
+    else:
+        stem = name
+        suffix = fallback_suffix if fallback_suffix.startswith(".") else f".{fallback_suffix}"
+
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .")
+    if not stem or stem.upper() in _WINDOWS_RESERVED_FILENAMES:
+        return None
+    return f"{stem}{suffix}"
+
+
 def unique_template_path(directory: Path, filename: str) -> Path:
     """Return a non-destructive path that does not collide with image or sidecar mask files."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -165,6 +200,302 @@ def write_image_file(path: Path, image: np.ndarray) -> bool:
         return False
     encoded.tofile(str(path))
     return True
+
+
+def is_video_media_path(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    try:
+        return Path(path).suffix.lower() in VIDEO_FILE_EXTS
+    except (TypeError, ValueError):
+        return False
+
+
+def is_supported_media_path(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    try:
+        return Path(path).suffix.lower() in MEDIA_FILE_EXTS
+    except (TypeError, ValueError):
+        return False
+
+
+def list_template_media_paths(directory: str | Path | None = None) -> list[Path]:
+    """Return template images/videos by modified time, bypassing native file dialog filters."""
+    base_dir = Path(directory) if directory else DATA_DIR / "templates"
+    if not base_dir.exists():
+        return []
+
+    media_paths = []
+    try:
+        for path in base_dir.iterdir():
+            if path.is_file() and is_supported_media_path(path):
+                media_paths.append(path)
+    except OSError as exc:
+        logger.warning(f"템플릿 미디어 목록 읽기 실패: {base_dir} ({exc})")
+        return []
+
+    media_paths.sort(key=lambda p: (p.stat().st_mtime if p.exists() else 0, p.name), reverse=True)
+    return media_paths
+
+
+class TemplateMediaSelectDialog(ctk.CTkToplevel):
+    """Simple template media picker that always shows videos as well as images."""
+
+    def __init__(self, parent, *, title: str = "템플릿 이미지/동영상 선택", directory: str | Path | None = None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("780x560")
+        self.minsize(620, 420)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result: str | None = None
+        self._all_paths = list_template_media_paths(directory)
+        self._visible_paths = list(self._all_paths)
+        self._preview_image = None
+
+        root = ctk.CTkFrame(self, fg_color=COLORS["bg_content"])
+        root.pack(fill="both", expand=True, padx=14, pady=14)
+
+        header = ctk.CTkFrame(root, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(
+            header,
+            text="템플릿 이미지/동영상",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=18, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+        ctk.CTkLabel(
+            header,
+            text=f"{len(self._all_paths)}개",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
+            text_color=COLORS["accent_text"],
+        ).pack(side="right")
+
+        self._search_var = tk.StringVar()
+        search = ctk.CTkEntry(
+            root,
+            textvariable=self._search_var,
+            placeholder_text="파일명 검색",
+            height=34,
+        )
+        search.pack(fill="x", pady=(0, 10))
+        self._search_var.trace_add("write", lambda *_: self._refresh_list())
+
+        body = ctk.CTkFrame(root, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=0)
+        body.grid_rowconfigure(0, weight=1)
+
+        self._listbox = tk.Listbox(
+            body,
+            height=18,
+            exportselection=False,
+            bg=COLORS["bg_log"],
+            fg=COLORS["text_primary"],
+            selectbackground=COLORS["accent_blue"],
+            selectforeground=COLORS["text_on_accent"],
+            activestyle="none",
+            font=("Malgun Gothic", 10),
+            highlightthickness=IOS_METRICS["canvas_border_width"],
+            highlightbackground=COLORS["image_canvas_border"],
+        )
+        self._listbox.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        self._listbox.bind("<<ListboxSelect>>", lambda _e: self._update_preview())
+        self._listbox.bind("<Double-Button-1>", lambda _e: self._confirm())
+        self._listbox.bind("<Return>", lambda _e: self._confirm())
+
+        preview_frame = ctk.CTkFrame(
+            body,
+            fg_color=COLORS["bg_card"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            width=210,
+        )
+        preview_frame.grid(row=0, column=1, sticky="ns")
+        preview_frame.grid_propagate(False)
+        self._preview_label = ctk.CTkLabel(
+            preview_frame,
+            text="미리보기",
+            text_color=COLORS["text_muted"],
+        )
+        self._preview_label.pack(fill="both", expand=True, padx=10, pady=10)
+        self._detail_label = ctk.CTkLabel(
+            preview_frame,
+            text="",
+            text_color=COLORS["text_secondary"],
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
+            wraplength=180,
+            justify="center",
+        )
+        self._detail_label.pack(fill="x", padx=10, pady=(0, 10))
+
+        buttons = ctk.CTkFrame(root, fg_color="transparent")
+        buttons.pack(fill="x", pady=(12, 0))
+        ctk.CTkButton(
+            buttons,
+            text="취소",
+            command=self.destroy,
+            width=90,
+            height=34,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            buttons,
+            text="선택",
+            command=self._confirm,
+            width=110,
+            height=34,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+        ).pack(side="right")
+
+        self._refresh_list()
+        if self._visible_paths:
+            self._listbox.selection_set(0)
+            self._listbox.activate(0)
+            self._update_preview()
+        self.after(50, search.focus_set)
+
+    def _refresh_list(self):
+        keyword = self._search_var.get().strip().lower()
+        if keyword:
+            self._visible_paths = [path for path in self._all_paths if keyword in path.name.lower()]
+        else:
+            self._visible_paths = list(self._all_paths)
+
+        self._listbox.delete(0, "end")
+        for path in self._visible_paths:
+            kind = "영상" if is_video_media_path(path) else "이미지"
+            try:
+                size_kb = max(1, path.stat().st_size // 1024)
+            except OSError:
+                size_kb = 0
+            self._listbox.insert("end", f"[{kind}] {path.name}  ({size_kb}KB)")
+        if self._visible_paths:
+            self._listbox.selection_set(0)
+            self._listbox.activate(0)
+            self._update_preview()
+        else:
+            self._preview_image = None
+            self._preview_label.configure(image=None, text="없음")
+            self._detail_label.configure(text="")
+
+    def _selected_path(self) -> Path | None:
+        selection = self._listbox.curselection()
+        if not selection:
+            return None
+        index = int(selection[0])
+        if not (0 <= index < len(self._visible_paths)):
+            return None
+        return self._visible_paths[index]
+
+    def _update_preview(self):
+        path = self._selected_path()
+        if path is None:
+            return
+        try:
+            if is_video_media_path(path):
+                cap = cv2.VideoCapture(str(path))
+                try:
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        raise RuntimeError("video frame read failed")
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                finally:
+                    cap.release()
+            else:
+                arr = np.fromfile(str(path), np.uint8)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    raise RuntimeError("image read failed")
+                rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            h, w = rgb.shape[:2]
+            scale = min(180 / max(1, w), 180 / max(1, h), 1.0)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            pil = Image.fromarray(resized)
+            self._preview_image = ctk.CTkImage(light_image=pil, dark_image=pil, size=(new_w, new_h))
+            self._preview_label.configure(image=self._preview_image, text="")
+            kind = "동영상" if is_video_media_path(path) else "이미지"
+            self._detail_label.configure(text=f"{kind}\n{path.name}\n{w} x {h}px")
+        except Exception:
+            self._preview_image = None
+            self._preview_label.configure(image=None, text="미리보기 실패")
+            self._detail_label.configure(text=path.name)
+
+    def _confirm(self):
+        path = self._selected_path()
+        if path is None:
+            return
+        self.result = str(path)
+        self.destroy()
+
+
+def select_template_media_file(parent, *, title: str = "템플릿 이미지/동영상 선택", directory: str | Path | None = None) -> str | None:
+    dialog = TemplateMediaSelectDialog(parent, title=title, directory=directory)
+    parent.wait_window(dialog)
+    return dialog.result
+
+
+def get_template_media_settings_path(media_path: str | Path) -> Path:
+    path = Path(media_path)
+    return path.with_name(f"{path.name}.wincro.json")
+
+
+class TemplateMediaSettings:
+    """Image-editor-compatible settings for loose template media files."""
+
+    def __init__(self, media_path: str):
+        self.target_image = str(media_path)
+        self.confidence = 0.65
+        self.verify_image_color = False
+        self.verify_image_brightness = False
+        self.search_radius = 0
+        self.search_region = None
+        self.move_mouse_before_search = False
+        self.action_x = None
+        self.action_y = None
+        self._settings_path = get_template_media_settings_path(media_path)
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if not self._settings_path.exists():
+                return
+            data = json.loads(self._settings_path.read_text(encoding="utf-8-sig"))
+            self.confidence = float(data.get("confidence", self.confidence) or self.confidence)
+            self.verify_image_color = bool(data.get("verify_image_color", False))
+            self.verify_image_brightness = bool(data.get("verify_image_brightness", False))
+            self.search_region = data.get("search_region")
+            self.search_radius = int(data.get("search_radius", 0) or 0)
+            self.move_mouse_before_search = bool(data.get("move_mouse_before_search", False))
+            self.action_x = data.get("action_x")
+            self.action_y = data.get("action_y")
+        except Exception as exc:
+            logger.warning(f"템플릿 미디어 설정 로드 실패: {self._settings_path} ({exc})")
+
+    def save(self) -> None:
+        try:
+            self._settings_path = get_template_media_settings_path(self.target_image)
+            data = {
+                "target_image": Path(self.target_image).name,
+                "confidence": self.confidence,
+                "verify_image_color": self.verify_image_color,
+                "verify_image_brightness": self.verify_image_brightness,
+                "search_region": self.search_region,
+                "search_radius": self.search_radius,
+                "move_mouse_before_search": self.move_mouse_before_search,
+                "action_x": self.action_x,
+                "action_y": self.action_y,
+            }
+            self._settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning(f"템플릿 미디어 설정 저장 실패: {self._settings_path} ({exc})")
 
 
 class ScreenRegionSelector(tk.Toplevel):
@@ -356,6 +687,21 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._original_image = None
         self._display_image = None
         self._photo_image = None
+        self._is_video = is_video_media_path(image_path)
+        self._video_frame_count = 0
+        self._video_fps = 0.0
+        self._video_duration_sec = 0.0
+        self._video_capture = None
+        self._video_play_after_id = None
+        self._video_playing = False
+        self._video_frame_interval_ms = 100
+        self._video_current_frame_index = 0
+        self._video_play_btn = None
+        self._video_stop_btn = None
+        self._video_overlay_btn = None
+        self._video_overlay_photo = None
+        self._video_progress_canvas = None
+        self._video_time_label = None
         self._cropped_preview = None
         self._cropped_photo = None
         self._scale = 1.0
@@ -381,6 +727,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._start_y = 0
         self._rect_id = None
         self._selecting = False
+        self._mouse_down_had_crop = False
         self._overlay_photo = None
 
         # 팬(이동) 관련
@@ -395,7 +742,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 타이틀에 파일명 표시
         from pathlib import Path
         filename = Path(image_path).name
-        self.title(f"이미지 편집: {filename}")
+        self.title(f"{'동영상' if self._is_video else '이미지'} 편집: {filename}")
         self.configure(fg_color=COLORS["bg_content"])
 
         # 모달 설정
@@ -408,10 +755,282 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 키보드 이벤트 바인딩 (화살표 키로 이미지 전환)
         self._bind_crop_keyboard_controls()
 
+    def destroy(self):
+        self._stop_video_preview()
+        self._release_video_capture()
+        try:
+            super().destroy()
+        except tk.TclError:
+            pass
+
+    def _release_video_capture(self):
+        cap = getattr(self, "_video_capture", None)
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        self._video_capture = None
+
+    def _stop_video_preview(self):
+        after_id = getattr(self, "_video_play_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._video_play_after_id = None
+        self._video_playing = False
+        self._update_video_control_state()
+
+    def _toggle_video_preview(self):
+        if self._video_playing:
+            self._stop_video_preview()
+        else:
+            self._resume_video_preview()
+
+    def _stop_video_from_button(self):
+        self._stop_video_preview()
+
+    def _resume_video_preview(self):
+        if not self._is_video or self._original_image is None:
+            return
+        if self._video_capture is None:
+            cap = cv2.VideoCapture(str(self._image_path))
+            if not cap.isOpened():
+                logger.warning(f"동영상 미리보기 캡처 열기 실패: {self._image_path}")
+                return
+            self._video_capture = cap
+            try:
+                self._video_capture.set(cv2.CAP_PROP_POS_FRAMES, self._video_current_frame_index)
+            except Exception:
+                pass
+        self._video_playing = True
+        self._update_video_control_state()
+        self._schedule_video_preview_frame(0)
+
+    def _restart_video_preview(self):
+        if not self._is_video:
+            return
+        self._stop_video_preview()
+        if self._video_capture is None:
+            cap = cv2.VideoCapture(str(self._image_path))
+            if not cap.isOpened():
+                logger.warning(f"동영상 미리보기 캡처 열기 실패: {self._image_path}")
+                return
+            self._video_capture = cap
+        try:
+            self._video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        except Exception:
+            pass
+        self._video_current_frame_index = 0
+        try:
+            ok, frame = self._video_capture.read()
+            if ok and frame is not None:
+                self._original_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self._full_image_mask = None
+                self._video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self._update_canvas_image()
+                if self._crop_coords is not None:
+                    self._refresh_preview()
+        except Exception as exc:
+            logger.warning(f"동영상 첫 프레임 복구 실패: {exc}")
+        self._video_playing = False
+        self._update_video_control_state()
+
+    def _format_video_time_text(self) -> str:
+        fps = self._video_fps if self._video_fps > 0 else 0.0
+        current_sec = (self._video_current_frame_index / fps) if fps > 0 else 0.0
+        duration_sec = self._video_duration_sec if self._video_duration_sec > 0 else 0.0
+        percent = int(round(self._video_progress_ratio() * 100))
+        if duration_sec > 0:
+            return f"{percent}%  {current_sec:.1f}s / {duration_sec:.1f}s"
+        return f"{percent}%  {current_sec:.1f}s"
+
+    def _video_progress_ratio(self) -> float:
+        if self._video_frame_count > 1:
+            return max(0.0, min(1.0, self._video_current_frame_index / (self._video_frame_count - 1)))
+        if self._video_duration_sec > 0 and self._video_fps > 0:
+            current_sec = self._video_current_frame_index / self._video_fps
+            return max(0.0, min(1.0, current_sec / self._video_duration_sec))
+        return 0.0
+
+    def _update_video_progress_bar(self):
+        if self._video_progress_canvas is None:
+            return
+        try:
+            canvas = self._video_progress_canvas
+            rendered_width = int(canvas.winfo_width() or 0)
+            rendered_height = int(canvas.winfo_height() or 0)
+            config_width = int(canvas.cget("width"))
+            config_height = int(canvas.cget("height"))
+            width = max(1, rendered_width if rendered_width > 1 else config_width)
+            height = max(1, rendered_height if rendered_height > 1 else config_height)
+            fill_w = int(width * self._video_progress_ratio())
+            canvas.delete("all")
+            canvas.create_rectangle(0, 0, width, height, fill=COLORS["bg_card"], outline="")
+            if fill_w > 0:
+                canvas.create_rectangle(0, 0, fill_w, height, fill=COLORS["accent_blue"], outline="")
+            canvas.create_rectangle(
+                0,
+                0,
+                width - 1,
+                height - 1,
+                outline=COLORS["image_canvas_border"],
+                width=IOS_METRICS["canvas_border_width"],
+            )
+        except tk.TclError:
+            pass
+
+    def _update_video_control_state(self):
+        if self._video_play_btn is not None:
+            try:
+                self._video_play_btn.configure(text="재생")
+            except tk.TclError:
+                pass
+        if self._video_stop_btn is not None:
+            try:
+                self._video_stop_btn.configure(text="중지")
+            except tk.TclError:
+                pass
+        if self._video_time_label is not None:
+            try:
+                self._video_time_label.configure(text=self._format_video_time_text())
+            except tk.TclError:
+                pass
+        self._update_video_progress_bar()
+        if self._video_overlay_btn is not None:
+            try:
+                self._canvas.itemconfigure("video_overlay", state="hidden" if self._video_playing else "normal")
+            except (tk.TclError, AttributeError):
+                pass
+
+    def _load_video_play_overlay_photo(self, size: int = 76):
+        if self._video_overlay_photo is not None:
+            return self._video_overlay_photo
+        if not VIDEO_PLAY_ICON_FILE.exists():
+            logger.warning("Bootstrap play icon asset missing: %s", VIDEO_PLAY_ICON_FILE)
+            return None
+        try:
+            with Image.open(VIDEO_PLAY_ICON_FILE) as image:
+                icon = image.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+            self._video_overlay_photo = ImageTk.PhotoImage(icon)
+            return self._video_overlay_photo
+        except Exception as exc:
+            logger.warning("Bootstrap play icon asset load failed: %s", exc)
+            return None
+
+    def _draw_video_overlay_play_button(self):
+        if not self._is_video or not hasattr(self, "_canvas"):
+            return
+        if self._video_playing:
+            return
+        center_x = self._canvas_width // 2
+        center_y = self._canvas_height // 2
+        photo = self._load_video_play_overlay_photo()
+        if photo is None:
+            return
+        play_id = self._canvas.create_image(
+            center_x,
+            center_y,
+            image=photo,
+            anchor="center",
+            tags=("video_overlay",),
+        )
+        self._video_overlay_btn = play_id
+        self._canvas.tag_bind(play_id, "<Button-1>", lambda _event: self._resume_video_preview())
+        self._canvas.tag_bind("video_overlay", "<Enter>", lambda _event: self._canvas.configure(cursor="hand2"))
+        self._canvas.tag_bind("video_overlay", "<Leave>", lambda _event: self._canvas.configure(cursor="crosshair"))
+
+    def _start_video_preview(self):
+        if not self._is_video or self._original_image is None:
+            return
+        if not hasattr(self, "_canvas") or not hasattr(self, "_preview_canvas"):
+            return
+        self._stop_video_preview()
+        if self._video_capture is None:
+            cap = cv2.VideoCapture(str(self._image_path))
+            if not cap.isOpened():
+                logger.warning(f"동영상 미리보기 캡처 열기 실패: {self._image_path}")
+                return
+            self._video_capture = cap
+        try:
+            self._video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        except Exception:
+            pass
+        self._video_current_frame_index = 0
+        self._video_playing = True
+        self._update_video_control_state()
+        self._schedule_video_preview_frame(0)
+
+    def _schedule_video_preview_frame(self, delay_ms: Optional[int] = None):
+        if not self._video_playing:
+            return
+        delay = self._video_frame_interval_ms if delay_ms is None else max(0, int(delay_ms))
+        self._video_play_after_id = self.after(delay, self._advance_video_preview_frame)
+
+    def _advance_video_preview_frame(self):
+        self._video_play_after_id = None
+        if not self._video_playing or not self._is_video or self._video_capture is None:
+            return
+        if not self.winfo_exists():
+            return
+
+        try:
+            ok, frame = self._video_capture.read()
+            if not ok or frame is None:
+                self._video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = self._video_capture.read()
+            if ok and frame is not None:
+                frame_pos = int(self._video_capture.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+                self._video_current_frame_index = max(0, frame_pos - 1)
+                self._original_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self._full_image_mask = None
+                self._update_canvas_image()
+                if self._crop_coords is not None:
+                    self._refresh_preview()
+                self._update_video_control_state()
+        except Exception as exc:
+            logger.warning(f"동영상 미리보기 프레임 갱신 실패: {exc}")
+            self._stop_video_preview()
+            return
+
+        self._schedule_video_preview_frame()
+
     def _load_image(self):
         """이미지 로드"""
         try:
             # 한글 경로 지원
+            self._stop_video_preview()
+            self._release_video_capture()
+            self._is_video = is_video_media_path(self._image_path)
+            self._video_frame_count = 0
+            self._video_fps = 0.0
+            self._video_duration_sec = 0.0
+            self._video_frame_interval_ms = 100
+            if self._is_video:
+                cap = cv2.VideoCapture(str(self._image_path))
+                if not cap.isOpened():
+                    logger.error(f"동영상 로드 실패: {self._image_path}")
+                    return
+                try:
+                    self._video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                    self._video_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+                    if self._video_frame_count > 0 and self._video_fps > 0:
+                        self._video_duration_sec = self._video_frame_count / self._video_fps
+                    preview_fps = min(max(self._video_fps or 10.0, 1.0), 12.0)
+                    self._video_frame_interval_ms = max(80, int(1000 / preview_fps))
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        logger.error(f"동영상 첫 프레임 로드 실패: {self._image_path}")
+                        return
+                    self._original_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self._full_image_mask = None
+                    self._crop_mask = None
+                finally:
+                    cap.release()
+                return
+
             img_array = np.fromfile(self._image_path, np.uint8)
             self._original_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if self._original_image is not None:
@@ -430,12 +1049,13 @@ class ImageCropDialog(ctk.CTkToplevel):
         screen_w = max(1024, int(self.winfo_screenwidth() or 1024))
         screen_h = max(768, int(self.winfo_screenheight() or 768))
 
-        canvas_w = min(1180, max(760, screen_w - 360))
+        side_reserved = 360 if self._is_video else 300
+        canvas_w = min(1180, max(760, screen_w - side_reserved))
         canvas_h = min(720, max(500, screen_h - 280))
-        win_w = min(screen_w - 32, canvas_w + 280)
+        win_w = min(screen_w - 32, canvas_w + side_reserved)
         win_h = min(screen_h - 32, canvas_h + 220)
 
-        self._canvas_width = max(640, win_w - 280)
+        self._canvas_width = max(640, win_w - side_reserved)
         self._canvas_height = max(420, win_h - 220)
         self._max_scale = 8.0
         self._initial_zoom_cap = 5.0
@@ -457,6 +1077,10 @@ class ImageCropDialog(ctk.CTkToplevel):
         if self._original_image is None:
             return ""
         h, w = self._original_image.shape[:2]
+        if self._is_video:
+            duration = f"{self._video_duration_sec:.1f}s" if self._video_duration_sec > 0 else "길이 미상"
+            fps = f"{self._video_fps:.1f}fps" if self._video_fps > 0 else "fps 미상"
+            return f"동영상: {w} x {h} px  |  {duration} / {fps}  |  표시: {int(self._scale * 100)}%"
         return f"원본: {w} x {h} px  |  표시: {int(self._scale * 100)}%"
 
     def _update_image_info_label(self) -> None:
@@ -546,7 +1170,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._configure_image_view_metrics(w, h)
 
         # 창 크기 설정
-        win_w = self._canvas_width + 280
+        win_w = self._canvas_width + (360 if self._is_video else 300)
         win_h = self._canvas_height + 220  # 버튼 영역 확보
         self.geometry(f"{win_w}x{win_h}")
         self.minsize(win_w, win_h)  # 최소 크기 설정
@@ -669,6 +1293,13 @@ class ImageCropDialog(ctk.CTkToplevel):
             checkbox_height=18,
         )
         self._background_cutout_cb.pack(side="left", padx=(8, 4))
+        if self._is_video:
+            self._background_cutout_var.set(False)
+            self._background_cutout_cb.configure(
+                text="배경제거(이미지 전용)",
+                state="disabled",
+                text_color=COLORS["text_muted"],
+            )
 
         # 이미지 내비게이션 (여러 이미지가 있을 때만 표시)
         if len(self._image_list) > 1 and self._current_index >= 0:
@@ -723,32 +1354,38 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 버튼 상태 업데이트
             self._update_nav_buttons()
 
-        # 버튼 프레임 (하단에 배치)
-        name_frame = ctk.CTkFrame(
+        # 하단 액션 카드: 파일명/주요 버튼/옵션을 분리해 긴 텍스트가 버튼을 밀지 않게 한다.
+        bottom_panel = ctk.CTkFrame(
             self,
             fg_color=COLORS["bg_glass"],
             corner_radius=IOS_METRICS["card_radius_compact"],
             border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
         )
-        name_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 6))
+        bottom_panel.pack(side="bottom", fill="x", padx=20, pady=(4, 14))
+
+        name_frame = ctk.CTkFrame(bottom_panel, fg_color="transparent")
+        name_frame.pack(fill="x", padx=14, pady=(10, 4))
+        name_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             name_frame,
             text="저장 전 이름",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_primary"],
-        ).pack(side="left", padx=(12, 8), pady=8)
+            width=92,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
         self._crop_filename_entry = ctk.CTkEntry(
             name_frame,
             textvariable=self._crop_filename_var,
             placeholder_text=self._crop_filename_placeholder(),
-            height=30,
-            font=ctk.CTkFont(size=12),
+            height=34,
+            font=ctk.CTkFont(size=12, weight="bold"),
             state="normal" if self._crop_coords is not None else "disabled",
         )
-        self._crop_filename_entry.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=8)
+        self._crop_filename_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self._crop_filename_entry.bind("<Return>", lambda _event: self._save_crop())
 
         self._crop_filename_hint_label = ctk.CTkLabel(
@@ -756,12 +1393,14 @@ class ImageCropDialog(ctk.CTkToplevel):
             text="크롭 후 입력하면 templates에 해당 이름으로 저장",
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
+            width=230,
+            anchor="w",
         )
-        self._crop_filename_hint_label.pack(side="left", padx=(0, 12), pady=8)
+        self._crop_filename_hint_label.grid(row=0, column=2, sticky="w")
         self._update_crop_filename_state()
 
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(side="bottom", fill="x", padx=20, pady=(6, 15))
+        btn_frame = ctk.CTkFrame(bottom_panel, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=14, pady=(4, 10))
 
         primary_btn_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
         primary_btn_row.pack(anchor="center", pady=(0, 6))
@@ -771,9 +1410,9 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         self._save_btn = ctk.CTkButton(
             primary_btn_row,
-            text="크롭 저장",
+            text="영상 크롭 저장" if self._is_video else "크롭 저장",
             command=self._save_crop,
-            width=100,
+            width=120 if self._is_video else 100,
             height=40,
             state="disabled" if self._crop_coords is None else "normal",
             fg_color=COLORS["success"],
@@ -808,6 +1447,19 @@ class ImageCropDialog(ctk.CTkToplevel):
             fg_color=COLORS["error"],
             hover_color=COLORS["danger_hover"],
             text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            primary_btn_row,
+            text="취소",
+            command=self.destroy,
+            width=80,
+            height=40,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="left", padx=5)
@@ -883,18 +1535,6 @@ class ImageCropDialog(ctk.CTkToplevel):
             )
             self._move_mouse_cb.pack(side="left", padx=5)
 
-        ctk.CTkButton(
-            primary_btn_row,
-            text="취소",
-            command=self.destroy,
-            width=80,
-            height=40,
-            fg_color=COLORS["bg_elevated"],
-            hover_color=COLORS["bg_card_hover"],
-            text_color=COLORS["text_secondary"],
-            corner_radius=IOS_METRICS["pill_radius"],
-        ).pack(side="left", padx=5)
-
         # 메인 컨텐츠 (이미지 + 미리보기)
         content_frame = ctk.CTkFrame(self, fg_color="transparent")
         content_frame.pack(padx=20, pady=10, fill="both", expand=True)
@@ -957,7 +1597,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["card_radius_compact"],
             border_width=IOS_METRICS["card_border_width"],
             border_color=COLORS["border"],
-            width=200,
+            width=230 if self._is_video else 200,
         )
         right_frame.pack(side="right", fill="y", padx=(15, 0))
         right_frame.pack_propagate(False)
@@ -987,6 +1627,70 @@ class ImageCropDialog(ctk.CTkToplevel):
             text_color=COLORS["text_muted"],
         )
         self._preview_label.pack(pady=5)
+
+        if self._is_video:
+            video_control_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+            video_control_frame.pack(fill="x", padx=14, pady=(4, 6))
+            self._video_play_btn = ctk.CTkButton(
+                video_control_frame,
+                text="재생",
+                width=190,
+                height=34,
+                command=self._resume_video_preview,
+                fg_color=COLORS["accent_blue"],
+                hover_color=COLORS["hover_blue"],
+                text_color=COLORS["text_on_accent"],
+                border_width=IOS_METRICS["card_border_width"],
+                border_color=COLORS["button_border"],
+                font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
+            )
+            self._video_play_btn.pack(fill="x", pady=(0, 6))
+            self._video_stop_btn = ctk.CTkButton(
+                video_control_frame,
+                text="중지",
+                width=190,
+                height=34,
+                command=self._stop_video_from_button,
+                fg_color=COLORS["danger"],
+                hover_color=COLORS["danger_hover"],
+                text_color=COLORS["text_on_accent"],
+                border_width=IOS_METRICS["card_border_width"],
+                border_color=COLORS["button_border"],
+                font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
+            )
+            self._video_stop_btn.pack(fill="x", pady=(0, 6))
+            ctk.CTkButton(
+                video_control_frame,
+                text="처음으로",
+                width=190,
+                height=34,
+                command=self._restart_video_preview,
+                fg_color=COLORS["confidence_amber"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_on_accent"],
+                border_width=IOS_METRICS["card_border_width"],
+                border_color=COLORS["button_border"],
+                font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=IOS_METRICS["pill_radius"],
+            ).pack(fill="x", pady=(0, 8))
+            self._video_time_label = ctk.CTkLabel(
+                video_control_frame,
+                text=self._format_video_time_text(),
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=COLORS["accent_blue_text"],
+            )
+            self._video_time_label.pack(pady=(0, 4))
+            self._video_progress_canvas = Canvas(
+                video_control_frame,
+                width=190,
+                height=14,
+                bg=COLORS["bg_card"],
+                highlightthickness=0,
+            )
+            self._video_progress_canvas.pack(fill="x", pady=(0, 2))
+            self._update_video_progress_bar()
 
         self._set_edit_mode("select")
         if self._crop_coords is not None:
@@ -1041,6 +1745,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         if hasattr(self, '_zoom_label'):
             self._zoom_label.configure(text=f"{int(self._scale * 100)}%")
         self._update_image_info_label()
+        self._draw_video_overlay_play_button()
 
     def _zoom(self, delta: float):
         """줌 조정"""
@@ -1167,8 +1872,33 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._refresh_preview()
         self._update_canvas_image()
 
+    def _clear_crop_selection(self):
+        """Clear the current crop rectangle without changing the loaded media."""
+        self._crop_coords = None
+        self._crop_mask = None
+        self._crop_mask_needs_refresh = False
+        self._selecting = False
+        if self._rect_id:
+            try:
+                self._canvas.delete(self._rect_id)
+            except tk.TclError:
+                pass
+            self._rect_id = None
+        if hasattr(self, "_save_btn"):
+            self._save_btn.configure(state="disabled")
+        if hasattr(self, "_crop_filename_var"):
+            self._crop_filename_var.set("")
+        self._update_crop_filename_state()
+        if hasattr(self, "_preview_canvas"):
+            self._preview_canvas.delete("all")
+        if hasattr(self, "_preview_label"):
+            self._preview_label.configure(text="영역을 선택하세요", text_color=COLORS["text_muted"])
+        self._update_canvas_image()
+
     def _crop_filename_placeholder(self) -> str:
         stem = Path(self._image_path).stem or "template"
+        if self._is_video:
+            return f"비우면 자동 저장: {stem}_crop_랜덤.mp4"
         return f"비우면 자동 저장: {stem}_crop_랜덤"
 
     def _update_crop_filename_state(self):
@@ -1262,6 +1992,7 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._canvas.focus_set()
         except Exception:
             pass
+        self._mouse_down_had_crop = self._crop_coords is not None
         self._start_x = event.x
         self._start_y = event.y
         self._selecting = True
@@ -1293,6 +2024,9 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._selecting = False
         self._end_x = event.x
         self._end_y = event.y
+        if self._mouse_down_had_crop and abs(event.x - self._start_x) < 5 and abs(event.y - self._start_y) < 5:
+            self._clear_crop_selection()
+            return
         self._update_preview(event.x, event.y)
 
     def _update_preview(self, end_x: int, end_y: int):
@@ -1315,6 +2049,10 @@ class ImageCropDialog(ctk.CTkToplevel):
         if self._original_image is None:
             messagebox.showerror("오류", "이미지를 불러올 수 없습니다.")
             self.destroy()
+            return
+
+        if self._is_video:
+            self._save_video_crop()
             return
 
         orig_x1, orig_y1, orig_x2, orig_y2 = self._crop_coords
@@ -1401,6 +2139,133 @@ class ImageCropDialog(ctk.CTkToplevel):
             logger.error(f"크롭 저장 오류: {e}")
             messagebox.showerror("오류", f"저장 중 오류가 발생했습니다.\n{e}")
 
+    def _save_video_crop(self):
+        """Save a cropped copy of the current video using the selected rectangle."""
+        from tkinter import messagebox
+        import uuid
+        import shutil
+
+        if self._crop_coords is None or self._original_image is None:
+            messagebox.showwarning("알림", "먼저 영상에서 크롭할 영역을 선택하세요.")
+            return
+
+        x1, y1, x2, y2 = [int(v) for v in self._crop_coords]
+        crop_w = max(1, x2 - x1)
+        crop_h = max(1, y2 - y1)
+        if crop_w < 2 or crop_h < 2:
+            messagebox.showwarning("알림", "크롭 영역이 너무 작습니다.")
+            return
+
+        original_path = Path(self._image_path)
+        custom_filename = sanitize_template_media_filename(self._crop_filename_var.get(), ".mp4")
+        if self._crop_filename_var.get().strip() and custom_filename is None:
+            messagebox.showwarning("알림", "저장 이름으로 사용할 수 없는 파일명입니다.")
+            return
+
+        if custom_filename:
+            new_path = unique_template_path(DATA_DIR / "templates", custom_filename)
+        else:
+            new_filename = f"{original_path.stem}_crop_{uuid.uuid4().hex[:6]}.mp4"
+            new_path = unique_template_path(DATA_DIR / "templates", new_filename)
+
+        tmp_path = new_path.with_name(f"_tmp_video_crop_{uuid.uuid4().hex[:10]}.mp4")
+        cap = None
+        writer = None
+        frame_count = 0
+        saved_successfully = False
+        try:
+            self._stop_video_preview()
+            self.configure(cursor="watch")
+            self.update_idletasks()
+
+            cap = cv2.VideoCapture(str(original_path))
+            if not cap.isOpened():
+                raise RuntimeError(f"동영상을 열 수 없습니다: {original_path}")
+
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or self._video_fps or 15.0)
+            if fps <= 0:
+                fps = 15.0
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(tmp_path), fourcc, fps, (crop_w, crop_h))
+            if not writer.isOpened():
+                raise RuntimeError(f"동영상 저장 파일을 열 수 없습니다: {tmp_path}")
+
+            while True:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                h, w = frame.shape[:2]
+                sx1 = max(0, min(w - 1, x1))
+                sy1 = max(0, min(h - 1, y1))
+                sx2 = max(sx1 + 1, min(w, x2))
+                sy2 = max(sy1 + 1, min(h, y2))
+                cropped = frame[sy1:sy2, sx1:sx2]
+                if cropped.shape[1] != crop_w or cropped.shape[0] != crop_h:
+                    cropped = cv2.resize(cropped, (crop_w, crop_h), interpolation=cv2.INTER_AREA)
+                writer.write(cropped)
+                frame_count += 1
+
+            if frame_count <= 0:
+                raise RuntimeError("저장할 영상 프레임이 없습니다")
+
+            if writer is not None:
+                writer.release()
+                writer = None
+            if cap is not None:
+                cap.release()
+                cap = None
+
+            if new_path.exists():
+                new_path.unlink()
+            try:
+                tmp_path.replace(new_path)
+            except OSError:
+                shutil.move(str(tmp_path), str(new_path))
+
+            logger.info(
+                f"[동영상 크롭] 저장 완료: {new_path} "
+                f"crop=({x1},{y1})~({x2},{y2}) size={crop_w}x{crop_h} frames={frame_count}"
+            )
+
+            old_path = self._set_current_rule_image(str(new_path))
+            if hasattr(self._rule, "save"):
+                self._rule.save()
+            if old_path:
+                try:
+                    invalidate_thumbnail_cache(old_path)
+                except Exception:
+                    pass
+            invalidate_thumbnail_cache(str(new_path))
+            self._invoke_image_callback(self._on_crop, str(new_path), self._rule, old_path)
+            saved_successfully = True
+            self.destroy()
+        except Exception as exc:
+            logger.error(f"동영상 크롭 저장 실패: {exc}", exc_info=True)
+            messagebox.showerror("오류", f"동영상 크롭 저장 실패:\n{exc}")
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+        finally:
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            try:
+                self.configure(cursor="")
+            except tk.TclError:
+                pass
+            if not saved_successfully and self._is_video:
+                self._video_playing = False
+                self._update_video_control_state()
+
     def _delete_image(self):
         """이미지 삭제"""
         from tkinter import messagebox
@@ -1416,6 +2281,10 @@ class ImageCropDialog(ctk.CTkToplevel):
                 if mask_path.exists():
                     mask_path.unlink()
                     logger.info(f"마스크 파일 삭제: {mask_path}")
+                settings_path = get_template_media_settings_path(image_path)
+                if settings_path.exists():
+                    settings_path.unlink()
+                    logger.info(f"템플릿 미디어 설정 삭제: {settings_path}")
 
                 old_path = self._set_current_rule_image(None)
                 if old_path:
@@ -1443,13 +2312,17 @@ class ImageCropDialog(ctk.CTkToplevel):
         templates_dir.mkdir(parents=True, exist_ok=True)
         initial_dir = templates_dir if templates_dir.exists() else Path(self._image_path).parent
 
+        media_filetypes = [
+            ("모든 파일", "*.*"),
+            ("이미지/동영상 파일", "*.*"),
+            ("이미지 파일", IMAGE_FILE_PATTERNS),
+            ("동영상 파일", VIDEO_FILE_PATTERNS),
+        ]
+
         new_path = filedialog.askopenfilename(
-            title="새 이미지 선택",
+            title="이미지/동영상 선택",
             initialdir=str(initial_dir),
-            filetypes=[
-                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
-                ("모든 파일", "*.*"),
-            ],
+            filetypes=media_filetypes,
         )
 
         if not new_path:
@@ -1457,6 +2330,14 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         try:
             new_path = Path(new_path)
+            if not is_supported_media_path(new_path):
+                from tkinter import messagebox
+                messagebox.showwarning("알림", "지원하지 않는 파일 형식입니다.")
+                return
+            if not (isinstance(self._rule, TemplateMediaSettings) or self._is_video) and is_video_media_path(new_path):
+                from tkinter import messagebox
+                messagebox.showwarning("알림", "액션 이미지는 동영상 파일을 대상으로 사용할 수 없습니다.")
+                return
 
             # 선택한 파일이 이미 templates 폴더에 있으면 그대로 사용
             if new_path.parent.resolve() == templates_dir.resolve():
@@ -1522,6 +2403,8 @@ class ImageCropDialog(ctk.CTkToplevel):
         if self._rule is not None and hasattr(self._rule, 'target_image'):
             old_path = getattr(self._rule, 'target_image', old_path)
             self._rule.target_image = image_path
+            if hasattr(self._rule, "save"):
+                self._rule.save()
         self._image_path = image_path or ""
         return old_path
 
@@ -1631,6 +2514,8 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._rule.search_radius = max(x2 - x1, y2 - y1) // 2
 
         logger.info(f"{source_label} 적용: ({x1}, {y1}) ~ ({x2}, {y2})")
+        if hasattr(self._rule, "save"):
+            self._rule.save()
         self._refresh_rule_setting_controls()
         self._invoke_image_callback(self._on_search_radius_change, self._rule)
         return True
@@ -1688,12 +2573,16 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         if hasattr(self, '_confidence_btn'):
             text, conf_pct = self._confidence_button_state()
+            has_extra_verify = bool(
+                getattr(self._rule, "verify_image_color", False)
+                or getattr(self._rule, "verify_image_brightness", False)
+            )
             self._confidence_btn.configure(
                 text=text,
                 state="normal" if self._rule is not None else "disabled",
-                fg_color=COLORS["confidence_amber"] if conf_pct != 65 else COLORS["bg_card"],
-                hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 else COLORS["bg_card_hover"],
-                text_color=COLORS["text_on_accent"] if conf_pct != 65 else COLORS["text_secondary"],
+                fg_color=COLORS["confidence_amber"] if conf_pct != 65 or has_extra_verify else COLORS["bg_card"],
+                hover_color=COLORS["confidence_amber_hover"] if conf_pct != 65 or has_extra_verify else COLORS["bg_card_hover"],
+                text_color=COLORS["text_on_accent"] if conf_pct != 65 or has_extra_verify else COLORS["text_secondary"],
             )
 
         if hasattr(self, '_move_mouse_var'):
@@ -1909,6 +2798,8 @@ class ImageCropDialog(ctk.CTkToplevel):
         """마우스 이동 옵션 변경"""
         if self._rule is not None:
             self._rule.move_mouse_before_search = self._move_mouse_var.get()
+            if hasattr(self._rule, "save"):
+                self._rule.save()
             logger.info(f"검색 전 마우스 이동: {'활성화' if self._rule.move_mouse_before_search else '비활성화'}")
             self._invoke_image_callback(self._on_search_radius_change, self._rule)
 
@@ -2049,6 +2940,8 @@ class ImageCropDialog(ctk.CTkToplevel):
             self._rule.confidence = conf_var.get() / 100.0
             self._rule.verify_image_color = bool(verify_color_var.get())
             self._rule.verify_image_brightness = bool(verify_brightness_var.get())
+            if hasattr(self._rule, "save"):
+                self._rule.save()
             conf_pct = int(conf_var.get())
             logger.info(
                 f"인식률 설정: {conf_pct}% "
@@ -2096,6 +2989,20 @@ class ImageCropDialog(ctk.CTkToplevel):
             command=conf_dialog.destroy,
         ).pack(side="left")
 
+    @staticmethod
+    def _navigation_media_from_item(item):
+        """Return (path, rule/settings) for action-backed images or loose template media."""
+        if isinstance(item, dict):
+            path = item.get("path") or item.get("target_image") or item.get("image_path")
+            return path, item.get("rule")
+        if isinstance(item, (str, Path)):
+            return str(item), None
+        if hasattr(item, "target_image"):
+            return getattr(item, "target_image", None), item
+        if hasattr(item, "image_path"):
+            return getattr(item, "image_path", None), None
+        return None, None
+
     def _navigate_image(self, direction: int):
         """이미지 내비게이션 (direction: -1=이전, 1=다음)"""
         if not self._image_list or self._current_index < 0:
@@ -2116,17 +3023,11 @@ class ImageCropDialog(ctk.CTkToplevel):
             # 새 이미지 정보 가져오기
             item = self._image_list[new_index]
 
-            # 이미지 경로 추출 (AutomationRule 또는 Action 객체)
-            if hasattr(item, 'target_image'):
-                new_image_path = item.target_image
-                new_rule = item
-            elif hasattr(item, 'image_path'):
-                new_image_path = item.image_path
-                new_rule = None
-            else:
+            new_image_path, new_rule = self._navigation_media_from_item(item)
+            if not new_image_path:
                 continue
 
-            if not new_image_path:
+            if not is_supported_media_path(new_image_path):
                 continue
 
             if not Path(new_image_path).exists():
@@ -2152,6 +3053,23 @@ class ImageCropDialog(ctk.CTkToplevel):
         # 이미지 다시 로드
         self._load_image()
 
+        if hasattr(self, "_background_cutout_cb"):
+            if self._is_video:
+                self._background_cutout_var.set(False)
+                self._background_cutout_cb.configure(
+                    text="배경제거(이미지 전용)",
+                    state="disabled",
+                    text_color=COLORS["text_muted"],
+                )
+            else:
+                self._background_cutout_cb.configure(
+                    text="배경제거 이미지따기",
+                    state="normal",
+                    text_color=COLORS["text_primary"],
+                )
+        if hasattr(self, "_save_btn"):
+            self._save_btn.configure(text="영상 크롭 저장" if self._is_video else "크롭 저장")
+
         # UI 업데이트
         if self._original_image is not None:
             h, w = self._original_image.shape[:2]
@@ -2160,7 +3078,7 @@ class ImageCropDialog(ctk.CTkToplevel):
 
         # 파일명 업데이트
         filename = Path(self._image_path).name
-        self.title(f"이미지 편집: {filename}")
+        self.title(f"{'동영상' if self._is_video else '이미지'} 편집: {filename}")
         if hasattr(self, '_filename_label'):
             self._filename_label.configure(text=f"📁 {truncate_ui_text(filename, 58)}")
 
@@ -2418,11 +3336,13 @@ class AltImageDialog(ctk.CTkToplevel):
         templates_dir.mkdir(parents=True, exist_ok=True)
 
         file_path = filedialog.askopenfilename(
-            title="멀티이미지 선택",
+            title="멀티이미지/동영상 선택",
             initialdir=str(templates_dir),
             filetypes=[
-                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp"),
                 ("모든 파일", "*.*"),
+                ("이미지/동영상 파일", "*.*"),
+                ("이미지 파일", IMAGE_FILE_PATTERNS),
+                ("동영상 파일", VIDEO_FILE_PATTERNS),
             ],
         )
 
@@ -2431,6 +3351,13 @@ class AltImageDialog(ctk.CTkToplevel):
 
         try:
             src_path = Path(file_path)
+            if is_video_media_path(src_path):
+                self._open_video_media_editor(src_path)
+                return
+            if not is_supported_media_path(src_path):
+                from tkinter import messagebox
+                messagebox.showwarning("알림", "지원하지 않는 파일 형식입니다.")
+                return
 
             # templates 폴더에 있으면 그대로 사용
             if src_path.parent.resolve() == templates_dir.resolve():
@@ -2454,6 +3381,63 @@ class AltImageDialog(ctk.CTkToplevel):
             logger.error(f"이미지 추가 실패: {e}")
             from tkinter import messagebox
             messagebox.showerror("오류", f"이미지 추가 실패: {e}")
+
+    def _open_video_media_editor(self, video_path: Path):
+        """동영상은 멀티이미지 매칭 목록에 직접 넣지 않고 편집창으로 연다."""
+        from ..utils.config import DATA_DIR
+        import shutil
+        import uuid
+
+        templates_dir = DATA_DIR / "templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        video_path = Path(video_path)
+        if video_path.parent.resolve() != templates_dir.resolve():
+            dest_path = templates_dir / f"video_{uuid.uuid4().hex[:8]}{video_path.suffix}"
+            shutil.copy2(video_path, dest_path)
+            video_path = dest_path
+
+        media_paths = []
+        if templates_dir.exists():
+            for path in templates_dir.iterdir():
+                if path.is_file() and is_supported_media_path(path):
+                    media_paths.append(path)
+        media_paths.sort(key=lambda p: (p.stat().st_mtime if p.exists() else 0, p.name), reverse=True)
+        try:
+            current_index = next(
+                idx for idx, path in enumerate(media_paths)
+                if path.resolve() == video_path.resolve()
+            )
+        except (StopIteration, OSError):
+            media_paths.insert(0, video_path)
+            current_index = 0
+
+        nav_items = [{"path": str(path), "rule": TemplateMediaSettings(path)} for path in media_paths]
+        settings = nav_items[current_index]["rule"] if nav_items else TemplateMediaSettings(video_path)
+
+        def mark_changed(*args):
+            saved = False
+            for arg in args:
+                if hasattr(arg, "save"):
+                    arg.save()
+                    saved = True
+                    break
+            if not saved and hasattr(settings, "save"):
+                settings.save()
+            if self._on_change:
+                self._on_change()
+
+        dialog = ImageCropDialog(
+            self,
+            str(video_path),
+            on_crop=mark_changed,
+            on_delete=mark_changed,
+            on_change=mark_changed,
+            rule=settings,
+            on_search_radius_change=mark_changed,
+            image_list=nav_items,
+            current_index=current_index,
+        )
+        self.wait_window(dialog)
 
     def _capture_screenshot(self):
         """스크린샷으로 멀티이미지 추가"""
@@ -3117,6 +4101,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             "type": COLORS["success"],
             "hotkey": COLORS["accent_orange"],
             "key_press": COLORS["accent_orange"],
+            "random_key_sequence": COLORS["accent_orange"],
             "scroll": COLORS["scroll_purple"],
             "drag": COLORS["warning"],
         }
@@ -3140,6 +4125,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             "type": "텍스트 입력",
             "hotkey": "단축키",
             "key_press": "키 입력",
+            "random_key_sequence": "랜덤키 입력",
             "scroll": "스크롤",
             "drag": "드래그",
         }
@@ -3214,6 +4200,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 "type": "T",
                 "hotkey": "K",
                 "key_press": "K",
+                "random_key_sequence": "R",
                 "scroll": "S",
                 "drag": "D",
             }
@@ -3363,8 +4350,37 @@ class AutomationPlanDialog(ctk.CTkToplevel):
         collect(self._plan.initial_rules)
         collect(self._plan.monitoring_rules)
 
+        rule_image_paths = set()
+        for item in all_image_rules:
+            try:
+                path = getattr(item, "target_image", None)
+                if path:
+                    rule_image_paths.add(str(Path(path).resolve()).lower())
+            except OSError:
+                pass
+
+        navigation_items = list(all_image_rules)
+        templates_dir = DATA_DIR / "templates"
+        if templates_dir.exists():
+            try:
+                video_paths = [
+                    path for path in templates_dir.iterdir()
+                    if path.is_file() and is_video_media_path(path)
+                ]
+                video_paths.sort(key=lambda p: (p.stat().st_mtime if p.exists() else 0, p.name), reverse=True)
+                for path in video_paths:
+                    try:
+                        resolved = str(path.resolve()).lower()
+                    except OSError:
+                        resolved = str(path).lower()
+                    if resolved in rule_image_paths:
+                        continue
+                    navigation_items.append({"path": str(path), "rule": TemplateMediaSettings(path)})
+            except OSError as exc:
+                logger.debug(f"템플릿 동영상 목록 로드 실패: {exc}")
+
         current_index = -1
-        for i, item in enumerate(all_image_rules):
+        for i, item in enumerate(navigation_items):
             if getattr(item, 'rule_id', None) == getattr(rule, 'rule_id', None):
                 current_index = i
                 break
@@ -3406,7 +4422,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             on_change=on_change,
             rule=rule,
             on_search_radius_change=on_search_radius_change,
-            image_list=all_image_rules,
+            image_list=navigation_items,
             current_index=current_index,
         )
         self.wait_window(dialog)

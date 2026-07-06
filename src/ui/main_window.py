@@ -25,7 +25,7 @@ from pynput import keyboard
 from PIL import Image
 
 from ..utils.logger import get_logger
-from ..utils.config import get_config, save_config, DATA_DIR, APP_VERSION
+from ..utils.config import get_config, save_config, DATA_DIR, TEMPLATES_DIR, APP_VERSION
 from ..utils.discord_notifier import (
     DiscordAlert,
     is_valid_discord_webhook_url,
@@ -531,6 +531,15 @@ class MainWindow(ctk.CTk):
         # 전역 F8 캡쳐 기능
         self._keyboard_listener: Optional[keyboard.Listener] = None
         self._capture_notification_label: Optional[ctk.CTkLabel] = None
+        self._template_video_active = False
+        self._template_video_stop_event: Optional[threading.Event] = None
+        self._template_video_thread: Optional[threading.Thread] = None
+        self._template_video_output_path: Optional[Path] = None
+        self._template_video_frame_count = 0
+        self._template_video_mode = "full"
+        self._template_video_region: Optional[dict] = None
+        self._template_video_on_window: Optional[tk.Toplevel] = None
+        self._template_video_lock = threading.Lock()
         self._recording_active = False  # 녹화 중이면 전역 F8 비활성화
 
         # UI 구성
@@ -1930,6 +1939,8 @@ class MainWindow(ctk.CTk):
         logger.info(f"창 모드 변경: {mode}, 자동 재시작...")
 
         # 리소스 정리 먼저 수행
+        self._stop_template_video_capture_for_shutdown()
+
         if self._keyboard_listener:
             try:
                 self._keyboard_listener.stop()
@@ -3582,19 +3593,363 @@ class MainWindow(ctk.CTk):
                         self.after(0, self._capture_full_screen)
                     except (tk.TclError, RuntimeError):
                         pass
+                elif key == keyboard.Key.f9:
+                    logger.info("F9 템플릿 동영상 토글 요청")
+                    try:
+                        self.after(0, self._toggle_template_video_capture)
+                    except (tk.TclError, RuntimeError):
+                        pass
             except Exception as e:
-                logger.error(f"F8 키 처리 오류: {e}")
+                logger.error(f"전역 단축키 처리 오류: {e}")
 
         try:
             self._keyboard_listener = keyboard.Listener(on_press=on_key_press)
             self._keyboard_listener.start()
-            logger.info("전역 F8 캡쳐 단축키 활성화")
+            logger.info("전역 F8/F9 단축키 활성화")
         except Exception as e:
             logger.error(f"전역 단축키 설정 실패: {e}")
 
     def set_recording_active(self, active: bool):
         """녹화 상태 설정 (녹화 중이면 전역 F8 비활성화)"""
         self._recording_active = active
+
+    def _toggle_template_video_capture(self):
+        """F9 전용 템플릿 동영상 캡쳐 시작/중지."""
+        with self._template_video_lock:
+            if self._template_video_active:
+                self._stop_template_video_capture_locked()
+                return
+        if self._recording_active:
+            logger.warning("F7 녹화 중에는 F9 템플릿 동영상 캡처를 시작하지 않습니다")
+            return
+
+        mode = self._choose_template_video_capture_mode()
+        if mode == "crop":
+            self._select_template_video_crop_region()
+            return
+        if mode == "full":
+            with self._template_video_lock:
+                if not self._template_video_active:
+                    self._start_template_video_capture_locked(mode="full", region=None)
+
+    def _choose_template_video_capture_mode(self) -> Optional[str]:
+        result = {"mode": None}
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("F9 동영상 녹화")
+        dialog.geometry("360x190")
+        dialog.resizable(False, False)
+        dialog.configure(fg_color=COLORS["bg_content"])
+        dialog.transient(self)
+        dialog.grab_set()
+
+        root = ctk.CTkFrame(
+            dialog,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["border"],
+        )
+        root.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(
+            root,
+            text="녹화 방식을 선택하세요",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=17, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(pady=(14, 8))
+        ctk.CTkLabel(
+            root,
+            text="크롭 동영상은 영역을 먼저 선택한 뒤 그 부분만 녹화합니다.",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+            wraplength=310,
+        ).pack(pady=(0, 12))
+
+        btn_row = ctk.CTkFrame(root, fg_color="transparent")
+        btn_row.pack(pady=(0, 12))
+
+        def choose(selected_mode: str):
+            result["mode"] = selected_mode
+            dialog.destroy()
+
+        ctk.CTkButton(
+            btn_row,
+            text="크롭 동영상",
+            command=lambda: choose("crop"),
+            width=130,
+            height=38,
+            fg_color=COLORS["accent_blue"],
+            hover_color=COLORS["hover_blue"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="전체 동영상",
+            command=lambda: choose("full"),
+            width=130,
+            height=38,
+            fg_color=COLORS["success"],
+            hover_color=COLORS["green_hover"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=IOS_METRICS["pill_radius"],
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            root,
+            text="취소",
+            command=dialog.destroy,
+            width=90,
+            height=30,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_secondary"],
+            corner_radius=IOS_METRICS["pill_radius"],
+        ).pack()
+
+        dialog.update_idletasks()
+        setup_window_position(dialog, "F9VideoModeDialog")
+        self.wait_window(dialog)
+        return result["mode"]
+
+    def _select_template_video_crop_region(self):
+        try:
+            from .analyzer_view import ScreenRegionSelector
+        except Exception as exc:
+            logger.error(f"F9 크롭 영역 선택기를 열 수 없습니다: {exc}", exc_info=True)
+            return
+
+        def on_region_select(x1, y1, x2, y2):
+            region = self._normalize_template_video_region(x1, y1, x2, y2)
+            if not region:
+                logger.warning("F9 크롭 동영상 영역이 너무 작거나 화면 범위를 벗어났습니다")
+                return
+            with self._template_video_lock:
+                if not self._template_video_active:
+                    self._start_template_video_capture_locked(mode="crop", region=region)
+
+        def on_cancel():
+            logger.info("F9 크롭 동영상 영역 선택 취소")
+
+        self.after(100, lambda: ScreenRegionSelector(self, on_region_select, on_cancel))
+
+    def _normalize_template_video_region(self, x1, y1, x2, y2) -> Optional[dict]:
+        left, right = sorted((int(x1), int(x2)))
+        top, bottom = sorted((int(y1), int(y2)))
+        try:
+            with mss.mss() as sct:
+                monitor = sct.monitors[0]
+                min_left = int(monitor.get("left", 0))
+                min_top = int(monitor.get("top", 0))
+                max_right = min_left + int(monitor["width"])
+                max_bottom = min_top + int(monitor["height"])
+        except Exception:
+            min_left = 0
+            min_top = 0
+            max_right = int(self.winfo_screenwidth() or 0)
+            max_bottom = int(self.winfo_screenheight() or 0)
+
+        left = max(min_left, min(left, max_right))
+        right = max(min_left, min(right, max_right))
+        top = max(min_top, min(top, max_bottom))
+        bottom = max(min_top, min(bottom, max_bottom))
+        width = right - left
+        height = bottom - top
+        if width < 16 or height < 16:
+            return None
+        if width % 2:
+            width -= 1
+        if height % 2:
+            height -= 1
+        if width < 16 or height < 16:
+            return None
+        return {"left": left, "top": top, "width": width, "height": height}
+
+    def _start_template_video_capture_locked(self, mode: str = "full", region: Optional[dict] = None):
+        if self._recording_active:
+            logger.warning("F7 녹화 중에는 F9 템플릿 동영상 캡쳐를 시작하지 않습니다")
+            return
+
+        TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        output_path = TEMPLATES_DIR / f"template_video_{timestamp}.mp4"
+        stop_event = threading.Event()
+
+        self._template_video_active = True
+        self._template_video_stop_event = stop_event
+        self._template_video_output_path = output_path
+        self._template_video_frame_count = 0
+        self._template_video_mode = mode
+        self._template_video_region = dict(region) if region else None
+        self._show_template_video_indicator()
+
+        thread = threading.Thread(
+            target=self._run_template_video_capture,
+            args=(stop_event, output_path, mode, dict(region) if region else None),
+            daemon=True,
+        )
+        self._template_video_thread = thread
+        thread.start()
+        logger.info(f"F9 템플릿 동영상 캡쳐 시작: {output_path}")
+
+    def _stop_template_video_capture_locked(self):
+        stop_event = self._template_video_stop_event
+        if stop_event is not None:
+            stop_event.set()
+        logger.info("F9 템플릿 동영상 캡쳐 중지 요청")
+
+    def _stop_template_video_capture_for_shutdown(self):
+        thread = None
+        with self._template_video_lock:
+            if self._template_video_stop_event is not None:
+                self._template_video_stop_event.set()
+            thread = self._template_video_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.5)
+        self._hide_template_video_indicator()
+
+    def _run_template_video_capture(self, stop_event: threading.Event, output_path: Path, mode: str = "full", region: Optional[dict] = None):
+        writer = None
+        success = False
+        error_message = ""
+        frame_count = 0
+        try:
+            fps = max(5, min(30, int(getattr(self._config.recording, "fps", 15) or 15)))
+            frame_interval = 1.0 / fps
+            with mss.mss() as sct:
+                if not sct.monitors:
+                    raise RuntimeError("캡쳐할 모니터를 찾을 수 없습니다")
+                monitor = dict(region) if region else dict(sct.monitors[0])
+                width = int(monitor["width"])
+                height = int(monitor["height"])
+                if width % 2:
+                    width -= 1
+                    monitor["width"] = width
+                if height % 2:
+                    height -= 1
+                    monitor["height"] = height
+                if width < 2 or height < 2:
+                    raise RuntimeError("녹화 영역이 너무 작습니다")
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+                if not writer.isOpened():
+                    raise RuntimeError(f"동영상 파일을 열 수 없습니다: {output_path}")
+
+                while not stop_event.is_set():
+                    loop_start = time.time()
+                    screenshot = sct.grab(monitor)
+                    frame = np.array(screenshot)
+                    if len(frame.shape) == 3 and frame.shape[2] == 4:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                    elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    if frame.shape[1] != width or frame.shape[0] != height:
+                        frame = frame[:height, :width]
+                        if frame.shape[1] != width or frame.shape[0] != height:
+                            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+                    writer.write(frame)
+                    frame_count += 1
+                    self._template_video_frame_count = frame_count
+                    sleep_time = frame_interval - (time.time() - loop_start)
+                    if sleep_time > 0:
+                        stop_event.wait(sleep_time)
+            success = frame_count > 0 and output_path.exists()
+        except Exception as exc:
+            error_message = str(exc)
+            logger.error(f"F9 템플릿 동영상 캡쳐 실패: {exc}", exc_info=True)
+        finally:
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+            try:
+                self.after(0, lambda: self._finish_template_video_capture(success, output_path, frame_count, error_message))
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _finish_template_video_capture(self, success: bool, output_path: Path, frame_count: int, error_message: str):
+        with self._template_video_lock:
+            self._template_video_active = False
+            self._template_video_stop_event = None
+            self._template_video_thread = None
+            self._template_video_output_path = None
+            self._template_video_frame_count = 0
+            self._template_video_mode = "full"
+            self._template_video_region = None
+        self._hide_template_video_indicator()
+
+        if success:
+            logger.info(f"F9 템플릿 동영상 저장 완료: {output_path} ({frame_count}프레임)")
+            self._show_capture_notification(str(output_path))
+            self._refresh_recorder_media_lists()
+        else:
+            if output_path.exists() and frame_count <= 0:
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
+            logger.error(f"F9 템플릿 동영상 저장 실패: {error_message or '프레임 없음'}")
+
+    def _refresh_recorder_media_lists(self):
+        for view in getattr(self, "_views", {}).values():
+            if hasattr(view, "_refresh_recordings_list_async"):
+                try:
+                    view._refresh_recordings_list_async(preserve_scroll=False)
+                except Exception:
+                    pass
+
+    def _show_template_video_indicator(self):
+        self._hide_template_video_indicator()
+        try:
+            indicator = tk.Toplevel(self)
+            indicator.overrideredirect(True)
+            indicator.attributes("-topmost", True)
+            indicator.configure(bg=COLORS["bg_card"])
+            label = tk.Label(
+                indicator,
+                text="F9 CROP ON" if self._template_video_mode == "crop" else "F9 VIDEO ON",
+                bg=COLORS["bg_card"],
+                fg=COLORS["accent_text"],
+                font=("Malgun Gothic", 11, "bold"),
+                padx=12,
+                pady=5,
+                bd=2,
+                relief="solid",
+            )
+            label.pack()
+            self.update_idletasks()
+            indicator.update_idletasks()
+            x = self.winfo_rootx() + max(10, self.winfo_width() - 145)
+            y = self.winfo_rooty() + 36
+            indicator.geometry(f"+{x}+{y}")
+            self._template_video_on_window = indicator
+            self._exclude_window_from_capture(indicator)
+        except Exception as exc:
+            logger.warning(f"F9 ON 표시 생성 실패: {exc}")
+
+    def _hide_template_video_indicator(self):
+        indicator = self._template_video_on_window
+        self._template_video_on_window = None
+        if indicator is not None:
+            try:
+                indicator.destroy()
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _exclude_window_from_capture(self, window):
+        if os.name != "nt":
+            return
+        try:
+            window.update_idletasks()
+            hwnd = int(window.winfo_id())
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            ok = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+            if not ok:
+                logger.warning("F9 ON 표시 캡쳐 제외 적용 실패: OS/드라이버가 지원하지 않을 수 있습니다")
+        except Exception as exc:
+            logger.warning(f"F9 ON 표시 캡쳐 제외 설정 실패: {exc}")
 
     def _capture_full_screen(self):
         """전체 화면 캡쳐 (F8) - 백그라운드에서 캡쳐 후 크롭 다이얼로그 열기"""
@@ -3685,9 +4040,11 @@ class MainWindow(ctk.CTk):
 
         # 알림 레이블 생성
         filename = Path(filepath).name
+        suffix = Path(filepath).suffix.lower()
+        message = f"🎬 동영상 저장 완료: {filename}" if suffix in {".mp4", ".avi", ".mov", ".mkv", ".webm"} else f"📸 화면 캡쳐 완료: {filename}"
         self._capture_notification_label = ctk.CTkLabel(
             self,
-            text=f"📸 화면 캡쳐 완료: {filename}",
+            text=message,
             fg_color=COLORS["accent"],
             corner_radius=IOS_METRICS["pill_radius"],
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=14, weight="bold"),
@@ -3904,6 +4261,8 @@ class MainWindow(ctk.CTk):
             os._exit(0)
 
         threading.Thread(target=_last_resort_exit, daemon=True).start()
+
+        self._stop_template_video_capture_for_shutdown()
 
         # 전역 키보드 리스너 정리
         if self._keyboard_listener:

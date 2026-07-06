@@ -47,6 +47,7 @@ from ..player.boss_state_machine import (
 )
 from ..player.boss_detector import BossDetector, BossFrameEvidence
 from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
+from ..player.random_key_sequence import format_random_key_sequences_summary
 from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
 from .main_window import BaseView
@@ -62,7 +63,14 @@ from .constants import (
 )
 from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
-from .analyzer_view import ImageCropDialog, submit_thumbnail_task
+from .random_key_sequence_dialog import RandomKeySequenceDialog
+from .analyzer_view import (
+    ImageCropDialog,
+    TemplateMediaSettings,
+    is_supported_media_path,
+    is_video_media_path,
+    submit_thumbnail_task,
+)
 from ..utils.waypoint_presets import (
     get_image_preset,
     list_arrival_key_presets,
@@ -93,6 +101,17 @@ COMPACT_ACTION_ROW_THRESHOLD = 80
 
 # 자동화 계획 저장 폴더
 PLANS_DIR = DATA_DIR / "plans"
+IMAGE_ACTION_EXTENSIONS = "*.png *.jpg *.jpeg *.bmp *.gif *.webp"
+VIDEO_MEDIA_EXTENSIONS = "*.mp4 *.avi *.mov *.mkv *.webm"
+TEMPLATE_MEDIA_EXTENSIONS = f"{IMAGE_ACTION_EXTENSIONS} {VIDEO_MEDIA_EXTENSIONS}"
+TEMPLATE_MEDIA_FILETYPES = [
+    ("이미지 파일", IMAGE_ACTION_EXTENSIONS),
+    ("모든 파일", "*.*"),
+]
+VIDEO_MEDIA_FILETYPES = [
+    ("동영상 파일", VIDEO_MEDIA_EXTENSIONS),
+    ("모든 파일", "*.*"),
+]
 
 # 스레드 관련
 import threading
@@ -119,6 +138,96 @@ def _unregister_game_mode_dialog(dialog) -> None:
             _active_game_mode_dialogs.discard(dialog)
     except Exception:
         pass
+
+
+def _open_template_video_editor(parent, media_path: str) -> None:
+    """Open video media in the same crop/settings dialog without binding it to an image action."""
+    try:
+        media_path_obj = Path(media_path)
+        if not media_path_obj.exists() or not is_supported_media_path(media_path_obj):
+            return
+
+        templates_dir = DATA_DIR / "templates"
+        media_paths = []
+        if templates_dir.exists():
+            for path in templates_dir.iterdir():
+                if path.is_file() and is_supported_media_path(path):
+                    media_paths.append(path)
+        media_paths.sort(key=lambda p: (p.stat().st_mtime if p.exists() else 0, p.name), reverse=True)
+
+        selected_resolved = media_path_obj.resolve()
+        current_index = -1
+        for idx, path in enumerate(media_paths):
+            try:
+                if path.resolve() == selected_resolved:
+                    current_index = idx
+                    break
+            except OSError:
+                continue
+
+        if current_index < 0:
+            media_paths.insert(0, media_path_obj)
+            current_index = 0
+
+        nav_items = [{"path": str(path), "rule": TemplateMediaSettings(path)} for path in media_paths]
+        settings = nav_items[current_index]["rule"] if nav_items else TemplateMediaSettings(media_path_obj)
+        changed = {"value": False}
+
+        def mark_changed(*args):
+            changed["value"] = True
+            saved = False
+            for arg in args:
+                if hasattr(arg, "save"):
+                    arg.save()
+                    saved = True
+                    break
+            if not saved and hasattr(settings, "save"):
+                settings.save()
+
+        dialog = ImageCropDialog(
+            parent,
+            str(media_path_obj),
+            on_crop=mark_changed,
+            on_delete=mark_changed,
+            on_change=mark_changed,
+            rule=settings,
+            on_search_radius_change=mark_changed,
+            image_list=nav_items,
+            current_index=current_index,
+        )
+        parent.wait_window(dialog)
+
+        if changed["value"]:
+            top = parent.winfo_toplevel()
+            if hasattr(top, "refresh_all_views"):
+                top.refresh_all_views()
+    except Exception as exc:
+        logger.error(f"동영상 편집 열기 실패: {media_path} ({exc})", exc_info=True)
+
+
+def _template_video_navigation_items(exclude_paths=None):
+    exclude = {str(Path(path).resolve()).lower() for path in (exclude_paths or []) if path}
+    templates_dir = DATA_DIR / "templates"
+    if not templates_dir.exists():
+        return []
+    items = []
+    try:
+        video_paths = [
+            path for path in templates_dir.iterdir()
+            if path.is_file() and is_video_media_path(path)
+        ]
+        video_paths.sort(key=lambda p: (p.stat().st_mtime if p.exists() else 0, p.name), reverse=True)
+        for path in video_paths:
+            try:
+                resolved = str(path.resolve()).lower()
+            except OSError:
+                resolved = str(path).lower()
+            if resolved in exclude:
+                continue
+            items.append({"path": str(path), "rule": TemplateMediaSettings(path)})
+    except OSError as exc:
+        logger.debug(f"템플릿 동영상 목록 로드 실패: {exc}")
+    return items
 
 
 def force_stop_all_game_modes(reason: str = "global_shutdown", detail: str = "", join_timeout: float = 1.5) -> int:
@@ -769,6 +878,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             details.append(f'"{text_preview}"')
         if rule.action_keys:
             details.append(f"[{' + '.join(rule.action_keys).upper()}]")
+        if getattr(rule, "action_type", None) == "random_key_sequence":
+            details.append(format_random_key_sequences_summary(getattr(rule, "random_key_sequences", [])))
         if getattr(rule, "target_image", None) and getattr(rule, "alternate_mouse_route", False):
             details.append("이동경로 변경")
         if (
@@ -1145,14 +1256,14 @@ class PlanDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
 
-        # 세번째 줄: 스크린샷 파일, 하위종목해체
+        # 세번째 줄: 동영상 파일, 하위종목해체
         btn_row3 = ctk.CTkFrame(btn_container, fg_color="transparent")
         btn_row3.pack(fill="x", pady=(3, 0))
 
         ctk.CTkButton(
             btn_row3,
-            text="📷 스크린샷",
-            command=self._add_screenshot_action,
+            text="🎬 동영상 입력",
+            command=self._add_video_action,
             width=110,
             height=28,
             fg_color=COLORS["accent_blue"],
@@ -1213,6 +1324,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
             height=28,
             fg_color=COLORS["accent_pink"],
             hover_color=COLORS["accent_pink_hover"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        ).pack(side="left", padx=(0, 5))
+
+        ctk.CTkButton(
+            btn_row5,
+            text="🎲 랜덤키입력",
+            command=self._add_random_key_action,
+            width=110,
+            height=28,
+            fg_color=COLORS["accent_orange"],
+            hover_color=COLORS["confidence_amber_hover"],
             font=ctk.CTkFont(size=12, weight="bold"),
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
@@ -1872,6 +1995,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._open_game_mode_dialog(config_rule_id=r.rule_id),
             ).pack(side="right", padx=3, pady=8)
+        elif rule.action_type == "random_key_sequence":
+            ctk.CTkButton(
+                control_frame,
+                text="⚙",
+                width=30,
+                height=24,
+                fg_color=COLORS["accent_orange"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_on_accent"],
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_random_key_action(r),
+            ).pack(side="right", padx=3, pady=8)
 
         is_monitoring = getattr(rule, "is_monitoring_mode", False)
         ctk.CTkButton(
@@ -2321,6 +2456,19 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._open_game_mode_dialog(config_rule_id=r.rule_id),
             ).pack(side="right", padx=(4, 0))
+        elif rule.action_type == "random_key_sequence":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                fg_color=COLORS["accent_orange"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_primary"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_random_key_action(r),
+            ).pack(side="right", padx=(4, 0))
 
         # 대기시간 버튼 (랜덤 여부 표시)
         wait_random = getattr(rule, 'wait_random', False)
@@ -2617,7 +2765,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except (IOError, OSError, ValueError):
                 pass
 
-        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "scroll": "📜", "drag": "↔", "game_mode": "🎮"}
+        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "key_press": "⌨", "random_key_sequence": "🎲", "scroll": "📜", "drag": "↔", "game_mode": "🎮"}
         ctk.CTkLabel(
             parent,
             text=icons.get(rule.action_type, "📋"),
@@ -2650,9 +2798,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """이미지 편집기 열기"""
         # 모든 이미지 규칙 수집
         all_image_rules = self._collect_all_image_rules()
+        rule_image_paths = [getattr(item, "target_image", None) for item in all_image_rules]
+        navigation_items = list(all_image_rules) + _template_video_navigation_items(rule_image_paths)
         current_index = -1
-        for i, r in enumerate(all_image_rules):
-            if r.rule_id == rule.rule_id:
+        for i, r in enumerate(navigation_items):
+            if getattr(r, "rule_id", None) == rule.rule_id:
                 current_index = i
                 break
 
@@ -2715,7 +2865,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             on_change=on_change,
             rule=rule,
             on_search_radius_change=on_search_radius_change,
-            image_list=all_image_rules,
+            image_list=navigation_items,
             current_index=current_index,
         )
         self.wait_window(dialog)
@@ -5507,6 +5657,50 @@ class PlanDetailDialog(ctk.CTkToplevel):
             suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
             logger.info(f"키 액션 추가{suffix}: {key_text}")
 
+    def _add_random_key_action(self):
+        """랜덤키 입력 액션 추가"""
+        import uuid
+        from ..player.random_key_sequence import format_random_key_sequences_summary
+
+        dialog = RandomKeySequenceDialog(self)
+        result = dialog.get_result()
+        if not result:
+            return
+        sequences, step_delay = result
+        new_rule = AutomationRule(
+            rule_id=f"rule_{uuid.uuid4().hex[:8]}",
+            action_type="random_key_sequence",
+            description="랜덤키 입력",
+            random_key_sequences=sequences,
+            random_key_step_delay=step_delay,
+            wait_after=0.5,
+        )
+        parent_rule = self._add_rule_to_current_parent(new_rule)
+        self._modified = True
+        self._refresh_after_rule_added(parent_rule, new_rule)
+        suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+        logger.info(f"랜덤키 액션 추가{suffix}: {format_random_key_sequences_summary(sequences)}")
+
+    def _edit_random_key_action(self, rule: AutomationRule):
+        """랜덤키 입력 액션 수정"""
+        dialog = RandomKeySequenceDialog(
+            self,
+            sequences=getattr(rule, "random_key_sequences", []),
+            step_delay=getattr(rule, "random_key_step_delay", 0.8),
+        )
+        result = dialog.get_result()
+        if not result:
+            return
+        sequences, step_delay = result
+        rule.random_key_sequences = sequences
+        rule.random_key_step_delay = step_delay
+        if not getattr(rule, "description", ""):
+            rule.description = "랜덤키 입력"
+        self._modified = True
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
+        logger.info(f"랜덤키 액션 수정: {format_random_key_sequences_summary(sequences)}")
+
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
         import uuid
@@ -5556,10 +5750,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 이미지 파일 선택
         image_path = filedialog.askopenfilename(
             title="클릭할 이미지 선택",
-            filetypes=[
-                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
-                ("모든 파일", "*.*"),
-            ],
+            filetypes=TEMPLATE_MEDIA_FILETYPES,
             initialdir=str(DATA_DIR / "templates"),
         )
 
@@ -5567,6 +5758,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return
 
         try:
+            if Path(image_path).suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+                from tkinter import messagebox
+                messagebox.showwarning("알림", "이미지 파일만 선택하세요.")
+                return
+
             # templates 폴더에 이미지 복사
             templates_dir = DATA_DIR / "templates"
             templates_dir.mkdir(parents=True, exist_ok=True)
@@ -5590,6 +5786,23 @@ class PlanDetailDialog(ctk.CTkToplevel):
             from tkinter import messagebox
             logger.error(f"이미지 액션 추가 실패: {e}")
             messagebox.showerror("오류", f"이미지 추가 실패: {e}")
+
+    def _add_video_action(self):
+        """동영상 템플릿을 선택해서 영상 편집/크롭 창으로 연다."""
+        from tkinter import filedialog
+
+        video_path = filedialog.askopenfilename(
+            title="편집할 동영상 선택",
+            filetypes=VIDEO_MEDIA_FILETYPES,
+            initialdir=str(DATA_DIR / "templates"),
+        )
+        if not video_path:
+            return
+        if not is_video_media_path(video_path):
+            from tkinter import messagebox
+            messagebox.showwarning("알림", "동영상 파일만 선택하세요.")
+            return
+        _open_template_video_editor(self, video_path)
 
     def _add_screenshot_action(self):
         """스크린샷 찍어서 이미지 액션으로 추가"""
@@ -26345,14 +26558,14 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
 
-        # 세번째 줄: 스크린샷 파일, 하위종목해체
+        # 세번째 줄: 동영상 파일, 하위종목해체
         btn_row3 = ctk.CTkFrame(btn_container, fg_color="transparent")
         btn_row3.pack(fill="x", pady=(3, 0))
 
         ctk.CTkButton(
             btn_row3,
-            text="📷 스크린샷",
-            command=self._add_screenshot_action,
+            text="🎬 동영상 입력",
+            command=self._add_video_action,
             width=110,
             height=28,
             fg_color=COLORS["accent_blue"],
@@ -26397,6 +26610,22 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             height=28,
             fg_color=COLORS["success"],
             hover_color=COLORS["green_hover"],
+            font=ctk.CTkFont(size=12),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        ).pack(side="left")
+
+        # 다섯번째 줄: 랜덤키 입력
+        btn_row5 = ctk.CTkFrame(btn_container, fg_color="transparent")
+        btn_row5.pack(fill="x", pady=(3, 0))
+
+        ctk.CTkButton(
+            btn_row5,
+            text="🎲 랜덤키입력",
+            command=self._add_random_key_action,
+            width=110,
+            height=28,
+            fg_color=COLORS["accent_orange"],
+            hover_color=COLORS["confidence_amber_hover"],
             font=ctk.CTkFont(size=12),
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
@@ -26622,6 +26851,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             details.append(f"({action.x},{action.y})")
         if action.keys:
             details.append("+".join(action.keys).upper())
+        if getattr(action, "action_type", None) == "random_key_sequence":
+            details.append(format_random_key_sequences_summary(getattr(action, "random_key_sequences", [])))
         if action.text:
             details.append(truncate_ui_text(action.text, 22))
         if getattr(action, "target_image", None):
@@ -26644,6 +26875,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             details.append(text_preview if compact else f'"{text_preview}"')
         if action.keys:
             details.append("+".join(action.keys).upper() if compact else f"[{' + '.join(action.keys).upper()}]")
+        if getattr(action, "action_type", None) == "random_key_sequence":
+            details.append(
+                truncate_ui_text(format_random_key_sequences_summary(getattr(action, "random_key_sequences", [])), 42)
+                if compact
+                else format_random_key_sequences_summary(getattr(action, "random_key_sequences", []))
+            )
         if getattr(action, "target_image", None):
             if compact:
                 details.append("이미지")
@@ -27292,6 +27529,20 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             command=lambda a=action: self._delete_action(a),
         ).pack(side="right", padx=(4, 0))
 
+        if action.action_type == "random_key_sequence":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=self._font(12, "bold"),
+                fg_color=COLORS["accent_orange"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_primary"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda a=action: self._edit_random_key_action(a),
+            ).pack(side="right", padx=(4, 0))
+
         # 스킵 모드 버튼 (S) - 이미지 못찾으면 스킵
         is_skip_action = getattr(action, 'skip_on_not_found', False)
         skip_btn_action = ctk.CTkButton(
@@ -27505,7 +27756,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             except (IOError, OSError, ValueError):
                 pass
 
-        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "scroll": "📜", "drag": "↔", "wait": "⏳", "wait_for_image": "🔍", "game_mode": "🎮"}
+        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "key_press": "⌨", "random_key_sequence": "🎲", "scroll": "📜", "drag": "↔", "wait": "⏳", "wait_for_image": "🔍", "game_mode": "🎮"}
         ctk.CTkLabel(
             parent,
             text=icons.get(action.action_type, "📋"),
@@ -27537,9 +27788,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         """이미지 편집기 열기"""
         # 모든 이미지 액션 수집
         all_image_actions = self._collect_all_image_actions()
+        action_image_paths = [getattr(item, "target_image", None) for item in all_image_actions]
+        navigation_items = list(all_image_actions) + _template_video_navigation_items(action_image_paths)
         current_index = -1
-        for i, a in enumerate(all_image_actions):
-            if a.action_id == action.action_id:
+        for i, a in enumerate(navigation_items):
+            if getattr(a, "action_id", None) == action.action_id:
                 current_index = i
                 break
 
@@ -27599,7 +27852,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             on_change=on_change,
             rule=action,
             on_search_radius_change=on_search_radius_change,
-            image_list=all_image_actions,
+            image_list=navigation_items,
             current_index=current_index,
         )
         self.wait_window(dialog)
@@ -28423,6 +28676,50 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
             logger.info(f"키 액션 추가{suffix}: {key_text}")
 
+    def _add_random_key_action(self):
+        """랜덤키 입력 액션 추가"""
+        from ..database.models import Action
+        from ..player.random_key_sequence import format_random_key_sequences_summary
+
+        dialog = RandomKeySequenceDialog(self)
+        result = dialog.get_result()
+        if not result:
+            return
+        sequences, step_delay = result
+        new_action = Action(
+            action_type="random_key_sequence",
+            description="랜덤키 입력",
+            random_key_sequences=sequences,
+            random_key_step_delay=step_delay,
+            timestamp=0,
+            wait_after=0.5,
+        )
+        parent_action = self._add_action_to_current_parent(new_action)
+        self._modified = True
+        self._refresh_after_action_added(parent_action, new_action)
+        suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+        logger.info(f"랜덤키 액션 추가{suffix}: {format_random_key_sequences_summary(sequences)}")
+
+    def _edit_random_key_action(self, action: Action):
+        """랜덤키 입력 액션 수정"""
+        dialog = RandomKeySequenceDialog(
+            self,
+            sequences=getattr(action, "random_key_sequences", []),
+            step_delay=getattr(action, "random_key_step_delay", 0.8),
+        )
+        result = dialog.get_result()
+        if not result:
+            return
+        sequences, step_delay = result
+        action.random_key_sequences = sequences
+        action.random_key_step_delay = step_delay
+        if not getattr(action, "description", ""):
+            action.description = "랜덤키 입력"
+        self._modified = True
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
+        logger.info(f"랜덤키 액션 수정: {format_random_key_sequences_summary(sequences)}")
+
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
         from tkinter import simpledialog
@@ -28473,10 +28770,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         # 이미지 파일 선택
         image_path = filedialog.askopenfilename(
             title="클릭할 이미지 선택",
-            filetypes=[
-                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif"),
-                ("모든 파일", "*.*"),
-            ],
+            filetypes=TEMPLATE_MEDIA_FILETYPES,
             initialdir=str(DATA_DIR / "templates"),
         )
 
@@ -28484,6 +28778,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return
 
         try:
+            if Path(image_path).suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+                from tkinter import messagebox
+                messagebox.showwarning("알림", "이미지 파일만 선택하세요.")
+                return
+
             # templates 폴더에 이미지 복사
             templates_dir = DATA_DIR / "templates"
             templates_dir.mkdir(parents=True, exist_ok=True)
@@ -28507,6 +28806,23 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             from tkinter import messagebox
             logger.error(f"이미지 액션 추가 실패: {e}")
             messagebox.showerror("오류", f"이미지 추가 실패: {e}")
+
+    def _add_video_action(self):
+        """동영상 템플릿을 선택해서 영상 편집/크롭 창으로 연다."""
+        from tkinter import filedialog
+
+        video_path = filedialog.askopenfilename(
+            title="편집할 동영상 선택",
+            filetypes=VIDEO_MEDIA_FILETYPES,
+            initialdir=str(DATA_DIR / "templates"),
+        )
+        if not video_path:
+            return
+        if not is_video_media_path(video_path):
+            from tkinter import messagebox
+            messagebox.showwarning("알림", "동영상 파일만 선택하세요.")
+            return
+        _open_template_video_editor(self, video_path)
 
     def _add_screenshot_action(self):
         """스크린샷 찍어서 이미지 액션으로 추가"""
@@ -30463,6 +30779,7 @@ class PlayerView(BaseView):
             "drag",
             "scroll",
             "key_press",
+            "random_key_sequence",
             "wait",
             "game_mode",
         }:
@@ -30478,6 +30795,8 @@ class PlayerView(BaseView):
             action_text=getattr(action, "text", None),
             action_keys=list(getattr(action, "keys", None) or []),
             action_key_events=list(getattr(action, "key_events", None) or []),
+            random_key_sequences=list(getattr(action, "random_key_sequences", None) or []),
+            random_key_step_delay=getattr(action, "random_key_step_delay", 0.8),
             drag_to_x=getattr(action, "drag_to_x", None),
             drag_to_y=getattr(action, "drag_to_y", None),
             drag_duration=getattr(action, "drag_duration", None),

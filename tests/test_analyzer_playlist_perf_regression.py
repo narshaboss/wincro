@@ -329,7 +329,7 @@ def test_image_crop_dialog_navigation_keeps_current_rule_settings_connected():
 
     assert "if self._rule is not None and hasattr(self._rule, 'target_images')" in setup_method
     assert "def _refresh_rule_setting_controls(self):" in text
-    assert "new_rule = item" in nav_method
+    assert "new_image_path, new_rule = self._navigation_media_from_item(item)" in nav_method
     assert "self._refresh_rule_setting_controls()" in nav_method
     assert "old_path = self._set_current_rule_image(str(new_path))" in crop_method
     assert "self._invoke_image_callback(self._on_crop, str(new_path), self._rule, old_path)" in crop_method
@@ -349,7 +349,8 @@ def test_analyzer_result_image_editor_passes_rule_list_and_setting_callbacks():
     assert "collect(self._plan.initial_rules)" in method
     assert "collect(self._plan.monitoring_rules)" in method
     assert "rule=rule" in method
-    assert "image_list=all_image_rules" in method
+    assert "navigation_items = list(all_image_rules)" in method
+    assert "image_list=navigation_items" in method
     assert "current_index=current_index" in method
     assert "on_search_radius_change=on_search_radius_change" in method
     assert "for rule_id in changed_rule_ids:" in method

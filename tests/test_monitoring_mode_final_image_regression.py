@@ -431,6 +431,7 @@ def test_monitoring_route_image_click_reuses_detected_location(tmp_path, monkeyp
             {
                 "image": route_image,
                 "goto_index": 0,
+                "pre_jump_recheck": False,
                 "monitor_actions": [
                     {
                         "type": "이미지 클릭",
@@ -476,6 +477,76 @@ def test_monitoring_route_image_click_reuses_detected_location(tmp_path, monkeyp
     assert result.monitoring_jump_rule_id == "target"
     assert route_searches == 1
     assert clicked == [("move", 111, 222), ("double_click",)]
+
+
+def test_monitor_action_image_click_waits_like_normal_image_action(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    image_path = _touch(tmp_path / "target.png")
+    searches = 0
+    clicked = []
+
+    def fake_find(image_path_arg, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        nonlocal searches
+        searches += 1
+        return (44, 55, 0.91) if searches >= 3 else None
+
+    class FakeInputController:
+        def move_to(self, x, y, duration=0):
+            clicked.append(("move", x, y))
+            return True
+
+        def click(self):
+            clicked.append(("click",))
+            return True
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr("src.player.rule_executor.get_input_controller", lambda: FakeInputController())
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: False)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+    monkeypatch.setattr(executor, "_check_user_intervention", lambda: False)
+
+    result = executor._execute_monitor_action(
+        {
+            "type": "이미지 클릭",
+            "image": image_path,
+            "click_type": "click",
+            "wait_after": 0,
+        },
+        confidence=0.8,
+    )
+
+    assert result == "이미지 클릭: target.png"
+    assert searches == 3
+    assert clicked == [("move", 44, 55), ("click",)]
+
+
+def test_monitor_action_image_click_skip_on_not_found_returns_success_message(tmp_path, monkeypatch):
+    executor = RuleExecutor()
+    image_path = _touch(tmp_path / "missing.png")
+    searches = []
+
+    def fake_find(image_path_arg, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        searches.append(Path(image_path_arg).name)
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: False)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+    monkeypatch.setattr(executor, "_check_user_intervention", lambda: False)
+
+    result = executor._execute_monitor_action(
+        {
+            "type": "이미지 클릭",
+            "image": image_path,
+            "click_type": "click",
+            "skip_on_not_found": True,
+            "wait_after": 0,
+        },
+        confidence=0.8,
+    )
+
+    assert result.startswith("스킵됨")
+    assert searches == ["missing.png"]
 
 
 def test_monitoring_route_jump_disabled_runs_actions_without_target_jump(tmp_path, monkeypatch):
@@ -597,6 +668,7 @@ def test_monitoring_route_can_jump_when_condition_image_is_visible(tmp_path, mon
             {
                 "image": route_image,
                 "goto_index": 0,
+                "pre_jump_recheck": False,
                 "monitor_actions": [monitor_action],
                 "condition_image": condition_image,
                 "condition_confidence": 0.81,
@@ -643,6 +715,91 @@ def test_monitoring_route_can_jump_when_condition_image_is_visible(tmp_path, mon
     assert "condition_decision=jump" in caplog.text
 
 
+def test_monitoring_pre_jump_recheck_blocks_jump_when_route_image_disappears(tmp_path, monkeypatch, caplog):
+    executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    route_target = AutomationRule(action_type="hotkey", description="target")
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "image": route_image,
+                "goto_index": 0,
+                "pre_jump_recheck": True,
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[route_target])
+    route_checks = 0
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        nonlocal route_checks
+        name = Path(image_path).name
+        if name == "final.png":
+            return None
+        if name == "route.png":
+            route_checks += 1
+            return (11, 22, 0.91) if route_checks == 1 else None
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: True)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="6")
+
+    assert result.success is False
+    assert route_checks == 2
+    assert "점프전 재확인 실패" in caplog.text
+    assert "pre_jump_recheck_result=not_found" in caplog.text
+    assert "pre_jump_recheck_decision=wait" in caplog.text
+
+
+def test_monitoring_pre_jump_recheck_allows_jump_when_route_image_still_visible(tmp_path, monkeypatch, caplog):
+    executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    route_target = AutomationRule(action_type="hotkey", description="target")
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "image": route_image,
+                "goto_index": 0,
+                "pre_jump_recheck": True,
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[route_target])
+    checks = []
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        name = Path(image_path).name
+        checks.append(name)
+        if name == "final.png":
+            return None
+        if name == "route.png":
+            return (11, 22, 0.91)
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="6")
+
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
+    assert checks == ["final.png", "route.png", "route.png"]
+    assert "점프전 재확인 통과" in caplog.text
+    assert "pre_jump_recheck_result=visible" in caplog.text
+    assert "pre_jump_recheck_decision=jump" in caplog.text
+
+
 def test_monitoring_route_priority_follows_user_order_not_target_index(tmp_path, monkeypatch):
     executor = RuleExecutor()
     final_image = _touch(tmp_path / "final.png")
@@ -660,10 +817,12 @@ def test_monitoring_route_priority_follows_user_order_not_target_index(tmp_path,
             {
                 "image": first_route_image,
                 "goto_index": 1,
+                "pre_jump_recheck": False,
             },
             {
                 "image": second_route_image,
                 "goto_index": 0,
+                "pre_jump_recheck": False,
             },
         ],
     )
@@ -716,6 +875,7 @@ def test_monitoring_route_supports_multiple_images_with_priority(tmp_path, monke
                     {"image": fast_image, "priority": 1},
                 ],
                 "goto_index": 0,
+                "pre_jump_recheck": False,
                 "monitor_actions": [monitor_action],
             }
         ],
@@ -764,10 +924,12 @@ def test_monitoring_watch_order_has_priority_over_inner_image_priority(tmp_path,
             {
                 "images": [{"image": first_watch_image, "priority": 9}],
                 "goto_index": 0,
+                "pre_jump_recheck": False,
             },
             {
                 "images": [{"image": second_watch_image, "priority": 1}],
                 "goto_index": 1,
+                "pre_jump_recheck": False,
             },
         ],
     )
@@ -816,6 +978,7 @@ def test_monitoring_multi_image_uses_image_specific_options(tmp_path, monkeypatc
                 "confidence": 0.72,
                 "search_region": [9, 9, 99, 99],
                 "goto_index": 0,
+                "pre_jump_recheck": False,
             }
         ],
     )
@@ -856,6 +1019,7 @@ def test_monitoring_route_can_jump_to_child_action_by_rule_id(tmp_path, monkeypa
                 "image": route_image,
                 "goto_index": 1,
                 "goto_rule_id": "child_target",
+                "pre_jump_recheck": False,
             }
         ],
     )

@@ -134,8 +134,13 @@ def test_action_row_buttons_are_reserved_before_long_text_labels():
 def test_image_crop_dialog_splits_primary_and_option_buttons():
     text = _read(ANALYZER_VIEW)
 
+    assert "bottom_panel = ctk.CTkFrame(" in text
+    assert "name_frame.grid_columnconfigure(1, weight=1)" in text
     assert "primary_btn_row = ctk.CTkFrame(btn_frame" in text
     assert "option_btn_row = ctk.CTkFrame(btn_frame" in text
+    assert "primary_btn_row.pack(anchor=\"center\", pady=(0, 6))" in text
+    assert "option_btn_row.pack(anchor=\"center\")" in text
+    assert "self._save_btn.pack(side=\"left\", padx=5)" in text
     assert "self._save_btn = ctk.CTkButton(\n            primary_btn_row," in text
     assert "self._alt_image_btn = ctk.CTkButton(\n                option_btn_row," in text
     assert "self._move_mouse_cb = ctk.CTkCheckBox(\n                option_btn_row," in text

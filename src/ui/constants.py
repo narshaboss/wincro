@@ -54,6 +54,7 @@ ACTION_NAMES = {
     "type": "텍스트 입력",
     "hotkey": "단축키",
     "key_press": "키 입력",
+    "random_key_sequence": "랜덤키 입력",
     "scroll": "스크롤",
     "drag": "드래그",
     "wait": "대기",
@@ -69,6 +70,7 @@ ACTION_NAMES_SHORT = {
     "type": "입력",
     "hotkey": "단축키",
     "key_press": "키",
+    "random_key_sequence": "랜덤키",
     "scroll": "스크롤",
     "drag": "드래그",
     "game_mode": "특화모드",
@@ -82,6 +84,7 @@ ACTION_COLORS = {
     "type": COLORS["success"],
     "hotkey": COLORS["accent_orange"],
     "key_press": COLORS["accent_orange"],
+    "random_key_sequence": COLORS["accent_orange"],
     "scroll": COLORS["scroll_purple"],
     "drag": COLORS["warning"],
     "wait": COLORS["text_muted"],
@@ -113,6 +116,14 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
     elif action_type in ["hotkey", "key_press"]:
         keys = getattr(action, 'action_keys', None) or getattr(action, 'keys', []) or []
         ma = {"type": "키 입력", "keys": keys}
+
+    elif action_type == "random_key_sequence":
+        sequences = getattr(action, "random_key_sequences", []) or []
+        ma = {
+            "type": "랜덤키 입력",
+            "random_key_sequences": sequences,
+            "random_key_step_delay": getattr(action, "random_key_step_delay", 0.8),
+        }
 
     elif action_type in ["click", "double_click", "right_click"]:
         click_type_map = {
@@ -183,8 +194,9 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
         return None
 
     # 공통 속성 복사
-    for attr in ['wait_after', 'wait_random_range', 'repeat_count',
-                 'skip', 'name', 'search_region', 'confidence', 'alternate_mouse_route',
+    for attr in ['wait_after', 'wait_random', 'wait_random_range', 'repeat_count',
+                 'repeat_delay', 'repeat_delay_random', 'repeat_delay_random_range',
+                 'skip', 'skip_on_not_found', 'name', 'search_region', 'confidence', 'alternate_mouse_route',
                  'click_until_image_disappears', 'click_until_image_disappears_delay',
                  'verify_image_color', 'verify_image_brightness']:
         val = getattr(action, attr, None)

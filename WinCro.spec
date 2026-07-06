@@ -2,8 +2,11 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [
+    ('icon.ico', '.'),
+    ('icon_preview.png', '.'),
     ('src/i18n', 'src/i18n'),
     ('src/ui/ctk_white_gold_theme.json', 'src/ui'),
+    ('src/ui/assets', 'src/ui/assets'),
     ('arduino', 'arduino'),
     ('data', 'data'),
 ]

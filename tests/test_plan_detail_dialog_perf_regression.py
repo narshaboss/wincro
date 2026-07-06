@@ -1861,7 +1861,9 @@ def test_detail_dialog_thumbnails_use_bounded_worker_queue():
         "def _collect_all_image_actions(self) -> list:",
     )
 
-    assert "from .analyzer_view import ImageCropDialog, submit_thumbnail_task" in text
+    assert "from .analyzer_view import (" in text
+    assert "ImageCropDialog" in text
+    assert "submit_thumbnail_task" in text
     assert "submit_thumbnail_task(_load_thumb)" in plan_method
     assert "submit_thumbnail_task(_load_thumb)" in sequence_method
     assert "threading.Thread(target=_load_thumb" not in plan_method
@@ -2633,10 +2635,10 @@ def test_sequence_add_button_resolves_selected_parent_by_id_after_refresh():
 
 def test_action_add_buttons_route_through_selected_parent_helpers():
     text = _read_text()
-    assert text.count("self._add_rule_to_current_parent(new_rule)") == 5
-    assert text.count("self._add_action_to_current_parent(new_action)") == 5
-    assert text.count("self._refresh_after_rule_added(parent_rule, new_rule)") == 5
-    assert text.count("self._refresh_after_action_added(parent_action, new_action)") == 5
+    assert text.count("self._add_rule_to_current_parent(new_rule)") == 6
+    assert text.count("self._add_action_to_current_parent(new_action)") == 6
+    assert text.count("self._refresh_after_rule_added(parent_rule, new_rule)") == 6
+    assert text.count("self._refresh_after_action_added(parent_action, new_action)") == 6
 
 
 def test_paste_uses_local_insert_refresh_helpers():

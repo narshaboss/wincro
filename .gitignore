@@ -36,3 +36,6 @@ data/digit_templates/debug_region_*.png
 data/maps/*.bak*
 data/maps/*.backup.json
 data/plans/*.broken_backup_*
+
+# Local Parsec control mapping
+tools/parsec_peer_map.json

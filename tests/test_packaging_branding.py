@@ -15,6 +15,17 @@ def test_pyinstaller_spec_uses_korean_fixed_branding_without_dwm_copy():
     assert "v$version 업무지원도구" in workflow
 
 
+def test_release_build_embeds_and_bundles_wincro_icon_assets():
+    spec = (ROOT / "WinCro.spec").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "build-release.yml").read_text(encoding="utf-8")
+
+    assert "icon='icon.ico'" in spec
+    assert "('icon.ico', '.')" in spec
+    assert "('icon_preview.png', '.')" in spec
+    assert "pyinstaller WinCro.spec --clean --noconfirm" in workflow
+    assert 'Compress-Archive -Path (Join-Path $appDir.FullName "*")' in workflow
+
+
 def test_version_resource_uses_korean_fixed_branding():
     version_info = (ROOT / "version_info.txt").read_text(encoding="utf-8")
 

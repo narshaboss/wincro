@@ -13,6 +13,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -82,6 +84,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -146,6 +150,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -212,6 +218,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -274,6 +282,8 @@
             "enter"
           ],
           "action_key_events": [],
+          "random_key_sequences": [],
+          "random_key_step_delay": 0.08,
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -334,28 +344,506 @@
       "monitoring_watches": []
     },
     {
-      "rule_id": "rule_f5043de1",
+      "rule_id": "rule_51916030",
       "rule_type": "fixed_sequence",
-      "description": "",
-      "action_type": "hotkey",
+      "description": "다이쇼 입장",
+      "action_type": "random_key_sequence",
       "action_x": null,
       "action_y": null,
       "action_text": null,
-      "action_keys": [
-        "z"
+      "action_keys": [],
+      "action_key_events": [],
+      "random_key_sequences": [
+        [
+          {
+            "keys": [
+              "z"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "z",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "z",
+                "delay": 0.1588
+              }
+            ],
+            "delay_after": 1.1,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "pageup"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "pageup",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "pageup",
+                "delay": 0.1331
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "down"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "down",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "down",
+                "delay": 0.0593
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "right"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "right",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "right",
+                "delay": 0.1159
+              }
+            ],
+            "delay_after": 1.3,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1273
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1386
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          }
+        ],
+        [
+          {
+            "keys": [
+              "z"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "z",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "z",
+                "delay": 0.115
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "pageup"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "pageup",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "pageup",
+                "delay": 0.0669
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "down"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "down",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "down",
+                "delay": 0.1471
+              }
+            ],
+            "delay_after": 1.2,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1543
+              }
+            ],
+            "delay_after": 1.3,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1482
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          }
+        ],
+        [
+          {
+            "keys": [
+              "z"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "z",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "z",
+                "delay": 0.1602
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "pageup"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "pageup",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "pageup",
+                "delay": 0.0099
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "down"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "down",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "down",
+                "delay": 0.1541
+              }
+            ],
+            "delay_after": 1.3,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "left"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "left",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "left",
+                "delay": 0.0856
+              }
+            ],
+            "delay_after": 1.4,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "left"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "left",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "left",
+                "delay": 0.1812
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1519
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1531
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          }
+        ],
+        [
+          {
+            "keys": [
+              "z"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "z",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "z",
+                "delay": 0.0172
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "pageup"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "pageup",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "pageup",
+                "delay": 0.0596
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "down"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "down",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "down",
+                "delay": 0.1639
+              }
+            ],
+            "delay_after": 1.2,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "left"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "left",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "left",
+                "delay": 0.1429
+              }
+            ],
+            "delay_after": 1.0,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.0362
+              }
+            ],
+            "delay_after": 1.4,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          },
+          {
+            "keys": [
+              "enter"
+            ],
+            "key_events": [
+              {
+                "event": "down",
+                "key": "enter",
+                "delay": 0.0
+              },
+              {
+                "event": "up",
+                "key": "enter",
+                "delay": 0.1207
+              }
+            ],
+            "delay_after": 0.8,
+            "delay_after_random": true,
+            "delay_after_random_range": 0.3
+          }
+        ]
       ],
-      "action_key_events": [
-        {
-          "event": "down",
-          "key": "z",
-          "delay": 0.0
-        },
-        {
-          "event": "up",
-          "key": "z",
-          "delay": 0.135
-        }
-      ],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -373,7 +861,7 @@
       "move_mouse_before_search": false,
       "alternate_mouse_route": false,
       "click_until_image_disappears": false,
-      "click_until_image_disappears_delay": 1.1,
+      "click_until_image_disappears_delay": 0.5,
       "wait_after": 1.5,
       "wait_random": true,
       "enabled": true,
@@ -399,322 +887,13 @@
       "trigger_missing_rewind_key_repeat_delay": 0.5,
       "trigger_missing_rewind_key_repeat_delay_random": false,
       "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-      "repeat_count": 2,
-      "repeat_delay": 1.1,
-      "repeat_delay_random": true,
+      "repeat_count": 1,
+      "repeat_delay": 0.5,
+      "repeat_delay_random": false,
       "repeat_delay_random_range": 0.3,
       "timestamp": 0.0,
       "parent_id": null,
-      "children": [
-        {
-          "rule_id": "rule_ccb9b214",
-          "rule_type": "fixed_sequence",
-          "description": "",
-          "action_type": "hotkey",
-          "action_x": null,
-          "action_y": null,
-          "action_text": null,
-          "action_keys": [
-            "pageup"
-          ],
-          "action_key_events": [
-            {
-              "event": "down",
-              "key": "pageup",
-              "delay": 0.0
-            },
-            {
-              "event": "up",
-              "key": "pageup",
-              "delay": 0.0646
-            }
-          ],
-          "drag_to_x": null,
-          "drag_to_y": null,
-          "drag_duration": null,
-          "scroll_amount": 0,
-          "target_image": null,
-          "target_images": [],
-          "trigger_image": null,
-          "trigger_x": null,
-          "trigger_y": null,
-          "confidence": 0.65,
-          "verify_image_color": false,
-          "verify_image_brightness": false,
-          "search_radius": 0,
-          "search_region": null,
-          "move_mouse_before_search": false,
-          "alternate_mouse_route": false,
-          "click_until_image_disappears": false,
-          "click_until_image_disappears_delay": 1.1,
-          "wait_after": 0.8,
-          "wait_random": true,
-          "enabled": true,
-          "wait_random_range": 0.3,
-          "typing_random": false,
-          "typing_delay": 0.1,
-          "typing_delay_range": 0.05,
-          "timeout": 30.0,
-          "skip_on_not_found": false,
-          "stop_playlist_on_trigger_missing": false,
-          "trigger_missing_keys": [],
-          "trigger_missing_key_repeat_count": 1,
-          "trigger_missing_key_repeat_delay": 0.5,
-          "trigger_missing_key_repeat_delay_random": false,
-          "trigger_missing_key_repeat_delay_random_range": 0.3,
-          "rewind_previous_on_trigger_missing": false,
-          "trigger_missing_rewind_count": 1,
-          "trigger_missing_rewind_delay": 0.5,
-          "trigger_missing_rewind_delay_random": false,
-          "trigger_missing_rewind_delay_random_range": 0.3,
-          "trigger_missing_rewind_keys": [],
-          "trigger_missing_rewind_key_repeat_count": 1,
-          "trigger_missing_rewind_key_repeat_delay": 0.5,
-          "trigger_missing_rewind_key_repeat_delay_random": false,
-          "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-          "repeat_count": 2,
-          "repeat_delay": 1.1,
-          "repeat_delay_random": true,
-          "repeat_delay_random_range": 0.3,
-          "timestamp": 0.0,
-          "parent_id": "rule_f5043de1",
-          "children": [],
-          "is_monitoring_mode": false,
-          "monitoring_final_image": null,
-          "monitoring_watches": []
-        },
-        {
-          "rule_id": "rule_88f126f3",
-          "rule_type": "fixed_sequence",
-          "description": "",
-          "action_type": "hotkey",
-          "action_x": null,
-          "action_y": null,
-          "action_text": null,
-          "action_keys": [
-            "down"
-          ],
-          "action_key_events": [
-            {
-              "event": "down",
-              "key": "down",
-              "delay": 0.0
-            },
-            {
-              "event": "up",
-              "key": "down",
-              "delay": 0.0962
-            }
-          ],
-          "drag_to_x": null,
-          "drag_to_y": null,
-          "drag_duration": null,
-          "scroll_amount": 0,
-          "target_image": null,
-          "target_images": [],
-          "trigger_image": null,
-          "trigger_x": null,
-          "trigger_y": null,
-          "confidence": 0.65,
-          "verify_image_color": false,
-          "verify_image_brightness": false,
-          "search_radius": 0,
-          "search_region": null,
-          "move_mouse_before_search": false,
-          "alternate_mouse_route": false,
-          "click_until_image_disappears": false,
-          "click_until_image_disappears_delay": 1.2,
-          "wait_after": 1.0,
-          "wait_random": true,
-          "enabled": true,
-          "wait_random_range": 0.3,
-          "typing_random": false,
-          "typing_delay": 0.1,
-          "typing_delay_range": 0.05,
-          "timeout": 30.0,
-          "skip_on_not_found": false,
-          "stop_playlist_on_trigger_missing": false,
-          "trigger_missing_keys": [],
-          "trigger_missing_key_repeat_count": 1,
-          "trigger_missing_key_repeat_delay": 0.5,
-          "trigger_missing_key_repeat_delay_random": false,
-          "trigger_missing_key_repeat_delay_random_range": 0.3,
-          "rewind_previous_on_trigger_missing": false,
-          "trigger_missing_rewind_count": 1,
-          "trigger_missing_rewind_delay": 0.5,
-          "trigger_missing_rewind_delay_random": false,
-          "trigger_missing_rewind_delay_random_range": 0.3,
-          "trigger_missing_rewind_keys": [],
-          "trigger_missing_rewind_key_repeat_count": 1,
-          "trigger_missing_rewind_key_repeat_delay": 0.5,
-          "trigger_missing_rewind_key_repeat_delay_random": false,
-          "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-          "repeat_count": 1,
-          "repeat_delay": 1.2,
-          "repeat_delay_random": true,
-          "repeat_delay_random_range": 0.3,
-          "timestamp": 0.0,
-          "parent_id": "rule_f5043de1",
-          "children": [],
-          "is_monitoring_mode": false,
-          "monitoring_final_image": null,
-          "monitoring_watches": []
-        },
-        {
-          "rule_id": "rule_2b671d57",
-          "rule_type": "fixed_sequence",
-          "description": "",
-          "action_type": "hotkey",
-          "action_x": null,
-          "action_y": null,
-          "action_text": null,
-          "action_keys": [
-            "left"
-          ],
-          "action_key_events": [
-            {
-              "event": "down",
-              "key": "left",
-              "delay": 0.0
-            },
-            {
-              "event": "up",
-              "key": "left",
-              "delay": 0.1295
-            }
-          ],
-          "drag_to_x": null,
-          "drag_to_y": null,
-          "drag_duration": null,
-          "scroll_amount": 0,
-          "target_image": null,
-          "target_images": [],
-          "trigger_image": null,
-          "trigger_x": null,
-          "trigger_y": null,
-          "confidence": 0.65,
-          "verify_image_color": false,
-          "verify_image_brightness": false,
-          "search_radius": 0,
-          "search_region": null,
-          "move_mouse_before_search": false,
-          "alternate_mouse_route": false,
-          "click_until_image_disappears": false,
-          "click_until_image_disappears_delay": 1.2,
-          "wait_after": 1.0,
-          "wait_random": true,
-          "enabled": true,
-          "wait_random_range": 0.3,
-          "typing_random": false,
-          "typing_delay": 0.1,
-          "typing_delay_range": 0.05,
-          "timeout": 30.0,
-          "skip_on_not_found": false,
-          "stop_playlist_on_trigger_missing": false,
-          "trigger_missing_keys": [],
-          "trigger_missing_key_repeat_count": 1,
-          "trigger_missing_key_repeat_delay": 0.5,
-          "trigger_missing_key_repeat_delay_random": false,
-          "trigger_missing_key_repeat_delay_random_range": 0.3,
-          "rewind_previous_on_trigger_missing": false,
-          "trigger_missing_rewind_count": 1,
-          "trigger_missing_rewind_delay": 0.5,
-          "trigger_missing_rewind_delay_random": false,
-          "trigger_missing_rewind_delay_random_range": 0.3,
-          "trigger_missing_rewind_keys": [],
-          "trigger_missing_rewind_key_repeat_count": 1,
-          "trigger_missing_rewind_key_repeat_delay": 0.5,
-          "trigger_missing_rewind_key_repeat_delay_random": false,
-          "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-          "repeat_count": 2,
-          "repeat_delay": 1.2,
-          "repeat_delay_random": true,
-          "repeat_delay_random_range": 0.3,
-          "timestamp": 0.0,
-          "parent_id": "rule_f5043de1",
-          "children": [],
-          "is_monitoring_mode": false,
-          "monitoring_final_image": null,
-          "monitoring_watches": []
-        },
-        {
-          "rule_id": "rule_1f9bab3e",
-          "rule_type": "fixed_sequence",
-          "description": "",
-          "action_type": "hotkey",
-          "action_x": null,
-          "action_y": null,
-          "action_text": null,
-          "action_keys": [
-            "enter"
-          ],
-          "action_key_events": [
-            {
-              "event": "down",
-              "key": "enter",
-              "delay": 0.0
-            },
-            {
-              "event": "up",
-              "key": "enter",
-              "delay": 0.0927
-            }
-          ],
-          "drag_to_x": null,
-          "drag_to_y": null,
-          "drag_duration": null,
-          "scroll_amount": 0,
-          "target_image": null,
-          "target_images": [],
-          "trigger_image": null,
-          "trigger_x": null,
-          "trigger_y": null,
-          "confidence": 0.65,
-          "verify_image_color": false,
-          "verify_image_brightness": false,
-          "search_radius": 0,
-          "search_region": null,
-          "move_mouse_before_search": false,
-          "alternate_mouse_route": false,
-          "click_until_image_disappears": false,
-          "click_until_image_disappears_delay": 0.8,
-          "wait_after": 1.1,
-          "wait_random": true,
-          "enabled": true,
-          "wait_random_range": 0.3,
-          "typing_random": false,
-          "typing_delay": 0.1,
-          "typing_delay_range": 0.05,
-          "timeout": 30.0,
-          "skip_on_not_found": false,
-          "stop_playlist_on_trigger_missing": false,
-          "trigger_missing_keys": [],
-          "trigger_missing_key_repeat_count": 1,
-          "trigger_missing_key_repeat_delay": 0.5,
-          "trigger_missing_key_repeat_delay_random": false,
-          "trigger_missing_key_repeat_delay_random_range": 0.3,
-          "rewind_previous_on_trigger_missing": false,
-          "trigger_missing_rewind_count": 1,
-          "trigger_missing_rewind_delay": 0.5,
-          "trigger_missing_rewind_delay_random": false,
-          "trigger_missing_rewind_delay_random_range": 0.3,
-          "trigger_missing_rewind_keys": [],
-          "trigger_missing_rewind_key_repeat_count": 1,
-          "trigger_missing_rewind_key_repeat_delay": 0.5,
-          "trigger_missing_rewind_key_repeat_delay_random": false,
-          "trigger_missing_rewind_key_repeat_delay_random_range": 0.3,
-          "repeat_count": 4,
-          "repeat_delay": 0.8,
-          "repeat_delay_random": true,
-          "repeat_delay_random_range": 0.3,
-          "timestamp": 0.0,
-          "parent_id": "rule_f5043de1",
-          "children": [],
-          "is_monitoring_mode": false,
-          "monitoring_final_image": null,
-          "monitoring_watches": []
-        }
-      ],
+      "children": [],
       "is_monitoring_mode": false,
       "monitoring_final_image": null,
       "monitoring_watches": []
@@ -729,6 +908,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -793,6 +974,8 @@
             "9"
           ],
           "action_key_events": [],
+          "random_key_sequences": [],
+          "random_key_step_delay": 0.08,
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -862,6 +1045,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -929,6 +1114,8 @@
             "enter"
           ],
           "action_key_events": [],
+          "random_key_sequences": [],
+          "random_key_step_delay": 0.08,
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -1153,6 +1340,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -1219,6 +1408,8 @@
         "o"
       ],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,
@@ -1281,6 +1472,8 @@
             "enter"
           ],
           "action_key_events": [],
+          "random_key_sequences": [],
+          "random_key_step_delay": 0.08,
           "drag_to_x": null,
           "drag_to_y": null,
           "drag_duration": null,
@@ -1350,6 +1543,8 @@
       "action_text": null,
       "action_keys": [],
       "action_key_events": [],
+      "random_key_sequences": [],
+      "random_key_step_delay": 0.08,
       "drag_to_x": null,
       "drag_to_y": null,
       "drag_duration": null,

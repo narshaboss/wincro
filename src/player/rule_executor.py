@@ -81,6 +81,7 @@ from ..utils.logger import get_logger
 from ..utils.config import get_config
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, RuleType
 from ..analyzer.enhanced_matcher import get_enhanced_matcher
+from .random_key_sequence import execute_random_key_sequence
 
 logger = get_logger(__name__)
 
@@ -152,8 +153,17 @@ from collections import OrderedDict
 _template_cache: OrderedDict = OrderedDict()  # {image_path: (template_gray, h, w, mtime, template_bgr)}
 _template_cache_lock = threading.Lock()
 _MAX_TEMPLATE_CACHE = 50
+_video_template_cache: OrderedDict = OrderedDict()  # {video_path: (mtime, size, frames)}
+_video_template_cache_lock = threading.Lock()
+_MAX_VIDEO_TEMPLATE_CACHE = 16
+_MAX_VIDEO_TEMPLATE_FRAMES = 8
+_VIDEO_TEMPLATE_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 _IMAGE_COLOR_DELTA_MAX = 18.0
 _IMAGE_BRIGHTNESS_DELTA_MAX = 28.0
+
+
+def _is_video_template_path(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in _VIDEO_TEMPLATE_EXTS
 
 
 def _get_screen_size_cached() -> Tuple[int, int]:
@@ -241,6 +251,83 @@ def _get_cached_template_bgr(image_path: str) -> Optional[np.ndarray]:
         return template
     except Exception:
         return None
+
+
+def _get_cached_video_template_frames(video_path: str) -> List[Tuple[np.ndarray, int, int, np.ndarray, str]]:
+    """Return sampled template frames for moving condition/monitor templates."""
+    global _video_template_cache
+    try:
+        path = Path(video_path)
+        if not path.exists():
+            return []
+        mtime = path.stat().st_mtime
+        size = path.stat().st_size
+
+        with _video_template_cache_lock:
+            cached = _video_template_cache.get(video_path)
+            if cached and cached[0] == mtime and cached[1] == size:
+                _video_template_cache.move_to_end(video_path)
+                return cached[2]
+
+        cap = cv2.VideoCapture(str(path))
+        if not cap.isOpened():
+            return []
+        frames: List[Tuple[np.ndarray, int, int, np.ndarray, str]] = []
+        try:
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if frame_count > 0:
+                if frame_count <= _MAX_VIDEO_TEMPLATE_FRAMES:
+                    indexes = list(range(frame_count))
+                else:
+                    indexes = np.linspace(0, frame_count - 1, _MAX_VIDEO_TEMPLATE_FRAMES, dtype=int).tolist()
+                for frame_index in dict.fromkeys(indexes):
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        continue
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    h, w = gray.shape[:2]
+                    if h < 4 or w < 4:
+                        continue
+                    frames.append((gray, h, w, frame, f"frame={int(frame_index)}"))
+            else:
+                read_count = 0
+                while len(frames) < _MAX_VIDEO_TEMPLATE_FRAMES:
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        break
+                    if read_count % 5 == 0:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        h, w = gray.shape[:2]
+                        if h >= 4 and w >= 4:
+                            frames.append((gray, h, w, frame, f"frame~{read_count}"))
+                    read_count += 1
+        finally:
+            cap.release()
+
+        with _video_template_cache_lock:
+            if video_path in _video_template_cache:
+                del _video_template_cache[video_path]
+            while len(_video_template_cache) >= _MAX_VIDEO_TEMPLATE_CACHE:
+                _video_template_cache.popitem(last=False)
+            _video_template_cache[video_path] = (mtime, size, frames)
+
+        return frames
+    except Exception as exc:
+        logger.debug("video template frame load failed: %s (%s)", video_path, exc)
+        return []
+
+
+def _get_cached_template_variants(image_path: str) -> List[Tuple[np.ndarray, int, int, Optional[np.ndarray], str]]:
+    """Return one image template or sampled video frames for template matching."""
+    if _is_video_template_path(image_path):
+        return _get_cached_video_template_frames(image_path)
+
+    cached = _get_cached_template(image_path)
+    if cached is None:
+        return []
+    template_gray, h, w = cached
+    return [(template_gray, h, w, _get_cached_template_bgr(image_path), "image")]
 
 
 def _resize_template_bgr(template_bgr: np.ndarray, width: int, height: int) -> Optional[np.ndarray]:
@@ -1011,6 +1098,11 @@ class RuleExecutor:
             "condition_threshold",
             "condition_region",
             "condition_decision",
+            "pre_jump_recheck",
+            "pre_jump_recheck_result",
+            "pre_jump_recheck_matched",
+            "pre_jump_recheck_threshold",
+            "pre_jump_recheck_decision",
             "watches",
             "final_images",
             "elapsed",
@@ -2208,6 +2300,25 @@ class RuleExecutor:
                     return self._make_result(rule, True, f"키 입력 완료", start_time)
                 return self._make_result(rule, False, "키 없음", start_time)
 
+            elif action_type == "random_key_sequence":
+                input_ctrl = get_input_controller()
+                ok, message, selected_index, selected_label = execute_random_key_sequence(
+                    input_ctrl,
+                    getattr(rule, "random_key_sequences", []),
+                    step_delay=getattr(rule, "random_key_step_delay", 0.8),
+                    stop_event=self._stop_event,
+                    log_prefix=self._step_prefix.strip(),
+                    log_func=lambda msg: logger.info(f"{_GREEN}{msg}{_RESET}"),
+                )
+                if not ok:
+                    logger.warning(f"{_YELLOW}{self._step_prefix}⚠ {message}{_RESET}")
+                    return self._make_result(rule, False, message, start_time)
+                logger.info(
+                    f"{_GREEN}{self._step_prefix}✓ 랜덤키 완료 "
+                    f"({selected_index + 1}번 묶음: {selected_label}){_RESET}"
+                )
+                return self._make_result(rule, True, message, start_time)
+
             elif action_type == "scroll":
                 scroll_amount = rule.scroll_amount if rule.scroll_amount != 0 else 0
 
@@ -2425,72 +2536,77 @@ class RuleExecutor:
                 return None
 
             # TM_CCOEFF_NORMED 매칭 (오탐률 낮음 — 절대 변경 금지)
-            cached = _get_cached_template(image_path)
-            if cached is None:
+            template_variants = _get_cached_template_variants(image_path)
+            if not template_variants:
                 logger.warning(f"템플릿 로드 실패: {Path(image_path).name}")
                 return None
-            tmpl_gray, th, tw = cached
             verify_visual = bool(verify_color or verify_brightness)
-            template_bgr = _get_cached_template_bgr(image_path) if verify_visual else None
-            if verify_visual and template_bgr is None:
+            if verify_visual and not any(item[3] is not None for item in template_variants):
                 logger.warning(f"템플릿 컬러 로드 실패: {Path(image_path).name}")
                 return None
 
             screen_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
             sh, sw = screen_gray.shape[:2]
-            if tw > sw or th > sh:
-                return None
 
             best_match = None
             best_scale = 1.0
-            for scale in _MULTISCALE_FACTORS:
-                scaled_tmpl = _resize_template_gray(tmpl_gray, scale)
-                if scaled_tmpl is None:
+            best_variant = ""
+            for tmpl_gray, th, tw, template_bgr, variant_label in template_variants:
+                if tw > sw or th > sh:
                     continue
-                sth, stw = scaled_tmpl.shape[:2]
-                if stw > sw or sth > sh or stw < 4 or sth < 4:
+                if verify_visual and template_bgr is None:
                     continue
-                result = cv2.matchTemplate(screen_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
-                time.sleep(0)  # GIL 해제
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                if best_match is None or max_val > best_match[2]:
-                    best_match = (max_loc, stw, sth, float(max_val))
-                    best_scale = scale
-                if max_val >= confidence:
-                    if verify_visual:
-                        candidate_points = np.argwhere(result >= confidence)
-                        if candidate_points.size:
-                            scores = result[candidate_points[:, 0], candidate_points[:, 1]]
-                            for idx in np.argsort(scores)[::-1][:25]:
-                                row, col = candidate_points[idx]
-                                if _passes_image_visual_verification(
-                                    screenshot_bgr,
-                                    template_bgr,
-                                    int(col),
-                                    int(row),
-                                    stw,
-                                    sth,
-                                    verify_color=verify_color,
-                                    verify_brightness=verify_brightness,
-                                ):
-                                    logger.debug(
-                                        f"[이미지 검색] CCOEFF+visual: conf={float(scores[idx]):.2f}, "
-                                        f"설정={confidence:.2f}, scale={scale:.2f} - {Path(image_path).name}"
-                                    )
-                                    final_x = int(col) + stw // 2 + region_offset_x
-                                    final_y = int(row) + sth // 2 + region_offset_y
-                                    return (final_x, final_y, float(scores[idx]))
+                for scale in _MULTISCALE_FACTORS:
+                    scaled_tmpl = _resize_template_gray(tmpl_gray, scale)
+                    if scaled_tmpl is None:
                         continue
-                    logger.debug(
-                        f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f}, scale={scale:.2f} - {Path(image_path).name}"
-                    )
-                    final_x = max_loc[0] + stw // 2 + region_offset_x
-                    final_y = max_loc[1] + sth // 2 + region_offset_y
-                    return (final_x, final_y, float(max_val))
+                    sth, stw = scaled_tmpl.shape[:2]
+                    if stw > sw or sth > sh or stw < 4 or sth < 4:
+                        continue
+                    result = cv2.matchTemplate(screen_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
+                    time.sleep(0)  # GIL 해제
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    if best_match is None or max_val > best_match[2]:
+                        best_match = (max_loc, stw, sth, float(max_val))
+                        best_scale = scale
+                        best_variant = variant_label
+                    if max_val >= confidence:
+                        if verify_visual:
+                            candidate_points = np.argwhere(result >= confidence)
+                            if candidate_points.size:
+                                scores = result[candidate_points[:, 0], candidate_points[:, 1]]
+                                for idx in np.argsort(scores)[::-1][:25]:
+                                    row, col = candidate_points[idx]
+                                    if _passes_image_visual_verification(
+                                        screenshot_bgr,
+                                        template_bgr,
+                                        int(col),
+                                        int(row),
+                                        stw,
+                                        sth,
+                                        verify_color=verify_color,
+                                        verify_brightness=verify_brightness,
+                                    ):
+                                        logger.debug(
+                                            f"[이미지 검색] CCOEFF+visual: conf={float(scores[idx]):.2f}, "
+                                            f"설정={confidence:.2f}, scale={scale:.2f}, {variant_label} - {Path(image_path).name}"
+                                        )
+                                        final_x = int(col) + stw // 2 + region_offset_x
+                                        final_y = int(row) + sth // 2 + region_offset_y
+                                        return (final_x, final_y, float(scores[idx]))
+                            continue
+                        logger.debug(
+                            f"[이미지 검색] CCOEFF: conf={max_val:.2f}, 설정={confidence:.2f}, "
+                            f"scale={scale:.2f}, {variant_label} - {Path(image_path).name}"
+                        )
+                        final_x = max_loc[0] + stw // 2 + region_offset_x
+                        final_y = max_loc[1] + sth // 2 + region_offset_y
+                        return (final_x, final_y, float(max_val))
 
             if best_match is not None:
                 logger.debug(
-                    f"[이미지 검색] CCOEFF: conf={best_match[2]:.2f}, 설정={confidence:.2f}, best_scale={best_scale:.2f} - {Path(image_path).name}"
+                    f"[이미지 검색] CCOEFF: conf={best_match[2]:.2f}, 설정={confidence:.2f}, "
+                    f"best_scale={best_scale:.2f}, {best_variant} - {Path(image_path).name}"
                 )
 
             return None
@@ -3484,7 +3600,32 @@ class RuleExecutor:
                         if action_result is not None:
                             return action_result
 
+                    pending_route_detail = {
+                        "action": f"[{step_num}] {monitor_rule_name}" if step_num else monitor_rule_name,
+                        "rule_id": getattr(rule, "rule_id", "") or "-",
+                        "watch": watch_no,
+                        "image": image_no,
+                        "priority": image_priority,
+                        "monitor_image": image_name,
+                        "matched": f"{matched_pct}%",
+                        "threshold": f"{threshold_pct}%",
+                        "search_region": search_region or "-",
+                        "monitor_actions": len(monitor_actions),
+                        "goto_index": goto_index,
+                        "goto_step": goto_label,
+                        "goto_rule_id": goto_rule_id or "-",
+                        "target_step": "-",
+                        "target_rule_id": goto_rule_id or "-",
+                        "target_name": "-",
+                    }
+
+                    def remember_pending_route_detail() -> None:
+                        route_detail = dict(pending_route_detail)
+                        route_detail.update(dict(watch.get("_condition_detail") or {}))
+                        self._last_monitoring_route_detail = route_detail
+
                     if not jump_enabled:
+                        remember_pending_route_detail()
                         logger.info(
                             f"{_YELLOW}{step_prefix}↷ 모니터링 점프 비활성: {image_name} "
                             f"전용 액션만 처리하고 최종이미지 대기로 복귀{_RESET}"
@@ -3496,8 +3637,16 @@ class RuleExecutor:
                         break
 
                     if self._monitoring_route_condition_blocks_jump(watch, base_confidence, step_prefix):
+                        remember_pending_route_detail()
                         if self._stop_event.wait(timeout=0.5):
                             self._log_monitoring_stop_context("condition_block_wait_stop", step_prefix, start_time)
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+                        break
+
+                    if self._monitoring_pre_jump_recheck_blocks_jump(watch, confidence, step_prefix):
+                        remember_pending_route_detail()
+                        if self._stop_event.wait(timeout=0.5):
+                            self._log_monitoring_stop_context("pre_jump_recheck_wait_stop", step_prefix, start_time)
                             return self._make_result(rule, False, "실행 중지됨", start_time)
                         break
 
@@ -3547,19 +3696,7 @@ class RuleExecutor:
                     if target_original_step and not target_runtime_step:
                         runtime_note = " 현재목록=범위밖"
                     route_detail = {
-                        "action": f"[{step_num}] {monitor_rule_name}" if step_num else monitor_rule_name,
-                        "rule_id": getattr(rule, "rule_id", "") or "-",
-                        "watch": watch_no,
-                        "image": image_no,
-                        "priority": image_priority,
-                        "monitor_image": image_name,
-                        "matched": f"{matched_pct}%",
-                        "threshold": f"{threshold_pct}%",
-                        "search_region": search_region or "-",
-                        "monitor_actions": len(monitor_actions),
-                        "goto_index": goto_index,
-                        "goto_step": goto_label,
-                        "goto_rule_id": goto_rule_id or "-",
+                        **pending_route_detail,
                         "target_step": target_step_label,
                         "target_rule_id": resolved_goto_rule_id or "-",
                         "target_name": action_name,
@@ -3694,6 +3831,7 @@ class RuleExecutor:
                         "condition_jump_when_visible": bool(raw.get("condition_jump_when_visible", False)),
                         "condition_verify_image_color": bool(raw.get("condition_verify_image_color", False)),
                         "condition_verify_image_brightness": bool(raw.get("condition_verify_image_brightness", False)),
+                        "pre_jump_recheck": bool(raw.get("pre_jump_recheck", True)),
                         "_watch_order": watch_order,
                         "_image_order": image_order,
                         "_image_priority": image_item["priority"],
@@ -3894,6 +4032,80 @@ class RuleExecutor:
         self._update_progress(f"{step_prefix}모니터링 조건 대기 중")
         return True
 
+    def _monitoring_pre_jump_recheck_blocks_jump(
+        self,
+        watch: dict,
+        confidence: float,
+        step_prefix: str = "",
+    ) -> bool:
+        """Optionally require the matched monitoring image to be visible again before jumping."""
+        if not bool(watch.get("pre_jump_recheck", True)):
+            watch["_condition_detail"] = {
+                **dict(watch.get("_condition_detail") or {}),
+                "pre_jump_recheck": "off",
+                "pre_jump_recheck_result": "-",
+                "pre_jump_recheck_matched": "-",
+                "pre_jump_recheck_threshold": "-",
+                "pre_jump_recheck_decision": "jump",
+            }
+            return False
+
+        image_path = str(watch.get("image") or "").strip()
+        threshold = self._safe_float(confidence or watch.get("confidence", 0.8), 0.8)
+        threshold_pct = int(float(threshold or 0) * 100)
+        detail_base = {
+            **dict(watch.get("_condition_detail") or {}),
+            "pre_jump_recheck": Path(image_path).name if image_path else "-",
+            "pre_jump_recheck_threshold": f"{threshold_pct}%",
+        }
+        if not image_path or not Path(image_path).exists():
+            watch["_condition_detail"] = {
+                **detail_base,
+                "pre_jump_recheck_result": "file_missing",
+                "pre_jump_recheck_matched": "-",
+                "pre_jump_recheck_decision": "wait",
+            }
+            logger.warning(
+                f"{_YELLOW}{step_prefix}⚠ 점프전 재확인 파일 없음: {image_path or '-'} → 점프 대기{_RESET}"
+            )
+            self._update_progress(f"{step_prefix}점프전 재확인 대기 중")
+            return True
+
+        result = self._find_image_on_screen(
+            image_path,
+            threshold,
+            search_region=watch.get("search_region"),
+            verify_color=bool(watch.get("verify_image_color", False)),
+            verify_brightness=bool(watch.get("verify_image_brightness", False)),
+        )
+        if not result:
+            watch["_condition_detail"] = {
+                **detail_base,
+                "pre_jump_recheck_result": "not_found",
+                "pre_jump_recheck_matched": "0%",
+                "pre_jump_recheck_decision": "wait",
+            }
+            logger.info(
+                f"{_YELLOW}{step_prefix}⏳ 점프전 재확인 실패: {Path(image_path).name} 없음 "
+                f"→ 점프 대기{_RESET}"
+            )
+            self._update_progress(f"{step_prefix}점프전 재확인 대기 중")
+            return True
+
+        actual_confidence = result[2] if len(result) > 2 else 0
+        matched_pct = int(float(actual_confidence or 0) * 100)
+        watch["_condition_detail"] = {
+            **detail_base,
+            "pre_jump_recheck_result": "visible",
+            "pre_jump_recheck_matched": f"{matched_pct}%",
+            "pre_jump_recheck_decision": "jump",
+        }
+        logger.info(
+            f"{_GREEN}{step_prefix}✓ 점프전 재확인 통과: {Path(image_path).name} "
+            f"({matched_pct}%) → 점프 실행{_RESET}"
+        )
+        return False
+
     def _execute_monitor_action_sequence(
         self,
         rule: AutomationRule,
@@ -3962,7 +4174,7 @@ class RuleExecutor:
 
     @staticmethod
     def _monitor_action_matches_detected_image(monitor_action: dict, matched_image: Optional[str]) -> bool:
-        if not matched_image or monitor_action.get("type") != "이미지 클릭":
+        if not matched_image or monitor_action.get("type") not in {"이미지 클릭", "동영상클릭", "동영상 입력"}:
             return False
         action_image = monitor_action.get("image")
         if not action_image:
@@ -4063,6 +4275,20 @@ class RuleExecutor:
                         return None
                     return f"키 입력: {'+'.join(key_list)}"
 
+            elif action_type == '랜덤키 입력':
+                input_ctrl = get_input_controller()
+                ok, message, selected_index, selected_label = execute_random_key_sequence(
+                    input_ctrl,
+                    monitor_action.get("random_key_sequences", []),
+                    step_delay=monitor_action.get("random_key_step_delay", 0.8),
+                    stop_event=self._stop_event,
+                    log_prefix="[모니터링] ",
+                    log_func=logger.info,
+                )
+                if not ok:
+                    return None
+                return f"{message} ({selected_index + 1}번 묶음: {selected_label})"
+
             elif action_type == '마우스 클릭':
                 x = monitor_action.get('x')
                 y = monitor_action.get('y')
@@ -4085,14 +4311,15 @@ class RuleExecutor:
                         input_ctrl.click()  # 이미 이동했으므로 좌표 없이 클릭
                         return f"마우스 클릭: ({x}, {y})"
 
-            elif action_type == '이미지 클릭':
+            elif action_type in {'이미지 클릭', '동영상클릭', '동영상 입력'}:
                 image_path = monitor_action.get('image')
                 click_type = monitor_action.get('click_type', 'click')
                 alternate_route = bool(monitor_action.get('alternate_mouse_route', False))
                 search_region = monitor_action.get('search_region')  # [x1, y1, x2, y2] 또는 None
+                media_label = "동영상" if action_type in {"동영상클릭", "동영상 입력"} else "이미지"
 
                 # INFO 레벨로 실제 사용 값 출력 (디버깅용)
-                logger.debug(f"[이미지 클릭] 이미지: {Path(image_path).name if image_path else 'None'}, 인식률: {search_confidence:.0%}, 검색범위: {search_region}")
+                logger.debug(f"[{action_type}] {media_label}: {Path(image_path).name if image_path else 'None'}, 인식률: {search_confidence:.0%}, 검색범위: {search_region}")
 
                 # search_radius가 있고 search_region이 없으면 변환
                 if not search_region and search_radius > 0:
@@ -4104,13 +4331,13 @@ class RuleExecutor:
                         action_center_y = monitor_action.get('center_y')
                     if action_center_x is not None and action_center_y is not None:
                         search_region = self._radius_to_region(action_center_x, action_center_y, search_radius)
-                        logger.debug(f"[이미지 클릭] search_radius로 범위 계산: {search_region}")
+                        logger.debug(f"[{action_type}] search_radius로 범위 계산: {search_region}")
 
                 if not image_path:
-                    logger.warning(f"{_YELLOW}⚠ 이미지 클릭: 이미지가 설정되지 않음{_RESET}")
+                    logger.warning(f"{_YELLOW}⚠ {action_type}: {media_label}가 설정되지 않음{_RESET}")
                     return None
                 if not Path(image_path).exists():
-                    logger.warning(f"{_YELLOW}⚠ 이미지 파일 없음: {Path(image_path).name}{_RESET}")
+                    logger.warning(f"{_YELLOW}⚠ {media_label} 파일 없음: {Path(image_path).name}{_RESET}")
                     return None
 
                 if monitor_action.get("click_until_image_disappears", False):
@@ -4127,21 +4354,65 @@ class RuleExecutor:
                 if location is not None:
                     conf = location[2] if len(location) > 2 else 0
                     logger.debug(
-                        f"[이미지 클릭] 모니터링 감지 위치 재사용: 위치=({location[0]}, {location[1]}), "
+                        f"[{action_type}] 모니터링 감지 위치 재사용: 위치=({location[0]}, {location[1]}), "
                         f"인식률={conf:.0%}"
                     )
                 else:
-                    location = self._find_image_on_screen(
-                        image_path,
-                        search_confidence,
-                        search_region=search_region,
-                        verify_color=bool(monitor_action.get("verify_image_color", False)),
-                        verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
-                    )
+                    skip_on_not_found = bool(monitor_action.get("skip_on_not_found", False))
+                    skip_timeout = self._safe_float(monitor_action.get("wait_after", 0.0), 0.0) if skip_on_not_found else 0.0
+                    search_start = time.time()
+                    wait_count = 0
+                    while location is None:
+                        if self._stop_event.is_set():
+                            return None
+                        if self._wait_for_resume():
+                            return None
+                        if skip_on_not_found and skip_timeout > 0 and time.time() - search_start >= skip_timeout:
+                            logger.info(
+                                f"{_YELLOW}  ⏭ 모니터링 전용액션 스킵: {media_label} 못찾음 "
+                                f"({skip_timeout:.1f}초 대기 후) - {Path(image_path).name}{_RESET}"
+                            )
+                            return f"스킵됨 ({media_label} 없음, {skip_timeout:.1f}초 대기)"
+
+                        if self._check_user_intervention():
+                            self._wait_after_intervention()
+                            if self._stop_event.is_set():
+                                return None
+
+                        location = self._find_image_on_screen(
+                            image_path,
+                            search_confidence,
+                            search_region=search_region,
+                            verify_color=bool(monitor_action.get("verify_image_color", False)),
+                            verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
+                        )
+                        if location:
+                            break
+
+                        elapsed = time.time() - search_start
+                        if skip_on_not_found and skip_timeout <= 0:
+                            logger.info(
+                                f"{_YELLOW}  ⏭ 모니터링 전용액션 스킵: {media_label} 못찾음 "
+                                f"({elapsed:.1f}초 대기 후) - {Path(image_path).name}{_RESET}"
+                            )
+                            return f"스킵됨 ({media_label} 없음, {elapsed:.1f}초 대기)"
+
+                        wait_count += 1
+                        if wait_count % 20 == 1:
+                            skip_info = ""
+                            if skip_on_not_found and skip_timeout > 0:
+                                remaining = max(0.0, skip_timeout - elapsed)
+                                skip_info = f" (타임아웃: {remaining:.0f}초 후)" if remaining < 60 else ""
+                            logger.info(
+                                f"{_YELLOW}  ⏳ 모니터링 전용액션 {media_label} 대기 중... "
+                                f"{elapsed:.0f}초{skip_info} - {Path(image_path).name}{_RESET}"
+                            )
+                        if self._stop_event.wait(timeout=0.5):
+                            return None
                 if location:
                     x, y = location[0], location[1]
                     conf = location[2] if len(location) > 2 else 0
-                    logger.debug(f"[이미지 클릭] 찾음: 위치=({x}, {y}), 인식률={conf:.0%}")
+                    logger.debug(f"[{action_type}] 찾음: 위치=({x}, {y}), 인식률={conf:.0%}")
                     input_ctrl = get_input_controller()
                     if alternate_route:
                         if not self._move_mouse_to(x, y, alternate_route=True):
@@ -4151,16 +4422,15 @@ class RuleExecutor:
                     time.sleep(0.05)
                     if click_type == 'double_click':
                         input_ctrl.double_click()  # 이미 이동했으므로 좌표 없이 클릭
-                        return f"이미지 더블클릭: {Path(image_path).name}"
+                        return f"{media_label} 더블클릭: {Path(image_path).name}"
                     elif click_type == 'right_click':
                         input_ctrl.right_click()  # 이미 이동했으므로 좌표 없이 클릭
-                        return f"이미지 우클릭: {Path(image_path).name}"
+                        return f"{media_label} 우클릭: {Path(image_path).name}"
                     else:
                         input_ctrl.click()  # 이미 이동했으므로 좌표 없이 클릭
-                        return f"이미지 클릭: {Path(image_path).name}"
-                else:
-                    logger.warning(f"{_YELLOW}  ⚠ 이미지 찾지 못함: {Path(image_path).name}{_RESET}")
-                    return None
+                        return f"{media_label} 클릭: {Path(image_path).name}"
+                logger.warning(f"{_YELLOW}  ⚠ {media_label} 찾지 못함: {Path(image_path).name}{_RESET}")
+                return None
 
             elif action_type == '스크롤':
                 amount = monitor_action.get('amount', 0)
@@ -4722,6 +4992,46 @@ class RuleExecutor:
             route_starts = _segment_meta(seg_idx).get('route_starts', []) or []
             return not bool(route_starts)
 
+        def _explicit_route_walls_for_segment(seg_idx):
+            """Return user-configured hard walls for a segment."""
+            walls = set()
+            meta = _segment_meta(seg_idx)
+            for item in meta.get('route_walls', []) or []:
+                try:
+                    walls.add((int(item.get('x')), int(item.get('y'))))
+                except Exception:
+                    continue
+            for item in meta.get('route_ends', []) or []:
+                try:
+                    if isinstance(item, dict) and not item.get('enabled', True):
+                        walls.add((int(item.get('x')), int(item.get('y'))))
+                except Exception:
+                    continue
+            return walls
+
+        def _clear_transient_local_dynamic_blocks(map_ref, seg_idx, *, reason, clear_learned_blocked=False):
+            """No-start local segments use runtime-only obstacle memory."""
+            if map_ref is None or not _uses_transient_local_map(seg_idx):
+                return
+            soft_snapshot = map_ref.get_soft_blocked_snapshot()
+            for sx, sy in list(soft_snapshot.keys()):
+                map_ref.clear_soft_blocked(sx, sy)
+
+            removed_blocked = 0
+            if clear_learned_blocked:
+                explicit_walls = _explicit_route_walls_for_segment(seg_idx)
+                for bx, by in list(map_ref.get_blocked_snapshot()):
+                    if (bx, by) in explicit_walls:
+                        continue
+                    if map_ref.clear_blocked(bx, by):
+                        removed_blocked += 1
+
+            if soft_snapshot or removed_blocked:
+                logger.info(
+                    f"[좌표모드] local 동적장애물 정리: soft={len(soft_snapshot)} "
+                    f"learned_wall={removed_blocked} reason={reason}"
+                )
+
         # 구간별 맵 파일명 헬퍼 (UI의 _get_segment_map_name과 동일 형식)
         def get_segment_map_path(seg_idx):
             """경유지 인덱스에 해당하는 맵 파일 경로 (경유지와 1:1 대응)"""
@@ -4840,6 +5150,12 @@ class RuleExecutor:
         if os.path.exists(seg0_path):
             game_map.load(seg0_path)
             _sanitize_segment_start_pos(game_map, 0)
+            _clear_transient_local_dynamic_blocks(
+                game_map,
+                0,
+                reason="load",
+                clear_learned_blocked=True,
+            )
             stats = game_map.get_statistics()
             logger.info(f"[좌표모드] 첫 경유지 맵 로드: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
         else:
@@ -4850,6 +5166,12 @@ class RuleExecutor:
                 if os.path.exists(old_map_path):
                     game_map.load(old_map_path)
                     _sanitize_segment_start_pos(game_map, 0)
+                    _clear_transient_local_dynamic_blocks(
+                        game_map,
+                        0,
+                        reason="load-fallback",
+                        clear_learned_blocked=True,
+                    )
                     stats = game_map.get_statistics()
                     logger.info(f"[좌표모드] 호환 맵 로드: {old_map_path} ({stats['total_tiles']}개 타일)")
                     loaded = True
@@ -4876,8 +5198,14 @@ class RuleExecutor:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 _old_map_ref = game_map
                 _sanitize_segment_start_pos(_old_map_ref, current_segment_idx)
-                def _save_old_segment_async(_map=_old_map_ref, _path=save_path, _name=old_name):
+                def _save_old_segment_async(_map=_old_map_ref, _path=save_path, _name=old_name, _seg_idx=current_segment_idx):
                     try:
+                        _clear_transient_local_dynamic_blocks(
+                            _map,
+                            _seg_idx,
+                            reason="save-switch",
+                            clear_learned_blocked=True,
+                        )
                         _map.save(_path)
                         logger.info(f"[좌표모드] '{_name}' 맵 저장: {_path}")
                     except Exception as _save_e:
@@ -4893,6 +5221,12 @@ class RuleExecutor:
             if os.path.exists(new_path):
                 game_map.load(new_path)
                 _sanitize_segment_start_pos(game_map, new_seg_idx)
+                _clear_transient_local_dynamic_blocks(
+                    game_map,
+                    new_seg_idx,
+                    reason="load-switch",
+                    clear_learned_blocked=True,
+                )
                 stats = game_map.get_statistics()
                 logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
             else:
@@ -4909,6 +5243,12 @@ class RuleExecutor:
                 fresh_map = GameMap(name=f"{map_name}_{seg_name}")
                 fresh_map.load(map_path)
                 _sanitize_segment_start_pos(fresh_map, seg_idx)
+                _clear_transient_local_dynamic_blocks(
+                    fresh_map,
+                    seg_idx,
+                    reason="reload-runtime",
+                    clear_learned_blocked=True,
+                )
                 game_map = fresh_map
                 pathfinder = SimplePathfinder(game_map)
                 logger.warning(f"[좌표모드] '{seg_name}' 런타임 맵 재로드")
@@ -5554,11 +5894,15 @@ class RuleExecutor:
                             explored_from[fail_pos] = tried
 
                         if stuck_count >= 3 and last_dir:
-                            # 3번 연속 실패 → 임시 장애물 등록 (누적 시 영구벽 승격)
-                            if mapping_enabled:
-                                ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
-                                wall_x = prev_x + ddx
-                                wall_y = prev_y + ddy
+                            # 3번 연속 실패 → 장애물 기록. no-start local 구간은 랜덤 장애물로 보고
+                            # 저장/승격하지 않는 short-lived soft block만 사용한다.
+                            ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
+                            wall_x = prev_x + ddx
+                            wall_y = prev_y + ddy
+                            if _uses_transient_local_map(current_target_idx):
+                                game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
+                                logger.info(f"[좌표모드] 동적장애물 임시회피: ({wall_x},{wall_y}) dir={last_dir}")
+                            elif mapping_enabled:
                                 game_map.mark_blocked(wall_x, wall_y)
                                 logger.info(f"[좌표모드] 임시벽 발견: ({wall_x},{wall_y})")
                             # 장애물 발견 → 경로 재계산
@@ -5568,7 +5912,7 @@ class RuleExecutor:
                             stuck_count = 0
 
                 # 3.3. soft_blocked 자동 감소 (10회마다)
-                if mapping_enabled:
+                if mapping_enabled or _uses_transient_local_map(current_target_idx):
                     tick_counter += 1
                     if tick_counter >= 10:
                         game_map.tick()
@@ -5749,6 +6093,12 @@ class RuleExecutor:
                 save_path = get_segment_map_path(current_segment_idx)
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 _sanitize_segment_start_pos(game_map, current_segment_idx)
+                _clear_transient_local_dynamic_blocks(
+                    game_map,
+                    current_segment_idx,
+                    reason="save-final",
+                    clear_learned_blocked=True,
+                )
                 game_map.save(save_path)
                 seg_n = get_seg_name(current_segment_idx)
                 logger.info(f"[맵핑] '{seg_n}' 맵 저장: {save_path}")

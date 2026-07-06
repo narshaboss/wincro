@@ -1,4 +1,4 @@
-﻿"""
+"""
 WinCro 설정 화면 모듈
 
 애플리케이션 설정을 위한 UI를 제공합니다.
@@ -81,6 +81,16 @@ class SettingsView(BaseView):
                     except Exception:
                         pass
             threading.Thread(target=_join_all, daemon=True).start()
+
+    def _post_ui(self, callback, delay_ms: int = 0) -> None:
+        """Post a UI callback only while this view is still alive."""
+        if self._stop_flag.is_set():
+            return
+        try:
+            self.after(delay_ms, callback)
+        except (tk.TclError, RuntimeError):
+            # Background workers can finish after the view/window has closed.
+            return
 
     def _setup_ui(self) -> None:
         """UI 구성"""
@@ -746,7 +756,7 @@ class SettingsView(BaseView):
                     pass
 
             try:
-                self.after(0, _apply_result)
+                self._post_ui(_apply_result)
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -1806,10 +1816,10 @@ class SettingsView(BaseView):
                 if result.get("update_available"):
                     ver = result["version"]
                     rel_data = result.get("release_data")
-                    self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
+                    self._post_ui(lambda v=ver, d=rel_data: self._show_update_available(v, d))
                 else:
                     ver = APP_VERSION
-                    self.after(0, lambda v=ver: self._show_up_to_date(v))
+                    self._post_ui(lambda v=ver: self._show_up_to_date(v))
                 return
 
             # updater 실패 시 기존 방법으로 폴백
@@ -1896,13 +1906,13 @@ class SettingsView(BaseView):
                     if self._compare_versions(latest_version, current_version) > 0:
                         ver = latest_version
                         rel_data = data
-                        self.after(0, lambda v=ver, d=rel_data: self._show_update_available(v, d))
+                        self._post_ui(lambda v=ver, d=rel_data: self._show_update_available(v, d))
                     else:
                         ver = current_version
-                        self.after(0, lambda v=ver: self._show_up_to_date(v))
+                        self._post_ui(lambda v=ver: self._show_up_to_date(v))
                 except Exception as e:
                     logger.error(f"버전 비교 오류: {e}")
-                    self.after(0, lambda: self._update_check_failed("버전 정보 파싱 실패"))
+                    self._post_ui(lambda: self._update_check_failed("버전 정보 파싱 실패"))
             else:
                 # 모든 방법 실패 - 사용자 친화적 메시지
                 error_detail = "연결 실패"
@@ -1936,12 +1946,12 @@ class SettingsView(BaseView):
                         error_detail = error_str[:20]
 
                 logger.error(f"모든 연결 방법 실패: {last_error}")
-                self.after(0, lambda e=error_detail: self._update_check_failed(e))
+                self._post_ui(lambda e=error_detail: self._update_check_failed(e))
 
         except Exception as e:
             # 전체 스레드 예외 발생 시 UI 복구
             logger.error(f"버전 확인 스레드 예외: {e}", exc_info=True)
-            self.after(0, lambda: self._update_check_failed("예기치 않은 오류"))
+            self._post_ui(lambda: self._update_check_failed("예기치 않은 오류"))
 
     def _compare_versions(self, v1: str, v2: str) -> int:
         """버전 비교 (v1 > v2: 1, v1 == v2: 0, v1 < v2: -1)"""
@@ -2193,14 +2203,14 @@ class SettingsView(BaseView):
             file_name = asset.get("name", "update.zip")
 
             if not download_url:
-                self.after(0, lambda: self._update_failed("다운로드 URL이 없습니다"))
+                self._post_ui(lambda: self._update_failed("다운로드 URL이 없습니다"))
                 return
 
             if not file_name.endswith(".zip"):
                 file_name = f"{file_name}.zip"
 
             logger.info(f"다운로드 시작: {download_url}")
-            self.after(0, lambda: self._update_status_label.configure(text="연결 중..."))
+            self._post_ui(lambda: self._update_status_label.configure(text="연결 중..."))
 
             paths = get_update_paths()
             temp_path = os.path.join(paths["temp_dir"], file_name)
@@ -2210,11 +2220,11 @@ class SettingsView(BaseView):
             try:
                 response = ssl_fallback_connect(
                     download_url,
-                    on_status=lambda msg: self.after(0, lambda m=msg:
+                    on_status=lambda msg: self._post_ui(lambda m=msg:
                         self._update_status_label.configure(text=m)),
                 )
             except ConnectionError as e:
-                self.after(0, lambda msg=str(e): self._update_failed(msg))
+                self._post_ui(lambda msg=str(e): self._update_failed(msg))
                 return
 
             with response:
@@ -2230,33 +2240,33 @@ class SettingsView(BaseView):
                             last_ui_percent = percent
                             mb_down = downloaded / (1024 * 1024)
                             mb_total = total / (1024 * 1024)
-                            self.after(0, lambda p=percent, d=mb_down, t=mb_total:
+                            self._post_ui(lambda p=percent, d=mb_down, t=mb_total:
                                 self._update_status_label.configure(
                                     text=f"다운로드 중... {p}% ({d:.1f}/{t:.1f}MB)"
                                 ))
 
-                self.after(0, lambda t=total_size: self._update_status_label.configure(
+                self._post_ui(lambda t=total_size: self._update_status_label.configure(
                     text=f"다운로드 중... 0% (0/{t/(1024*1024):.1f}MB)"
                 ))
 
                 download_file(response, temp_path, chunk_size=131072, on_progress=_on_progress)
 
-            self.after(0, lambda: self._update_status_label.configure(text="압축 해제 중..."))
+            self._post_ui(lambda: self._update_status_label.configure(text="압축 해제 중..."))
 
             # 개발 모드 체크
             if not getattr(sys, 'frozen', False):
-                self.after(0, lambda: self._update_success_dev(version, temp_path))
+                self._post_ui(lambda: self._update_success_dev(version, temp_path))
                 return
 
             # 압축 해제 및 exe 찾기
             try:
                 new_app_dir, new_exe_name = extract_and_find_exe(temp_path, paths["extract_dir"])
             except FileNotFoundError:
-                self.after(0, lambda: self._update_failed("업데이트 파일에 exe가 없습니다"))
+                self._post_ui(lambda: self._update_failed("업데이트 파일에 exe가 없습니다"))
                 return
 
             logger.info(f"새 앱 디렉토리: {new_app_dir}, 새 exe: {new_exe_name}")
-            self.after(0, lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
+            self._post_ui(lambda: self._update_status_label.configure(text="업데이트 준비 중..."))
 
             # 배치 파일 생성 (전체 폴더 교체)
             current_exe = paths["current_exe"]
@@ -2366,12 +2376,12 @@ del "%~f0"
             save_update_config(version)
 
             # 배치 파일 실행하고 프로그램 종료
-            self.after(0, lambda: self._start_update_and_exit(batch_path))
+            self._post_ui(lambda: self._start_update_and_exit(batch_path))
 
         except Exception as e:
             error_msg = classify_error(e)
             logger.error(f"업데이트 다운로드 오류: {e}", exc_info=True)
-            self.after(0, lambda msg=error_msg: self._update_failed(msg))
+            self._post_ui(lambda msg=error_msg: self._update_failed(msg))
 
     def _start_update_and_exit(self, batch_path: str) -> None:
         """배치 파일 실행 후 종료"""
@@ -3030,7 +3040,7 @@ del "%~f0"
                 self._show_test_results(result_text)
 
             try:
-                self.after(0, _show_results)
+                self._post_ui(_show_results)
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -3409,11 +3419,11 @@ del "%~f0"
         try:
             import serial
         except ImportError:
-            self.after(0, lambda: self._update_arduino_status(False, "pyserial 미설치"))
+            self._post_ui(lambda: self._update_arduino_status(False, "pyserial 미설치"))
             return
 
         # UI 업데이트
-        self.after(0, lambda: self._update_arduino_status(False, "연결 중..."))
+        self._post_ui(lambda: self._update_arduino_status(False, "연결 중..."))
 
         try:
             # 이전 연결 정리
@@ -3436,7 +3446,7 @@ del "%~f0"
             )
 
             if not ser.is_open:
-                self.after(0, lambda: self._update_arduino_status(False, "포트 열기 실패"))
+                self._post_ui(lambda: self._update_arduino_status(False, "포트 열기 실패"))
                 return
 
             self._arduino_serial = ser
@@ -3456,7 +3466,7 @@ del "%~f0"
             if not firmware_ok:
                 # 펌웨어 없음/구형 - 자동 업로드 시도
                 status_text = "펌웨어 업데이트 중..." if firmware_status == "outdated" else "펌웨어 업로드 중..."
-                self.after(0, lambda s=status_text: self._update_arduino_status(False, s))
+                self._post_ui(lambda s=status_text: self._update_arduino_status(False, s))
                 logger.info(f"펌웨어 상태={firmware_status}, 자동 업로드 시작")
 
                 ser.close()
@@ -3467,16 +3477,16 @@ del "%~f0"
                     from ..utils.arduino_uploader import upload_firmware
 
                     def progress_cb(msg):
-                        self.after(0, lambda m=msg: self._update_arduino_status(False, m))
+                        self._post_ui(lambda m=msg: self._update_arduino_status(False, m))
 
                     success, message = upload_firmware(port, progress_cb)
 
                     if not success:
-                        self.after(0, lambda m=message[:40]: self._update_arduino_status(False, f"업로드 실패: {m}"))
+                        self._post_ui(lambda m=message[:40]: self._update_arduino_status(False, f"업로드 실패: {m}"))
                         logger.error(f"펌웨어 업로드 실패: {message}")
                         return
                 except Exception as upload_err:
-                    self.after(0, lambda: self._update_arduino_status(False, "펌웨어 업로드 오류"))
+                    self._post_ui(lambda: self._update_arduino_status(False, "펌웨어 업로드 오류"))
                     logger.error(f"펌웨어 업로드 예외: {upload_err}")
                     return
 
@@ -3514,10 +3524,10 @@ del "%~f0"
 
             # 결과 표시
             if firmware_ok:
-                self.after(0, lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (HID 준비)"))
+                self._post_ui(lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (HID 준비)"))
                 logger.info(f"아두이노 HID 연결 성공: {port}")
             else:
-                self.after(0, lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (펌웨어?)"))
+                self._post_ui(lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (펌웨어?)"))
                 logger.warning(f"펌웨어 준비 미완료: {firmware_status}")
 
             # 설정 저장
@@ -3528,24 +3538,24 @@ del "%~f0"
 
         except PermissionError:
             logger.error(f"아두이노 연결 오류: 포트 접근 권한 없음\n{traceback.format_exc()}")
-            self.after(0, lambda: self._update_arduino_status(False, "포트 사용중"))
+            self._post_ui(lambda: self._update_arduino_status(False, "포트 사용중"))
         except FileNotFoundError:
             logger.error(f"아두이노 연결 오류: 포트를 찾을 수 없음\n{traceback.format_exc()}")
-            self.after(0, lambda: self._update_arduino_status(False, "포트 없음"))
+            self._post_ui(lambda: self._update_arduino_status(False, "포트 없음"))
         except serial.SerialException as e:
             error_msg = str(e).lower()
             logger.error(f"아두이노 연결 오류: {e}\n{traceback.format_exc()}")
             if "permission" in error_msg or "access" in error_msg:
-                self.after(0, lambda: self._update_arduino_status(False, "포트 사용중"))
+                self._post_ui(lambda: self._update_arduino_status(False, "포트 사용중"))
             elif "could not open port" in error_msg or "filenotfound" in error_msg:
-                self.after(0, lambda: self._update_arduino_status(False, "포트 없음"))
+                self._post_ui(lambda: self._update_arduino_status(False, "포트 없음"))
             else:
                 short_msg = str(e)[:35]
-                self.after(0, lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
+                self._post_ui(lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
         except Exception as e:
             logger.error(f"아두이노 연결 오류: {e}\n{traceback.format_exc()}")
             short_msg = str(e)[:35]
-            self.after(0, lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
+            self._post_ui(lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
 
     def _check_firmware(self, ser) -> bool:
         """펌웨어 설치 확인 (호환용 wrapper)."""
@@ -3655,25 +3665,25 @@ del "%~f0"
                 from ..utils.arduino_uploader import upload_firmware
 
                 def progress_cb(msg):
-                    self.after(0, lambda m=msg: self._arduino_status_label.configure(text=m))
+                    self._post_ui(lambda m=msg: self._arduino_status_label.configure(text=m))
 
                 success, message = upload_firmware(port, progress_cb)
 
                 if success:
-                    self.after(0, lambda: messagebox.showinfo("성공", "펌웨어 업로드 완료!\n재연결하세요."))
-                    self.after(0, lambda: self._update_arduino_status(False, "업로드 완료 - 재연결 필요"))
+                    self._post_ui(lambda: messagebox.showinfo("성공", "펌웨어 업로드 완료!\n재연결하세요."))
+                    self._post_ui(lambda: self._update_arduino_status(False, "업로드 완료 - 재연결 필요"))
                 else:
-                    self.after(0, lambda m=message: messagebox.showerror("실패", f"펌웨어 업로드 실패:\n{m}"))
-                    self.after(0, lambda: self._update_arduino_status(False, "업로드 실패"))
+                    self._post_ui(lambda m=message: messagebox.showerror("실패", f"펌웨어 업로드 실패:\n{m}"))
+                    self._post_ui(lambda: self._update_arduino_status(False, "업로드 실패"))
 
             except Exception as e:
                 logger.error(f"펌웨어 업로드 오류: {e}")
-                self.after(0, lambda: messagebox.showerror("오류", f"펌웨어 업로드 오류:\n{e}"))
-                self.after(0, lambda: self._update_arduino_status(False, "업로드 오류"))
+                self._post_ui(lambda: messagebox.showerror("오류", f"펌웨어 업로드 오류:\n{e}"))
+                self._post_ui(lambda: self._update_arduino_status(False, "업로드 오류"))
             finally:
                 # 버튼 복구
-                self.after(0, lambda: self._arduino_upload_btn.configure(state="normal", text="펌웨어 업로드"))
-                self.after(0, lambda: self._arduino_connect_btn.configure(state="normal"))
+                self._post_ui(lambda: self._arduino_upload_btn.configure(state="normal", text="펌웨어 업로드"))
+                self._post_ui(lambda: self._arduino_connect_btn.configure(state="normal"))
 
         import threading
         thread = threading.Thread(target=upload_thread, daemon=True)

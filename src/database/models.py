@@ -21,6 +21,7 @@ class ActionType(Enum):
     TYPE = "type"
     HOTKEY = "hotkey"
     KEY_PRESS = "key_press"
+    RANDOM_KEY_SEQUENCE = "random_key_sequence"
     WAIT = "wait"
     WAIT_FOR_IMAGE = "wait_for_image"  # 이미지가 나타날 때까지 대기
     SCREENSHOT = "screenshot"
@@ -54,6 +55,8 @@ class Action:
     text: Optional[str] = None  # 입력할 텍스트
     keys: Optional[List[str]] = None  # 단축키 조합
     key_events: List[Dict[str, Any]] = field(default_factory=list)  # recorded key down/up events
+    random_key_sequences: List[List[Dict[str, Any]]] = field(default_factory=list)  # 랜덤 실행 키 묶음
+    random_key_step_delay: float = 0.8  # 랜덤키 묶음 안 키 사이 대기시간
     duration: float = 0.0  # 액션 지속 시간 (초)
     wait_before: float = 0.0  # 실행 전 대기 시간 (초)
     wait_after: float = 0.0  # 실행 후 대기 시간 (초)
@@ -101,6 +104,12 @@ class Action:
             self.action_id = f"action_{uuid.uuid4().hex[:8]}"
         if self.children is None:
             self.children = []
+        if self.random_key_sequences is None:
+            self.random_key_sequences = []
+        try:
+            self.random_key_step_delay = max(0.0, float(self.random_key_step_delay or 0.0))
+        except (TypeError, ValueError):
+            self.random_key_step_delay = 0.8
         try:
             self.click_until_image_disappears_delay = max(
                 0.0,
@@ -121,7 +130,8 @@ class Action:
         """딕셔너리에서 생성 (하위 호환성 지원)"""
         # 유효한 필드 목록
         valid_fields = {
-            'action_type', 'x', 'y', 'button', 'text', 'keys', 'key_events', 'duration',
+            'action_type', 'x', 'y', 'button', 'text', 'keys', 'key_events',
+            'random_key_sequences', 'random_key_step_delay', 'duration',
             'wait_before', 'wait_after', 'wait_random', 'wait_random_range',
             'typing_random', 'typing_delay', 'typing_delay_range',
             'target_image', 'confidence', 'verify_image_color', 'verify_image_brightness',
@@ -157,6 +167,9 @@ class Action:
             return f"입력: {self.text[:20]}..." if self.text and len(self.text) > 20 else f"입력: {self.text}"
         elif self.action_type == ActionType.HOTKEY.value:
             return f"단축키: {'+'.join(self.keys or [])}"
+        elif self.action_type == ActionType.RANDOM_KEY_SEQUENCE.value:
+            count = len(self.random_key_sequences or [])
+            return f"랜덤키 입력: {count}개 묶음"
         elif self.action_type == ActionType.WAIT.value:
             return f"대기: {self.duration}초"
         elif self.action_type == ActionType.WAIT_FOR_IMAGE.value:

@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from src.ui.analyzer_view import sanitize_template_filename, unique_template_path
+from src.ui.analyzer_view import (
+    TemplateMediaSettings,
+    is_video_media_path,
+    sanitize_template_filename,
+    sanitize_template_media_filename,
+    unique_template_path,
+)
 from src.ui.image_crop_utils import get_sidecar_mask_path
 
 
@@ -109,11 +115,113 @@ def test_image_crop_dialog_enables_filename_after_crop_and_resets_between_images
     assert "self._reset_crop_filename()" in change_method
 
 
+def test_image_crop_dialog_click_clears_existing_crop_selection():
+    text = _text(ANALYZER_VIEW)
+    crop_class = text[
+        text.index("class ImageCropDialog"):
+        text.index("class AltImageDialog", text.index("class ImageCropDialog"))
+    ]
+    mouse_down_method = crop_class[
+        crop_class.index("def _on_mouse_down(self, event):"):
+        crop_class.index("def _on_mouse_drag(self, event):")
+    ]
+    mouse_up_method = crop_class[
+        crop_class.index("def _on_mouse_up(self, event):"):
+        crop_class.index("def _update_preview(self, end_x: int, end_y: int):")
+    ]
+    clear_method = crop_class[
+        crop_class.index("def _clear_crop_selection(self):"):
+        crop_class.index("def _crop_filename_placeholder", crop_class.index("def _clear_crop_selection"))
+    ]
+
+    assert "self._mouse_down_had_crop = False" in crop_class
+    assert "self._mouse_down_had_crop = self._crop_coords is not None" in mouse_down_method
+    assert "abs(event.x - self._start_x) < 5" in mouse_up_method
+    assert "abs(event.y - self._start_y) < 5" in mouse_up_method
+    assert "self._clear_crop_selection()" in mouse_up_method
+    assert "self._crop_coords = None" in clear_method
+    assert "self._save_btn.configure(state=\"disabled\")" in clear_method
+    assert "self._preview_canvas.delete(\"all\")" in clear_method
+
+
 def test_sanitize_template_filename_preserves_korean_and_blocks_paths():
     assert sanitize_template_filename("환수의모험 확인버튼", ".png") == "환수의모험 확인버튼.png"
     assert sanitize_template_filename("../bad:name?.jpg", ".png") == "bad_name_.jpg"
     assert sanitize_template_filename("CON", ".png") is None
     assert sanitize_template_filename("   ", ".png") is None
+
+
+def test_template_video_filename_and_settings_sidecar(tmp_path):
+    video = tmp_path / "영상샘플.mp4"
+    video.write_bytes(b"video")
+
+    assert is_video_media_path(video)
+    assert sanitize_template_media_filename("크롭영상", ".mp4") == "크롭영상.mp4"
+    assert sanitize_template_media_filename("../bad:name?.mp4", ".mp4") == "bad_name_.mp4"
+
+    settings = TemplateMediaSettings(str(video))
+    settings.confidence = 0.91
+    settings.verify_image_color = True
+    settings.search_region = [1, 2, 30, 40]
+    settings.save()
+
+    loaded = TemplateMediaSettings(str(video))
+    assert loaded.confidence == 0.91
+    assert loaded.verify_image_color is True
+    assert loaded.search_region == [1, 2, 30, 40]
+
+
+def test_image_crop_dialog_video_preview_refreshes_canvas_and_crop_preview():
+    text = _text(ANALYZER_VIEW)
+    crop_class = text[
+        text.index("class ImageCropDialog"):
+        text.index("class AltImageDialog", text.index("class ImageCropDialog"))
+    ]
+    advance_method = crop_class[
+        crop_class.index("def _advance_video_preview_frame(self):"):
+        crop_class.index("def _load_image(self):")
+    ]
+
+    assert "self._video_capture = None" in crop_class
+    assert "def _resume_video_preview(self):" in crop_class
+    assert "def _stop_video_preview(self):" in crop_class
+    assert "def _stop_video_from_button(self):" in crop_class
+    assert "def _video_progress_ratio(self) -> float:" in crop_class
+    assert "def _update_video_progress_bar(self):" in crop_class
+    assert "def _load_video_play_overlay_photo(self, size: int = 76):" in crop_class
+    assert "def _draw_video_overlay_play_button(self):" in crop_class
+    assert "def destroy(self):" in crop_class
+    assert "self._video_frame_interval_ms = max(80, int(1000 / preview_fps))" in crop_class
+    assert "VIDEO_PLAY_ICON_FILE.exists()" in crop_class
+    assert "ImageTk.PhotoImage(icon)" in crop_class
+    assert "self._canvas.create_image(" in crop_class
+    assert "self._canvas.create_polygon(" not in crop_class
+    assert "text=\"미리보기 시작\"" not in crop_class
+    assert "self._canvas.tag_bind(play_id, \"<Button-1>\", lambda _event: self._resume_video_preview())" in crop_class
+    assert "self._update_canvas_image()" in advance_method
+    assert "self._refresh_preview()" in advance_method
+    assert "if self._is_video:\n            self._start_video_preview()" not in crop_class
+
+
+def test_image_crop_dialog_bottom_buttons_keep_original_fixed_sizes():
+    text = _text(ANALYZER_VIEW)
+    crop_class = text[
+        text.index("class ImageCropDialog"):
+        text.index("class AltImageDialog", text.index("class ImageCropDialog"))
+    ]
+    bottom_start = crop_class.index("btn_frame = ctk.CTkFrame(bottom_panel")
+    bottom_buttons = crop_class[
+        bottom_start:crop_class.index("# 메인 컨텐츠", bottom_start)
+    ]
+
+    assert 'primary_btn_row.pack(anchor="center", pady=(0, 6))' in bottom_buttons
+    assert 'option_btn_row.pack(anchor="center")' in bottom_buttons
+    assert "primary_btn_row.grid_columnconfigure" not in bottom_buttons
+    assert "option_btn_row.grid_columnconfigure" not in bottom_buttons
+    assert "sticky=\"ew\"" not in bottom_buttons
+    assert "width=100" in bottom_buttons
+    assert "width=80" in bottom_buttons
+    assert 'text="취소"' in bottom_buttons
 
 
 def test_unique_template_path_does_not_overwrite_image_or_mask(tmp_path):

@@ -64,6 +64,8 @@ class AutomationRule:
     action_text: Optional[str] = None  # ??????????
     action_keys: Optional[List[str]] = None  # ?????
     action_key_events: List[Dict[str, Any]] = field(default_factory=list)  # recorded key down/up events
+    random_key_sequences: List[List[Dict[str, Any]]] = field(default_factory=list)  # 랜덤 실행 키 묶음
+    random_key_step_delay: float = 0.8  # 랜덤키 묶음 안 키 사이 대기시간
 
     # ??????
     drag_to_x: Optional[int] = None
@@ -140,6 +142,12 @@ class AutomationRule:
             self.action_keys = []
         if self.action_key_events is None:
             self.action_key_events = []
+        if self.random_key_sequences is None:
+            self.random_key_sequences = []
+        try:
+            self.random_key_step_delay = max(0.0, float(self.random_key_step_delay or 0.0))
+        except (TypeError, ValueError):
+            self.random_key_step_delay = 0.8
         if self.target_images is None:
             self.target_images = []
         if self.trigger_missing_keys is None:
@@ -253,6 +261,8 @@ class AutomationRule:
             "action_text": self.action_text,
             "action_keys": self.action_keys,
             "action_key_events": self.action_key_events,
+            "random_key_sequences": self.random_key_sequences,
+            "random_key_step_delay": self.random_key_step_delay,
             "drag_to_x": self.drag_to_x,
             "drag_to_y": self.drag_to_y,
             "drag_duration": self.drag_duration,
@@ -369,6 +379,8 @@ class AutomationRule:
             action_text=data.get("action_text"),
             action_keys=data.get("action_keys", []),
             action_key_events=data.get("action_key_events", []),
+            random_key_sequences=data.get("random_key_sequences", []),
+            random_key_step_delay=data.get("random_key_step_delay", 0.8),
             drag_to_x=data.get("drag_to_x"),
             drag_to_y=data.get("drag_to_y"),
             drag_duration=data.get("drag_duration"),

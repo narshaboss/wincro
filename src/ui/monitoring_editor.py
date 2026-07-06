@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinCro monitoring mode editor.
 
 The monitoring mode is intentionally simple:
@@ -27,17 +27,27 @@ from ..utils.config import DATA_DIR, get_config, save_config
 from ..utils.logger import get_logger
 from ..player.rule_executor import (
     _MULTISCALE_FACTORS,
-    _get_cached_template,
-    _get_cached_template_bgr,
+    _get_cached_template_variants,
     _grab_screen_bgr,
     _passes_image_visual_verification,
     _resize_template_gray,
 )
-from .analyzer_view import get_cached_thumbnail, set_cached_thumbnail, submit_thumbnail_task
+from .analyzer_view import (
+    VIDEO_FILE_PATTERNS,
+    get_cached_thumbnail,
+    is_video_media_path,
+    set_cached_thumbnail,
+    submit_thumbnail_task,
+)
 from .constants import ACTION_NAMES_SHORT
 from .key_input_dialog import KeyInputDialog, format_key_combo
+from .random_key_sequence_dialog import RandomKeySequenceDialog
 from .text_overflow import truncate_ui_text
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
+from ..player.random_key_sequence import (
+    format_random_key_sequences_summary,
+    normalize_random_key_sequences,
+)
 
 logger = get_logger(__name__)
 
@@ -51,8 +61,19 @@ _MONITORING_RENDER_BATCH_DELAY_MS = 12
 class MonitorActionEditorDialog(ctk.CTkToplevel):
     """Direct editor for monitoring-only actions."""
 
-    ACTION_TYPES = ("이미지 클릭", "마우스 클릭", "키 입력", "텍스트 입력", "스크롤", "드래그")
+    VIDEO_CLICK_TYPE = "동영상클릭"
+    LEGACY_VIDEO_CLICK_TYPE = "동영상 입력"
+    RANDOM_KEY_TYPE = "랜덤키 입력"
+    ACTION_TYPES = ("이미지 클릭", VIDEO_CLICK_TYPE, "마우스 클릭", "키 입력", RANDOM_KEY_TYPE, "텍스트 입력", "스크롤", "드래그")
+    VIDEO_CLICK_TYPES = (VIDEO_CLICK_TYPE, LEGACY_VIDEO_CLICK_TYPE)
+    MEDIA_CLICK_TYPES = ("이미지 클릭", VIDEO_CLICK_TYPE, LEGACY_VIDEO_CLICK_TYPE)
     CLICK_TYPES = ("click", "double_click", "right_click")
+
+    @classmethod
+    def _normalise_action_type(cls, action_type: str) -> str:
+        if action_type == cls.LEGACY_VIDEO_CLICK_TYPE:
+            return cls.VIDEO_CLICK_TYPE
+        return action_type
 
     def __init__(self, editor: "MonitoringModeEditor", action: dict | None, on_save):
         super().__init__(editor)
@@ -67,7 +88,13 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         )
         self._confidence = MonitoringModeEditor._safe_confidence(self._source_action.get("confidence", 0.8))
         self._key_events = [dict(event) for event in (self._source_action.get("key_events") or []) if isinstance(event, dict)]
+        self._random_key_sequences = normalize_random_key_sequences(self._source_action.get("random_key_sequences", []))
+        try:
+            self._random_key_step_delay = max(0.0, float(self._source_action.get("random_key_step_delay", 0.8) or 0.0))
+        except (TypeError, ValueError):
+            self._random_key_step_delay = 0.8
         self._key_label = None
+        self._random_key_label = None
         self._image_label = None
         self._region_label = None
         self._confidence_label = None
@@ -102,7 +129,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         ).pack(anchor="w")
         ctk.CTkLabel(
             root,
-            text="감시 이미지가 발견되었을 때만 실행되는 액션입니다. 이미지 클릭은 인식률, 검색범위, 색상/밝기 확인을 여기서 바로 설정합니다.",
+            text="감시 이미지가 발견되었을 때만 실행되는 액션입니다. 이미지/동영상 클릭은 인식률, 검색범위, 색상/밝기 확인을 여기서 바로 설정합니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             wraplength=560,
@@ -122,7 +149,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             text_color=COLORS["text_primary"],
         ).pack(side="left", padx=(0, 8))
 
-        action_type = str(self._source_action.get("type") or "이미지 클릭")
+        action_type = self._normalise_action_type(str(self._source_action.get("type") or "이미지 클릭"))
         if action_type not in self.ACTION_TYPES:
             action_type = "이미지 클릭"
         self._field_vars["type"] = tk.StringVar(value=action_type)
@@ -151,7 +178,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         bottom.pack(fill="x", padx=18, pady=(0, 16))
         ctk.CTkButton(
             bottom,
-            text="저장",
+            text="\uc800\uc7a5",
             width=110,
             height=38,
             font=self._font(13, "bold"),
@@ -215,7 +242,9 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
 
     def _rebuild_detail_fields(self) -> None:
         self._clear_detail()
-        action_type = self._field_vars["type"].get()
+        action_type = self._normalise_action_type(self._field_vars["type"].get())
+        if action_type != self._field_vars["type"].get():
+            self._field_vars["type"].set(action_type)
         ctk.CTkLabel(
             self._detail_frame,
             text="상세 설정",
@@ -223,17 +252,19 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             text_color=COLORS["text_primary"],
         ).pack(anchor="w", padx=12, pady=(12, 6))
 
-        if action_type == "이미지 클릭":
+        if action_type in self.MEDIA_CLICK_TYPES:
             self._build_image_click_fields()
         elif action_type == "마우스 클릭":
             self._build_mouse_fields()
         elif action_type == "키 입력":
             self._build_key_fields()
+        elif action_type == self.RANDOM_KEY_TYPE:
+            self._build_random_key_fields()
         elif action_type == "텍스트 입력":
             self._build_text_fields()
-        elif action_type == "스크롤":
+        elif action_type == "\uc2a4\ud06c\ub864":
             self._build_scroll_fields()
-        elif action_type == "드래그":
+        elif action_type == "\ub4dc\ub798\uadf8":
             self._build_drag_fields()
 
     def _build_click_type_combo(self, row, key="click_type") -> None:
@@ -256,10 +287,13 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         ).pack(side="left")
 
     def _build_image_click_fields(self) -> None:
-        image_row = self._row(self._detail_frame, "이미지")
+        action_type = self._normalise_action_type(self._field_vars["type"].get())
+        is_video_action = action_type in self.VIDEO_CLICK_TYPES
+        media_label = "\ub3d9\uc601\uc0c1" if is_video_action else "\uc774\ubbf8\uc9c0"
+        image_row = self._row(self._detail_frame, media_label)
         self._image_label = ctk.CTkLabel(
             image_row,
-            text=truncate_ui_text(Path(self._image_path).name, 34) if self._image_path else "이미지 없음",
+            text=truncate_ui_text(Path(self._image_path).name, 34) if self._image_path else f"{media_label} 없음",
             anchor="w",
             font=self._font(12, "bold"),
             text_color=COLORS["accent_text"] if self._image_path else COLORS["text_muted"],
@@ -267,7 +301,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         self._image_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ctk.CTkButton(
             image_row,
-            text="선택",
+            text="영상 선택" if is_video_action else "선택",
             width=76,
             height=30,
             font=self._font(12, "bold"),
@@ -275,11 +309,22 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             hover_color=COLORS["hover_blue"],
             command=self._choose_image,
         ).pack(side="right")
+        if is_video_action:
+            ctk.CTkButton(
+                image_row,
+                text="영상 테스트",
+                width=88,
+                height=30,
+                font=self._font(12, "bold"),
+                fg_color=COLORS["success"],
+                hover_color=COLORS["green_hover"],
+                command=self._test_video_template,
+            ).pack(side="right", padx=(0, 6))
 
         click_row = self._row(self._detail_frame, "클릭 유형")
         self._build_click_type_combo(click_row)
 
-        conf_row = self._row(self._detail_frame, "인식률")
+        conf_row = self._row(self._detail_frame, "\uc778\uc2dd\ub960")
         self._confidence_label = ctk.CTkLabel(
             conf_row,
             text=f"{int(self._confidence * 100)}%",
@@ -299,7 +344,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         slider.set(self._confidence)
         slider.pack(side="left", fill="x", expand=True)
 
-        region_row = self._row(self._detail_frame, "검색범위")
+        region_row = self._row(self._detail_frame, "\uac80\uc0c9\ubc94\uc704")
         self._region_label = ctk.CTkLabel(
             region_row,
             text=self._region_text(),
@@ -338,6 +383,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             ("verify_image_brightness", "밝기 확인"),
             ("alternate_mouse_route", "직각 이동"),
             ("click_until_image_disappears", "사라질 때까지 반복"),
+            ("skip_on_not_found", "못찾으면 스킵"),
         )):
             ctk.CTkCheckBox(
                 option_grid,
@@ -351,9 +397,9 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         option_grid.grid_columnconfigure(0, weight=1, minsize=160)
         option_grid.grid_columnconfigure(1, weight=1, minsize=180)
 
-        delay_row = self._row(self._detail_frame, "사라짐 대기")
+        delay_row = self._row(self._detail_frame, "\uc0ac\ub77c\uc9d0 \ub300\uae30")
         self._entry(delay_row, "click_until_image_disappears_delay", 0.5, width=100)
-        ctk.CTkLabel(delay_row, text="초", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(delay_row, text="\ucd08", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(6, 0))
 
     def _build_mouse_fields(self) -> None:
         row = self._row(self._detail_frame, "좌표")
@@ -374,7 +420,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         ).pack(side="left")
 
     def _build_key_fields(self) -> None:
-        row = self._row(self._detail_frame, "키")
+        row = self._row(self._detail_frame, "\ud0a4")
         keys = [str(key).lower().strip() for key in (self._source_action.get("keys", []) or []) if str(key).strip()]
         self._field_vars["keys_text"] = tk.StringVar(value="+".join(keys))
         self._key_label = ctk.CTkLabel(
@@ -418,7 +464,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         ).pack(fill="x", padx=12, pady=(0, 8))
 
     def _build_text_fields(self) -> None:
-        row = self._row(self._detail_frame, "입력문")
+        row = self._row(self._detail_frame, "\uc785\ub825\ubb38")
         self._text_box = ctk.CTkTextbox(
             row,
             width=380,
@@ -441,11 +487,11 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             hover_color=COLORS["hover_blue"],
         ).pack(side="left", padx=(0, 8))
         self._entry(typing_row, "typing_delay", 0.1, width=80)
-        ctk.CTkLabel(typing_row, text="±", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=5)
+        ctk.CTkLabel(typing_row, text="초", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=5)
         self._entry(typing_row, "typing_delay_range", 0.05, width=80)
 
     def _build_scroll_fields(self) -> None:
-        row = self._row(self._detail_frame, "스크롤")
+        row = self._row(self._detail_frame, "\uc2a4\ud06c\ub864")
         self._entry(row, "amount", self._source_action.get("amount", 0), width=140)
 
     def _build_drag_fields(self) -> None:
@@ -493,19 +539,67 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         self._key_events = []
         self._refresh_key_label()
 
+    def _build_random_key_fields(self) -> None:
+        row = self._row(self._detail_frame, "키 묶음")
+        self._random_key_label = ctk.CTkLabel(
+            row,
+            text=format_random_key_sequences_summary(self._random_key_sequences),
+            anchor="w",
+            font=self._font(12, "bold"),
+            text_color=COLORS["accent_text"] if self._random_key_sequences else COLORS["text_muted"],
+        )
+        self._random_key_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(
+            row,
+            text="묶음 설정",
+            width=96,
+            height=30,
+            font=self._font(12, "bold"),
+            fg_color=COLORS["accent_orange"],
+            hover_color=COLORS["confidence_amber_hover"],
+            command=self._edit_random_key_sequences,
+        ).pack(side="right")
+        ctk.CTkLabel(
+            self._detail_frame,
+            text="실행 시 저장된 묶음 중 1개를 랜덤으로 골라 순서대로 입력합니다.",
+            font=self._font(11),
+            text_color=COLORS["text_muted"],
+            anchor="w",
+            wraplength=520,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=(0, 8))
+
+    def _edit_random_key_sequences(self) -> None:
+        dialog = RandomKeySequenceDialog(
+            self,
+            sequences=self._random_key_sequences,
+            step_delay=self._random_key_step_delay,
+        )
+        result = dialog.get_result()
+        if not result:
+            return
+        sequences, step_delay = result
+        self._random_key_sequences = sequences
+        self._random_key_step_delay = step_delay
+        if self._random_key_label is not None:
+            self._random_key_label.configure(
+                text=format_random_key_sequences_summary(sequences),
+                text_color=COLORS["accent_text"] if sequences else COLORS["text_muted"],
+            )
+
     def _build_common_options(self, parent) -> None:
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=IOS_METRICS["control_radius"])
         card.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
             card,
-            text="반복/대기",
+            text="\ubc18\ubcf5/\ub300\uae30",
             font=self._font(14, "bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w", padx=12, pady=(12, 6))
 
         row = self._row(card, "반복")
         self._entry(row, "repeat_count", 1, width=80)
-        ctk.CTkLabel(row, text="회", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(5, 12))
+        ctk.CTkLabel(row, text="\ud68c", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(5, 12))
         self._entry(row, "repeat_delay", 0.5, width=80)
         ctk.CTkLabel(row, text="초 간격", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(5, 12))
         ctk.CTkCheckBox(
@@ -519,9 +613,9 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         ).pack(side="left", padx=(0, 6))
         self._entry(row, "repeat_delay_random_range", 0.3, width=70)
 
-        wait_row = self._row(card, "실행 후")
+        wait_row = self._row(card, "\uc2e4\ud589 \ud6c4")
         self._entry(wait_row, "wait_after", 0.5, width=90)
-        ctk.CTkLabel(wait_row, text="초 대기", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(5, 12))
+        ctk.CTkLabel(wait_row, text="\ucd08 \ub300\uae30", font=self._font(11), text_color=COLORS["text_muted"]).pack(side="left", padx=(5, 12))
         ctk.CTkCheckBox(
             wait_row,
             text="랜덤",
@@ -536,19 +630,90 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
     def _choose_image(self) -> None:
         templates_dir = DATA_DIR / "templates"
         templates_dir.mkdir(parents=True, exist_ok=True)
+        type_var = self._field_vars.get("type")
+        action_type = self._normalise_action_type(type_var.get() if type_var is not None else "이미지 클릭")
+        is_video_action = action_type in self.VIDEO_CLICK_TYPES
         path = filedialog.askopenfilename(
-            title="전용액션 이미지 선택",
+            title="전용액션 동영상 선택" if is_video_action else "전용액션 이미지 선택",
             initialdir=str(templates_dir),
-            filetypes=[("이미지 파일", "*.png *.jpg *.jpeg *.bmp")],
+            filetypes=[("동영상 파일", VIDEO_FILE_PATTERNS), ("모든 파일", "*.*")] if is_video_action else [("이미지 파일", "*.png *.jpg *.jpeg *.bmp")],
         )
         if not path:
             return
-        self._image_path = self._editor._copy_image_to_templates(path, prefix="monitor_action")
+        if is_video_action and not is_video_media_path(path):
+            messagebox.showwarning("\uc804\uc6a9\uc561\uc158 \uc601\uc0c1", "\uc601\uc0c1 \ud30c\uc77c\ub9cc \uc120\ud0dd\ud558\uc138\uc694.", parent=self)
+            return
+        self._image_path = self._editor._copy_image_to_templates(
+            path,
+            prefix="monitor_action_video" if is_video_action else "monitor_action",
+        )
         if self._image_label is not None:
             self._image_label.configure(
                 text=truncate_ui_text(Path(self._image_path).name, 34),
                 text_color=COLORS["accent_text"],
             )
+
+    def _test_video_template(self) -> None:
+        if not self._image_path:
+            messagebox.showwarning("\uc601\uc0c1 \ud14c\uc2a4\ud2b8", "\uc601\uc0c1\uc774 \uc124\uc815\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.", parent=self)
+            return
+        if not Path(self._image_path).exists():
+            messagebox.showerror("\uc601\uc0c1 \ud14c\uc2a4\ud2b8", f"\uc601\uc0c1 \ud30c\uc77c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.\n{self._image_path}", parent=self)
+            return
+        if not is_video_media_path(self._image_path):
+            messagebox.showwarning("\uc601\uc0c1 \ud14c\uc2a4\ud2b8", "\uc601\uc0c1 \ud30c\uc77c\ub9cc \ud14c\uc2a4\ud2b8\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.", parent=self)
+            return
+
+        route = {
+            "condition_image": self._image_path,
+            "condition_confidence": self._confidence,
+            "condition_search_region": copy.deepcopy(self._search_region),
+            "condition_verify_image_color": bool(self._field_vars.get("verify_image_color").get()) if self._field_vars.get("verify_image_color") is not None else False,
+            "condition_verify_image_brightness": bool(self._field_vars.get("verify_image_brightness").get()) if self._field_vars.get("verify_image_brightness") is not None else False,
+        }
+
+        def worker() -> None:
+            try:
+                result = self._editor._match_condition_image_for_test(route)
+            except Exception as exc:
+                logger.exception("[모니터링] 전용액션 영상 테스트 오류")
+                result = {"ok": False, "error": str(exc)}
+
+            def show_result() -> None:
+                try:
+                    if not self.winfo_exists():
+                        return
+                except tk.TclError:
+                    return
+                if not result.get("ok"):
+                    messagebox.showerror("\uc601\uc0c1 \ud14c\uc2a4\ud2b8", f"\ud14c\uc2a4\ud2b8 \uc2e4\ud328: {result.get('error', 'unknown error')}", parent=self)
+                    return
+                score_pct = int(round(float(result.get("score", 0.0)) * 100))
+                threshold_pct = int(round(float(result.get("threshold", 0.0)) * 100))
+                found = bool(result.get("found"))
+                status = "\ubc1c\uacac" if found else "\ubbf8\ubc1c\uacac"
+                detail = [
+                    f"결과: {status}",
+                    f"인식률: {score_pct}% / 기준 {threshold_pct}%",
+                    f"검색범위: {result.get('region_label', '-')}",
+                ]
+                if result.get("position"):
+                    x, y = result["position"]
+                    detail.append(f"위치: ({x}, {y})")
+                if result.get("variant"):
+                    detail.append(f"동영상 프레임: {result.get('variant')}")
+                if result.get("visual_failed"):
+                    detail.append("추가 확인: 점수는 기준 이상이지만 색상/밝기 검증 실패")
+                if result.get("verify"):
+                    detail.append(f"검증옵션: {result.get('verify')}")
+                messagebox.showinfo("\uc601\uc0c1 \ud14c\uc2a4\ud2b8", "\n".join(detail), parent=self)
+
+            try:
+                self.after(0, show_result)
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_confidence(self, value) -> None:
         self._confidence = MonitoringModeEditor._safe_confidence(value)
@@ -576,7 +741,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
 
     def _show_region_options(self) -> None:
         dialog = ctk.CTkToplevel(self)
-        dialog.title("전용액션 검색범위")
+        dialog.title("\uc804\uc6a9\uc561\uc158 \uac80\uc0c9\ubc94\uc704")
         dialog.geometry("500x350")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_content"])
@@ -593,7 +758,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(0, 4))
         ctk.CTkLabel(
             main,
-            text="A/B영역은 일반 이미지 액션과 같은 공용 범위입니다. 자유영역은 이 전용액션에만 적용됩니다.",
+            text="A/B영역은 일반 이미지 액션과 같은 공용 범위입니다. 자유영역은 이 전용액션에만 적용합니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             wraplength=460,
@@ -749,28 +914,30 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             if var is not None:
                 action["typing_random"] = bool(var.get())
 
-        if action_type in ("이미지 클릭", "마우스 클릭"):
+        if action_type in self.MEDIA_CLICK_TYPES or action_type == "마우스 클릭":
             var = self._field_vars.get("alternate_mouse_route")
             if var is not None:
                 action["alternate_mouse_route"] = bool(var.get())
 
-        if action_type == "이미지 클릭":
+        if action_type in self.MEDIA_CLICK_TYPES:
             for key in (
                 "verify_image_color",
                 "verify_image_brightness",
                 "click_until_image_disappears",
+                "skip_on_not_found",
             ):
                 var = self._field_vars.get(key)
                 if var is not None:
                     action[key] = bool(var.get())
 
     def _save(self) -> None:
-        action_type = self._field_vars["type"].get()
+        action_type = self._normalise_action_type(self._field_vars["type"].get())
         action: dict = {"type": action_type}
 
-        if action_type == "이미지 클릭":
+        if action_type in self.MEDIA_CLICK_TYPES:
             if not self._image_path:
-                messagebox.showerror("설정 필요", "이미지 클릭 액션에는 이미지가 필요합니다.", parent=self)
+                media_label = "\ub3d9\uc601\uc0c1" if action_type in self.VIDEO_CLICK_TYPES else "\uc774\ubbf8\uc9c0"
+                messagebox.showerror("설정 필요", f"{action_type} 액션에는 {media_label}가 필요합니다.", parent=self)
                 return
             action["image"] = self._image_path
             action["click_type"] = self._field_vars["click_type"].get()
@@ -787,15 +954,22 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
                 return
             action["keys"] = keys
             action["key_events"] = [dict(event) for event in self._key_events if isinstance(event, dict)]
+        elif action_type == self.RANDOM_KEY_TYPE:
+            sequences = normalize_random_key_sequences(self._random_key_sequences)
+            if not sequences:
+                messagebox.showerror("설정 필요", "랜덤키 입력 액션에는 키 묶음이 필요합니다.", parent=self)
+                return
+            action["random_key_sequences"] = sequences
+            action["random_key_step_delay"] = self._random_key_step_delay
         elif action_type == "텍스트 입력":
             text = self._text_box.get("1.0", "end").rstrip("\n") if self._text_box is not None else ""
             if not text:
                 messagebox.showerror("설정 필요", "텍스트 입력 액션에는 입력문이 필요합니다.", parent=self)
                 return
             action["text"] = text
-        elif action_type == "스크롤":
+        elif action_type == "\uc2a4\ud06c\ub864":
             action["amount"] = self._int_value(self._field_vars["amount"].get(), 0)
-        elif action_type == "드래그":
+        elif action_type == "\ub4dc\ub798\uadf8":
             for key in ("from_x", "from_y", "to_x", "to_y"):
                 action[key] = self._int_value(self._field_vars[key].get(), 0)
 
@@ -888,6 +1062,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     "goto_index": goto_index,
                     "goto_rule_id": str(watch.get("goto_rule_id") or ""),
                     "jump_enabled": bool(watch.get("jump_enabled", True)),
+                    "pre_jump_recheck": bool(watch.get("pre_jump_recheck", True)),
                     "monitor_actions": copy.deepcopy(watch.get("monitor_actions", []) or []),
                     "condition_image": watch.get("condition_image"),
                     "condition_search_region": copy.deepcopy(watch.get("condition_search_region")),
@@ -1045,7 +1220,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_box,
-            text="최종이미지를 기다리다가 등록한 이동 이미지가 먼저 보이면 전용액션을 실행한 뒤 지정 액션으로 점프하고 모니터링을 끝냅니다.",
+            text="최종이미지를 기다리다가 등록한 모니터링 이미지가 먼저 보이면 전용액션을 실행한 뒤 지정한 액션으로 점프하고 모니터링을 종료합니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             wraplength=920,
@@ -1067,7 +1242,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         flow.pack(fill="x", pady=(0, 12))
         ctk.CTkLabel(
             flow,
-            text="1. 최종이미지 대기   →   2. 이동 이미지 발견   →   3. 전용액션 실행 후 지정 액션으로 점프",
+            text="1. 최종이미지 대기  →  2. 모니터링 이미지 발견  →  3. 전용액션 실행  →  지정 액션으로 점프",
             font=self._font(13, "bold"),
             text_color=COLORS["accent_text"],
             wraplength=980,
@@ -1093,7 +1268,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="w")
         self._route_count_label = ctk.CTkLabel(
             title,
-            text="등록 0개",
+            text="\ub4f1\ub85d 0\uac1c",
             font=self._font(11),
             text_color=COLORS["text_secondary"],
         )
@@ -1135,7 +1310,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             card,
-            text="모니터링 이미지가 보이면 전용액션을 먼저 실행하고, 지정한 액션으로 점프하면서 모니터링은 종료됩니다.",
+            text="모니터링 이미지가 보이면 전용액션을 먼저 실행하고, 지정한 점프액션으로 이동하면 모니터링은 종료됩니다.",
             font=self._font(11),
             text_color=COLORS["text_secondary"],
             anchor="w",
@@ -1161,7 +1336,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkButton(
             bottom,
-            text="저장",
+            text="\uc800\uc7a5",
             width=120,
             height=40,
             font=self._font(14, "bold"),
@@ -1225,7 +1400,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _region_label_text(self, region) -> str:
         normalized = self._normalize_search_region_value(region)
         if not normalized:
-            return "미설정"
+            return "\ubbf8\uc124\uc815"
         x1, y1, x2, y2 = normalized
         return f"({x1}, {y1}) ~ ({x2}, {y2})  {x2 - x1}x{y2 - y1}"
 
@@ -1246,7 +1421,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return self._normalize_search_region_value(self._route_watches[idx].get("condition_search_region"))
         return None
 
-    def _apply_region_to_target(self, target: str, region, source_label: str = "검색범위", idx: int | None = None) -> bool:
+    def _apply_region_to_target(self, target: str, region, source_label: str = "\uac80\uc0c9\ubc94\uc704", idx: int | None = None) -> bool:
         normalized = self._normalize_search_region_value(region)
         if normalized is None:
             return False
@@ -1288,6 +1463,20 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if not path or not Path(path).exists():
             return ""
         try:
+            if is_video_media_path(path):
+                frames = _get_cached_template_variants(str(path))
+                if not frames:
+                    return "동영상 조건 템플릿을 읽을 수 없습니다."
+                # Moving templates are expected to vary, but every sampled frame
+                # being nearly flat still makes the condition unreliable.
+                gray_values = [frame[0] for frame in frames if frame and frame[0] is not None]
+                if not gray_values:
+                    return "동영상 조건 프레임이 비어 있습니다."
+                mean_std = float(np.mean([np.std(gray) for gray in gray_values]))
+                if mean_std < 3:
+                    return "동영상 조건 프레임이 거의 단색입니다. 다시 캡처하세요."
+                return ""
+
             img_arr = np.fromfile(str(path), np.uint8)
             img = cv2.imdecode(img_arr, cv2.IMREAD_UNCHANGED)
             if img is None:
@@ -1341,21 +1530,36 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         def load_thumbnail():
             try:
-                img_arr = np.fromfile(source, np.uint8)
-                img = cv2.imdecode(img_arr, cv2.IMREAD_UNCHANGED)
-                if img is None:
-                    raise ValueError("image decode failed")
-                if img.ndim == 2:
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-                elif img.shape[2] == 4:
-                    bgr = img[:, :, :3].astype(np.float32)
-                    alpha = img[:, :, 3:4].astype(np.float32) / 255.0
-                    bg_rgb = tuple(int(COLORS["bg_card"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
-                    bg_bgr = np.array([bg_rgb[2], bg_rgb[1], bg_rgb[0]], dtype=np.float32)
-                    composited = (bgr * alpha) + (bg_bgr * (1.0 - alpha))
-                    img_rgb = cv2.cvtColor(composited.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                if is_video_media_path(source):
+                    cap = cv2.VideoCapture(source)
+                    try:
+                        if not cap.isOpened():
+                            raise ValueError("video open failed")
+                        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                        if frame_count > 1:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_count // 2))
+                        ok, frame = cap.read()
+                        if not ok or frame is None:
+                            raise ValueError("video frame read failed")
+                        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    finally:
+                        cap.release()
                 else:
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img_arr = np.fromfile(source, np.uint8)
+                    img = cv2.imdecode(img_arr, cv2.IMREAD_UNCHANGED)
+                    if img is None:
+                        raise ValueError("image decode failed")
+                    if img.ndim == 2:
+                        img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                    elif img.shape[2] == 4:
+                        bgr = img[:, :, :3].astype(np.float32)
+                        alpha = img[:, :, 3:4].astype(np.float32) / 255.0
+                        bg_rgb = tuple(int(COLORS["bg_card"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+                        bg_bgr = np.array([bg_rgb[2], bg_rgb[1], bg_rgb[0]], dtype=np.float32)
+                        composited = (bgr * alpha) + (bg_bgr * (1.0 - alpha))
+                        img_rgb = cv2.cvtColor(composited.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                    else:
+                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 h, w = img_rgb.shape[:2]
                 scale = min(size[0] / w, size[1] / h)
                 new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
@@ -1398,7 +1602,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if target in {"route", "condition"} and (idx is None or not 0 <= idx < len(self._route_watches)):
             return
 
-        title_text = "조건 이미지 검색범위" if target == "condition" else "모니터링 이미지 액션 검색범위"
+        title_text = "\uc870\uac74 \uc774\ubbf8\uc9c0 \uac80\uc0c9\ubc94\uc704" if target == "condition" else "\ubaa8\ub2c8\ud130\ub9c1 \uc774\ubbf8\uc9c0 \uc561\uc158 \uac80\uc0c9\ubc94\uc704"
         dialog = ctk.CTkToplevel(self)
         dialog.title("검색범위 선택")
         dialog.geometry("540x390")
@@ -1423,7 +1627,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(0, 4))
         ctk.CTkLabel(
             main,
-            text="A/B 영역은 일반 이미지 액션과 같은 공용 프리셋을 쓰고, 자유영역은 현재 모니터링 항목에만 적용됩니다.",
+            text="A/B 영역은 일반 이미지 액션과 같은 공용 프리셋을 쓰고, 자유영역은 현재 모니터링 항목에만 적용합니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             wraplength=500,
@@ -1645,15 +1849,17 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         return ""
 
     def _add_route_watch(self) -> None:
+        default_goto_index = self._default_route_goto_index()
         self._route_watches.append(
             {
                 "image": None,
                 "images": [],
                 "search_region": None,
                 "confidence": self._monitor_confidence,
-                "goto_index": self._default_route_goto_index(),
+                "goto_index": default_goto_index,
                 "goto_rule_id": self._default_route_goto_rule_id(),
                 "jump_enabled": True,
+                "pre_jump_recheck": default_goto_index >= 0,
                 "monitor_actions": [],
                 "condition_image": None,
                 "condition_search_region": None,
@@ -1693,6 +1899,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             goto_index = self._default_route_goto_index()
             goto_rule_id = self._default_route_goto_rule_id()
         images = self._normalise_route_images(route)
+        jump_enabled = bool(route.get("jump_enabled", True))
         return {
             "image": images[0]["image"] if images else (route.get("image") or route.get("image_path")),
             "images": images,
@@ -1700,7 +1907,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             "confidence": self._safe_confidence(route.get("confidence", self._monitor_confidence)),
             "goto_index": goto_index,
             "goto_rule_id": goto_rule_id,
-            "jump_enabled": bool(route.get("jump_enabled", True)),
+            "jump_enabled": jump_enabled,
+            "pre_jump_recheck": bool(route.get("pre_jump_recheck", goto_index >= 0 and jump_enabled)) and goto_index >= 0 and jump_enabled,
             "monitor_actions": copy.deepcopy(route.get("monitor_actions", []) or []),
             "condition_image": route.get("condition_image"),
             "condition_search_region": copy.deepcopy(route.get("condition_search_region")),
@@ -1791,7 +1999,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._set_route_images(idx, current)
         if skipped:
             self._set_status_text(
-                f"이미지 {added}개 추가, {skipped}개 제외 - 최대 {_MAX_MONITORING_IMAGES_PER_ROUTE}개",
+                f"\uc774\ubbf8\uc9c0 {added}\uac1c \ucd94\uac00, {skipped}\uac1c \uc81c\uc678 - \ucd5c\ub300 {_MAX_MONITORING_IMAGES_PER_ROUTE}\uac1c",
                 COLORS["accent_text"],
             )
         elif added:
@@ -1830,7 +2038,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return
 
         dialog = ctk.CTkToplevel(self)
-        dialog.title("모니터링 이미지 관리")
+        dialog.title("\ubaa8\ub2c8\ud130\ub9c1 \uc774\ubbf8\uc9c0 \uad00\ub9ac")
         dialog.geometry("780x660")
         dialog.minsize(720, 560)
         dialog.configure(fg_color=COLORS["bg_content"])
@@ -1867,7 +2075,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             for child in list_frame.winfo_children():
                 child.destroy()
             images = self._normalise_route_images(self._route_watches[idx])
-            count_var.set(f"등록 {len(images)}/{_MAX_MONITORING_IMAGES_PER_ROUTE}개")
+            count_var.set(f"\ub4f1\ub85d {len(images)}/{_MAX_MONITORING_IMAGES_PER_ROUTE}\uac1c")
             if not images:
                 ctk.CTkLabel(
                     list_frame,
@@ -1999,7 +2207,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 ).pack(side="left", padx=(0, 5))
                 self._small_button(
                     option_row,
-                    "범위×",
+                    "범위",
                     COLORS["bg_elevated"],
                     COLORS["bg_card_hover"],
                     lambda i=image_idx: clear_image_region(i),
@@ -2027,7 +2235,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 ).pack(side="left", padx=(0, 4))
                 self._small_button(
                     item_row,
-                    "▲",
+                    "\u25b2",
                     COLORS["bg_elevated"],
                     COLORS["bg_card_hover"],
                     lambda i=image_idx: self._move_route_image(idx, i, -1, refresh),
@@ -2035,7 +2243,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 ).pack(side="left", padx=(6, 4))
                 self._small_button(
                     item_row,
-                    "▼",
+                    "\u25bc",
                     COLORS["bg_elevated"],
                     COLORS["bg_card_hover"],
                     lambda i=image_idx: self._move_route_image(idx, i, 1, refresh),
@@ -2043,7 +2251,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 ).pack(side="left", padx=(0, 4))
                 self._small_button(
                     item_row,
-                    "×",
+                    "삭제",
                     COLORS["danger"],
                     COLORS["danger_hover"],
                     lambda i=image_idx: self._delete_route_image(idx, i, refresh),
@@ -2104,6 +2312,24 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._route_watches[idx]["condition_image"] = self._copy_image_to_templates(path, prefix="condition")
         self._refresh_route_row(idx)
 
+    def _select_route_condition_video(self, idx: int) -> None:
+        if not 0 <= idx < len(self._route_watches):
+            return
+        templates_dir = DATA_DIR / "templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        path = filedialog.askopenfilename(
+            title="조건 동영상 선택",
+            initialdir=str(templates_dir),
+            filetypes=[("동영상 파일", VIDEO_FILE_PATTERNS), ("모든 파일", "*.*")],
+        )
+        if not path:
+            return
+        if not is_video_media_path(path):
+            messagebox.showwarning("\uc870\uac74 \uc601\uc0c1", "\uc601\uc0c1 \ud30c\uc77c\ub9cc \uc120\ud0dd\ud558\uc138\uc694.", parent=self)
+            return
+        self._route_watches[idx]["condition_image"] = self._copy_image_to_templates(path, prefix="condition_video")
+        self._refresh_route_row(idx)
+
     def _open_route_condition_settings(self, idx: int) -> None:
         if not 0 <= idx < len(self._route_watches):
             return
@@ -2127,7 +2353,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         confidence_var = tk.StringVar()
         warning_var = tk.StringVar()
         jump_mode_var = tk.StringVar(
-            value="보일 때 점프" if route.get("condition_jump_when_visible", False) else "안 보일 때 점프"
+            value="보이면 점프" if route.get("condition_jump_when_visible", False) else "안 보이면 점프"
         )
         verify_color_var = tk.BooleanVar(value=bool(route.get("condition_verify_image_color", False)))
         verify_brightness_var = tk.BooleanVar(value=bool(route.get("condition_verify_image_brightness", False)))
@@ -2137,13 +2363,13 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             root,
-            text=f"{idx + 1}번 조건 이미지",
+            text=f"{idx + 1}번 조건 이미지/동영상",
             font=self._font(18, "bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w")
         ctk.CTkLabel(
             root,
-            text="조건 이미지가 계속 보이면 전용액션 후 점프를 보류합니다. 이미지, 검색범위, 인식률을 여기서 설정하세요.",
+            text="조건 이미지/동영상이 계속 보이면 전용액션 후 점프를 보류합니다. 파일, 검색범위, 인식률을 여기서 설정하세요.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             wraplength=560,
@@ -2200,7 +2426,11 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         def refresh_dialog() -> None:
             current = self._route_watches[idx] if 0 <= idx < len(self._route_watches) else {}
             image_path = current.get("condition_image")
-            image_var.set(Path(image_path).name if image_path else "조건 이미지 없음")
+            if image_path:
+                kind = "\ub3d9\uc601\uc0c1" if is_video_media_path(image_path) else "\uc774\ubbf8\uc9c0"
+                image_var.set(f"{kind}: {Path(image_path).name}")
+            else:
+                image_var.set("조건 이미지/동영상 없음")
             region_var.set(f"검색범위: {self._region_label_text(current.get('condition_search_region'))}")
             confidence = self._safe_confidence(current.get("condition_confidence", 0.8))
             confidence_var.set(f"{int(confidence * 100)}%")
@@ -2209,6 +2439,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         def choose_image() -> None:
             self._select_route_condition_image(idx)
+            refresh_dialog()
+
+        def choose_video() -> None:
+            self._select_route_condition_video(idx)
             refresh_dialog()
 
         def clear_condition() -> None:
@@ -2235,7 +2469,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         button_row = ctk.CTkFrame(root, fg_color="transparent")
         button_row.pack(fill="x", pady=(0, 12))
         self._small_button(button_row, "이미지 선택", COLORS["accent_blue"], COLORS["hover_blue"], choose_image, width=92).pack(side="left", padx=(0, 6))
-        self._small_button(button_row, "검색범위", COLORS["bg_elevated"], COLORS["bg_card_hover"], open_region, width=82).pack(side="left", padx=(0, 6))
+        self._small_button(button_row, "동영상 입력", COLORS["accent_orange"], COLORS["confidence_amber_hover"], choose_video, width=92).pack(side="left", padx=(0, 6))
+        self._small_button(button_row, "\uac80\uc0c9\ubc94\uc704", COLORS["bg_elevated"], COLORS["bg_card_hover"], open_region, width=82).pack(side="left", padx=(0, 6))
         self._small_button(button_row, "범위해제", COLORS["bg_elevated"], COLORS["bg_card_hover"], clear_region, width=82).pack(side="left", padx=(0, 6))
         self._small_button(button_row, "조건해제", COLORS["danger"], COLORS["danger_hover"], clear_condition, width=82).pack(side="left", padx=(0, 6))
         self._small_button(button_row, "조건 테스트", COLORS["success"], COLORS["green_hover"], test_condition, width=92).pack(side="left")
@@ -2246,7 +2481,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         confidence_inner.pack(fill="x", padx=12, pady=10)
         ctk.CTkLabel(
             confidence_inner,
-            text="조건 인식률",
+            text="\uc870\uac74 \uc778\uc2dd\ub960",
             width=90,
             anchor="w",
             font=self._font(12, "bold"),
@@ -2284,7 +2519,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="left", padx=(0, 8))
         ctk.CTkSegmentedButton(
             mode_inner,
-            values=["안 보일 때 점프", "보일 때 점프"],
+            values=["안 보이면 점프", "보이면 점프"],
             variable=jump_mode_var,
             command=lambda value: self._on_route_condition_jump_mode_changed(idx, value),
             fg_color=COLORS["bg_elevated"],
@@ -2354,10 +2589,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         route = self._route_watches[idx]
         image_path = str(route.get("condition_image") or "").strip()
         if not image_path:
-            messagebox.showwarning("조건 테스트", "조건 이미지가 설정되지 않았습니다.", parent=parent or self)
+            messagebox.showwarning("\uc870\uac74 \ud14c\uc2a4\ud2b8", "\uc870\uac74 \uc774\ubbf8\uc9c0/\uc601\uc0c1\uc774 \uc124\uc815\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.", parent=parent or self)
             return
         if not Path(image_path).exists():
-            messagebox.showerror("조건 테스트", f"조건 이미지 파일이 없습니다.\n{image_path}", parent=parent or self)
+            messagebox.showerror("\uc870\uac74 \ud14c\uc2a4\ud2b8", f"\uc870\uac74 \ud30c\uc77c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.\n{image_path}", parent=parent or self)
             return
 
         def worker() -> None:
@@ -2373,12 +2608,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 except tk.TclError:
                     target_parent = self
                 if not result.get("ok"):
-                    messagebox.showerror("조건 테스트", f"테스트 실패: {result.get('error', '알 수 없는 오류')}", parent=target_parent)
+                    messagebox.showerror("\uc870\uac74 \ud14c\uc2a4\ud2b8", f"\ud14c\uc2a4\ud2b8 \uc2e4\ud328: {result.get('error', 'unknown error')}", parent=target_parent)
                     return
                 score_pct = int(round(float(result.get("score", 0.0)) * 100))
                 threshold_pct = int(round(float(result.get("threshold", 0.0)) * 100))
                 found = bool(result.get("found"))
-                status = "발견" if found else "미발견"
+                status = "\ubc1c\uacac" if found else "\ubbf8\ubc1c\uacac"
                 detail = [
                     f"결과: {status}",
                     f"인식률: {score_pct}% / 기준 {threshold_pct}%",
@@ -2387,11 +2622,13 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 if result.get("position"):
                     x, y = result["position"]
                     detail.append(f"위치: ({x}, {y})")
+                if result.get("variant"):
+                    detail.append(f"템플릿: {result.get('variant')}")
                 if result.get("visual_failed"):
-                    detail.append("추가확인: 점수는 기준 이상이지만 색상/밝기 검증 실패")
+                    detail.append("추가 확인: 점수는 기준 이상이지만 색상/밝기 검증 실패")
                 if result.get("verify"):
                     detail.append(f"검증옵션: {result.get('verify')}")
-                messagebox.showinfo("조건 테스트", "\n".join(detail), parent=target_parent)
+                messagebox.showinfo("\uc870\uac74 \ud14c\uc2a4\ud2b8", "\n".join(detail), parent=target_parent)
 
             try:
                 self.after(0, show_result)
@@ -2428,12 +2665,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             offset_y = y1
             region_label = self._region_label_text([x1, y1, x2, y2])
 
-        cached = _get_cached_template(image_path)
-        if cached is None:
+        template_variants = _get_cached_template_variants(image_path)
+        if not template_variants:
             return {"ok": False, "error": "조건 템플릿 로드 실패"}
-        template_gray, _template_h, _template_w = cached
-        template_bgr = _get_cached_template_bgr(image_path) if verify_visual else None
-        if verify_visual and template_bgr is None:
+        if verify_visual and not any(item[3] is not None for item in template_variants):
             return {"ok": False, "error": "색상/밝기 검증용 템플릿 로드 실패"}
 
         screen_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
@@ -2441,62 +2676,69 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         best_score = 0.0
         best_position = None
         best_size = None
+        best_variant = ""
         visual_failed = False
 
-        for scale in _MULTISCALE_FACTORS:
-            scaled_template = _resize_template_gray(template_gray, scale)
-            if scaled_template is None:
+        for template_gray, _template_h, _template_w, template_bgr, variant_label in template_variants:
+            if verify_visual and template_bgr is None:
                 continue
-            th, tw = scaled_template.shape[:2]
-            if tw > sw or th > sh or tw < 4 or th < 4:
-                continue
-            result = cv2.matchTemplate(screen_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
-            max_val = float(max_val)
-            if max_val > best_score:
-                best_score = max_val
-                best_position = (int(max_loc[0]) + tw // 2 + offset_x, int(max_loc[1]) + th // 2 + offset_y)
-                best_size = (tw, th)
+            for scale in _MULTISCALE_FACTORS:
+                scaled_template = _resize_template_gray(template_gray, scale)
+                if scaled_template is None:
+                    continue
+                th, tw = scaled_template.shape[:2]
+                if tw > sw or th > sh or tw < 4 or th < 4:
+                    continue
+                result = cv2.matchTemplate(screen_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                max_val = float(max_val)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_position = (int(max_loc[0]) + tw // 2 + offset_x, int(max_loc[1]) + th // 2 + offset_y)
+                    best_size = (tw, th)
+                    best_variant = str(variant_label or "")
 
-            if max_val < confidence:
-                continue
-            if verify_visual:
-                candidate_points = np.argwhere(result >= confidence)
-                if candidate_points.size:
-                    scores = result[candidate_points[:, 0], candidate_points[:, 1]]
-                    for order in np.argsort(scores)[::-1][:25]:
-                        row, col = candidate_points[order]
-                        if _passes_image_visual_verification(
-                            screenshot_bgr,
-                            template_bgr,
-                            int(col),
-                            int(row),
-                            tw,
-                            th,
-                            verify_color=verify_color,
-                            verify_brightness=verify_brightness,
-                        ):
-                            score = float(scores[order])
-                            return {
-                                "ok": True,
-                                "found": True,
-                                "score": score,
-                                "threshold": confidence,
-                                "region_label": region_label,
-                                "position": (int(col) + tw // 2 + offset_x, int(row) + th // 2 + offset_y),
-                                "verify": self._condition_verify_label(verify_color, verify_brightness),
-                            }
-                visual_failed = True
-                continue
-            return {
-                "ok": True,
-                "found": True,
-                "score": max_val,
-                "threshold": confidence,
-                "region_label": region_label,
-                "position": (int(max_loc[0]) + tw // 2 + offset_x, int(max_loc[1]) + th // 2 + offset_y),
-                "verify": "",
-            }
+                if max_val < confidence:
+                    continue
+                if verify_visual:
+                    candidate_points = np.argwhere(result >= confidence)
+                    if candidate_points.size:
+                        scores = result[candidate_points[:, 0], candidate_points[:, 1]]
+                        for order in np.argsort(scores)[::-1][:25]:
+                            row, col = candidate_points[order]
+                            if _passes_image_visual_verification(
+                                screenshot_bgr,
+                                template_bgr,
+                                int(col),
+                                int(row),
+                                tw,
+                                th,
+                                verify_color=verify_color,
+                                verify_brightness=verify_brightness,
+                            ):
+                                score = float(scores[order])
+                                return {
+                                    "ok": True,
+                                    "found": True,
+                                    "score": score,
+                                    "threshold": confidence,
+                                    "region_label": region_label,
+                                    "position": (int(col) + tw // 2 + offset_x, int(row) + th // 2 + offset_y),
+                                    "verify": self._condition_verify_label(verify_color, verify_brightness),
+                                    "variant": str(variant_label or ""),
+                                }
+                    visual_failed = True
+                    continue
+                return {
+                    "ok": True,
+                    "found": True,
+                    "score": max_val,
+                    "threshold": confidence,
+                    "region_label": region_label,
+                    "position": (int(max_loc[0]) + tw // 2 + offset_x, int(max_loc[1]) + th // 2 + offset_y),
+                    "verify": "",
+                    "variant": str(variant_label or ""),
+                }
 
         return {
             "ok": True,
@@ -2506,6 +2748,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             "region_label": region_label,
             "position": best_position if best_score > 0 else None,
             "size": best_size,
+            "variant": best_variant,
             "visual_failed": visual_failed,
             "verify": self._condition_verify_label(verify_color, verify_brightness),
         }
@@ -2549,6 +2792,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._route_watches[idx]["goto_index"] = target_index
         self._route_watches[idx]["goto_rule_id"] = str(option.get("rule_id") or "")
         self._route_watches[idx]["goto_step"] = str(option.get("step") or "")
+        self._route_watches[idx]["pre_jump_recheck"] = True
         self._refresh_route_row(idx)
 
     def _open_jump_target_dialog(self, idx: int) -> None:
@@ -2581,7 +2825,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             list_frame,
-            text="상위 액션은 기본 접힘입니다. ▸ 버튼을 눌러 하위액션을 펼친 뒤 바로 선택할 수 있습니다.",
+            text="상위 액션은 기본 접힘입니다. ▶ 버튼을 눌러 하위액션을 펼친 뒤 바로 선택할 수 있습니다.",
             font=self._font(12),
             text_color=COLORS["text_secondary"],
             anchor="w",
@@ -2630,7 +2874,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 if children:
                     self._small_button(
                         row,
-                        "▾" if option_key in expanded else "▸",
+                        "\u25be" if option_key in expanded else "\u25b8",
                         COLORS["bg_elevated"],
                         COLORS["bg_card_hover"],
                         lambda key=option_key: (expanded.remove(key) if key in expanded else expanded.add(key), render()),
@@ -2666,7 +2910,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                         child_selected = current_rule_id and child_option.get("rule_id") == current_rule_id
                         ctk.CTkLabel(
                             child_row,
-                            text="└",
+                            text="\u2514",
                             width=24,
                             font=self._font(12, "bold"),
                             text_color=COLORS["text_muted"],
@@ -2701,7 +2945,18 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
     def _on_route_jump_enabled_changed(self, idx: int, value: str) -> None:
         if 0 <= idx < len(self._route_watches):
-            self._route_watches[idx]["jump_enabled"] = value == "활성"
+            enabled = value == "활성"
+            self._route_watches[idx]["jump_enabled"] = enabled
+            if not enabled:
+                self._route_watches[idx]["pre_jump_recheck"] = False
+            elif self._watch_goto_index(self._route_watches[idx]) >= 0:
+                self._route_watches[idx].setdefault("pre_jump_recheck", True)
+
+    def _on_route_pre_jump_recheck_changed(self, idx: int, value: str) -> None:
+        if 0 <= idx < len(self._route_watches):
+            route = self._route_watches[idx]
+            can_jump = self._watch_goto_index(route) >= 0 and bool(route.get("jump_enabled", True))
+            route["pre_jump_recheck"] = bool(can_jump and value == "ON")
 
     def _on_route_confidence_changed(self, idx: int, value) -> None:
         if 0 <= idx < len(self._route_watches):
@@ -2716,7 +2971,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
     def _on_route_condition_jump_mode_changed(self, idx: int, value: str) -> None:
         if 0 <= idx < len(self._route_watches):
-            self._route_watches[idx]["condition_jump_when_visible"] = value == "보일 때 점프"
+            self._route_watches[idx]["condition_jump_when_visible"] = value == "보이면 점프"
 
     def _refresh_route_list(self) -> None:
         self._update_route_count_label()
@@ -2771,7 +3026,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _update_route_count_label(self) -> None:
         if self._route_count_label is not None:
             image_count = sum(len(self._normalise_route_images(route)) for route in self._route_watches)
-            self._route_count_label.configure(text=f"등록 {len(self._route_watches)}개 / 이미지 {image_count}개")
+            self._route_count_label.configure(text=f"\ub4f1\ub85d {len(self._route_watches)}\uac1c / \uc774\ubbf8\uc9c0 {image_count}\uac1c")
 
     def _refresh_route_row(self, idx: int) -> None:
         self._update_route_count_label()
@@ -2816,7 +3071,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         image_path = route_images[0]["image"] if route_images else route.get("image")
         image_name = Path(image_path).name if image_path else "이미지 없음"
         image_label_text = truncate_ui_text(image_name, 42)
-        image_count_text = f"외 {len(route_images) - 1}개" if len(route_images) > 1 else ""
+        image_count_text = f"+{len(route_images) - 1}\uac1c" if len(route_images) > 1 else ""
         if image_count_text:
             image_label_text = truncate_ui_text(f"{image_label_text} {image_count_text}", 42)
         region = route.get("search_region")
@@ -2831,9 +3086,18 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if route.get("condition_verify_image_brightness"):
             condition_verify_parts.append("밝기")
         condition_verify_text = f" ({'/'.join(condition_verify_parts)})" if condition_verify_parts else ""
-        condition_text = "조건 이미지 재캡처 필요" if condition_warning else (
-            f"{condition_mode_text}{condition_verify_text}: {Path(condition_image).name}" if condition_image else "조건 없음"
+        condition_media_kind = "\ub3d9\uc601\uc0c1" if is_video_media_path(condition_image) else "\uc774\ubbf8\uc9c0"
+        condition_text = "\uc870\uac74 \uc774\ubbf8\uc9c0 \uc0ac\ubcf8\ucc98 \ud544\uc694" if condition_warning else (
+            f"{condition_mode_text}{condition_verify_text}: {condition_media_kind} {Path(condition_image).name}"
+            if condition_image else "\uc870\uac74 \uc5c6\uc74c"
         )
+
+        can_pre_jump_recheck = self._watch_goto_index(route) >= 0 and bool(route.get("jump_enabled", True))
+        if not can_pre_jump_recheck:
+            route["pre_jump_recheck"] = False
+        elif "pre_jump_recheck" not in route:
+            route["pre_jump_recheck"] = True
+        pre_jump_recheck_enabled = bool(route.get("pre_jump_recheck", False)) and can_pre_jump_recheck
 
         top = ctk.CTkFrame(inner, fg_color="transparent")
         top.pack(fill="x")
@@ -2862,10 +3126,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             font=self._font(12, "bold"),
             text_color=COLORS["text_primary"] if image_path else COLORS["text_muted"],
         ).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self._small_button(top, "이미지관리", COLORS["accent_blue"], COLORS["hover_blue"], lambda i=idx: self._select_route_image(i), width=78).pack(side="left", padx=(0, 5))
+        self._small_button(top, "\uc774\ubbf8\uc9c0", COLORS["accent_blue"], COLORS["hover_blue"], lambda i=idx: self._select_route_image(i), width=78).pack(side="left", padx=(0, 5))
         self._small_button(top, "범위", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._select_route_region(i), width=46).pack(side="left", padx=(0, 5))
-        self._small_button(top, "▲", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._move_route_watch(i, -1), width=34).pack(side="left", padx=(0, 4))
-        self._small_button(top, "▼", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._move_route_watch(i, 1), width=34).pack(side="left", padx=(0, 4))
+        self._small_button(top, "\u25b2", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._move_route_watch(i, -1), width=34).pack(side="left", padx=(0, 4))
+        self._small_button(top, "\u25bc", COLORS["bg_elevated"], COLORS["bg_card_hover"], lambda i=idx: self._move_route_watch(i, 1), width=34).pack(side="left", padx=(0, 4))
         self._small_button(top, "삭제", COLORS["danger"], COLORS["danger_hover"], lambda i=idx: self._delete_route_watch(i), width=48).pack(side="left")
 
         controls = ctk.CTkFrame(inner, fg_color="transparent")
@@ -2880,7 +3144,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="left", padx=(40, 8))
         ctk.CTkLabel(
             controls,
-            text="인식률",
+            text="\uc778\uc2dd\ub960",
             width=50,
             anchor="w",
             font=self._font(10),
@@ -2915,7 +3179,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         action_row.pack(fill="x", pady=(6, 0))
         ctk.CTkLabel(
             action_row,
-            text=f"전용액션 {len(monitor_actions)}개",
+            text=f"\uc804\uc6a9\uc561\uc158 {len(monitor_actions)}\uac1c",
             width=108,
             anchor="w",
             font=self._font(11, "bold"),
@@ -2946,6 +3210,45 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             lambda i=idx: self._clear_route_actions(i),
             width=66,
         ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            action_row,
+            text="\uc810\ud504\uc804 \uc7ac\ud655\uc778",
+            width=82,
+            anchor="w",
+            font=self._font(10, "bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left", padx=(0, 4))
+        pre_jump_recheck_var = tk.StringVar(value="ON" if pre_jump_recheck_enabled else "OFF")
+
+        def update_pre_jump_recheck(value: str, button=None, route_index: int = idx) -> None:
+            self._on_route_pre_jump_recheck_changed(route_index, value)
+            if button is not None and 0 <= route_index < len(self._route_watches):
+                enabled = bool(self._route_watches[route_index].get("pre_jump_recheck", False))
+                button.configure(
+                    selected_color=COLORS["success"] if enabled else COLORS["danger"],
+                    selected_hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
+                )
+
+        pre_jump_recheck_toggle = ctk.CTkSegmentedButton(
+            action_row,
+            values=["ON", "OFF"],
+            variable=pre_jump_recheck_var,
+            width=76,
+            height=28,
+            fg_color=COLORS["bg_elevated"],
+            selected_color=COLORS["success"] if pre_jump_recheck_enabled else COLORS["danger"],
+            selected_hover_color=COLORS["green_hover"] if pre_jump_recheck_enabled else COLORS["danger_hover"],
+            unselected_color=COLORS["bg_elevated"],
+            unselected_hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"],
+            font=self._font(10, "bold"),
+        )
+        pre_jump_recheck_toggle.configure(
+            command=lambda value, button=pre_jump_recheck_toggle: update_pre_jump_recheck(value, button)
+        )
+        if not can_pre_jump_recheck:
+            pre_jump_recheck_toggle.configure(state="disabled")
+        pre_jump_recheck_toggle.pack(side="left", padx=(0, 8))
         condition_thumb = ctk.CTkLabel(
             action_row,
             text="조건",
@@ -3003,7 +3306,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             lambda i=idx: self._open_jump_target_dialog(i),
             width=60,
         ).pack(side="left", padx=(0, 8))
-        jump_enabled_var = tk.StringVar(value="활성" if route.get("jump_enabled", True) else "비활성")
+        jump_enabled_var = tk.StringVar(value="\ud65c\uc131" if route.get("jump_enabled", True) else "\ube44\ud65c\uc131")
 
         def update_jump_enabled(value: str, button=None, route_index: int = idx) -> None:
             self._on_route_jump_enabled_changed(route_index, value)
@@ -3016,7 +3319,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
         jump_toggle = ctk.CTkSegmentedButton(
             jump_row,
-            values=["활성", "비활성"],
+            values=["\ud65c\uc131", "\ube44\ud65c\uc131"],
             variable=jump_enabled_var,
             width=126,
             height=30,
@@ -3082,7 +3385,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if not actions:
             ctk.CTkLabel(
                 preview,
-                text="전용액션 없음: + 추가를 눌러 이 이미지가 감지됐을 때 먼저 실행할 액션을 등록하세요.",
+                text="전용액션 없음: + 추가를 눌러 이 이미지가 감지되었을 때 먼저 실행할 액션을 등록하세요.",
                 font=self._font(10),
                 text_color=COLORS["text_muted"],
                 anchor="w",
@@ -3145,7 +3448,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(side="right", padx=(5, 0))
             self._small_button(
                 item,
-                "▼",
+                "\u25bc",
                 COLORS["bg_elevated"],
                 COLORS["bg_card_hover"],
                 lambda r=route_idx, a=action_idx: self._move_route_action(r, a, 1),
@@ -3153,7 +3456,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(side="right", padx=(5, 0))
             self._small_button(
                 item,
-                "▲",
+                "\u25b2",
                 COLORS["bg_elevated"],
                 COLORS["bg_card_hover"],
                 lambda r=route_idx, a=action_idx: self._move_route_action(r, a, -1),
@@ -3161,7 +3464,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             ).pack(side="right", padx=(5, 0))
             self._small_button(
                 item,
-                "테스트",
+                "\ud14c\uc2a4\ud2b8",
                 COLORS["accent_orange"],
                 COLORS["confidence_amber_hover"],
                 lambda r=route_idx, a=action_idx: self._test_route_action(r, a),
@@ -3274,7 +3577,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="right", padx=(5, 0))
         self._small_button(
             item,
-            "▼",
+            "\u25bc",
             COLORS["bg_elevated"],
             COLORS["bg_card_hover"],
             lambda r=route_idx, a=action_idx: self._move_route_action(r, a, 1),
@@ -3282,7 +3585,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="right", padx=(5, 0))
         self._small_button(
             item,
-            "▲",
+            "\u25b2",
             COLORS["bg_elevated"],
             COLORS["bg_card_hover"],
             lambda r=route_idx, a=action_idx: self._move_route_action(r, a, -1),
@@ -3290,7 +3593,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="right", padx=(5, 0))
         self._small_button(
             item,
-            "테스트",
+            "\ud14c\uc2a4\ud2b8",
             COLORS["accent_orange"],
             COLORS["confidence_amber_hover"],
             lambda r=route_idx, a=action_idx: self._test_route_action(r, a),
@@ -3372,7 +3675,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="right", padx=(5, 0))
         self._small_button(
             item,
-            "▼",
+            "\u25bc",
             COLORS["bg_elevated"],
             COLORS["bg_card_hover"],
             lambda r=route_idx, a=action_idx: self._move_route_action(r, a, 1),
@@ -3380,7 +3683,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="right", padx=(5, 0))
         self._small_button(
             item,
-            "▲",
+            "\u25b2",
             COLORS["bg_elevated"],
             COLORS["bg_card_hover"],
             lambda r=route_idx, a=action_idx: self._move_route_action(r, a, -1),
@@ -3388,7 +3691,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         ).pack(side="right", padx=(5, 0))
         self._small_button(
             item,
-            "테스트",
+            "\ud14c\uc2a4\ud2b8",
             COLORS["accent_orange"],
             COLORS["confidence_amber_hover"],
             lambda r=route_idx, a=action_idx: self._test_route_action(r, a),
@@ -3406,7 +3709,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         return True
 
     def _build_monitor_action_thumbnail(self, parent, action: dict) -> None:
-        image_path = action.get("image") if action.get("type") == "이미지 클릭" else None
+        image_path = action.get("image") if action.get("type") in MonitorActionEditorDialog.MEDIA_CLICK_TYPES else None
         thumb = ctk.CTkLabel(
             parent,
             text="IMG" if image_path else "-",
@@ -3501,11 +3804,16 @@ class MonitoringModeEditor(ctk.CTkToplevel):
     def _action_color(action_type: str):
         if action_type == "텍스트 입력":
             return COLORS["success"]
-        if action_type == "키 입력":
+        if action_type in {"키 입력", MonitorActionEditorDialog.RANDOM_KEY_TYPE}:
             return COLORS["accent_orange"]
-        if action_type in {"마우스 클릭", "이미지 클릭"}:
+        if action_type in {
+            "마우스 클릭",
+            "이미지 클릭",
+            MonitorActionEditorDialog.VIDEO_CLICK_TYPE,
+            MonitorActionEditorDialog.LEGACY_VIDEO_CLICK_TYPE,
+        }:
             return COLORS["accent_blue"]
-        if action_type == "드래그":
+        if action_type == "\ub4dc\ub798\uadf8":
             return COLORS["warning"]
         return COLORS["text_secondary"]
 
@@ -3516,14 +3824,16 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             return f'"{str(action.get("text", ""))[:24]}"'
         if action_type == "키 입력":
             keys = action.get("keys", []) or []
-            return format_key_combo([str(k).lower().strip() for k in keys if str(k).strip()]) or "기록 키"
+            return format_key_combo([str(k).lower().strip() for k in keys if str(k).strip()]) or "\uae30\ub85d \uc5c6\uc74c"
+        if action_type == MonitorActionEditorDialog.RANDOM_KEY_TYPE:
+            return format_random_key_sequences_summary(action.get("random_key_sequences", []))
         if action_type == "마우스 클릭":
             return f"({action.get('x', 0)}, {action.get('y', 0)})"
-        if action_type == "이미지 클릭":
+        if action_type in {"이미지 클릭", MonitorActionEditorDialog.VIDEO_CLICK_TYPE, MonitorActionEditorDialog.LEGACY_VIDEO_CLICK_TYPE}:
             return Path(str(action.get("image", ""))).name if action.get("image") else "이미지 없음"
-        if action_type == "스크롤":
+        if action_type == "\uc2a4\ud06c\ub864":
             return str(action.get("amount", 0))
-        if action_type == "드래그":
+        if action_type == "\ub4dc\ub798\uadf8":
             return f"({action.get('from_x', 0)},{action.get('from_y', 0)})→({action.get('to_x', 0)},{action.get('to_y', 0)})"
         return ""
 
@@ -3537,7 +3847,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         wait = float(action.get("wait_after", 0.5) or 0)
         if wait:
             parts.append(f"대기 {wait:g}s")
-        if action_type == "이미지 클릭":
+        if action_type in {"이미지 클릭", MonitorActionEditorDialog.VIDEO_CLICK_TYPE, MonitorActionEditorDialog.LEGACY_VIDEO_CLICK_TYPE}:
             confidence = action.get("confidence")
             if confidence:
                 parts.append(f"인식 {int(float(confidence) * 100)}%")
@@ -3547,6 +3857,10 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 parts.append("색상")
             if action.get("verify_image_brightness"):
                 parts.append("밝기")
+            if action.get("skip_on_not_found"):
+                parts.append("스킵")
+            if action.get("click_until_image_disappears"):
+                parts.append("사라질때까지")
         return " · ".join(parts) if parts else "기본 옵션"
 
     def _run_monitor_action_test(self, action: dict) -> None:
@@ -3604,6 +3918,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             if goto_index < 0:
                 messagebox.showerror("설정 필요", f"모니터링 이미지 액션 {idx}번의 이동 대상 액션을 선택하세요.", parent=self)
                 return
+            jump_enabled = bool(route.get("jump_enabled", True))
+            pre_jump_recheck = (
+                bool(route.get("pre_jump_recheck", goto_index >= 0 and jump_enabled))
+                and goto_index >= 0
+                and jump_enabled
+            )
             valid_watches.append(
                 {
                     "image": image,
@@ -3613,7 +3933,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     "goto_index": goto_index,
                     "goto_rule_id": str(route.get("goto_rule_id") or ""),
                     "goto_step": str(route.get("goto_step") or ""),
-                    "jump_enabled": bool(route.get("jump_enabled", True)),
+                    "jump_enabled": jump_enabled,
+                    "pre_jump_recheck": pre_jump_recheck,
                     "monitor_actions": copy.deepcopy(route.get("monitor_actions", []) or []),
                     "condition_image": route.get("condition_image"),
                     "condition_search_region": copy.deepcopy(route.get("condition_search_region")),
