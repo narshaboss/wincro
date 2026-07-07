@@ -45,8 +45,12 @@ def test_auto_update_refreshes_existing_shortcut_icons():
     service_text = Path(r"C:\Projects\wincro\src\utils\update_service.py").read_text(encoding="utf-8")
 
     assert "build_shortcut_icon_refresh_batch" in app_text
+    assert "_refresh_shortcut_icons_async" in app_text
+    assert "name=\"shortcut-icon-refresh\"" in app_text
     assert "build_shortcut_icon_refresh_batch" in settings_text
     assert "def build_shortcut_icon_refresh_batch(app_dir: str) -> str:" in service_text
+    assert "def refresh_existing_shortcut_icons(" in service_text
+    assert "_shortcut_refresh_powershell_command(escape_for_cmd=True)" in service_text
     assert "$lnk.IconLocation=$icon;" in service_text
     assert "$lnk.TargetPath=$targetExe;" in service_text
     assert "User Pinned\\\\TaskBar" in service_text

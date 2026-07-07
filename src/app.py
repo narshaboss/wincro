@@ -9,6 +9,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 import atexit
 import threading
+import sys
 
 from .utils.logger import get_logger, set_log_level, apply_performance_config
 from .utils.config import (
@@ -118,6 +119,7 @@ class WinCroApp:
             # Packaged playlists are authoritative after update; old plan backups are discarded.
             self._sync_shutdown_schedule_async()
             self._sync_startup_registry_async()
+            self._refresh_shortcut_icons_async()
             self._discard_legacy_plan_backup()
 
             # 메인 윈도우 생성
@@ -176,6 +178,21 @@ class WinCroApp:
                 logger.error(f"[자동시작] 시작 동기화 예외: {e}", exc_info=True)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_shortcut_icons_async(self) -> None:
+        """Repair stale desktop/taskbar shortcuts after older updaters install us."""
+        if not getattr(sys, "frozen", False):
+            return
+
+        def _worker():
+            try:
+                from .utils.update_service import refresh_existing_shortcut_icons
+
+                refresh_existing_shortcut_icons()
+            except Exception as e:
+                logger.warning(f"[아이콘] 시작 자가복구 예외: {e}")
+
+        threading.Thread(target=_worker, daemon=True, name="shortcut-icon-refresh").start()
 
     def _create_views(self) -> None:
         """뷰 팩토리 등록 (실제 생성은 탭 클릭 시 지연 생성)"""

@@ -8,6 +8,7 @@ app.py와 settings_view.py 모두 이 서비스를 사용합니다.
 import os
 import sys
 import shutil
+import subprocess
 import zipfile
 import tempfile
 import urllib.request
@@ -236,21 +237,20 @@ def get_update_paths():
     }
 
 
-def build_shortcut_icon_refresh_batch(app_dir: str) -> str:
-    """Return a batch snippet that refreshes existing WinCro shortcuts.
+def _shortcut_refresh_powershell_command(*, escape_for_cmd: bool = False) -> str:
+    """Build the PowerShell command used to repair existing shortcuts."""
+    def _ps_quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
 
-    The application files can update correctly while Windows keeps an old .lnk
-    icon or pinned taskbar icon. Refreshing shortcuts in-place makes icon
-    rollout deterministic without deleting user shortcuts.
-    """
-    app_dir = app_dir.replace('"', '')
+    primary_exe = _ps_quote(PRIMARY_EXECUTABLE_FILE)
+    legacy_exe = ",".join(_ps_quote(name) for name in LEGACY_EXECUTABLE_ALIASES)
     powershell_command = (
         "$ErrorActionPreference='SilentlyContinue';"
         "$appDir=$env:WINCRO_UPDATE_APP_DIR;"
         "$targetExe=$env:WINCRO_UPDATE_EXE;"
         "$icon=($targetExe + ',0');"
         "$names=@('업무지원도구','WinCro','WinCro 개발','작업도우미','결재 도우미','결제 도우미','결제도우미');"
-        "$legacyExe=@('업무지원도구.exe','작업도우미.exe','WinCro.exe','dwm.exe','결재 도우미.exe','결제 도우미.exe','결제도우미.exe');"
+        f"$legacyExe=@({primary_exe},{legacy_exe});"
         "$folders=@("
         "[Environment]::GetFolderPath('Desktop'),"
         "[Environment]::GetFolderPath('CommonDesktopDirectory'),"
@@ -281,9 +281,71 @@ def build_shortcut_icon_refresh_batch(app_dir: str) -> str:
         "try { ie4uinit.exe -show } catch {};"
         "try { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) } catch {}"
     )
-    # Escape the PowerShell pipeline for cmd.exe because this is embedded in a
-    # generated .bat file.
-    powershell_command = powershell_command.replace("|", "^|")
+    if escape_for_cmd:
+        # Escape the PowerShell pipeline for cmd.exe because this is embedded in
+        # a generated .bat file.
+        powershell_command = powershell_command.replace("|", "^|")
+    return powershell_command
+
+
+def refresh_existing_shortcut_icons(app_dir: Optional[str] = None, exe_path: Optional[str] = None) -> bool:
+    """Refresh stale WinCro shortcut icons from the currently running app.
+
+    Older versions generate the update batch, so they cannot run newer shortcut
+    repair code during the update into this version. Running this once after the
+    new executable starts closes that rollout gap.
+    """
+    if os.name != "nt":
+        return False
+
+    exe_path = exe_path or sys.executable
+    app_dir = app_dir or os.path.dirname(exe_path)
+    if not exe_path or not os.path.exists(exe_path):
+        logger.warning(f"[아이콘] 바로가기 자가복구 건너뜀: 실행 파일 없음 ({exe_path})")
+        return False
+
+    env = os.environ.copy()
+    env["WINCRO_UPDATE_APP_DIR"] = app_dir
+    env["WINCRO_UPDATE_EXE"] = exe_path
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                _shortcut_refresh_powershell_command(),
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            creationflags=creationflags,
+            check=False,
+        )
+        if result.returncode == 0:
+            logger.info("[아이콘] 바로가기/고정 아이콘 자가복구 완료")
+            return True
+        logger.warning(f"[아이콘] 바로가기 자가복구 실패: exit={result.returncode}")
+    except subprocess.TimeoutExpired:
+        logger.warning("[아이콘] 바로가기 자가복구 시간 초과")
+    except Exception as exc:
+        logger.warning(f"[아이콘] 바로가기 자가복구 예외: {exc}")
+    return False
+
+
+def build_shortcut_icon_refresh_batch(app_dir: str) -> str:
+    """Return a batch snippet that refreshes existing WinCro shortcuts.
+
+    The application files can update correctly while Windows keeps an old .lnk
+    icon or pinned taskbar icon. Refreshing shortcuts in-place makes icon
+    rollout deterministic without deleting user shortcuts.
+    """
+    app_dir = app_dir.replace('"', '')
+    powershell_command = _shortcut_refresh_powershell_command(escape_for_cmd=True)
     return f"""
 echo [아이콘] 바로가기 아이콘 갱신 중...
 set "WINCRO_UPDATE_APP_DIR={app_dir}"
