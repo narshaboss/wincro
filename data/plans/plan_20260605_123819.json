@@ -1191,8 +1191,9 @@
           "confidence": 0.8,
           "goto_index": 0,
           "goto_rule_id": "rule_c5a4ceff",
-          "goto_step": "1",
+          "goto_step": "",
           "jump_enabled": true,
+          "pre_jump_recheck": false,
           "monitor_actions": [
             {
               "type": "이미지 클릭",

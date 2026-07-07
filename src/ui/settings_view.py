@@ -2195,7 +2195,7 @@ class SettingsView(BaseView):
         from ..utils.update_service import (
             ssl_fallback_connect, download_file,
             extract_and_find_exe, save_update_config,
-            get_update_paths, classify_error,
+            get_update_paths, classify_error, build_shortcut_icon_refresh_batch,
         )
 
         try:
@@ -2277,6 +2277,7 @@ class SettingsView(BaseView):
             batch_path = paths["batch_path"]
             data_dir = paths["data_dir"]
             data_backup = paths["data_backup"]
+            shortcut_refresh_batch = build_shortcut_icon_refresh_batch(app_dir)
 
             batch_content = f'''@echo off
 chcp 65001 >nul
@@ -2354,6 +2355,7 @@ if exist "{data_backup}\\templates" (
 if exist "{data_backup}\\triggers" (
     xcopy /E /I /Y /Q "{data_backup}\\triggers\\*" "{app_dir}\\_internal\\data\\triggers\\" >nul 2>&1
 )
+{shortcut_refresh_batch}
 rd /s /q "{data_backup}" 2>nul
 
 echo.

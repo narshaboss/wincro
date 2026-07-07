@@ -236,6 +236,64 @@ def get_update_paths():
     }
 
 
+def build_shortcut_icon_refresh_batch(app_dir: str) -> str:
+    """Return a batch snippet that refreshes existing WinCro shortcuts.
+
+    The application files can update correctly while Windows keeps an old .lnk
+    icon or pinned taskbar icon. Refreshing shortcuts in-place makes icon
+    rollout deterministic without deleting user shortcuts.
+    """
+    app_dir = app_dir.replace('"', '')
+    powershell_command = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$appDir=$env:WINCRO_UPDATE_APP_DIR;"
+        "$targetExe=$env:WINCRO_UPDATE_EXE;"
+        "$icon=($targetExe + ',0');"
+        "$names=@('업무지원도구','WinCro','WinCro 개발','작업도우미','결재 도우미','결제 도우미','결제도우미');"
+        "$legacyExe=@('업무지원도구.exe','작업도우미.exe','WinCro.exe','dwm.exe','결재 도우미.exe','결제 도우미.exe','결제도우미.exe');"
+        "$folders=@("
+        "[Environment]::GetFolderPath('Desktop'),"
+        "[Environment]::GetFolderPath('CommonDesktopDirectory'),"
+        "[Environment]::GetFolderPath('StartMenu'),"
+        "[Environment]::GetFolderPath('CommonStartMenu'),"
+        "(Join-Path $env:APPDATA 'Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar'),"
+        "(Join-Path $env:APPDATA 'Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\StartMenu')"
+        ");"
+        "$shell=New-Object -ComObject WScript.Shell;"
+        "foreach($folder in $folders){"
+        "if(-not $folder -or -not (Test-Path $folder)){continue};"
+        "Get-ChildItem -Path $folder -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {"
+        "try {"
+        "$lnk=$shell.CreateShortcut($_.FullName);"
+        "$target=[string]$lnk.TargetPath;"
+        "$targetName=[IO.Path]::GetFileName($target);"
+        "$matchName=$names -contains $_.BaseName;"
+        "$matchTarget=($target -and ($target.StartsWith($appDir,[StringComparison]::OrdinalIgnoreCase) -or ($legacyExe -contains $targetName)));"
+        "if($matchName -or $matchTarget){"
+        "$lnk.TargetPath=$targetExe;"
+        "$lnk.WorkingDirectory=$appDir;"
+        "$lnk.IconLocation=$icon;"
+        "$lnk.Save();"
+        "}"
+        "} catch {}"
+        "}"
+        "};"
+        "try { ie4uinit.exe -show } catch {};"
+        "try { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) } catch {}"
+    )
+    # Escape the PowerShell pipeline for cmd.exe because this is embedded in a
+    # generated .bat file.
+    powershell_command = powershell_command.replace("|", "^|")
+    return f"""
+echo [아이콘] 바로가기 아이콘 갱신 중...
+set "WINCRO_UPDATE_APP_DIR={app_dir}"
+set "WINCRO_UPDATE_EXE=%WINCRO_UPDATE_APP_DIR%\\%NEW_EXE_NAME%"
+if defined NEW_EXE_NAME (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "{powershell_command}" >nul 2>&1
+)
+"""
+
+
 def classify_error(error: Exception) -> str:
     """업데이트 오류를 사용자 친화적 메시지로 분류합니다."""
     error_str = str(error)

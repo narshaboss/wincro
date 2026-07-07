@@ -422,7 +422,7 @@ class WinCroApp:
         from .utils.update_service import (
             ssl_fallback_connect, download_file,
             extract_and_find_exe, save_update_config,
-            get_update_paths,
+            get_update_paths, build_shortcut_icon_refresh_batch,
         )
 
         # 짧은 초기화 대기
@@ -482,6 +482,7 @@ class WinCroApp:
             internal_backup = os.path.join(app_dir, "_internal_old")
             exe_backup = os.path.join(app_dir, f"{exe_name}.old")
             recovery_bat = os.path.join(app_dir, "recovery.bat")
+            shortcut_refresh_batch = build_shortcut_icon_refresh_batch(app_dir)
 
             batch_content = f'''@echo off
 chcp 65001 >nul
@@ -609,6 +610,7 @@ if exist "{data_backup}\\templates" (
 if exist "{data_backup}\\triggers" (
     xcopy /E /I /Y /Q "{data_backup}\\triggers\\*" "{app_dir}\\_internal\\data\\triggers\\" >nul 2>&1
 )
+{shortcut_refresh_batch}
 echo [8/8] 정리 중...
 rd /s /q "{data_backup}" 2>nul
 rd /s /q "{internal_backup}" 2>nul

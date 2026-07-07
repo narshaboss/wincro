@@ -39,6 +39,20 @@ def test_auto_update_preserves_pc_local_config_file():
     assert 'copy /y "{data_backup}\\\\config.json" "{app_dir}\\\\_internal\\\\data\\\\config.json"' in app_text
 
 
+def test_auto_update_refreshes_existing_shortcut_icons():
+    app_text = Path(r"C:\Projects\wincro\src\app.py").read_text(encoding="utf-8")
+    settings_text = Path(r"C:\Projects\wincro\src\ui\settings_view.py").read_text(encoding="utf-8")
+    service_text = Path(r"C:\Projects\wincro\src\utils\update_service.py").read_text(encoding="utf-8")
+
+    assert "build_shortcut_icon_refresh_batch" in app_text
+    assert "build_shortcut_icon_refresh_batch" in settings_text
+    assert "def build_shortcut_icon_refresh_batch(app_dir: str) -> str:" in service_text
+    assert "$lnk.IconLocation=$icon;" in service_text
+    assert "$lnk.TargetPath=$targetExe;" in service_text
+    assert "User Pinned\\\\TaskBar" in service_text
+    assert "ie4uinit.exe -show" in service_text
+
+
 def test_transient_github_http_error_is_warning_not_error(monkeypatch, caplog):
     def raise_http_error(*_args, **_kwargs):
         raise urllib.error.HTTPError(
