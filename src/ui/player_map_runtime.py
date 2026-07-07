@@ -28,6 +28,55 @@ class GameModeMapRuntime:
             owner._sanitize_segment_placeholder_target_tile(game_map_ref, segment_idx)
         if game_map_ref is not None and not owner._should_persist_segment_end(segment_idx):
             game_map_ref.end_pos = None
+        self.sanitize_transient_local_dynamic_blocks(
+            game_map_ref,
+            segment_idx,
+            reason="sanitize",
+            clear_learned_blocked=True,
+        )
+
+    def sanitize_transient_local_dynamic_blocks(
+        self,
+        game_map_ref,
+        segment_idx: int,
+        *,
+        reason: str,
+        clear_learned_blocked: bool = True,
+    ):
+        """Remove non-persistent obstacle state from no-start local maps."""
+        owner = self._owner
+        if game_map_ref is None:
+            return
+        try:
+            if not owner._uses_transient_local_map(segment_idx):
+                return
+        except Exception:
+            return
+
+        explicit_walls = set()
+        try:
+            meta = owner._get_segment_waypoint_meta(segment_idx)
+            for item in meta.get("route_walls", []) or []:
+                explicit_walls.add((int(item.get("x")), int(item.get("y"))))
+            for item in meta.get("route_ends", []) or []:
+                if isinstance(item, dict) and not item.get("enabled", True):
+                    explicit_walls.add((int(item.get("x")), int(item.get("y"))))
+        except Exception:
+            explicit_walls = set()
+
+        removed = game_map_ref.clear_dynamic_obstacles(
+            clear_blocked=clear_learned_blocked,
+            preserve_blocked=explicit_walls,
+        )
+        if removed["soft"] or removed["blocked"] or removed["edges"]:
+            logger.info(
+                "[맵핑] local 동적장애물 정리: idx=%s soft=%s learned_wall=%s edge=%s reason=%s",
+                segment_idx,
+                removed["soft"],
+                removed["blocked"],
+                removed["edges"],
+                reason,
+            )
 
     def verify_saved_map_file(self, map_path: str, expected_passable: int = None) -> bool:
         """Validate the minimum structure of a saved map file."""
@@ -200,6 +249,12 @@ class GameModeMapRuntime:
             game_map_ref,
             segment_idx,
             map_path,
+        )
+        self.sanitize_transient_local_dynamic_blocks(
+            game_map_ref,
+            segment_idx,
+            reason=f"{context_label}-post-repair",
+            clear_learned_blocked=True,
         )
 
         if loaded_start_before != loaded_start_after:

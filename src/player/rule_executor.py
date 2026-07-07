@@ -5013,23 +5013,15 @@ class RuleExecutor:
             """No-start local segments use runtime-only obstacle memory."""
             if map_ref is None or not _uses_transient_local_map(seg_idx):
                 return
-            soft_snapshot = map_ref.get_soft_blocked_snapshot()
-            for sx, sy in list(soft_snapshot.keys()):
-                map_ref.clear_soft_blocked(sx, sy)
-
-            removed_blocked = 0
-            if clear_learned_blocked:
-                explicit_walls = _explicit_route_walls_for_segment(seg_idx)
-                for bx, by in list(map_ref.get_blocked_snapshot()):
-                    if (bx, by) in explicit_walls:
-                        continue
-                    if map_ref.clear_blocked(bx, by):
-                        removed_blocked += 1
-
-            if soft_snapshot or removed_blocked:
+            explicit_walls = _explicit_route_walls_for_segment(seg_idx)
+            removed = map_ref.clear_dynamic_obstacles(
+                clear_blocked=clear_learned_blocked,
+                preserve_blocked=explicit_walls,
+            )
+            if removed["soft"] or removed["blocked"] or removed["edges"]:
                 logger.info(
-                    f"[좌표모드] local 동적장애물 정리: soft={len(soft_snapshot)} "
-                    f"learned_wall={removed_blocked} reason={reason}"
+                    f"[좌표모드] local 동적장애물 정리: soft={removed['soft']} "
+                    f"learned_wall={removed['blocked']} edge={removed['edges']} reason={reason}"
                 )
 
         # 구간별 맵 파일명 헬퍼 (UI의 _get_segment_map_name과 동일 형식)
