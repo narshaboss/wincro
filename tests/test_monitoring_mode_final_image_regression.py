@@ -715,7 +715,7 @@ def test_monitoring_route_can_jump_when_condition_image_is_visible(tmp_path, mon
     assert "condition_decision=jump" in caplog.text
 
 
-def test_monitoring_pre_jump_recheck_blocks_jump_when_route_image_disappears(tmp_path, monkeypatch, caplog):
+def test_monitoring_pre_jump_recheck_allows_jump_when_route_image_disappears(tmp_path, monkeypatch, caplog):
     executor = RuleExecutor()
     caplog.set_level(logging.INFO)
     final_image = _touch(tmp_path / "final.png")
@@ -747,18 +747,18 @@ def test_monitoring_pre_jump_recheck_blocks_jump_when_route_image_disappears(tmp
         return None
 
     monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
-    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: True)
 
     result = executor._execute_monitoring_mode(rule, [], 0, step_num="6")
 
-    assert result.success is False
+    assert result.success is True
+    assert result.monitoring_jump_index == 0
     assert route_checks == 2
-    assert "점프전 재확인 실패" in caplog.text
+    assert "점프전 재확인 통과" in caplog.text
     assert "pre_jump_recheck_result=not_found" in caplog.text
-    assert "pre_jump_recheck_decision=wait" in caplog.text
+    assert "pre_jump_recheck_decision=jump" in caplog.text
 
 
-def test_monitoring_pre_jump_recheck_allows_jump_when_route_image_still_visible(tmp_path, monkeypatch, caplog):
+def test_monitoring_pre_jump_recheck_repeats_actions_when_route_image_still_visible(tmp_path, monkeypatch, caplog):
     executor = RuleExecutor()
     caplog.set_level(logging.INFO)
     final_image = _touch(tmp_path / "final.png")
@@ -789,14 +789,69 @@ def test_monitoring_pre_jump_recheck_allows_jump_when_route_image_still_visible(
         return None
 
     monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: True)
+
+    result = executor._execute_monitoring_mode(rule, [], 0, step_num="6")
+
+    assert result.success is False
+    assert checks == ["final.png", "route.png", "route.png"]
+    assert "점프전 재확인 감지" in caplog.text
+    assert "pre_jump_recheck_result=visible" in caplog.text
+    assert "pre_jump_recheck_decision=repeat_actions" in caplog.text
+
+
+def test_monitoring_pre_jump_recheck_runs_actions_again_then_jumps_when_image_disappears(tmp_path, monkeypatch, caplog):
+    executor = RuleExecutor()
+    caplog.set_level(logging.INFO)
+    final_image = _touch(tmp_path / "final.png")
+    route_image = _touch(tmp_path / "route.png")
+    route_target = AutomationRule(action_type="hotkey", description="target")
+    monitor_action = {"type": "hotkey", "key": "esc"}
+    rule = AutomationRule(
+        action_type="click",
+        target_image=final_image,
+        is_monitoring_mode=True,
+        monitoring_watches=[
+            {
+                "image": route_image,
+                "goto_index": 0,
+                "pre_jump_recheck": True,
+                "monitor_actions": [monitor_action],
+            }
+        ],
+    )
+    executor._current_plan = SimpleNamespace(initial_rules=[route_target])
+    route_checks = 0
+    monitor_runs = []
+
+    def fake_find(image_path, confidence, search_region=None, verify_color=False, verify_brightness=False):
+        nonlocal route_checks
+        name = Path(image_path).name
+        if name == "final.png":
+            return None
+        if name == "route.png":
+            route_checks += 1
+            if route_checks in {1, 2, 3}:
+                return (11, 22, 0.91)
+            return None
+        return None
+
+    def fake_monitor_actions(rule_arg, actions, confidence, start_time, step_prefix="", **kwargs):
+        monitor_runs.append(list(actions))
+        return None
+
+    monkeypatch.setattr(executor, "_find_image_on_screen", fake_find)
+    monkeypatch.setattr(executor, "_execute_monitor_action_sequence", fake_monitor_actions)
+    monkeypatch.setattr(executor._stop_event, "wait", lambda timeout=None: False)
 
     result = executor._execute_monitoring_mode(rule, [], 0, step_num="6")
 
     assert result.success is True
     assert result.monitoring_jump_index == 0
-    assert checks == ["final.png", "route.png", "route.png"]
+    assert route_checks == 4
+    assert monitor_runs == [[monitor_action], [monitor_action]]
+    assert "점프전 재확인 감지" in caplog.text
     assert "점프전 재확인 통과" in caplog.text
-    assert "pre_jump_recheck_result=visible" in caplog.text
     assert "pre_jump_recheck_decision=jump" in caplog.text
 
 

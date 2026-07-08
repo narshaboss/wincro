@@ -7718,6 +7718,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._recent_runtime_issue_detail = ""
         self._recent_runtime_issue_at = 0.0
         self._recent_runtime_issue_hits = 0
+        self._last_runtime_coord_snapshot = None
+        self._last_ocr_coord_snapshot = None
+        self._last_valid_runtime_coord_snapshot = None
         self._last_route_diagnostic_snapshot = None
         self._stop_event.clear()
         self._key_press_count = 0
@@ -14292,6 +14295,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                     _last_frontier_log_iter = iteration
 
                             if explore_target:
+                                _probing_unknown_from_frontier = False
                                 # raw 복구 프론티어는 카운터 리셋 안 함 (전체맵핑 완료 조건 도달 보장)
                                 if not _frontier_from_raw:
                                     boss_no_frontier_count = 0
@@ -14324,6 +14328,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                         _pending_probe_target = (current_x + _pdx, current_y + _pdy)
                                         probe_focus_target = _pending_probe_target
                                         probe_focus_stall = 0
+                                        _probing_unknown_from_frontier = True
                                         explore_target = None
                                         explore_target_tries = 0
                                         if _ui_update_ok and iteration % 5 == 0:
@@ -14338,18 +14343,24 @@ class GameModeDialog(ctk.CTkToplevel):
                                 if direction is None:
                                     explore_target_tries += 3  # 방향 없음 = 빠르게 포기
                                 else:
-                                    _ddx, _ddy = DIRECTIONS_4.get(direction, (0, 0))
-                                    _cur_dist = abs(current_x - explore_target[0]) + abs(current_y - explore_target[1])
-                                    _next_dist = abs((current_x + _ddx) - explore_target[0]) + abs((current_y + _ddy) - explore_target[1])
-                                    if _is_backtrack_dir or _next_dist >= _cur_dist:
-                                        # 원거리(>=5칸)에서는 과민 누적을 완화해 조기 스킵 방지
-                                        if _cur_dist <= 4:
-                                            explore_target_tries += 1
+                                    if _probing_unknown_from_frontier or explore_target is None:
+                                        # 프런티어에 도착해 미탐색 칸을 직접 검증하는 경우
+                                        # explore_target을 비워야 다음 반복에서 새 프런티어를 고른다.
+                                        # 이 상태에서 기존 프런티어 거리 계산을 계속하면 None 참조로 루프가 죽는다.
+                                        explore_target_tries = 0
+                                    else:
+                                        _ddx, _ddy = DIRECTIONS_4.get(direction, (0, 0))
+                                        _cur_dist = abs(current_x - explore_target[0]) + abs(current_y - explore_target[1])
+                                        _next_dist = abs((current_x + _ddx) - explore_target[0]) + abs((current_y + _ddy) - explore_target[1])
+                                        if _is_backtrack_dir or _next_dist >= _cur_dist:
+                                            # 원거리(>=5칸)에서는 과민 누적을 완화해 조기 스킵 방지
+                                            if _cur_dist <= 4:
+                                                explore_target_tries += 1
+                                            else:
+                                                explore_target_tries = max(0, explore_target_tries - 1)
                                         else:
                                             explore_target_tries = max(0, explore_target_tries - 1)
-                                    else:
-                                        explore_target_tries = max(0, explore_target_tries - 1)  # 진전 시 완화
-                                if explore_target_tries >= 15:
+                                if explore_target is not None and explore_target_tries >= 15:
                                     _forced_wall = False
                                     # 프런티어 반복 실패: 인접 진입엣지 실패가 누적되면 벽으로 확정
                                     if (_is_mapping_mode and mapping_on and use_map and

@@ -3831,7 +3831,7 @@ class RuleExecutor:
                         "condition_jump_when_visible": bool(raw.get("condition_jump_when_visible", False)),
                         "condition_verify_image_color": bool(raw.get("condition_verify_image_color", False)),
                         "condition_verify_image_brightness": bool(raw.get("condition_verify_image_brightness", False)),
-                        "pre_jump_recheck": bool(raw.get("pre_jump_recheck", True)),
+                        "pre_jump_recheck": bool(raw.get("pre_jump_recheck", False)),
                         "_watch_order": watch_order,
                         "_image_order": image_order,
                         "_image_priority": image_item["priority"],
@@ -4038,8 +4038,8 @@ class RuleExecutor:
         confidence: float,
         step_prefix: str = "",
     ) -> bool:
-        """Optionally require the matched monitoring image to be visible again before jumping."""
-        if not bool(watch.get("pre_jump_recheck", True)):
+        """Re-run monitor actions if the matched image is still visible before jumping."""
+        if not bool(watch.get("pre_jump_recheck", False)):
             watch["_condition_detail"] = {
                 **dict(watch.get("_condition_detail") or {}),
                 "pre_jump_recheck": "off",
@@ -4063,13 +4063,12 @@ class RuleExecutor:
                 **detail_base,
                 "pre_jump_recheck_result": "file_missing",
                 "pre_jump_recheck_matched": "-",
-                "pre_jump_recheck_decision": "wait",
+                "pre_jump_recheck_decision": "jump",
             }
             logger.warning(
-                f"{_YELLOW}{step_prefix}⚠ 점프전 재확인 파일 없음: {image_path or '-'} → 점프 대기{_RESET}"
+                f"{_YELLOW}{step_prefix}⚠ 점프전 재확인 파일 없음: {image_path or '-'} → 점프 실행{_RESET}"
             )
-            self._update_progress(f"{step_prefix}점프전 재확인 대기 중")
-            return True
+            return False
 
         result = self._find_image_on_screen(
             image_path,
@@ -4083,14 +4082,13 @@ class RuleExecutor:
                 **detail_base,
                 "pre_jump_recheck_result": "not_found",
                 "pre_jump_recheck_matched": "0%",
-                "pre_jump_recheck_decision": "wait",
+                "pre_jump_recheck_decision": "jump",
             }
             logger.info(
-                f"{_YELLOW}{step_prefix}⏳ 점프전 재확인 실패: {Path(image_path).name} 없음 "
-                f"→ 점프 대기{_RESET}"
+                f"{_GREEN}{step_prefix}✓ 점프전 재확인 통과: {Path(image_path).name} 없음 "
+                f"→ 점프 실행{_RESET}"
             )
-            self._update_progress(f"{step_prefix}점프전 재확인 대기 중")
-            return True
+            return False
 
         actual_confidence = result[2] if len(result) > 2 else 0
         matched_pct = int(float(actual_confidence or 0) * 100)
@@ -4098,13 +4096,14 @@ class RuleExecutor:
             **detail_base,
             "pre_jump_recheck_result": "visible",
             "pre_jump_recheck_matched": f"{matched_pct}%",
-            "pre_jump_recheck_decision": "jump",
+            "pre_jump_recheck_decision": "repeat_actions",
         }
         logger.info(
-            f"{_GREEN}{step_prefix}✓ 점프전 재확인 통과: {Path(image_path).name} "
-            f"({matched_pct}%) → 점프 실행{_RESET}"
+            f"{_YELLOW}{step_prefix}⏳ 점프전 재확인 감지: {Path(image_path).name} "
+            f"({matched_pct}%) → 전용액션 재실행 대기{_RESET}"
         )
-        return False
+        self._update_progress(f"{step_prefix}점프전 재확인 감지 → 전용액션 재실행")
+        return True
 
     def _execute_monitor_action_sequence(
         self,
