@@ -519,7 +519,161 @@ def test_route_only_local_avoid_activates_persistent_bypass_detour():
     assert "keep_blocked_avoid=True" in route_slice
     assert '"keep_blocked_avoid": bool(keep_blocked_avoid),' in text
     assert 'bool(_detour.get("keep_blocked_avoid")) or _current_key == _origin' in forbidden_slice
+
+
+def test_route_only_detour_does_not_enable_wall_follow_outside_mapping_test():
+    text = _player_view_text()
+
+    activate_slice = text[
+        text.index("def _activate_route_chokepoint_detour("):
+        text.index("def _get_route_chokepoint_detour_forbidden_tiles(")
+    ]
+    route_slice = text[
+        text.index("_route_local_dir = _pick_local_avoid_dir(cx, cy, target_pos, _blocked_primary_dir)"):
+        text.index("if _local_avoid_mode:")
+    ]
+    relaxed_slice = text[
+        text.index("if _stop_nonchoke_relax:"):
+        text.index("elif _stop_chokepoint_retry:")
+    ]
+
+    assert "wall_follow=False" in activate_slice
+    assert '"wall_follow": bool(wall_follow),' in activate_slice
+    assert "_wall_follow_max_steps = max(40, min(160, (_goal_dist + 8) * 4))" in activate_slice
+    assert '"max_forced_steps": _wall_follow_max_steps if wall_follow else 6,' in activate_slice
+    assert "장벽추종 우회 고정" in activate_slice
+    assert "keep_blocked_avoid=True" in route_slice
+    assert "keep_blocked_avoid=True" in relaxed_slice
+    assert "wall_follow=True" not in route_slice
+    assert "wall_follow=True" not in relaxed_slice
+
+
+def test_route_only_wall_follow_forces_side_until_forward_opens():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _get_route_chokepoint_detour_forced_dir("):
+        text.index("def _clear_step_watchdog():")
+    ]
+    route_start = text.index("if _route_direct_dir_override:")
+    route_end = text.index("if not (_route_result.found and _route_result.directions):", route_start)
+    route_slice = text[route_start:route_end]
+    route_order_slice = text[route_start:route_end + len("if not (_route_result.found and _route_result.directions):")]
+
+    assert '_wall_follow = bool(_detour.get("wall_follow"))' in helper_slice
+    assert "_forward_open = (" in helper_slice
+    assert "_forward_known = (" in helper_slice
+    assert 'self._game_map.is_passable(_forward[0], _forward[1])' in helper_slice
+    assert '_detour["expire"] = max(int(_detour.get("expire", 0) or 0), int(iteration) + 12)' in helper_slice
+    assert "return _blocked_dir" in helper_slice
+    assert "return _side_dir" in helper_slice
+    assert "_register_dir_block(_current[0], _current[1], _side_dir, iteration, ttl=24)" in helper_slice
+    assert "_register_dir_block(_origin[0], _origin[1], _side_dir, iteration, ttl=24)" in helper_slice
+    assert "_register_dir_block(_next[0], _next[1], _reverse_side, iteration, ttl=18)" in helper_slice
+    assert 'bool(_active_route_chokepoint_detour.get("wall_follow"))' in route_slice
+    assert "_forced_detour_dir = _get_route_chokepoint_detour_forced_dir(cx, cy, target_pos)" in route_slice
+    assert route_order_slice.index('bool(_active_route_chokepoint_detour.get("wall_follow"))') < route_order_slice.index("if not (_route_result.found and _route_result.directions):")
     assert "경로막힘 임시우회 고정" in text
+
+
+def test_wall_follow_keeps_detour_alive_until_forward_tile_is_known_open():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _get_route_chokepoint_detour_forced_dir("):
+        text.index("def _clear_step_watchdog():")
+    ]
+    forward_slice = helper_slice[
+        helper_slice.index("_forward = (_current[0] + _dx, _current[1] + _dy)"):
+        helper_slice.index("_next = (_current[0] + _sdx, _current[1] + _sdy)")
+    ]
+
+    assert "_forward_open = (" in forward_slice
+    assert "_forward_known = (" in forward_slice
+    assert "if _forward_known:\n                        _clear_route_chokepoint_detour()" in forward_slice
+    assert 'else:\n                        _detour["expire"] = max' in forward_slice
+    assert "return _blocked_dir" in forward_slice
+    assert forward_slice.index("if _forward_known:") < forward_slice.index("return _blocked_dir")
+    assert forward_slice.index('else:\n                        _detour["expire"] = max') < forward_slice.index("return _blocked_dir")
+
+
+def test_mapping_test_direct_route_can_use_wall_follow_detour():
+    text = _player_view_text()
+
+    mode_slice = text[
+        text.index("_mapping_test_direct_route_mode = ("):
+        text.index("_strict_route_mode =", text.index("_mapping_test_direct_route_mode = ("))
+    ]
+    active_slice = text[
+        text.index("_active_route_chokepoint_detour = ("):
+        text.index("# 디버그: 상태 출력", text.index("_active_route_chokepoint_detour = ("))
+    ]
+    blocked_slice = text[
+        text.index("if _mapping_test_direct_route_mode and _blocked_edge_fail >= AVOID_EDGE_FAIL_THRESHOLD:"):
+        text.index("tried = explored_from.get(current_pos, set())", text.index("if _mapping_test_direct_route_mode and _blocked_edge_fail >= AVOID_EDGE_FAIL_THRESHOLD:"))
+    ]
+
+    assert "_is_mapping_test" in mode_slice
+    assert "(not _mt_has_starts)" in mode_slice
+    assert "(not _segment_map_locked)" in mode_slice
+    assert "(_route_only_mode or _mapping_test_direct_route_mode)" in active_slice
+    assert "_wall_follow_dir = _pick_chokepoint_nudge_dir(" in blocked_slice
+    assert "wall_follow=True" in blocked_slice
+    assert "return _wall_follow_dir" in blocked_slice
+
+
+def test_mapping_test_no_start_persists_wall_or_edge_obstacles_immediately():
+    text = _player_view_text()
+    obstacle_slice = text[
+        text.index("elif _known_passable and not _force_frontier_wall:"):
+        text.index("# 벽이 현재 프런티어 목표이면 즉시 무효화")
+    ]
+    save_slice = obstacle_slice[
+        obstacle_slice.index("_must_persist_mapping_obstacle = ("):
+        obstacle_slice.index("elif mapping_on and _wall_marked")
+    ]
+
+    assert obstacle_slice.index("_edge_marked = self._game_map.mark_blocked_edge") < obstacle_slice.index("_must_persist_mapping_obstacle = (")
+    assert "_is_mapping_test and not _mt_has_starts and not _segment_map_locked" in save_slice
+    assert "and (_wall_marked or _edge_marked)" in save_slice
+    assert "self._auto_save_map(" in save_slice
+    assert "critical=True" in save_slice
+    assert "threading.Thread(" not in save_slice
+
+
+def test_mapping_test_direct_route_uses_unknown_a_star_before_explore_fallback():
+    text = _player_view_text()
+
+    direct_slice = text[
+        text.index("# ── 맵핑테스트 최단경로 전용 모드"):
+        text.index("# 1차~2차: 일반 모드 경로 탐색", text.index("# ── 맵핑테스트 최단경로 전용 모드"))
+    ]
+
+    assert "if _is_mapping_test and (not _mapping_guard_active() or _mt_has_map):" in direct_slice
+    assert "current_pos, target_pos, allow_unknown=True" in direct_slice
+    assert "unknown_cost=3" in direct_slice
+    assert "respect_blocked_edges=(_is_mapping_test and not _mt_has_starts and not _segment_map_locked)" in direct_slice
+    assert "avoid_set=_direct_avoid" in direct_slice
+    assert "_skip_to_explore = True" in direct_slice
+
+
+def test_mapping_test_direct_route_prefers_saved_known_map_before_unknown_path():
+    text = _player_view_text()
+
+    direct_start = text.index("if _is_mapping_test and (not _mapping_guard_active() or _mt_has_map):")
+    direct_slice = text[
+        direct_start:
+        text.index("# 1", direct_start)
+    ]
+
+    assert "_direct_avoid = _build_avoid_set(target_pos)" in direct_slice
+    assert "_known_map_result = pathfinder.find_path(" in direct_slice
+    assert "allow_unknown=False" in direct_slice
+    assert "allow_soft_blocked=True" in direct_slice
+    assert "저장맵 경로" in direct_slice
+    assert "_sp_result = pathfinder.find_path(" in direct_slice
+    assert direct_slice.index("_known_map_result = pathfinder.find_path(") < direct_slice.index("_sp_result = pathfinder.find_path(")
+    assert direct_slice.index("allow_unknown=False") < direct_slice.index("allow_unknown=True")
 
 
 def test_local_bypass_avoid_prevents_side_tile_from_returning_to_origin():
@@ -706,6 +860,64 @@ def test_route_only_dynamic_chokepoint_gate_centralizes_move_path_and_stop_guard
     assert guard_slice.index("_active_dynamic_gate = _get_dynamic_chokepoint_gate") < guard_slice.index("_recent_dynamic_gate_snapshot")
     assert "_active_gate = _get_dynamic_chokepoint_gate((target_x, target_y))" in success_slice
     assert "_clear_dynamic_chokepoint_gate(" in success_slice
+
+
+def test_route_only_dynamic_chokepoint_gate_waits_before_retrying_passable_tile():
+    text = _player_view_text()
+
+    helper_slice = text[
+        text.index("def _remember_dynamic_chokepoint_gate("):
+        text.index("def _collect_route_direction_state(")
+    ]
+    wait_helper_slice = text[
+        text.index("def _get_dynamic_chokepoint_wait("):
+        text.index("def _clear_temporary_goal_detour(")
+    ]
+    guard_slice = text[
+        text.index("_dynamic_wait = _get_dynamic_chokepoint_wait("):
+        text.index("if _guard_target_total_iterations > max_target_total_iterations:")
+    ]
+
+    assert "DYNAMIC_CHOKEPOINT_WAIT_TICKS = 12" in text
+    assert '"retry_after_iter": _retry_after_iter' in helper_slice
+    assert "blocked_dirs.get(_dir_key(_from[0], _from[1], direction)" in helper_slice
+    assert "self._game_map.is_blocked(_bx, _by) or not self._game_map.is_passable(_bx, _by)" in wait_helper_slice
+    assert "_edge_count < ROUTE_ONLY_CHOKE_ESCAPE_THRESHOLD" in wait_helper_slice
+    assert "int(iteration) >= _retry_after_iter" in wait_helper_slice
+    assert "_guard_target_total_iterations = max(0, _guard_target_total_iterations - 1)" in guard_slice
+    assert '"dynamic_chokepoint_wait"' in guard_slice
+    assert "self._stop_event.wait(0.12)" in guard_slice
+    assert "continue" in guard_slice
+
+
+def test_special_mode_direction_blocks_use_shared_transient_blocker():
+    text = _player_view_text()
+    setup_slice = text[
+        text.index("DIR_BLOCK_TTL_MIN = 6"):
+        text.index("def _gate_pos", text.index("DIR_BLOCK_TTL_MIN = 6"))
+    ]
+
+    assert "from ..player.transient_direction_blocker import TransientDirectionBlocker" in text
+    assert "TransientDirectionBlocker(" in setup_slice
+    assert "blocked_dirs = _dir_blocker.expires" in setup_slice
+    assert "return _dir_blocker.key(x, y, d)" in setup_slice
+    assert "_dir_blocker.cleanup(now_iter)" in setup_slice
+    assert "return _dir_blocker.is_blocked(x, y, d, now_iter)" in setup_slice
+    assert "_dir_blocker.register(x, y, d, now_iter, ttl=ttl)" in setup_slice
+
+
+def test_route_only_dynamic_chokepoint_timeout_has_specific_stop_reason():
+    text = _player_view_text()
+
+    assert '"dynamic_chokepoint_timeout":' in text
+    guard_slice = text[
+        text.index("_dynamic_wait = _get_dynamic_chokepoint_wait("):
+        text.index("if _guard_target_total_iterations > max_target_total_iterations:")
+    ]
+
+    assert '_guard_stop_reason = "dynamic_chokepoint_timeout"' in guard_slice
+    assert "_gate_age > max_stagnation_iterations" in guard_slice
+    assert "blocked={_gate_blocked}" in guard_slice
 
 
 def test_route_only_can_force_runtime_reload_when_locked_no_start_segment_current_pos_is_unknown():

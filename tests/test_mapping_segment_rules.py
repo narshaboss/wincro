@@ -159,6 +159,29 @@ def test_no_start_segment_uses_transient_local_map_path():
     assert not view._get_segment_map_name(1).endswith("_local_map.json")
 
 
+def test_mapping_test_no_start_route_end_preserves_learned_local_blocks():
+    waypoints = [
+        (31, 30, "group-root", {
+            "route_starts": [],
+            "route_ends": [(31, 30)],
+            "skip_initial_map_copy": True,
+        }),
+        (13, 22, "cave1", {
+            "route_starts": [(9, 3)],
+            "route_ends": [(13, 22)],
+            "skip_initial_map_copy": True,
+        }),
+    ]
+    view = _make_view_with_waypoints(waypoints)
+
+    view._is_mapping_test = True
+    assert view._should_persist_learned_local_blocks(0) is True
+    assert view._should_persist_learned_local_blocks(1) is False
+
+    view._is_mapping_test = False
+    assert view._should_persist_learned_local_blocks(0) is False
+
+
 def test_equivalent_rule_prefixes_ignore_orphan_game_modes():
     waypoints = [
         (13, 22, "cave1", {

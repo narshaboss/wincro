@@ -28,11 +28,17 @@ class GameModeMapRuntime:
             owner._sanitize_segment_placeholder_target_tile(game_map_ref, segment_idx)
         if game_map_ref is not None and not owner._should_persist_segment_end(segment_idx):
             game_map_ref.end_pos = None
+        clear_learned_blocked = not bool(getattr(game_map_ref, "preserve_learned_blocked", False))
+        try:
+            if owner._should_persist_learned_local_blocks(segment_idx):
+                clear_learned_blocked = False
+        except Exception:
+            pass
         self.sanitize_transient_local_dynamic_blocks(
             game_map_ref,
             segment_idx,
             reason="sanitize",
-            clear_learned_blocked=True,
+            clear_learned_blocked=clear_learned_blocked,
         )
 
     def sanitize_transient_local_dynamic_blocks(
@@ -52,6 +58,12 @@ class GameModeMapRuntime:
                 return
         except Exception:
             return
+        try:
+            if getattr(game_map_ref, "preserve_learned_blocked", False) or owner._should_persist_learned_local_blocks(segment_idx):
+                clear_learned_blocked = False
+                setattr(game_map_ref, "preserve_learned_blocked", True)
+        except Exception:
+            pass
 
         explicit_walls = set()
         try:
@@ -66,6 +78,7 @@ class GameModeMapRuntime:
 
         removed = game_map_ref.clear_dynamic_obstacles(
             clear_blocked=clear_learned_blocked,
+            clear_edges=clear_learned_blocked,
             preserve_blocked=explicit_walls,
         )
         if removed["soft"] or removed["blocked"] or removed["edges"]:
@@ -254,7 +267,7 @@ class GameModeMapRuntime:
             game_map_ref,
             segment_idx,
             reason=f"{context_label}-post-repair",
-            clear_learned_blocked=True,
+            clear_learned_blocked=not getattr(game_map_ref, "preserve_learned_blocked", False),
         )
 
         if loaded_start_before != loaded_start_after:

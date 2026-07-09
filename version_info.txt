@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 275, 0),
-    prodvers=(1, 0, 275, 0),
+    filevers=(1, 0, 276, 0),
+    prodvers=(1, 0, 276, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -22,7 +22,7 @@ VSVersionInfo(
             StringStruct(u'InternalName', u'업무지원도구'),
             StringStruct(u'OriginalFilename', u'업무지원도구.exe'),
             StringStruct(u'ProductName', u'업무지원도구'),
-            StringStruct(u'ProductVersion', u'1.0.275.0'),
+            StringStruct(u'ProductVersion', u'1.0.276.0'),
           ]
         )
       ]

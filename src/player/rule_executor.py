@@ -35,6 +35,7 @@ from ..utils.input_controller import (
     is_arduino_strict_enabled,
     unblock_automation_input,
 )
+from .transient_direction_blocker import TransientDirectionBlocker
 
 # pynput 사용 시도 (멀티모니터 지원)
 try:
@@ -5181,6 +5182,10 @@ class RuleExecutor:
         def switch_segment_map(new_seg_idx):
             """구간 맵 전환: 현재 맵 저장 → 새 구간 맵 로드"""
             nonlocal game_map, pathfinder, current_segment_idx
+            try:
+                transient_dynamic_edges.clear()
+            except Exception:
+                pass
             old_name = get_seg_name(current_segment_idx)
             new_name = get_seg_name(new_seg_idx)
             # 현재 맵 저장
@@ -5226,6 +5231,10 @@ class RuleExecutor:
         def _reload_current_segment_map_runtime(seg_idx):
             """세그먼트 전환 직후 런타임 오염이 의심될 때 현재 맵을 디스크 기준으로 다시 읽는다."""
             nonlocal game_map, pathfinder
+            try:
+                transient_dynamic_edges.clear()
+            except Exception:
+                pass
             map_path = get_segment_map_path(seg_idx)
             if not map_path or not os.path.exists(map_path):
                 return False
@@ -5456,6 +5465,22 @@ class RuleExecutor:
         segment_transition_stable_hits = 0
         segment_transition_logged = False
         unknown_path_fails = 0  # A* unknown 경로 연속 실패 횟수
+        TRANSIENT_DYNAMIC_EDGE_TTL = 45
+        transient_dynamic_edges = TransientDirectionBlocker(default_ttl=TRANSIENT_DYNAMIC_EDGE_TTL)
+
+        def _expire_transient_dynamic_edges(current_iteration):
+            return transient_dynamic_edges.cleanup_map_edges(game_map, current_iteration)
+
+        def _remember_transient_dynamic_edge(x, y, direction, current_iteration):
+            if not direction:
+                return False
+            return transient_dynamic_edges.register_map_edge(
+                game_map,
+                x,
+                y,
+                direction,
+                current_iteration,
+            )
 
         def press_key(direction):
             """방향키 누르기"""
@@ -5507,6 +5532,7 @@ class RuleExecutor:
 
             current_pos = (cx, cy)
             target_pos = (tx, ty)
+            _expire_transient_dynamic_edges(iteration)
 
             # 경로가 있고 현재 위치가 경로 상에 있으면 따라가기
             if current_path and path_index < len(current_path):
@@ -5520,10 +5546,12 @@ class RuleExecutor:
                             dy = next_pos[1] - cy
                             for d, (ddx, ddy) in DIRECTIONS_4.items():
                                 if ddx == dx and ddy == dy:
+                                    if game_map.is_edge_blocked(cx, cy, d):
+                                        break
                                     return d
 
             # 1차: 알려진 이동가능 경로만 (soft_blocked 제외)
-            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, allow_soft_blocked=False, max_iterations=20000, stop_event=self._stop_event)
+            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, allow_soft_blocked=False, max_iterations=20000, stop_event=self._stop_event, respect_blocked_edges=True)
             time.sleep(0)  # GIL 해제
             if result.found and len(result.directions) > 0:
                 current_path = result.path
@@ -5537,7 +5565,7 @@ class RuleExecutor:
                 return None
 
             # 1.5차: soft_blocked 허용
-            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, allow_soft_blocked=True, max_iterations=20000, stop_event=self._stop_event)
+            result = pathfinder.find_path(current_pos, target_pos, allow_unknown=False, allow_soft_blocked=True, max_iterations=20000, stop_event=self._stop_event, respect_blocked_edges=True)
             time.sleep(0)  # GIL 해제
             if result.found and len(result.directions) > 0:
                 current_path = result.path
@@ -5552,7 +5580,7 @@ class RuleExecutor:
 
             # 2차: 미탐색 영역 포함 (연속 실패 3회 이상이면 건너뜀)
             if unknown_path_fails < 3:
-                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=True, unknown_cost=3, max_iterations=20000, stop_event=self._stop_event)
+                result = pathfinder.find_path(current_pos, target_pos, allow_unknown=True, unknown_cost=3, max_iterations=20000, stop_event=self._stop_event, respect_blocked_edges=True)
                 time.sleep(0)  # GIL 해제
                 if result.found and len(result.directions) > 0:
                     current_path = result.path
@@ -5892,7 +5920,11 @@ class RuleExecutor:
                             wall_y = prev_y + ddy
                             if _uses_transient_local_map(current_target_idx):
                                 game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
-                                logger.info(f"[좌표모드] 동적장애물 임시회피: ({wall_x},{wall_y}) dir={last_dir}")
+                                _edge_marked = _remember_transient_dynamic_edge(prev_x, prev_y, last_dir, iteration)
+                                logger.info(
+                                    f"[좌표모드] 동적장애물 임시회피: ({wall_x},{wall_y}) "
+                                    f"from=({prev_x},{prev_y}) dir={last_dir} edge={'Y' if _edge_marked else 'keep'}"
+                                )
                             elif mapping_enabled:
                                 game_map.mark_blocked(wall_x, wall_y)
                                 logger.info(f"[좌표모드] 임시벽 발견: ({wall_x},{wall_y})")

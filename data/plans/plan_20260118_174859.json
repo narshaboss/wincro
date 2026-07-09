@@ -2271,7 +2271,7 @@
           "alternate_mouse_route": false,
           "click_until_image_disappears": false,
           "click_until_image_disappears_delay": 0.5,
-          "wait_after": 1.0,
+          "wait_after": 3.5,
           "wait_random": true,
           "enabled": true,
           "wait_random_range": 0.3,
