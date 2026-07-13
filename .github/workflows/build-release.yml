@@ -43,7 +43,6 @@ jobs:
         id: meta
         shell: python
         run: |
-          import json
           import os
           import re
           from pathlib import Path
@@ -62,15 +61,6 @@ jobs:
             raise SystemExit(
                 f"Version mismatch: config={config_version} init={init_version}"
             )
-
-          cache_path = Path("data/update_cache.json")
-          if cache_path.exists():
-            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
-            cache_version = cache_data.get("current_version")
-            if cache_version and cache_version != config_version:
-                raise SystemExit(
-                    f"Version mismatch: config={config_version} cache={cache_version}"
-                )
 
           github_output = Path(os.environ["GITHUB_OUTPUT"])
           with github_output.open("a", encoding="utf-8") as handle:

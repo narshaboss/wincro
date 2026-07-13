@@ -1,5 +1,42 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all
+
+
+def collect_packaged_data():
+    """Bundle stable data assets without leaking runtime state into releases."""
+    data_root = Path("data")
+    excluded_names = {
+        "wincro.db",
+        "업무지원도구.db",
+        "작업도우미.db",
+        "update_cache.json",
+    }
+    excluded_suffixes = (
+        ".bak",
+        ".bak1",
+        ".bak2",
+        ".bak3",
+        ".tmp",
+        ".log",
+    )
+    packaged = []
+    for path in data_root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(data_root)
+        rel_parts = set(rel.parts)
+        if "__pycache__" in rel_parts:
+            continue
+        if path.name in excluded_names:
+            continue
+        if path.suffix in excluded_suffixes or any(path.name.endswith(s) for s in excluded_suffixes):
+            continue
+        if rel.match("digit_templates/debug_region_*.png"):
+            continue
+        packaged.append((str(path), str(Path("data") / rel.parent)))
+    return packaged
 
 datas = [
     ('icon.ico', '.'),
@@ -8,8 +45,8 @@ datas = [
     ('src/ui/ctk_white_gold_theme.json', 'src/ui'),
     ('src/ui/assets', 'src/ui/assets'),
     ('arduino', 'arduino'),
-    ('data', 'data'),
 ]
+datas += collect_packaged_data()
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('customtkinter')

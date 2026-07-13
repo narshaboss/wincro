@@ -446,6 +446,8 @@ def test_play_mode_discord_stuck_watchdog_uses_hidden_special_mode_activity():
     assert "def _mini_record_game_mode_notification_activity" in text
     assert "getattr(gm, \"_last_runtime_activity_at\", 0.0)" in helper_body
     assert "getattr(gm, \"_last_runtime_activity_text\", \"\")" in helper_body
+    assert "heartbeat_at = time.monotonic()" in helper_body
+    assert "activity_at = max(activity_at, heartbeat_at)" in helper_body
     assert "self._mini_notification_last_progress_at = activity_at" in helper_body
     assert "특화모드 진행:" in helper_body
     assert "self._mini_record_game_mode_notification_activity()" in watchdog_body

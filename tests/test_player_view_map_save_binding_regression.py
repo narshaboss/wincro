@@ -27,7 +27,6 @@ class _DummyOwner:
         self._repair_calls = []
         self._repair_return = False
         self._repair_mutator = None
-        self._persist_learned_local_blocks = False
         self.logged = []
 
     def _sanitize_segment_start_pos(self, _game_map_ref, _segment_idx):
@@ -50,9 +49,6 @@ class _DummyOwner:
 
     def _uses_transient_local_map(self, _segment_idx):
         return False
-
-    def _should_persist_learned_local_blocks(self, _segment_idx):
-        return self._persist_learned_local_blocks
 
     def _repair_segment_map_connectivity_from_backups(self, game_map_ref, segment_idx, map_path):
         self._repair_calls.append((segment_idx, str(map_path)))
@@ -183,89 +179,3 @@ def test_switch_segment_map_reuses_shared_load_repair_path(tmp_path):
     saved_map = GameMap(name="saved-next")
     assert saved_map.load(str(next_path)) is True
     assert (9, 9) in saved_map.passable
-
-
-def test_transient_local_runtime_save_keeps_learned_walls_only_when_mapping_policy_allows(tmp_path):
-    owner = _DummyOwner(tmp_path)
-    owner._persist_learned_local_blocks = True
-    owner._uses_transient_local_map = lambda _segment_idx: True
-    runtime = GameModeMapRuntime(owner)
-    game_map = _make_map("local-preserve")
-    game_map.mark_blocked(8, 8)
-    game_map.mark_soft_blocked(9, 9)
-    game_map.mark_blocked_edge(1, 1, "right")
-    runtime.bind_game_map_segment(game_map, 0)
-
-    saved_path = runtime.auto_save_map(segment_idx=0, game_map_ref=game_map, critical=True)
-
-    saved_map = GameMap(name="reload")
-    assert saved_map.load(saved_path)
-    assert saved_map.is_blocked(8, 8)
-    assert not saved_map.is_soft_blocked(9, 9)
-    assert saved_map.is_edge_blocked(1, 1, "right")
-    assert saved_map.preserve_learned_blocked is True
-
-
-def test_transient_local_runtime_keeps_saved_learned_walls_after_normal_load_policy(tmp_path):
-    owner = _DummyOwner(tmp_path)
-    owner._persist_learned_local_blocks = False
-    owner._uses_transient_local_map = lambda _segment_idx: True
-    runtime = GameModeMapRuntime(owner)
-    game_map = _make_map("local-loaded-preserve")
-    game_map.mark_blocked(8, 8)
-    game_map.mark_soft_blocked(9, 9)
-    game_map.mark_blocked_edge(1, 1, "right")
-    game_map.preserve_learned_blocked = True
-
-    runtime.sanitize_segment_end_pos(game_map, 0)
-
-    assert game_map.is_blocked(8, 8)
-    assert not game_map.is_soft_blocked(9, 9)
-    assert game_map.is_edge_blocked(1, 1, "right")
-    assert game_map.preserve_learned_blocked is True
-
-
-def test_transient_local_runtime_load_path_reuses_preserved_learned_walls(tmp_path):
-    owner = _DummyOwner(tmp_path)
-    owner._persist_learned_local_blocks = False
-    owner._uses_transient_local_map = lambda _segment_idx: True
-    runtime = GameModeMapRuntime(owner)
-    saved_map = _make_map("saved-local-preserve")
-    saved_map.mark_blocked(8, 8)
-    saved_map.mark_soft_blocked(9, 9)
-    saved_map.mark_blocked_edge(1, 1, "right")
-    saved_map.preserve_learned_blocked = True
-    map_path = tmp_path / "segment_0_local_map.json"
-    saved_map.save(str(map_path))
-
-    loaded_map = GameMap("loaded-local-preserve")
-    runtime._load_segment_snapshot(
-        segment_idx=0,
-        game_map_ref=loaded_map,
-        map_path=str(map_path),
-        context_label="second-run",
-    )
-
-    assert loaded_map.is_blocked(8, 8)
-    assert not loaded_map.is_soft_blocked(9, 9)
-    assert loaded_map.is_edge_blocked(1, 1, "right")
-    assert loaded_map.preserve_learned_blocked is True
-    assert owner._repair_calls == [(0, str(map_path))]
-
-
-def test_transient_local_runtime_still_clears_unflagged_learned_walls(tmp_path):
-    owner = _DummyOwner(tmp_path)
-    owner._persist_learned_local_blocks = False
-    owner._uses_transient_local_map = lambda _segment_idx: True
-    runtime = GameModeMapRuntime(owner)
-    game_map = _make_map("local-unflagged")
-    game_map.mark_blocked(8, 8)
-    game_map.mark_soft_blocked(9, 9)
-    game_map.mark_blocked_edge(1, 1, "right")
-
-    runtime.sanitize_segment_end_pos(game_map, 0)
-
-    assert not game_map.is_blocked(8, 8)
-    assert not game_map.is_soft_blocked(9, 9)
-    assert not game_map.is_edge_blocked(1, 1, "right")
-    assert game_map.preserve_learned_blocked is False

@@ -1301,8 +1301,14 @@ class MainWindow(ctk.CTk):
             if not gm.winfo_exists() or not getattr(gm, "_is_running", False):
                 return
             activity_at = float(getattr(gm, "_last_runtime_activity_at", 0.0) or 0.0)
+            # Hidden special-mode dialogs can run for a long time without emitting
+            # user-visible progress logs. While the dialog thread is alive, treat the
+            # watchdog poll itself as a heartbeat to avoid false Discord stuck alerts.
+            heartbeat_at = time.monotonic()
             if activity_at <= 0:
-                activity_at = time.monotonic()
+                activity_at = heartbeat_at
+            else:
+                activity_at = max(activity_at, heartbeat_at)
             last_progress_at = float(getattr(self, "_mini_notification_last_progress_at", 0.0) or 0.0)
             if activity_at < last_progress_at:
                 return

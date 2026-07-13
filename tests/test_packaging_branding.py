@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import ast
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,37 @@ def test_release_build_embeds_and_bundles_wincro_icon_assets():
     assert "('icon_preview.png', '.')" in spec
     assert "pyinstaller WinCro.spec --clean --noconfirm" in workflow
     assert 'Compress-Archive -Path (Join-Path $appDir.FullName "*")' in workflow
+
+
+def test_pyinstaller_spec_filters_runtime_data_from_release_bundle():
+    spec = (ROOT / "WinCro.spec").read_text(encoding="utf-8")
+
+    assert "def collect_packaged_data()" in spec
+    assert "('data', 'data')" not in spec
+    assert '"wincro.db"' in spec
+    assert '"update_cache.json"' in spec
+    assert 'rel.match("digit_templates/debug_region_*.png")' in spec
+    assert '".bak1"' in spec
+
+
+def test_pyinstaller_data_collector_excludes_runtime_files_when_executed():
+    spec_path = ROOT / "WinCro.spec"
+    spec_tree = ast.parse(spec_path.read_text(encoding="utf-8"))
+    collect_def = next(
+        node for node in spec_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "collect_packaged_data"
+    )
+    namespace = {"Path": Path}
+    exec(compile(ast.Module(body=[collect_def], type_ignores=[]), str(spec_path), "exec"), namespace)
+
+    collected = namespace["collect_packaged_data"]()
+    collected_sources = {Path(src).as_posix() for src, _dest in collected}
+
+    assert "data/update_cache.json" not in collected_sources
+    assert "data/wincro.db" not in collected_sources
+    assert "data/digit_templates/debug_region_1.png" not in collected_sources
+    assert not any(path.endswith(".bak1") for path in collected_sources)
+    assert any(path.startswith("data/plans/") and path.endswith(".json") for path in collected_sources)
 
 
 def test_version_resource_uses_korean_fixed_branding():

@@ -247,7 +247,6 @@ class GameMap:
         self.patrol_points: List[Tuple[int, int]] = []  # ?? ?? (?? ??)
         self.start_pos: Optional[Tuple[int, int]] = None  # ???
         self.end_pos: Optional[Tuple[int, int]] = None    # ???
-        self.preserve_learned_blocked: bool = False
 
     @staticmethod
     def _normalize_direction(direction: str) -> Optional[str]:
@@ -355,7 +354,6 @@ class GameMap:
         self,
         *,
         clear_blocked: bool = False,
-        clear_edges: bool = True,
         preserve_blocked: Optional[Set[Tuple[int, int]]] = None,
     ) -> Dict[str, int]:
         """Remove runtime-only obstacle memory from transient local maps.
@@ -372,10 +370,9 @@ class GameMap:
         }
         with self._lock:
             soft_count = len(self.soft_blocked)
-            edge_count = len(self.blocked_edges) if clear_edges else 0
+            edge_count = len(self.blocked_edges)
             self.soft_blocked.clear()
-            if clear_edges:
-                self.blocked_edges.clear()
+            self.blocked_edges.clear()
 
             blocked_count = 0
             if clear_blocked:
@@ -708,7 +705,6 @@ class GameMap:
             "patrol_points": [list(p) for p in patrol_snapshot],
             "start_pos": list(start_snap) if start_snap is not None else None,
             "end_pos": list(end_snap) if end_snap is not None else None,
-            "preserve_learned_blocked": bool(getattr(self, "preserve_learned_blocked", False)),
         }
 
         path_obj = Path(filepath)
@@ -761,7 +757,6 @@ class GameMap:
                 except (ValueError, IndexError):
                     continue
             new_patrol = self._decode_coord_list(data.get("patrol_points", []))
-            preserve_learned_blocked = bool(data.get("preserve_learned_blocked", False))
             raw_edges = data.get("blocked_edges", [])
             new_blocked_edges = set()
             for edge in raw_edges:
@@ -803,7 +798,6 @@ class GameMap:
                 self.patrol_points = new_patrol
                 self.start_pos = new_start
                 self.end_pos = new_end
-                self.preserve_learned_blocked = preserve_learned_blocked
 
             logger.info(f"[Map] ??: {filepath} (???? {len(new_passable)}?, ? {len(new_blocked)}?, ?? {len(new_patrol)}?)")
             return True
@@ -838,7 +832,6 @@ class GameMap:
                 except (ValueError, IndexError):
                     continue
             loaded_patrol = self._decode_coord_list(data.get("patrol_points", []))
-            loaded_preserve_learned_blocked = bool(data.get("preserve_learned_blocked", False))
             raw_edges = data.get("blocked_edges", [])
             loaded_blocked_edges = set()
             for edge in raw_edges:
@@ -906,9 +899,6 @@ class GameMap:
                 self.patrol_points = merged_patrol
                 self.start_pos = merged_start
                 self.end_pos = merged_end
-                self.preserve_learned_blocked = bool(
-                    getattr(self, "preserve_learned_blocked", False) or loaded_preserve_learned_blocked
-                )
                 after = len(self.passable) + len(self.blocked)
 
             logger.info(f"[Map] ??: {before}? -> {after}?")
@@ -1018,7 +1008,6 @@ class GameMap:
             self.patrol_points.clear()
             self.start_pos = None
             self.end_pos = None
-            self.preserve_learned_blocked = False
             self.name = "Unknown"
         logger.info("[Map] 초기화")
 
@@ -1038,10 +1027,7 @@ def sanitize_transient_local_map_file(filepath: str) -> bool:
     game_map = GameMap(path.stem)
     if not game_map.load(str(path)):
         return False
-    removed = game_map.clear_dynamic_obstacles(
-        clear_blocked=not bool(getattr(game_map, "preserve_learned_blocked", False)),
-        clear_edges=not bool(getattr(game_map, "preserve_learned_blocked", False)),
-    )
+    removed = game_map.clear_dynamic_obstacles(clear_blocked=True)
     changed = bool(removed["soft"] or removed["blocked"] or removed["edges"])
     if changed:
         game_map.save(str(path))
