@@ -7,7 +7,7 @@ PLAN_PATH = ROOT / "data" / "plans" / "plan_20260205_000742.json"
 MAP_PATH = ROOT / "data" / "maps" / "65546d26_06_흑해골굴6굴_map.json"
 
 
-def test_wongak_factory_cave_6_uses_locked_legacy_map():
+def test_wongak_factory_cave_6_uses_locked_corrected_map():
     plan = json.loads(PLAN_PATH.read_text(encoding="utf-8-sig"))
     waypoint = plan["game_modes"]["rule_65546d26"]["waypoints"][6]
 
@@ -18,10 +18,11 @@ def test_wongak_factory_cave_6_uses_locked_legacy_map():
     passable = {tuple(point) for point in game_map["passable"]}
     blocked = {tuple(point) for point in game_map["blocked"]}
 
-    assert len(passable) == 443
-    assert len(blocked) == 221
+    assert len(passable) == 445
+    assert len(blocked) == 220
     assert (20, 22) in passable
-    assert (11, 17) in blocked
+    assert (11, 17) in passable
+    assert (16, 21) in passable
     assert (20, 22) not in blocked
-    assert (11, 17) not in passable
-    assert "preserve_learned_blocked" not in game_map
+    assert (11, 17) not in blocked
+    assert game_map["preserve_learned_blocked"] is False
