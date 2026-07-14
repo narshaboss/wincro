@@ -4991,42 +4991,9 @@ class RuleExecutor:
             route_starts = _segment_meta(seg_idx).get('route_starts', []) or []
             return not bool(route_starts)
 
-        def _explicit_route_walls_for_segment(seg_idx):
-            """Return user-configured hard walls for a segment."""
-            walls = set()
-            meta = _segment_meta(seg_idx)
-            for item in meta.get('route_walls', []) or []:
-                try:
-                    walls.add((int(item.get('x')), int(item.get('y'))))
-                except Exception:
-                    continue
-            for item in meta.get('route_ends', []) or []:
-                try:
-                    if isinstance(item, dict) and not item.get('enabled', True):
-                        walls.add((int(item.get('x')), int(item.get('y'))))
-                except Exception:
-                    continue
-            return walls
-
-        def _clear_transient_local_dynamic_blocks(map_ref, seg_idx, *, reason, clear_learned_blocked=False):
-            """No-start local segments use runtime-only obstacle memory."""
-            if map_ref is None or not _uses_transient_local_map(seg_idx):
-                return
-            explicit_walls = _explicit_route_walls_for_segment(seg_idx)
-            removed = map_ref.clear_dynamic_obstacles(
-                clear_blocked=clear_learned_blocked,
-                preserve_blocked=explicit_walls,
-            )
-            if removed["soft"] or removed["blocked"] or removed["edges"]:
-                logger.info(
-                    f"[좌표모드] local 동적장애물 정리: soft={removed['soft']} "
-                    f"learned_wall={removed['blocked']} edge={removed['edges']} reason={reason}"
-                )
-
         # 구간별 맵 파일명 헬퍼 (UI의 _get_segment_map_name과 동일 형식)
         def get_segment_map_path(seg_idx):
-            """경유지 인덱스에 해당하는 맵 파일 경로 (경유지와 1:1 대응)"""
-            import shutil
+            """플레이 중 사용할 기존 맵 경로를 쓰기 없이 찾는다."""
             waypoints = getattr(config, 'waypoints', []) or []
             if seg_idx < len(waypoints):
                 wp = waypoints[seg_idx]
@@ -5050,19 +5017,13 @@ class RuleExecutor:
             # 파일이 이미 존재하면 바로 반환
             if os.path.exists(new_path):
                 return new_path
-            # 공유 맵 파일(소스)이 있으면 자체 경로로 복사 (원본 보호)
+            # 일반 재생은 읽기 전용이다. 공유 맵도 복사하지 않고 직접 읽는다.
             if seg_idx < len(waypoints):
                 wp = waypoints[seg_idx]
                 if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
                     shared = wp[3].get('map_file')
                     if shared and os.path.exists(shared):
-                        try:
-                            os.makedirs(map_dir, exist_ok=True)
-                            shutil.copy2(shared, new_path)
-                            logger.info(f"[좌표모드] 공유맵 복사: {os.path.basename(shared)} → {os.path.basename(new_path)}")
-                        except Exception:
-                            pass
-                        return new_path
+                        return shared
             # 같은 이름의 다른 경유지가 있는지 확인
             has_dup = False
             for i, w in enumerate(waypoints):
@@ -5098,13 +5059,7 @@ class RuleExecutor:
                     ])
                 for old_path in old_candidates:
                     if os.path.exists(old_path):
-                        try:
-                            os.makedirs(map_dir, exist_ok=True)
-                            shutil.copy2(old_path, new_path)
-                            logger.info(f"[좌표모드] 맵 마이그레이션: {os.path.basename(old_path)} → {os.path.basename(new_path)}")
-                        except Exception:
-                            pass
-                        break
+                        return old_path
             return new_path
 
         # 첫 번째 경유지 맵 로드
@@ -5141,12 +5096,6 @@ class RuleExecutor:
         if os.path.exists(seg0_path):
             game_map.load(seg0_path)
             _sanitize_segment_start_pos(game_map, 0)
-            _clear_transient_local_dynamic_blocks(
-                game_map,
-                0,
-                reason="load",
-                clear_learned_blocked=True,
-            )
             stats = game_map.get_statistics()
             logger.info(f"[좌표모드] 첫 경유지 맵 로드: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
         else:
@@ -5157,12 +5106,6 @@ class RuleExecutor:
                 if os.path.exists(old_map_path):
                     game_map.load(old_map_path)
                     _sanitize_segment_start_pos(game_map, 0)
-                    _clear_transient_local_dynamic_blocks(
-                        game_map,
-                        0,
-                        reason="load-fallback",
-                        clear_learned_blocked=True,
-                    )
                     stats = game_map.get_statistics()
                     logger.info(f"[좌표모드] 호환 맵 로드: {old_map_path} ({stats['total_tiles']}개 타일)")
                     loaded = True
@@ -5179,31 +5122,10 @@ class RuleExecutor:
             return f"경유지{seg_idx+1}"
 
         def switch_segment_map(new_seg_idx):
-            """구간 맵 전환: 현재 맵 저장 → 새 구간 맵 로드"""
+            """구간 맵 전환: 현재 런타임 맵은 버리고 새 구간 맵만 읽는다."""
             nonlocal game_map, pathfinder, current_segment_idx
             old_name = get_seg_name(current_segment_idx)
             new_name = get_seg_name(new_seg_idx)
-            # 현재 맵 저장
-            try:
-                save_path = get_segment_map_path(current_segment_idx)
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                _old_map_ref = game_map
-                _sanitize_segment_start_pos(_old_map_ref, current_segment_idx)
-                def _save_old_segment_async(_map=_old_map_ref, _path=save_path, _name=old_name, _seg_idx=current_segment_idx):
-                    try:
-                        _clear_transient_local_dynamic_blocks(
-                            _map,
-                            _seg_idx,
-                            reason="save-switch",
-                            clear_learned_blocked=True,
-                        )
-                        _map.save(_path)
-                        logger.info(f"[좌표모드] '{_name}' 맵 저장: {_path}")
-                    except Exception as _save_e:
-                        logger.error(f"[좌표모드] 맵 저장 실패: {_save_e}")
-                threading.Thread(target=_save_old_segment_async, daemon=True).start()
-            except Exception as e:
-                logger.error(f"[좌표모드] 맵 저장 실패: {e}")
             # 새 구간 맵 로드
             current_segment_idx = new_seg_idx
             game_map = GameMap(name=f"{map_name}_{new_name}")
@@ -5212,12 +5134,6 @@ class RuleExecutor:
             if os.path.exists(new_path):
                 game_map.load(new_path)
                 _sanitize_segment_start_pos(game_map, new_seg_idx)
-                _clear_transient_local_dynamic_blocks(
-                    game_map,
-                    new_seg_idx,
-                    reason="load-switch",
-                    clear_learned_blocked=True,
-                )
                 stats = game_map.get_statistics()
                 logger.info(f"[좌표모드] '{old_name}'→'{new_name}' 전환, 맵 로드: {stats['total_tiles']}개 타일")
             else:
@@ -5234,12 +5150,6 @@ class RuleExecutor:
                 fresh_map = GameMap(name=f"{map_name}_{seg_name}")
                 fresh_map.load(map_path)
                 _sanitize_segment_start_pos(fresh_map, seg_idx)
-                _clear_transient_local_dynamic_blocks(
-                    fresh_map,
-                    seg_idx,
-                    reason="reload-runtime",
-                    clear_learned_blocked=True,
-                )
                 game_map = fresh_map
                 pathfinder = SimplePathfinder(game_map)
                 logger.warning(f"[좌표모드] '{seg_name}' 런타임 맵 재로드")
@@ -5250,6 +5160,7 @@ class RuleExecutor:
 
         if mapping_enabled:
             logger.info(f"[좌표모드] 맵핑 시스템 활성화")
+        logger.info("[좌표모드] 플레이 실행 맵 정책: 읽기 전용 (파일 저장 없음)")
 
         # A* 경로탐색기 초기화 (GameMap 활용)
         pathfinder = SimplePathfinder(game_map)
@@ -5885,15 +5796,11 @@ class RuleExecutor:
                             explored_from[fail_pos] = tried
 
                         if stuck_count >= 3 and last_dir:
-                            # 3번 연속 실패 → 장애물 기록. no-start local 구간은 랜덤 장애물로 보고
-                            # 저장/승격하지 않는 short-lived soft block만 사용한다.
-                            ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
-                            wall_x = prev_x + ddx
-                            wall_y = prev_y + ddy
-                            if _uses_transient_local_map(current_target_idx):
-                                game_map.mark_soft_blocked(wall_x, wall_y, allow_promote=False)
-                                logger.info(f"[좌표모드] 동적장애물 임시회피: ({wall_x},{wall_y}) dir={last_dir}")
-                            elif mapping_enabled:
+                            # v1.0.269 기준: 맵핑 활성 상태에서만 실패 칸을 벽으로 기록한다.
+                            if mapping_enabled:
+                                ddx, ddy = DIRECTIONS_4.get(last_dir, (0, 0))
+                                wall_x = prev_x + ddx
+                                wall_y = prev_y + ddy
                                 game_map.mark_blocked(wall_x, wall_y)
                                 logger.info(f"[좌표모드] 임시벽 발견: ({wall_x},{wall_y})")
                             # 장애물 발견 → 경로 재계산
@@ -5903,7 +5810,7 @@ class RuleExecutor:
                             stuck_count = 0
 
                 # 3.3. soft_blocked 자동 감소 (10회마다)
-                if mapping_enabled or _uses_transient_local_map(current_target_idx):
+                if mapping_enabled:
                     tick_counter += 1
                     if tick_counter >= 10:
                         game_map.tick()
@@ -6076,23 +5983,11 @@ class RuleExecutor:
             except Exception:
                 pass
 
-            # 맵핑 결과 출력 및 저장 (현재 구간 맵)
+            # 일반/부분 재생에서는 런타임 맵을 파일에 저장하지 않는다.
             if mapping_enabled:
                 stats = game_map.get_statistics()
                 logger.info(f"[맵핑] '{get_seg_name(current_segment_idx)}' 탐색 결과: {stats['total_tiles']}개 타일 (이동가능: {stats['passable_tiles']}, 벽: {stats['blocked_tiles']})")
-
-                save_path = get_segment_map_path(current_segment_idx)
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                _sanitize_segment_start_pos(game_map, current_segment_idx)
-                _clear_transient_local_dynamic_blocks(
-                    game_map,
-                    current_segment_idx,
-                    reason="save-final",
-                    clear_learned_blocked=True,
-                )
-                game_map.save(save_path)
-                seg_n = get_seg_name(current_segment_idx)
-                logger.info(f"[맵핑] '{seg_n}' 맵 저장: {save_path}")
+                logger.info("[좌표모드] 플레이 실행 중 변경된 맵 데이터 폐기 (읽기 전용)")
 
             logger.info(f"{_GREEN}[좌표모드] ========== 실행 종료 =========={_RESET}")
 

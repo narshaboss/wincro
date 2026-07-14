@@ -56,3 +56,14 @@ def test_single_waypoint_run_starts_from_selected_segment():
     assert "if single_mode:" in loop_slice
     assert "target_idx = single_idx" in loop_slice
     assert "self._switch_segment_map(single_idx)" in loop_slice
+
+
+def test_normal_single_waypoint_run_is_map_read_only():
+    text = PLAYER_VIEW.read_text(encoding="utf-8-sig")
+    start = text.index("def _start_execution(self):")
+    start_slice = text[start:text.index("def _stop_execution(self):", start)]
+
+    assert "and not getattr(self, '_single_waypoint_mode', False)" not in start_slice
+    assert "self._no_save_mode = not (" in start_slice
+    assert "getattr(self, '_is_mapping_test', False)" in start_slice
+    assert "getattr(self, '_is_mapping', False)" in start_slice

@@ -312,16 +312,6 @@ class GameMap:
         logger.debug(f"[Map] {pos} ?")
         return True
 
-    def clear_blocked(self, x: int, y: int):
-        """Remove a blocked tile without marking it passable."""
-        pos = (int(x), int(y))
-        with self._lock:
-            if pos in self.blocked:
-                self.blocked.discard(pos)
-                logger.debug(f"[Map] clear blocked: {pos}")
-                return True
-        return False
-
     def mark_soft_blocked(self, x: int, y: int, allow_promote: bool = True):
         """?? ? ??? ?????."""
         pos = (int(x), int(y))
@@ -349,47 +339,6 @@ class GameMap:
             if pos in self.soft_blocked:
                 del self.soft_blocked[pos]
                 logger.debug(f"[Map] {pos} 임시 장애물 해제")
-
-    def clear_dynamic_obstacles(
-        self,
-        *,
-        clear_blocked: bool = False,
-        preserve_blocked: Optional[Set[Tuple[int, int]]] = None,
-    ) -> Dict[str, int]:
-        """Remove runtime-only obstacle memory from transient local maps.
-
-        No-start ``*_local_map.json`` files must not keep random monsters or
-        temporary chokepoints as persistent walls. Keeping passable tiles is
-        useful, but blocked/soft/edge state can poison future runs on deployed
-        PCs.
-        """
-        preserve = {
-            (int(x), int(y))
-            for x, y in (preserve_blocked or set())
-            if self._is_valid_coord(int(x), int(y))
-        }
-        with self._lock:
-            soft_count = len(self.soft_blocked)
-            edge_count = len(self.blocked_edges)
-            self.soft_blocked.clear()
-            self.blocked_edges.clear()
-
-            blocked_count = 0
-            if clear_blocked:
-                for pos in list(self.blocked):
-                    if pos in preserve:
-                        continue
-                    self.blocked.discard(pos)
-                    blocked_count += 1
-
-        return {"soft": soft_count, "blocked": blocked_count, "edges": edge_count}
-
-    def clear_blocked_edges(self) -> int:
-        """Clear all blocked movement edges and return the removed count."""
-        with self._lock:
-            count = len(self.blocked_edges)
-            self.blocked_edges.clear()
-        return count
 
     def is_soft_blocked(self, x: int, y: int) -> bool:
         """임시 장애물인지 확인"""
@@ -1016,41 +965,3 @@ class GameMap:
 class TileInfo:
     """호환성용 (사용 안함)"""
     pass
-
-
-def sanitize_transient_local_map_file(filepath: str) -> bool:
-    """Remove persistent obstacle state from one ``*_local_map.json`` file."""
-    path = Path(filepath)
-    if not path.name.endswith("_local_map.json") or not path.exists():
-        return False
-
-    game_map = GameMap(path.stem)
-    if not game_map.load(str(path)):
-        return False
-    removed = game_map.clear_dynamic_obstacles(clear_blocked=True)
-    changed = bool(removed["soft"] or removed["blocked"] or removed["edges"])
-    if changed:
-        game_map.save(str(path))
-        logger.info(
-            "[Map] local map 동적장애물 파일 정리: %s soft=%s blocked=%s edge=%s",
-            path.name,
-            removed["soft"],
-            removed["blocked"],
-            removed["edges"],
-        )
-    return changed
-
-
-def sanitize_transient_local_maps(map_dir: str) -> int:
-    """Sanitize all transient local map files in ``map_dir``."""
-    root = Path(map_dir)
-    if not root.exists():
-        return 0
-    changed = 0
-    for path in root.glob("*_local_map.json"):
-        try:
-            if sanitize_transient_local_map_file(str(path)):
-                changed += 1
-        except Exception as exc:
-            logger.warning("[Map] local map 동적장애물 파일 정리 실패: %s (%s)", path, exc)
-    return changed

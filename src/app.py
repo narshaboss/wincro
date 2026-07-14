@@ -120,7 +120,6 @@ class WinCroApp:
             self._sync_shutdown_schedule_async()
             self._sync_startup_registry_async()
             self._refresh_shortcut_icons_async()
-            self._sanitize_transient_local_maps_async()
             self._discard_legacy_plan_backup()
 
             # 메인 윈도우 생성
@@ -194,23 +193,6 @@ class WinCroApp:
                 logger.warning(f"[아이콘] 시작 자가복구 예외: {e}")
 
         threading.Thread(target=_worker, daemon=True, name="shortcut-icon-refresh").start()
-
-    def _sanitize_transient_local_maps_async(self) -> None:
-        """Clean stale runtime obstacle state from packaged local map files."""
-        if not getattr(sys, "frozen", False):
-            return
-
-        def _worker():
-            try:
-                from .player.game_map import sanitize_transient_local_maps
-
-                changed = sanitize_transient_local_maps(str(DATA_DIR / "maps"))
-                if changed:
-                    logger.info(f"[맵핑] local map 동적장애물 시작 정리 완료: {changed}개")
-            except Exception as e:
-                logger.warning(f"[맵핑] local map 동적장애물 시작 정리 예외: {e}")
-
-        threading.Thread(target=_worker, daemon=True, name="local-map-sanitize").start()
 
     def _create_views(self) -> None:
         """뷰 팩토리 등록 (실제 생성은 탭 클릭 시 지연 생성)"""

@@ -21,31 +21,40 @@ class _DummyOwner:
         self._mapping_segment_completion_committed_idx = None
         self._start_registered = False
         self._boss_segment_active = False
+        self._is_mapping = False
+        self._is_mapping_test = False
+        self._locked_segments = set()
         self._has_map_backup = False
         self._map_save_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._repair_calls = []
         self._repair_return = False
         self._repair_mutator = None
+        self._sanitize_calls = []
         self.logged = []
 
     def _sanitize_segment_start_pos(self, _game_map_ref, _segment_idx):
+        self._sanitize_calls.append(("start", _segment_idx))
         return None
 
     def _sanitize_segment_placeholder_target_tile(self, _game_map_ref, _segment_idx):
+        self._sanitize_calls.append(("target", _segment_idx))
         return None
 
     def _should_persist_segment_end(self, _segment_idx):
         return True
 
-    def _is_segment_map_locked(self, _segment_idx):
-        return False
+    def _is_segment_map_locked(self, segment_idx):
+        return segment_idx in self._locked_segments
 
     def _get_segment_display_name(self, segment_idx):
         return f"segment-{segment_idx}"
 
     def _get_segment_map_name(self, segment_idx):
         return str(self._tmp_path / f"segment_{segment_idx}_map.json")
+
+    def _resolve_segment_map_load_path(self, segment_idx):
+        return self._get_segment_map_name(segment_idx)
 
     def _uses_transient_local_map(self, _segment_idx):
         return False
@@ -69,11 +78,11 @@ class _DummyOwner:
 
 
 def _make_map(name: str = "map") -> GameMap:
-    gm = GameMap(name=name)
-    gm.passable = {(1, 1), (1, 2), (2, 2)}
-    gm.blocked = {(2, 1)}
-    gm.soft_blocked = {}
-    return gm
+    game_map = GameMap(name=name)
+    game_map.passable = {(1, 1), (1, 2), (2, 2)}
+    game_map.blocked = {(2, 1)}
+    game_map.soft_blocked = {}
+    return game_map
 
 
 def test_game_map_is_bound_to_segment_on_runtime_loads():
@@ -86,8 +95,44 @@ def test_game_map_is_bound_to_segment_on_runtime_loads():
     assert getattr(game_map, "_segment_idx", None) == 4
 
 
-def test_auto_save_prefers_bound_segment_idx_to_current_idx(tmp_path, caplog):
+def test_auto_save_is_blocked_outside_mapping_session(tmp_path):
     owner = _DummyOwner(tmp_path)
+    runtime = GameModeMapRuntime(owner)
+    game_map = _make_map("normal-play")
+    owner._game_map = game_map
+
+    saved_path = runtime.auto_save_map(segment_idx=0, game_map_ref=game_map, critical=True)
+
+    assert saved_path == ""
+    assert not Path(owner._get_segment_map_name(0)).exists()
+    assert owner._sanitize_calls == []
+
+
+def test_normal_play_cannot_overwrite_existing_map(tmp_path):
+    owner = _DummyOwner(tmp_path)
+    runtime = GameModeMapRuntime(owner)
+    stored_map = _make_map("stored")
+    map_path = Path(owner._get_segment_map_name(0))
+    stored_map.save(str(map_path))
+    before = map_path.read_bytes()
+
+    runtime_map = _make_map("runtime")
+    runtime_map.passable.add((99, 99))
+    saved_path = runtime.auto_save_map(
+        segment_idx=0,
+        game_map_ref=runtime_map,
+        critical=True,
+        reason="normal-play-test",
+    )
+
+    assert saved_path == ""
+    assert map_path.read_bytes() == before
+    assert owner._sanitize_calls == []
+
+
+def test_auto_save_prefers_bound_segment_idx_during_mapping(tmp_path, caplog):
+    owner = _DummyOwner(tmp_path)
+    owner._is_mapping = True
     runtime = GameModeMapRuntime(owner)
     game_map = _make_map("bound-save")
     owner._game_map = game_map
@@ -102,7 +147,32 @@ def test_auto_save_prefers_bound_segment_idx_to_current_idx(tmp_path, caplog):
     assert "세그먼트 보정: 0->3" in caplog.text
 
 
-def test_switch_segment_map_persists_previous_segment_before_swapping(tmp_path):
+def test_locked_map_is_never_saved_even_with_explicit_mapping_capture(tmp_path):
+    owner = _DummyOwner(tmp_path)
+    owner._locked_segments.add(3)
+    runtime = GameModeMapRuntime(owner)
+    stored_map = _make_map("stored-locked")
+    map_path = Path(owner._get_segment_map_name(3))
+    stored_map.save(str(map_path))
+    before = map_path.read_bytes()
+    game_map = _make_map("locked")
+    game_map.passable.add((99, 99))
+    runtime.bind_game_map_segment(game_map, 3)
+
+    saved_path = runtime.auto_save_map(
+        segment_idx=3,
+        game_map_ref=game_map,
+        critical=True,
+        mapping_session=True,
+        reason="test",
+    )
+
+    assert saved_path == ""
+    assert map_path.read_bytes() == before
+    assert owner._sanitize_calls == []
+
+
+def test_switch_segment_map_does_not_persist_during_normal_play(tmp_path):
     owner = _DummyOwner(tmp_path)
     runtime = GameModeMapRuntime(owner)
     owner._game_map = _make_map("current")
@@ -112,13 +182,12 @@ def test_switch_segment_map_persists_previous_segment_before_swapping(tmp_path):
 
     assert runtime.switch_segment_map(2, skip_save=False) is True
 
-    saved_map = GameMap(name="saved-current")
-    assert saved_map.load(owner._get_segment_map_name(4)) is True
-    assert (7, 7) in saved_map.passable
+    assert not Path(owner._get_segment_map_name(4)).exists()
 
 
-def test_switch_segment_map_uses_shared_persist_helper_for_previous_segment(tmp_path):
+def test_switch_segment_map_persists_previous_segment_during_mapping(tmp_path):
     owner = _DummyOwner(tmp_path)
+    owner._is_mapping = True
     runtime = GameModeMapRuntime(owner)
     current_map = _make_map("current")
     owner._game_map = current_map
@@ -141,6 +210,9 @@ def test_switch_segment_map_uses_shared_persist_helper_for_previous_segment(tmp_
     assert calls[0]["critical"] is True
     assert calls[0]["allow_during_switch"] is True
     assert calls[0]["emit_saved_ui_log"] is False
+    assert calls[0]["mapping_session"] is True
+    assert calls[0]["reason"] == "segment-switch"
+    assert Path(owner._get_segment_map_name(4)).exists()
 
 
 def test_switch_segment_map_loads_new_segment_and_binds_runtime_map(tmp_path):
@@ -160,7 +232,7 @@ def test_switch_segment_map_loads_new_segment_and_binds_runtime_map(tmp_path):
     assert (5, 5) in owner._game_map.passable
 
 
-def test_switch_segment_map_reuses_shared_load_repair_path(tmp_path):
+def test_switch_segment_map_load_repair_stays_in_memory(tmp_path):
     owner = _DummyOwner(tmp_path)
     owner._repair_return = True
     owner._repair_mutator = lambda game_map_ref: game_map_ref.mark_passable(9, 9)
@@ -178,4 +250,4 @@ def test_switch_segment_map_reuses_shared_load_repair_path(tmp_path):
 
     saved_map = GameMap(name="saved-next")
     assert saved_map.load(str(next_path)) is True
-    assert (9, 9) in saved_map.passable
+    assert (9, 9) not in saved_map.passable

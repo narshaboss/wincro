@@ -7725,9 +7725,10 @@ class GameModeDialog(ctk.CTkToplevel):
         self._stop_event.clear()
         self._key_press_count = 0
         # 일반 전체 테스트에서는 맵 저장/기록 안 함
-        self._no_save_mode = (not getattr(self, '_is_mapping_test', False)
-                              and not getattr(self, '_is_mapping', False)
-                              and not getattr(self, '_single_waypoint_mode', False))
+        self._no_save_mode = not (
+            getattr(self, '_is_mapping_test', False)
+            or getattr(self, '_is_mapping', False)
+        )
         if getattr(self, '_is_mapping_test', False):
             self._configure_mapping_test_button(running=True)
         else:
@@ -7761,6 +7762,8 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.debug("[중단추적] stop_execution ignored: already idle without explicit reason")
             return
         was_mapping = getattr(self, '_is_mapping', False)
+        was_mapping_test = getattr(self, '_is_mapping_test', False)
+        was_mapping_session = bool(was_mapping or was_mapping_test)
         mapping_seg = getattr(self, '_current_segment_idx', -1)
         if not getattr(self, "_stop_reason", ""):
             _recent_issue = self._get_recent_runtime_issue(max_age_s=12.0)
@@ -7836,7 +7839,12 @@ class GameModeDialog(ctk.CTkToplevel):
         def do_save():
             try:
                 if not _skip_save and _save_map_ref is not None and getattr(_save_map_ref, 'passable', None):
-                    self._auto_save_map(segment_idx=_save_segment_idx, game_map_ref=_save_map_ref)
+                    self._auto_save_map(
+                        segment_idx=_save_segment_idx,
+                        game_map_ref=_save_map_ref,
+                        mapping_session=was_mapping_session,
+                        reason="execution-stop",
+                    )
                     stats = _save_map_ref.get_statistics()
                     try:
                         self.after(0, lambda s=stats: self._append_log(
@@ -8125,9 +8133,9 @@ class GameModeDialog(ctk.CTkToplevel):
         _is_mapping_test = getattr(self, '_is_mapping_test', False)
 
         def _segment_runtime_locked(seg_idx: int) -> bool:
-            """맵핑테스트에서는 map_locked를 무시하고 실제 맵핑 흐름을 우선한다."""
+            """잠금맵은 실행 종류와 무관하게 런타임 맵핑도 금지한다."""
             _raw_locked = all_targets[seg_idx][9] if len(all_targets[seg_idx]) > 9 else False
-            return bool(_raw_locked) and not _is_mapping_test
+            return bool(_raw_locked)
 
         # 맵 데이터 사용 여부
         use_map = hasattr(self, '_game_map')
@@ -14344,9 +14352,8 @@ class GameModeDialog(ctk.CTkToplevel):
                                     explore_target_tries += 3  # 방향 없음 = 빠르게 포기
                                 else:
                                     if _probing_unknown_from_frontier or explore_target is None:
-                                        # 프런티어에 도착해 미탐색 칸을 직접 검증하는 경우
-                                        # explore_target을 비워야 다음 반복에서 새 프런티어를 고른다.
-                                        # 이 상태에서 기존 프런티어 거리 계산을 계속하면 None 참조로 루프가 죽는다.
+                                        # Direct frontier probing intentionally clears the old target.
+                                        # Do not calculate distance against None or retain stale retry state.
                                         explore_target_tries = 0
                                     else:
                                         _ddx, _ddy = DIRECTIONS_4.get(direction, (0, 0))
@@ -14359,7 +14366,7 @@ class GameModeDialog(ctk.CTkToplevel):
                                             else:
                                                 explore_target_tries = max(0, explore_target_tries - 1)
                                         else:
-                                            explore_target_tries = max(0, explore_target_tries - 1)
+                                            explore_target_tries = max(0, explore_target_tries - 1)  # 진전 시 완화
                                 if explore_target is not None and explore_target_tries >= 15:
                                     _forced_wall = False
                                     # 프런티어 반복 실패: 인접 진입엣지 실패가 누적되면 벽으로 확정
@@ -16718,6 +16725,10 @@ class GameModeDialog(ctk.CTkToplevel):
     def _on_arrival(self):
         if not self._is_running:
             return  # 중복 호출 방지
+        _mapping_save_session = bool(
+            getattr(self, '_is_mapping', False)
+            or getattr(self, '_is_mapping_test', False)
+        )
         self._completed_normally = True  # 정상 도착 플래그
         self._is_running = False
         self._stop_event.set()
@@ -16746,6 +16757,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         kwargs={
                             'segment_idx': getattr(self, '_current_segment_idx', 0),
                             'game_map_ref': self._game_map,
+                            'mapping_session': _mapping_save_session,
+                            'reason': 'arrival',
                         },
                         daemon=True,
                     ).start()
@@ -17251,7 +17264,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._mapping_mode = "path"  # 'path' (경로맵핑) 또는 'full' (전체맵핑)
 
         # 첫 번째 경유지 맵 로드 시도
-        map_path = self._get_segment_map_name(0)
+        map_path = self._resolve_segment_map_load_path(0)
         seg_name = self._get_segment_display_name(0)
         if os.path.exists(map_path):
             self._game_map.load(map_path)
@@ -17260,19 +17273,15 @@ class GameModeDialog(ctk.CTkToplevel):
             _loaded_start_after = tuple(self._game_map.start_pos) if self._game_map.start_pos is not None else None
             _connectivity_repaired = self._repair_segment_map_connectivity_from_backups(self._game_map, 0, map_path)
             if _loaded_start_before != _loaded_start_after or _connectivity_repaired:
-                try:
-                    self._game_map.save(map_path)
-                    if _loaded_start_before != _loaded_start_after:
-                        logger.warning(
-                            "[맵핑] '%s' start_pos 자동복구: %s -> %s",
-                            seg_name,
-                            _loaded_start_before,
-                            _loaded_start_after,
-                        )
-                    if _connectivity_repaired:
-                        logger.warning(f"[맵핑] '{seg_name}' 끊긴 연결 자동복구 저장 완료")
-                except Exception as e:
-                    logger.error(f"[맵핑] 시작 세그먼트 자동복구 저장 실패: {e}")
+                if _loaded_start_before != _loaded_start_after:
+                    logger.warning(
+                        "[맵핑] '%s' start_pos 자동복구(메모리 전용): %s -> %s",
+                        seg_name,
+                        _loaded_start_before,
+                        _loaded_start_after,
+                    )
+                if _connectivity_repaired:
+                    logger.warning(f"[맵핑] '{seg_name}' 끊긴 연결 자동복구(메모리 전용)")
             stats = self._game_map.get_statistics()
             logger.info(f"[맵핑] '{seg_name}' 맵 로드: {map_path} ({stats['total_tiles']}개 타일)")
             self._update_mapping_status()
@@ -17312,8 +17321,22 @@ class GameModeDialog(ctk.CTkToplevel):
         if not waypoints:
             messagebox.showerror("오류", "경유지를 최소 1개 추가하세요")
             return
-        # 현재 구간의 경유지 좌표 확인
-        seg_idx = getattr(self, '_current_segment_idx', 0)
+        # 카드에서 특정 경유지 맵핑을 시작한 경우 현재 구간이 아니라
+        # 실제 요청 구간의 잠금/좌표를 기준으로 시작 여부를 결정한다.
+        current_seg_idx = getattr(self, '_current_segment_idx', 0)
+        requested_seg_idx = getattr(self, '_mapping_target_idx', None)
+        if isinstance(requested_seg_idx, int) and 0 <= requested_seg_idx < len(waypoints):
+            seg_idx = requested_seg_idx
+        else:
+            seg_idx = current_seg_idx
+        if self._is_segment_map_locked(seg_idx):
+            self._mapping_target_idx = None
+            self._update_card_mapping_btn(seg_idx, False)
+            messagebox.showwarning(
+                "맵 잠금",
+                "잠금된 맵은 맵핑하거나 저장할 수 없습니다. 먼저 잠금을 해제하세요.",
+            )
+            return
         if seg_idx < len(waypoints):
             wp = waypoints[seg_idx]
             target_x, target_y = int(wp[0]), int(wp[1])
@@ -17328,6 +17351,7 @@ class GameModeDialog(ctk.CTkToplevel):
         # 좌표 모드 강제 설정
         self._config.navigation_mode = 'coordinate'
         self._config.mapping_enabled = True
+        self._no_save_mode = False
 
         # 실행 상태 설정
         self._is_mapping = True
@@ -17388,6 +17412,8 @@ class GameModeDialog(ctk.CTkToplevel):
             kwargs={
                 'segment_idx': seg_idx,
                 'game_map_ref': self._game_map,
+                'mapping_session': True,
+                'reason': 'mapping-complete',
             },
             daemon=True,
         ).start()
@@ -17396,12 +17422,7 @@ class GameModeDialog(ctk.CTkToplevel):
         logger.info(f"[맵핑] 맵핑 완료 - {stats['total_tiles']}개 타일")
 
     def _is_segment_map_locked(self, segment_idx: int) -> bool:
-        """해당 구간의 맵 잠금 상태 확인.
-
-        맵핑테스트에서는 runtime 규칙과 동일하게 map_locked를 무시한다.
-        """
-        if getattr(self, '_is_mapping_test', False):
-            return False
+        """해당 구간의 절대 맵 잠금 상태 확인."""
         waypoints = getattr(self._config, 'waypoints', []) or []
         if 0 <= segment_idx < len(waypoints):
             wp = waypoints[segment_idx]
@@ -18268,12 +18289,21 @@ class GameModeDialog(ctk.CTkToplevel):
     def _resolve_game_map_segment_idx(self, game_map_ref, fallback_idx: int) -> int:
         return self._get_map_runtime().resolve_game_map_segment_idx(game_map_ref, fallback_idx)
 
-    def _auto_save_map(self, segment_idx: int = None, game_map_ref=None, critical: bool = False) -> str:
+    def _auto_save_map(
+        self,
+        segment_idx: int = None,
+        game_map_ref=None,
+        critical: bool = False,
+        mapping_session=None,
+        reason: str = "auto",
+    ) -> str:
         """맵 자동 저장 (스레드 안전, 메모리 데이터를 직접 저장, 롤링 백업 포함)"""
         return self._get_map_runtime().auto_save_map(
             segment_idx=segment_idx,
             game_map_ref=game_map_ref,
             critical=critical,
+            mapping_session=mapping_session,
+            reason=reason,
         )
 
     def _backup_map(self):
@@ -18313,6 +18343,8 @@ class GameModeDialog(ctk.CTkToplevel):
                         segment_idx=mapping_seg,
                         game_map_ref=_save_map_ref,
                         critical=True,
+                        mapping_session=True,
+                        reason="mapping-stop",
                     )
             except Exception as e:
                 logger.debug(f"무시된 예외: {e}")
@@ -18409,6 +18441,9 @@ class GameModeDialog(ctk.CTkToplevel):
             _map_ref = game_map
             def _save_edited_map():
                 try:
+                    if self._is_segment_map_locked(_seg):
+                        self._append_log("⚠️ 잠금된 맵은 편집 내용을 저장할 수 없습니다.", force=True)
+                        return
                     self._sanitize_segment_end_pos(_map_ref, _seg)
                     _path = self._get_segment_map_name(_seg)
                     _map_ref.save(_path)
@@ -18612,7 +18647,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 if _cfg:
                     _cfg.pop('map_file', None)
             # 맵 파일 경로도 수집 (붙여넣기 시 복사용)
-            map_paths = [self._get_segment_map_name(index)]
+            map_paths = [self._resolve_segment_map_load_path(index)]
             # 자식 인덱스 수집 (group_parent == 부모 이름)
             child_indices = []
             if src_name:
@@ -18628,7 +18663,7 @@ class GameModeDialog(ctk.CTkToplevel):
                     _cfg = clipboard_data[-1][3] if len(clipboard_data[-1]) >= 4 and isinstance(clipboard_data[-1][3], dict) else None
                     if _cfg:
                         _cfg.pop('map_file', None)
-                map_paths.append(self._get_segment_map_name(ci))
+                map_paths.append(self._resolve_segment_map_load_path(ci))
 
             set_waypoint_clipboard({"waypoints": clipboard_data, "map_paths": map_paths})
 
@@ -19010,21 +19045,13 @@ class GameModeDialog(ctk.CTkToplevel):
         return key, int(follow_interval * 1000), smooth_move
 
     def _get_segment_map_name(self, segment_idx: int) -> str:
-        """구간별 맵 파일명 생성 — rule_id 기반 독립 경로.
-
-        원칙: 항상 자기 rule_id prefix 경로만 반환.
-        map_file은 초기 복사 소스로만 사용하고 직접 반환하지 않음.
-        → 삭제/저장이 다른 특화모드 파일에 절대 영향 안 감.
-        """
-        import os, shutil
+        """구간별 canonical 맵 경로를 부작용 없이 반환한다."""
+        import os
         waypoints = getattr(self._config, 'waypoints', []) or []
-        base = self._config.name or "autosave"
         seg_name = self._get_segment_display_name(segment_idx)
         map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
-        # rule_id 접두사 (rule_abc12345 → abc12345)
         _rid = getattr(self, '_config_rule_id', None) or ""
         _rid_prefix = _rid.replace("rule_", "")[:8] + "_" if _rid else ""
-        # 보스 경유지(0,0) 판별
         is_boss = False
         if segment_idx < len(waypoints):
             wp = waypoints[segment_idx]
@@ -19032,89 +19059,91 @@ class GameModeDialog(ctk.CTkToplevel):
                 if int(wp[0]) == 0 and int(wp[1]) == 0:
                     is_boss = True
         use_local_runtime = self._uses_transient_local_map(segment_idx)
-        # 파일명 = {rule_id}_{번호}_{경유지이름}_map.json
         if is_boss:
-            own_path = os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_boss_map.json")
-        elif use_local_runtime:
-            own_path = os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_local_map.json")
-        else:
-            own_path = os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json")
-        # 자기 파일이 없으면 → 소스에서 복사 (원본 절대 건드리지 않음)
-        _skip_initial_copy = False
-        if segment_idx < len(waypoints):
-            wp = waypoints[segment_idx]
-            if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
-                _skip_initial_copy = bool(wp[3].get('skip_initial_map_copy'))
+            return os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_boss_map.json")
         if use_local_runtime:
-            if not os.path.exists(own_path) and not _skip_initial_copy:
-                old_candidates = [
-                    os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json"),
-                    os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json"),
-                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
-                ]
-                for alt_prefix in self._get_equivalent_rule_prefixes(segment_idx):
-                    old_candidates.extend([
-                        os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_local_map.json"),
-                        os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_map.json"),
-                    ])
-                for old_path in old_candidates:
-                    if old_path != own_path and os.path.exists(old_path):
-                        try:
-                            shutil.copy2(old_path, own_path)
-                            logger.info(f"[맵] 로컬맵 마이그레이션: {os.path.basename(old_path)} → {os.path.basename(own_path)}")
-                        except Exception as e:
-                            logger.error(f"[맵] 로컬맵 마이그레이션 실패: {e}")
-                        break
+            return os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_local_map.json")
+        return os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json")
+
+    def _resolve_segment_map_load_path(self, segment_idx: int) -> str:
+        """기존 맵을 복사하거나 수정하지 않고 읽을 경로를 찾는다."""
+        import os
+
+        own_path = self._get_segment_map_name(segment_idx)
+        if os.path.exists(own_path):
             return own_path
-        if not os.path.exists(own_path):
-            # 1순위: map_file (다른 특화모드에서 복사해온 소스)
-            source = None
-            if not _skip_initial_copy and segment_idx < len(waypoints):
-                wp = waypoints[segment_idx]
-                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
-                    mf = wp[3].get('map_file')
-                    if mf and os.path.exists(mf):
-                        source = mf
-            # 2순위: 이전 형식 파일 마이그레이션
-            if not source and not _skip_initial_copy:
-                has_dup = False
-                for i, w in enumerate(waypoints):
-                    if i != segment_idx:
-                        other = w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2] else f"경유지{i+1}"
-                        if other == seg_name:
-                            has_dup = True
-                            break
-                if not has_dup:
-                    if is_boss:
-                        old_candidates = [
-                            os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_boss_map.json"),
-                            os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
-                        ]
-                    else:
-                        old_candidates = [
-                            os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json"),
-                            os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
-                        ]
-                    for alt_prefix in self._get_equivalent_rule_prefixes(segment_idx):
-                        if is_boss:
-                            old_candidates.append(
-                                os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_boss_map.json")
-                            )
-                        else:
-                            old_candidates.extend([
-                                os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_map.json"),
-                                os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_local_map.json"),
-                            ])
-                    for old_path in old_candidates:
-                        if old_path != own_path and os.path.exists(old_path):
-                            source = old_path
-                            break
-            if source:
-                try:
-                    shutil.copy2(source, own_path)
-                    logger.info(f"[맵] 복사: {os.path.basename(source)} → {os.path.basename(own_path)}")
-                except Exception as e:
-                    logger.error(f"[맵] 복사 실패: {e}")
+
+        waypoints = getattr(self._config, 'waypoints', []) or []
+        base = self._config.name or "autosave"
+        seg_name = self._get_segment_display_name(segment_idx)
+        map_dir = os.path.dirname(own_path)
+        _rid = getattr(self, '_config_rule_id', None) or ""
+        _rid_prefix = _rid.replace("rule_", "")[:8] + "_" if _rid else ""
+        wp = waypoints[segment_idx] if 0 <= segment_idx < len(waypoints) else None
+        meta = wp[3] if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict) else {}
+        if meta.get('skip_initial_map_copy'):
+            return own_path
+
+        is_boss = bool(
+            isinstance(wp, (list, tuple))
+            and len(wp) >= 2
+            and int(wp[0]) == 0
+            and int(wp[1]) == 0
+        )
+        use_local_runtime = self._uses_transient_local_map(segment_idx)
+        candidates = []
+
+        if use_local_runtime:
+            candidates.extend([
+                os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json"),
+                os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_local_map.json"),
+                os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json"),
+                os.path.join(map_dir, f"{base}_{seg_name}_local_map.json"),
+                os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+            ])
+            for alt_prefix in self._get_equivalent_rule_prefixes(segment_idx):
+                candidates.extend([
+                    os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_local_map.json"),
+                    os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_map.json"),
+                ])
+        else:
+            map_file = meta.get('map_file')
+            if map_file:
+                candidates.append(map_file)
+
+            has_duplicate_name = any(
+                i != segment_idx
+                and (
+                    w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2]
+                    else f"경유지{i + 1}"
+                ) == seg_name
+                for i, w in enumerate(waypoints)
+            )
+            if not has_duplicate_name:
+                suffix = "boss_map.json" if is_boss else "map.json"
+                candidates.extend([
+                    os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_{suffix}"),
+                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+                ])
+                for alt_prefix in self._get_equivalent_rule_prefixes(segment_idx):
+                    candidates.append(
+                        os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_{suffix}")
+                    )
+
+        seen = set()
+        for candidate in candidates:
+            if not candidate:
+                continue
+            normalized = os.path.normcase(os.path.abspath(candidate))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            if normalized != os.path.normcase(os.path.abspath(own_path)) and os.path.exists(candidate):
+                logger.info(
+                    f"[맵] 읽기 전용 대체 경로 사용: {os.path.basename(candidate)} "
+                    f"(canonical={os.path.basename(own_path)})"
+                )
+                return candidate
         return own_path
 
     def _get_segment_display_name(self, segment_idx: int) -> str:
@@ -19133,7 +19162,7 @@ class GameModeDialog(ctk.CTkToplevel):
             getattr(self, '_game_map', None) is not None):
             stats = self._game_map.get_statistics()
             return int(stats.get("passable_tiles", 0)) + int(stats.get("blocked_tiles", 0))
-        map_path = self._get_segment_map_name(segment_idx)
+        map_path = self._resolve_segment_map_load_path(segment_idx)
         if not os.path.exists(map_path):
             return -1  # 미탐색
         try:
@@ -19979,6 +20008,14 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _toggle_map_lock(self, idx):
         """경유지 맵 잠금 토글"""
+        if (
+            getattr(self, '_is_mapping', False)
+            or getattr(self, '_is_mapping_test', False)
+            or getattr(self, '_is_running', False)
+            or self._map_save_lock.locked()
+        ):
+            self._append_log("⚠️ 실행 또는 맵 저장 중에는 맵 잠금을 변경할 수 없습니다")
+            return
         waypoints = getattr(self._config, 'waypoints', []) or []
         if not (0 <= idx < len(waypoints)):
             return
@@ -20012,8 +20049,13 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _toggle_all_map_locks(self):
         """모든 경유지 맵 잠금 일괄 토글"""
-        if getattr(self, '_is_mapping', False) or self._is_running:
-            self._append_log("⚠️ 실행 중에는 전체 맵 잠금 변경 불가")
+        if (
+            getattr(self, '_is_mapping', False)
+            or getattr(self, '_is_mapping_test', False)
+            or getattr(self, '_is_running', False)
+            or self._map_save_lock.locked()
+        ):
+            self._append_log("⚠️ 실행 또는 맵 저장 중에는 전체 맵 잠금 변경 불가")
             return
         waypoints = getattr(self._config, 'waypoints', []) or []
         if not waypoints:
@@ -21477,7 +21519,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 not (self._uses_transient_local_map(idx) and not getattr(self, '_is_mapping', False) and not self._is_running)):
                 view_map = self._game_map
             else:
-                map_path = self._get_segment_map_name(idx)
+                map_path = self._resolve_segment_map_load_path(idx)
                 view_map = GameMap(name=seg_name)
                 if os.path.exists(map_path):
                     view_map.load(map_path)
@@ -21540,7 +21582,7 @@ class GameModeDialog(ctk.CTkToplevel):
                 ):
                     loaded_map = self._game_map
                 else:
-                    map_path = self._get_segment_map_name(sim_idx)
+                    map_path = self._resolve_segment_map_load_path(sim_idx)
                     loaded_map = GameMap(name=seg_label)
                     if os.path.exists(map_path):
                         loaded_map.load(map_path)
@@ -21639,7 +21681,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._update_card_map_badge(idx)
 
     def _clear_all_maps(self):
-        """모든 경유지 맵 한번에 초기화 (잠금 해제 포함)"""
+        """잠금되지 않은 경유지 맵만 한번에 초기화한다."""
         if getattr(self, '_is_mapping', False) or self._is_running:
             self._append_log("⚠️ 실행 중에는 맵 초기화 불가")
             return
@@ -21662,7 +21704,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         msg = f"전체 {len(waypoints)}개 경유지의 맵 데이터를 모두 삭제합니다.\n되돌릴 수 없습니다."
         if locked_names:
-            msg += f"\n\n잠금된 맵 {len(locked_names)}개도 잠금 해제 후 초기화됩니다:\n" + ", ".join(locked_names[:5])
+            msg += f"\n\n잠금된 맵 {len(locked_names)}개는 보호되어 건너뜁니다:\n" + ", ".join(locked_names[:5])
             if len(locked_names) > 5:
                 msg += f" 외 {len(locked_names) - 5}개"
         if not messagebox.askyesno("전체 맵 초기화", msg):
@@ -21671,14 +21713,9 @@ class GameModeDialog(ctk.CTkToplevel):
         cleared = 0
         for i in range(len(waypoints)):
             seg_name = self._get_segment_display_name(i)
-            # 잠금 해제
             if self._is_segment_map_locked(i):
-                wp = waypoints[i]
-                if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict):
-                    wp[3]['map_locked'] = False
-                cards = getattr(self, '_wp_cards', [])
-                if 0 <= i < len(cards) and cards[i] is not None:
-                    self._configure_map_lock_btn(cards[i].get('map_lock_btn'), False)
+                logger.info(f"[맵핑] 전체 초기화에서 잠금맵 보호: idx={i} name='{seg_name}'")
+                continue
 
             # map_file 공유 경로 해제 (원본 파일 보호)
             wp = waypoints[i]
@@ -21821,6 +21858,13 @@ class GameModeDialog(ctk.CTkToplevel):
             return
         import os
         from tkinter import filedialog, messagebox
+
+        if self._is_segment_map_locked(idx):
+            messagebox.showwarning(
+                "맵 잠금",
+                "잠금된 맵에는 다른 맵을 불러오거나 덮어쓸 수 없습니다.",
+            )
+            return
 
         try:
             seg_name = self._get_segment_display_name(idx)
@@ -26039,14 +26083,6 @@ class GameModeDialog(ctk.CTkToplevel):
         self._config.enabled = True
         self._apply_settings()
 
-        # 맵 데이터도 저장
-        if hasattr(self, '_game_map') and self._game_map:
-            try:
-                map_path = self._auto_save_map(critical=True)
-                logger.info(f"[특화모드] 설정 저장 시 맵도 저장: {map_path}")
-            except Exception as e:
-                logger.error(f"[특화모드] 맵 저장 실패: {e}")
-
         # 액션 목록에 게임모드 규칙 추가/업데이트
         display_name = self._config.name if self._config.name else "특화모드"
 
@@ -26233,16 +26269,6 @@ class GameModeDialog(ctk.CTkToplevel):
         _rt = getattr(self, '_run_thread', None)
         if _rt is not None and _rt.is_alive():
             _rt.join(timeout=2.0)
-
-        # 맵 데이터 저장 (실행 중이 아니었을 때만 — 실행 중이면 do_save가 처리)
-        if not _was_running and hasattr(self, '_game_map') and self._game_map:
-            stats = self._game_map.get_statistics()
-            if stats['total_tiles'] > 0:
-                try:
-                    map_path = self._auto_save_map(critical=True)
-                    logger.info(f"[특화모드] 닫기 시 맵 저장: {map_path} ({stats['total_tiles']}개 타일)")
-                except Exception as e:
-                    logger.error(f"[특화모드] 닫기 시 맵 저장 실패: {e}")
 
         # 닫기 전 액션 목록 갱신 (저장 후 반영 보장)
         if self._refresh_callback:

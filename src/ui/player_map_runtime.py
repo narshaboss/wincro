@@ -19,6 +19,16 @@ class GameModeMapRuntime:
     def __init__(self, owner):
         self._owner = owner
 
+    def _mapping_persistence_active(self, mapping_session=None) -> bool:
+        """Return whether a save belongs to an explicit mapping session."""
+        if mapping_session is not None:
+            return bool(mapping_session)
+        owner = self._owner
+        return bool(
+            getattr(owner, "_is_mapping", False)
+            or getattr(owner, "_is_mapping_test", False)
+        )
+
     def sanitize_segment_end_pos(self, game_map_ref, segment_idx: int):
         """Clear segment-only runtime markers before disk persistence."""
         owner = self._owner
@@ -28,55 +38,6 @@ class GameModeMapRuntime:
             owner._sanitize_segment_placeholder_target_tile(game_map_ref, segment_idx)
         if game_map_ref is not None and not owner._should_persist_segment_end(segment_idx):
             game_map_ref.end_pos = None
-        self.sanitize_transient_local_dynamic_blocks(
-            game_map_ref,
-            segment_idx,
-            reason="sanitize",
-            clear_learned_blocked=True,
-        )
-
-    def sanitize_transient_local_dynamic_blocks(
-        self,
-        game_map_ref,
-        segment_idx: int,
-        *,
-        reason: str,
-        clear_learned_blocked: bool = True,
-    ):
-        """Remove non-persistent obstacle state from no-start local maps."""
-        owner = self._owner
-        if game_map_ref is None:
-            return
-        try:
-            if not owner._uses_transient_local_map(segment_idx):
-                return
-        except Exception:
-            return
-
-        explicit_walls = set()
-        try:
-            meta = owner._get_segment_waypoint_meta(segment_idx)
-            for item in meta.get("route_walls", []) or []:
-                explicit_walls.add((int(item.get("x")), int(item.get("y"))))
-            for item in meta.get("route_ends", []) or []:
-                if isinstance(item, dict) and not item.get("enabled", True):
-                    explicit_walls.add((int(item.get("x")), int(item.get("y"))))
-        except Exception:
-            explicit_walls = set()
-
-        removed = game_map_ref.clear_dynamic_obstacles(
-            clear_blocked=clear_learned_blocked,
-            preserve_blocked=explicit_walls,
-        )
-        if removed["soft"] or removed["blocked"] or removed["edges"]:
-            logger.info(
-                "[맵핑] local 동적장애물 정리: idx=%s soft=%s learned_wall=%s edge=%s reason=%s",
-                segment_idx,
-                removed["soft"],
-                removed["blocked"],
-                removed["edges"],
-                reason,
-            )
 
     def verify_saved_map_file(self, map_path: str, expected_passable: int = None) -> bool:
         """Validate the minimum structure of a saved map file."""
@@ -137,10 +98,22 @@ class GameModeMapRuntime:
         critical: bool,
         allow_during_switch: bool = False,
         emit_saved_ui_log: bool = True,
+        mapping_session=None,
+        reason: str = "auto",
     ) -> str:
         owner = self._owner
         trace_t0 = time.time()
         segment_idx = self.resolve_game_map_segment_idx(game_map_ref, segment_idx)
+
+        # Check authorization before sanitizers can mutate even the in-memory map.
+        # A lock is absolute and is never bypassed by mapping-test mode.
+        if owner._is_segment_map_locked(segment_idx):
+            logger.info(f"[맵핑] 저장 차단: 잠금맵 idx={segment_idx} reason={reason}")
+            return ""
+
+        if not self._mapping_persistence_active(mapping_session):
+            logger.info(f"[맵핑] 저장 차단: 맵핑 세션 아님 idx={segment_idx} reason={reason}")
+            return ""
 
         if getattr(owner, "_segment_switch_in_progress", False) and not allow_during_switch:
             logger.info("[맵핑] 전환 중 일반 맵 저장 건너뜀")
@@ -153,9 +126,6 @@ class GameModeMapRuntime:
                 owner.after(0, lambda: owner._append_log("⚠️ 맵 저장 건너뜀: 보스 경유지 활성"))
             except Exception:
                 pass
-            return ""
-
-        if owner._is_segment_map_locked(segment_idx):
             return ""
 
         if not getattr(game_map_ref, "passable", None):
@@ -182,6 +152,11 @@ class GameModeMapRuntime:
 
         if not getattr(game_map_ref, "passable", None):
             owner._map_save_lock.release()
+            return ""
+
+        if owner._is_segment_map_locked(segment_idx):
+            owner._map_save_lock.release()
+            logger.info(f"[맵핑] 저장 직전 차단: 잠금맵 idx={segment_idx} reason={reason}")
             return ""
 
         try:
@@ -250,12 +225,6 @@ class GameModeMapRuntime:
             segment_idx,
             map_path,
         )
-        self.sanitize_transient_local_dynamic_blocks(
-            game_map_ref,
-            segment_idx,
-            reason=f"{context_label}-post-repair",
-            clear_learned_blocked=True,
-        )
 
         if loaded_start_before != loaded_start_after:
             logger.warning(
@@ -275,14 +244,22 @@ class GameModeMapRuntime:
             )
 
         if loaded_start_before != loaded_start_after or connectivity_repaired:
-            try:
-                game_map_ref.save(map_path)
-            except Exception as save_error:
-                logger.error(f"[맵핑] '{seg_name}' {context_label} 자동복구 재저장 실패: {save_error}")
+            logger.info(
+                "[맵핑] '%s' 로드 보정은 메모리에만 적용: context=%s",
+                seg_name,
+                context_label,
+            )
 
         return loaded_ok, stats, loaded_start_before, loaded_start_after, connectivity_repaired
 
-    def auto_save_map(self, segment_idx: int = None, game_map_ref=None, critical: bool = False) -> str:
+    def auto_save_map(
+        self,
+        segment_idx: int = None,
+        game_map_ref=None,
+        critical: bool = False,
+        mapping_session=None,
+        reason: str = "auto",
+    ) -> str:
         """Persist the active map with lock protection and rolling backups."""
         owner = self._owner
         if segment_idx is None:
@@ -293,6 +270,8 @@ class GameModeMapRuntime:
             segment_idx=segment_idx,
             game_map_ref=game_map_ref,
             critical=critical,
+            mapping_session=mapping_session,
+            reason=reason,
         )
 
     def backup_map(self):
@@ -302,6 +281,12 @@ class GameModeMapRuntime:
             getattr(owner, "_game_map", None),
             getattr(owner, "_current_segment_idx", 0),
         )
+        if owner._is_segment_map_locked(segment_idx):
+            logger.info(f"[맵핑] 백업 차단: 잠금맵 idx={segment_idx}")
+            return
+        if not self._mapping_persistence_active():
+            logger.info(f"[맵핑] 백업 차단: 맵핑 세션 아님 idx={segment_idx}")
+            return
         seg_name = owner._get_segment_display_name(segment_idx)
         map_path = owner._get_segment_map_name(segment_idx)
         backup_path = map_path.replace("_map.json", "_map.backup.json")
@@ -322,6 +307,9 @@ class GameModeMapRuntime:
         from ..player.simple_pathfinder import SimplePathfinder
 
         segment_idx = getattr(owner, "_current_segment_idx", 0)
+        if owner._is_segment_map_locked(segment_idx):
+            messagebox.showwarning("맵 잠금", "잠금된 맵은 복원하거나 덮어쓸 수 없습니다.")
+            return
         seg_name = owner._get_segment_display_name(segment_idx)
         map_path = owner._get_segment_map_name(segment_idx)
         backup_path = map_path.replace("_map.json", "_map.backup.json")
@@ -358,7 +346,7 @@ class GameModeMapRuntime:
             messagebox.showerror("되돌리기", "백업 파일 로드 실패")
 
     def switch_segment_map(self, new_segment_idx: int, skip_save: bool = False) -> bool:
-        """Switch the active segment map while preserving the previous segment snapshot."""
+        """Switch maps; persist the previous segment only during explicit mapping."""
         owner = self._owner
         from ..player.game_map import GameMap
         from ..player.map_explorer import MapExplorer
@@ -368,6 +356,7 @@ class GameModeMapRuntime:
             return False
 
         trace_t0 = time.time()
+        mapping_session = self._mapping_persistence_active()
         owner._segment_switch_in_progress = True
         logger.info(
             f"[전환추적] 구간전환 시작: current_idx={getattr(owner, '_current_segment_idx', 0)} "
@@ -378,7 +367,7 @@ class GameModeMapRuntime:
             current_map_ref = getattr(owner, "_game_map", None)
             old_name = owner._get_segment_display_name(current_seg_idx)
 
-            if not skip_save and not owner._is_segment_map_locked(current_seg_idx):
+            if not skip_save and mapping_session:
                 try:
                     saved_path = self._persist_map_snapshot(
                         segment_idx=current_seg_idx,
@@ -386,6 +375,8 @@ class GameModeMapRuntime:
                         critical=True,
                         allow_during_switch=True,
                         emit_saved_ui_log=False,
+                        mapping_session=True,
+                        reason="segment-switch",
                     )
                     if saved_path:
                         logger.info(
@@ -395,14 +386,23 @@ class GameModeMapRuntime:
                 except Exception as save_error:
                     logger.error(f"[맵핑] 현재 맵 저장 실패: {save_error}")
                     logger.warning("[맵핑] 현재 구간 저장 실패 후에도 전환은 계속")
-            elif skip_save or owner._is_segment_map_locked(current_seg_idx):
-                logger.info("[맵핑] 전환 중 현재 구간 저장 건너뜀 (skip_save 또는 잠금)")
+            else:
+                logger.info(
+                    f"[맵핑] 구간 전환 저장 건너뜀: idx={current_seg_idx} "
+                    f"skip_save={skip_save} mapping_session={mapping_session} "
+                    f"locked={owner._is_segment_map_locked(current_seg_idx)}"
+                )
 
             new_name = owner._get_segment_display_name(new_segment_idx)
             next_map = GameMap(name=f"{getattr(owner._config, 'name', None) or 'autosave'}_{new_name}")
             self.bind_game_map_segment(next_map, new_segment_idx)
 
-            map_path = owner._get_segment_map_name(new_segment_idx)
+            load_path_resolver = getattr(
+                owner,
+                "_resolve_segment_map_load_path",
+                owner._get_segment_map_name,
+            )
+            map_path = load_path_resolver(new_segment_idx)
             if os.path.exists(map_path):
                 logger.info(
                     f"[전환추적] 구간전환 맵 로드 시작: new_idx={new_segment_idx} seg='{new_name}' path={map_path}"
@@ -454,7 +454,12 @@ class GameModeMapRuntime:
         from ..player.map_explorer import MapExplorer
         from ..player.simple_pathfinder import SimplePathfinder
 
-        map_path = owner._get_segment_map_name(segment_idx)
+        load_path_resolver = getattr(
+            owner,
+            "_resolve_segment_map_load_path",
+            owner._get_segment_map_name,
+        )
+        map_path = load_path_resolver(segment_idx)
         if not map_path or not os.path.exists(map_path):
             return False
 
