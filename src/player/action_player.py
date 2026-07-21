@@ -1123,6 +1123,27 @@ class ActionPlayer:
             logger.warning("자동화 계획에 규칙이 없습니다")
             return False
 
+        def _contains_isolated_game_mode(rules) -> bool:
+            for rule in rules or []:
+                if (
+                    getattr(rule, "action_type", "") == "game_mode"
+                    and plan.game_modes.get(getattr(rule, "rule_id", ""))
+                ):
+                    return True
+                if _contains_isolated_game_mode(getattr(rule, "children", ())):
+                    return True
+            return False
+
+        if (
+            _contains_isolated_game_mode(plan.initial_rules)
+            or _contains_isolated_game_mode(plan.monitoring_rules)
+        ):
+            logger.error(
+                "[특화모드격리] ActionPlayer 직접 실행 차단: "
+                "GameModeDialog 프로필 디스패처를 사용해야 합니다."
+            )
+            return False
+
         self._current_automation_plan = plan
         self._state = PlayerState.RUNNING
 

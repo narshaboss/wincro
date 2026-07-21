@@ -13,6 +13,12 @@ from pathlib import Path
 import uuid
 import os
 
+from ..special_mode_profiles import (
+    DEFAULT_SPECIAL_MODE_PROFILE,
+    infer_legacy_special_mode_profile,
+    normalize_special_mode_profile,
+)
+
 
 def _to_relative_path(abs_path: Optional[str]) -> Optional[str]:
     """??? ??????????? ??? (????)"""
@@ -525,6 +531,7 @@ class GameModeConfig:
     ???? ??? ?????? ?????? ?????? ??? ?????????.
     """
     enabled: bool = False
+    engine_profile: str = DEFAULT_SPECIAL_MODE_PROFILE
     name: str = ""                 # ???????????
     character_image: str = ""      # ????????? (??? ?????
     target_image: str = ""         # ??? ????
@@ -634,6 +641,7 @@ class GameModeConfig:
         """Serialize game mode config."""
         return {
             "enabled": self.enabled,
+            "engine_profile": normalize_special_mode_profile(self.engine_profile),
             "name": self.name,
             "character_image": _to_relative_path(self.character_image),
             "target_image": _to_relative_path(self.target_image),
@@ -713,6 +721,9 @@ class GameModeConfig:
         default_conf = data.get("confidence", 0.65)
         return cls(
             enabled=data.get("enabled", False),
+            engine_profile=normalize_special_mode_profile(
+                data.get("engine_profile", DEFAULT_SPECIAL_MODE_PROFILE)
+            ),
             name=data.get("name", ""),
             character_image=_to_absolute_path(data.get("character_image"), templates_dir) or "",
             target_image=_to_absolute_path(data.get("target_image"), templates_dir) or "",
@@ -871,7 +882,13 @@ class AutomationPlan:
         if "game_modes" in data and data["game_modes"]:
             # ????? {rule_id: config_dict}
             for rule_id, cfg_data in data["game_modes"].items():
-                game_modes[rule_id] = GameModeConfig.from_dict(cfg_data, templates_dir)
+                config = GameModeConfig.from_dict(cfg_data, templates_dir)
+                if not cfg_data.get("engine_profile"):
+                    config.engine_profile = infer_legacy_special_mode_profile(
+                        plan_id=data.get("plan_id", ""),
+                        rule_id=rule_id,
+                    )
+                game_modes[rule_id] = config
         elif "game_mode" in data and data["game_mode"]:
             # ??????????????: ??? game_mode ??game_modes dict
             config = GameModeConfig.from_dict(data["game_mode"], templates_dir)
@@ -880,7 +897,13 @@ class AutomationPlan:
                 if r.get("action_type") == "game_mode":
                     gm_rule_id = r.get("rule_id")
                     break
-            game_modes[gm_rule_id or "_default"] = config
+            resolved_rule_id = gm_rule_id or "_default"
+            if not data["game_mode"].get("engine_profile"):
+                config.engine_profile = infer_legacy_special_mode_profile(
+                    plan_id=data.get("plan_id", ""),
+                    rule_id=resolved_rule_id,
+                )
+            game_modes[resolved_rule_id] = config
 
         return cls(
             plan_id=data.get("plan_id", ""),

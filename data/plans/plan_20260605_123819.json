@@ -1611,6 +1611,7 @@
   "game_modes": {
     "rule_f86b3b6a": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "다이쇼 좌표",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -1701,6 +1702,7 @@
     },
     "rule_8e5a8602": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "다이쇼 좌표",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",

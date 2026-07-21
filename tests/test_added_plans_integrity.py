@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLAN_DIR = ROOT / "data" / "plans"
 IMAGE_DIRS = (ROOT / "data" / "images", ROOT / "data" / "templates", ROOT / "data")
 ADDED_OR_UPDATED_PLANS = (
+    "plan_20260118_174859.json",
     "plan_20260519_152141.json",
     "plan_20260502_164945.json",
     "plan_20260205_000742.json",

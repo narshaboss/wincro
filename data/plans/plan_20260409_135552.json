@@ -56,6 +56,7 @@
   "game_modes": {
     "rule_6bc2141e": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",

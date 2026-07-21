@@ -1,5 +1,12 @@
 # A* 경로탐색 알고리즘
 
+> **역사 자료 주의:** 이 문서의 `_run_coordinate_loop()` 및
+> `RuleExecutor.execute_game_mode_coordinate()` 복구 예시는 현재 실행 경로가
+> 아닙니다. 현재 특화모드는 `GameModeConfig.engine_profile`에 따라
+> `wongak_legacy_v1` 또는 `akgui_v2`로 엄격히 분리됩니다. 구현 변경 전에는
+> `docs/SPECIAL_MODE_ENGINE_BOUNDARIES.md`를 먼저 확인해야 하며, 이 문서의
+> 예시를 공용 실행기로 복원하면 안 됩니다.
+
 ## 개요
 
 맵핑 시스템에서 사용하는 A* 기반 경로탐색 알고리즘입니다.

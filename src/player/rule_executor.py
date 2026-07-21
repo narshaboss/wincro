@@ -4924,6 +4924,16 @@ class RuleExecutor:
         Returns:
             bool: 목표 도달 여부
         """
+        from ..special_mode_profiles import get_special_mode_profile
+
+        profile = get_special_mode_profile(
+            getattr(config, "engine_profile", "")
+        )
+        raise RuntimeError(
+            "격리된 특화모드는 RuleExecutor 좌표 엔진으로 직접 실행할 수 없습니다. "
+            f"GameModeDialog 디스패처를 사용해야 합니다: {profile.profile_id}"
+        )
+
         from ..utils.digit_templates import get_digit_matcher
         from .game_map import GameMap, DIRECTIONS_4
         from .simple_pathfinder import SimplePathfinder

@@ -80,6 +80,7 @@
   "game_modes": {
     "rule_584defa4": {
       "enabled": true,
+      "engine_profile": "akgui_v2",
       "name": "",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",

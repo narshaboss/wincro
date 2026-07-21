@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import ast
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,31 @@ def test_version_resource_uses_korean_fixed_branding():
     assert "StringStruct(u'OriginalFilename', u'업무지원도구.exe')" in version_info
     assert "StringStruct(u'ProductName', u'업무지원도구')" in version_info
     assert "작업도우미.exe" not in version_info
+
+
+def test_release_versions_are_synchronized():
+    init_text = (ROOT / "src" / "__init__.py").read_text(encoding="utf-8")
+    config_text = (ROOT / "src" / "utils" / "config.py").read_text(encoding="utf-8")
+    version_info = (ROOT / "version_info.txt").read_text(encoding="utf-8")
+
+    package_version = re.search(r'__version__ = "([^"]+)"', init_text).group(1)
+    app_version = re.search(r'APP_VERSION = "([^"]+)"', config_text).group(1)
+    assert package_version == app_version
+
+    version_parts = tuple(int(part) for part in app_version.split("."))
+    expected_tuple = version_parts + (0,) * (4 - len(version_parts))
+    expected_string = ".".join(str(part) for part in expected_tuple)
+
+    for key in ("filevers", "prodvers"):
+        match = re.search(rf"{key}=\(([^)]*)\)", version_info)
+        assert match is not None
+        actual_tuple = tuple(int(part.strip()) for part in match.group(1).split(","))
+        assert actual_tuple == expected_tuple
+
+    for key in ("FileVersion", "ProductVersion"):
+        match = re.search(rf"StringStruct\(u'{key}', u'([^']+)'\)", version_info)
+        assert match is not None
+        assert match.group(1) == expected_string
 
 
 def test_packaged_config_defaults_to_fixed_korean_branding():

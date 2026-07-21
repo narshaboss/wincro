@@ -3511,7 +3511,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
         self._gm_wait_after_id = None
 
     def _run_game_mode(self, config_rule_id=None, source_rule=None, source_previous_rule=None):
-        """특화모드 실행 — 숨긴 GameModeDialog로 _run_coordinate_loop 사용"""
+        """특화모드 실행 — 숨긴 GameModeDialog의 프로필 디스패처 사용."""
         config = self._plan.game_modes.get(config_rule_id) if config_rule_id else self._plan.game_mode
         if not config:
             self._on_game_mode_complete(False, "특화모드 설정 없음")
@@ -3927,7 +3927,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # game_mode 규칙 포함 여부 확인
         # → 있으면 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends/보스 지원)
-        # → RuleExecutor.execute_game_mode_coordinate는 간소화 버전이라 route_ends 미지원 → 조기 도착 판정 버그
+        # → RuleExecutor 직접 경로는 격리 경계를 우회하므로 fail-closed 처리됨
         _has_game_mode = any(
             _rule_is_enabled(r) and r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id)
             for r in rules_to_run
@@ -6785,6 +6785,13 @@ class GameModeDialog(ctk.CTkToplevel):
             else:
                 self._config = GameModeConfig()
 
+        from ..special_mode_profiles import normalize_special_mode_profile
+
+        self._config.engine_profile = normalize_special_mode_profile(
+            getattr(self._config, "engine_profile", "")
+        )
+        self._original_engine_profile = self._config.engine_profile
+
         self.title("🎮 특화모드")
         self.resizable(True, True)
         self.minsize(1200, 800)
@@ -7261,11 +7268,115 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception:
                 self._is_running = False
 
+    def _build_engine_profile_ui(self, parent):
+        """Build the mandatory algorithm selector at the top of the dialog."""
+        from ..special_mode_profiles import (
+            AKGUI_V2_PROFILE,
+            WONGAK_LEGACY_PROFILE,
+            get_special_mode_profile,
+            get_special_mode_profiles,
+            normalize_special_mode_profile,
+        )
+
+        profile_id = normalize_special_mode_profile(
+            getattr(self._config, "engine_profile", "")
+        )
+        self._config.engine_profile = profile_id
+        profiles = get_special_mode_profiles()
+        self._engine_profile_id_by_label = {
+            profile.display_name: profile.profile_id for profile in profiles
+        }
+        self._engine_profile_label_by_id = {
+            profile.profile_id: profile.display_name for profile in profiles
+        }
+
+        frame = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"],
+            border_width=2,
+            border_color=COLORS["accent_orange"],
+        )
+        frame.pack(fill="x", pady=(0, 8))
+
+        row = ctk.CTkFrame(frame, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(11, 5))
+        ctk.CTkLabel(
+            row,
+            text="알고리즘 유형",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        self._engine_profile_var = ctk.StringVar(
+            value=self._engine_profile_label_by_id[profile_id]
+        )
+        selector = ctk.CTkSegmentedButton(
+            row,
+            values=[
+                self._engine_profile_label_by_id[WONGAK_LEGACY_PROFILE],
+                self._engine_profile_label_by_id[AKGUI_V2_PROFILE],
+            ],
+            variable=self._engine_profile_var,
+            command=self._on_engine_profile_selected,
+            height=34,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            selected_color=COLORS["accent_orange"],
+            selected_hover_color=COLORS["confidence_amber_hover"],
+            unselected_color=COLORS["bg_card_hover"],
+            unselected_hover_color=COLORS["bg_elevated"],
+        )
+        selector.pack(side="right")
+        self._engine_profile_selector = selector
+
+        profile = get_special_mode_profile(profile_id)
+        lock_text = (
+            "기존 특화모드는 알고리즘 변경이 잠겨 있습니다."
+            if self._config_rule_id
+            else "새 특화모드는 저장 전에 알고리즘을 선택하세요."
+        )
+        self._engine_profile_help_label = ctk.CTkLabel(
+            frame,
+            text=f"{profile.description}  {lock_text}",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+        )
+        self._engine_profile_help_label.pack(fill="x", padx=14, pady=(0, 10))
+
+        # Direct profile mutation of an existing rule can bind incompatible
+        # maps and waypoint semantics. Migration must happen by explicit clone.
+        if self._config_rule_id:
+            selector.configure(state="disabled")
+
+    def _on_engine_profile_selected(self, display_name: str):
+        from ..special_mode_profiles import get_special_mode_profile
+
+        if self._config_rule_id:
+            self._engine_profile_var.set(
+                self._engine_profile_label_by_id[self._original_engine_profile]
+            )
+            return
+        profile_id = self._engine_profile_id_by_label.get(display_name)
+        if not profile_id:
+            return
+        self._config.engine_profile = profile_id
+        profile = get_special_mode_profile(profile_id)
+        self._engine_profile_help_label.configure(
+            text=f"{profile.description}  새 특화모드는 저장 전에 알고리즘을 선택하세요."
+        )
+        logger.info(
+            "[특화모드] 새 설정 알고리즘 선택: %s",
+            profile.profile_id,
+        )
+
     def _build_ui(self):
         """UI 구성"""
         main = ctk.CTkScrollableFrame(self, fg_color="transparent")
         main.pack(fill="both", expand=True, padx=15, pady=10)
         self._main_scroll = main
+
+        self._build_engine_profile_ui(main)
 
         # === 좌표 기반 모드 설정 프레임 ===
         self._coord_mode_frame = ctk.CTkFrame(main, fg_color="transparent")
@@ -7931,7 +8042,7 @@ class GameModeDialog(ctk.CTkToplevel):
         try:
             if not self._handle_source_trigger_gate():
                 return
-            self._run_coordinate_loop()
+            self._run_selected_special_mode_engine()
         except Exception as e:
             self._mark_stop_reason("run_loop_exception", f"{type(e).__name__}: {e}", overwrite=True)
             logger.error(f"[실행루프] 치명적 오류: {e}", exc_info=True)
@@ -7952,8 +8063,32 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception:
                 self._is_running = False
 
-    def _run_coordinate_loop(self):
-        """좌표 기반 이동 루프 - 단순 알고리즘"""
+    def _run_selected_special_mode_engine(self):
+        """Dispatch only by the explicit, persisted engine profile."""
+        from ..player.special_mode.engines import get_special_mode_engine
+        from ..special_mode_profiles import get_special_mode_profile
+
+        profile = get_special_mode_profile(
+            getattr(self._config, "engine_profile", "")
+        )
+        engine = get_special_mode_engine(profile.profile_id)
+        self._active_engine_profile = profile.profile_id
+        self._append_log(
+            f"🧩 알고리즘: {profile.display_name} "
+            f"(profile={profile.profile_id}, behavior=v{profile.behavior_version})"
+        )
+        engine.run(self)
+
+    def _run_akgui_v2_coordinate_loop(self):
+        """Run the Akgui-only coordinate engine."""
+        from ..player.special_mode.akgui_v2 import AkguiV2CoordinateRunner
+
+        AkguiV2CoordinateRunner(self).run()
+
+    # OWNERSHIP LOCK: Akgui work must never edit this method. Its source hash
+    # is enforced by tests/test_special_mode_engine_isolation.py.
+    def _run_wongak_legacy_coordinate_loop(self):
+        """Frozen Wongak legacy coordinate engine."""
         from ..utils.digit_templates import get_digit_matcher
         import pyautogui
         import keyboard
@@ -17385,7 +17520,7 @@ class GameModeDialog(ctk.CTkToplevel):
             self._backup_map()
             if self._stop_event.is_set():
                 return
-            self._run_coordinate_loop()
+            self._run_selected_special_mode_engine()
         finally:
             # 수동 중지가 아닐 때만 완료 처리
             if self._is_mapping:
@@ -17864,81 +17999,6 @@ class GameModeDialog(ctk.CTkToplevel):
         self._append_log(f"🤖 AI순찰 생성: '{seg_name}' ({len(patrol_points)}개)")
         return True
 
-    def _get_equivalent_rule_prefixes(self, segment_idx: int):
-        """동일한 경유지 구조를 가진 다른 rule-id 접두사를 반환한다.
-
-        no-start/local-map 전환 전후에 파일명이 달라져도 원본 맵을 안전하게
-        복구할 수 있도록, 현재 세그먼트와 동일한 경유지 구조를 가진 다른
-        특화모드의 맵 파일을 migration source 후보로 인정한다.
-        """
-        plan = getattr(self, "_plan", None)
-        current_rule_id = getattr(self, "_config_rule_id", None)
-        current_waypoints = getattr(self._config, "waypoints", []) or []
-        if not plan or not current_rule_id or not current_waypoints:
-            return []
-        if not (0 <= segment_idx < len(current_waypoints)):
-            return []
-
-        game_modes = getattr(plan, "game_modes", {}) or {}
-        active_game_rule_ids = set()
-
-        def _collect_active_game_rules(rules):
-            for rule in rules or []:
-                try:
-                    if getattr(rule, "action_type", "") == "game_mode":
-                        active_game_rule_ids.add(getattr(rule, "rule_id", ""))
-                    _collect_active_game_rules(getattr(rule, "children", []) or [])
-                except Exception:
-                    continue
-
-        _collect_active_game_rules(getattr(plan, "initial_rules", []) or [])
-        _collect_active_game_rules(getattr(plan, "monitoring_rules", []) or [])
-
-        def _normalize_points(items):
-            norm = []
-            for item in items or []:
-                if not isinstance(item, dict):
-                    continue
-                x = item.get("x")
-                y = item.get("y")
-                if x is None or y is None:
-                    continue
-                norm.append((int(x), int(y), bool(item.get("enabled", True))))
-            return tuple(norm)
-
-        def _normalize_waypoint(wp):
-            meta = wp[3] if len(wp) >= 4 and isinstance(wp[3], dict) else {}
-            name = wp[2] if len(wp) >= 3 and wp[2] else ""
-            return (
-                int(wp[0]),
-                int(wp[1]),
-                name,
-                _normalize_points(meta.get("route_starts", [])),
-                _normalize_points(meta.get("route_ends", [])),
-                bool(meta.get("target_image")),
-                bool(meta.get("arrival_keys", [])),
-            )
-
-        current_signature = [_normalize_waypoint(wp) for wp in current_waypoints]
-        candidates = []
-        for other_rule_id, other_cfg in game_modes.items():
-            if other_rule_id == current_rule_id:
-                continue
-            if active_game_rule_ids and other_rule_id not in active_game_rule_ids:
-                continue
-            other_waypoints = getattr(other_cfg, "waypoints", []) or []
-            if len(other_waypoints) < len(current_signature):
-                continue
-            try:
-                if all(
-                    _normalize_waypoint(other_waypoints[i]) == current_signature[i]
-                    for i in range(len(current_signature))
-                ):
-                    candidates.append(other_rule_id.replace("rule_", "", 1)[:8] + "_")
-            except Exception:
-                continue
-        return candidates
-
     def _should_persist_segment_end(self, segment_idx: int) -> bool:
         """해당 구간의 end_pos를 맵 파일에 유지해야 하는지 여부"""
         waypoints = getattr(self._config, 'waypoints', []) or []
@@ -18316,7 +18376,35 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _switch_segment_map(self, new_segment_idx: int, skip_save: bool = False) -> bool:
         """?? ? ?? (?? ? ?? -> ? ?? ? ?? -> pathfinder ??). ?? ? True."""
+        from ..special_mode_profiles import AKGUI_V2_PROFILE
+
+        if getattr(self, "_active_engine_profile", "") == AKGUI_V2_PROFILE:
+            raise RuntimeError(
+                "악귀문 엔진의 일반 맵 전환 호출이 차단되었습니다. "
+                "_switch_akgui_v2_segment_map을 사용하세요."
+            )
         return self._get_map_runtime().switch_segment_map(new_segment_idx, skip_save=skip_save)
+
+    def _switch_akgui_v2_segment_map(
+        self,
+        new_segment_idx: int,
+        *,
+        skip_save: bool = False,
+    ) -> bool:
+        """Akgui-only guarded entry to shared map I/O infrastructure."""
+        from ..special_mode_profiles import AKGUI_V2_PROFILE
+
+        configured = getattr(self._config, "engine_profile", "")
+        active = getattr(self, "_active_engine_profile", "")
+        if configured != AKGUI_V2_PROFILE or active != AKGUI_V2_PROFILE:
+            raise RuntimeError(
+                "악귀문 맵 경계 호출이 다른 알고리즘 컨텍스트에서 차단되었습니다: "
+                f"configured={configured!r}, active={active!r}"
+            )
+        return self._get_map_runtime().switch_segment_map(
+            new_segment_idx,
+            skip_save=skip_save,
+        )
 
     def _reload_current_segment_map_runtime(self, segment_idx: int) -> bool:
         """?? ???? ?? ??? ???? ?? ?? ??? ??? ????."""
@@ -19047,11 +19135,26 @@ class GameModeDialog(ctk.CTkToplevel):
     def _get_segment_map_name(self, segment_idx: int) -> str:
         """구간별 canonical 맵 경로를 부작용 없이 반환한다."""
         import os
+        from ..special_mode_profiles import get_special_mode_profile
+
         waypoints = getattr(self._config, 'waypoints', []) or []
         seg_name = self._get_segment_display_name(segment_idx)
-        map_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "maps")
         _rid = getattr(self, '_config_rule_id', None) or ""
         _rid_prefix = _rid.replace("rule_", "")[:8] + "_" if _rid else ""
+        profile = get_special_mode_profile(
+            getattr(self._config, "engine_profile", "")
+        )
+        map_root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data",
+            "maps",
+        )
+        rule_namespace = _rid.replace("rule_", "", 1) or "_default"
+        map_dir = os.path.join(
+            map_root,
+            profile.map_namespace,
+            rule_namespace,
+        )
         is_boss = False
         if segment_idx < len(waypoints):
             wp = waypoints[segment_idx]
@@ -19066,23 +19169,33 @@ class GameModeDialog(ctk.CTkToplevel):
         return os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json")
 
     def _resolve_segment_map_load_path(self, segment_idx: int) -> str:
-        """기존 맵을 복사하거나 수정하지 않고 읽을 경로를 찾는다."""
+        """Resolve only this profile/rule map or its exact legacy source."""
         import os
+        from ..special_mode_profiles import get_special_mode_profile
 
         own_path = self._get_segment_map_name(segment_idx)
         if os.path.exists(own_path):
             return own_path
 
         waypoints = getattr(self._config, 'waypoints', []) or []
-        base = self._config.name or "autosave"
         seg_name = self._get_segment_display_name(segment_idx)
         map_dir = os.path.dirname(own_path)
+        map_root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data",
+            "maps",
+        )
         _rid = getattr(self, '_config_rule_id', None) or ""
         _rid_prefix = _rid.replace("rule_", "")[:8] + "_" if _rid else ""
+        profile = get_special_mode_profile(
+            getattr(self._config, "engine_profile", "")
+        )
         wp = waypoints[segment_idx] if 0 <= segment_idx < len(waypoints) else None
         meta = wp[3] if isinstance(wp, (list, tuple)) and len(wp) >= 4 and isinstance(wp[3], dict) else {}
         if meta.get('skip_initial_map_copy'):
-            return own_path
+            # skip_initial_map_copy blocks generic fallbacks, but an exact
+            # profile/rule legacy file remains a valid read-only source.
+            pass
 
         is_boss = bool(
             isinstance(wp, (list, tuple))
@@ -19096,39 +19209,44 @@ class GameModeDialog(ctk.CTkToplevel):
         if use_local_runtime:
             candidates.extend([
                 os.path.join(map_dir, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json"),
-                os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_local_map.json"),
-                os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_map.json"),
-                os.path.join(map_dir, f"{base}_{seg_name}_local_map.json"),
-                os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
+                os.path.join(map_root, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_local_map.json"),
+                os.path.join(map_root, f"{_rid_prefix}{segment_idx:02d}_{seg_name}_map.json"),
             ])
-            for alt_prefix in self._get_equivalent_rule_prefixes(segment_idx):
-                candidates.extend([
-                    os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_local_map.json"),
-                    os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_map.json"),
-                ])
         else:
             map_file = meta.get('map_file')
             if map_file:
-                candidates.append(map_file)
-
-            has_duplicate_name = any(
-                i != segment_idx
-                and (
-                    w[2] if isinstance(w, (list, tuple)) and len(w) >= 3 and w[2]
-                    else f"경유지{i + 1}"
-                ) == seg_name
-                for i, w in enumerate(waypoints)
-            )
-            if not has_duplicate_name:
-                suffix = "boss_map.json" if is_boss else "map.json"
-                candidates.extend([
-                    os.path.join(map_dir, f"{segment_idx:02d}_{seg_name}_{suffix}"),
-                    os.path.join(map_dir, f"{base}_{seg_name}_map.json"),
-                ])
-                for alt_prefix in self._get_equivalent_rule_prefixes(segment_idx):
-                    candidates.append(
-                        os.path.join(map_dir, f"{alt_prefix}{segment_idx:02d}_{seg_name}_{suffix}")
+                map_file_abs = os.path.abspath(map_file)
+                own_rule_namespace = os.path.abspath(map_dir)
+                legacy_name = os.path.basename(map_file_abs)
+                try:
+                    in_own_rule_namespace = (
+                        os.path.commonpath([map_file_abs, own_rule_namespace])
+                        == own_rule_namespace
                     )
+                except ValueError:
+                    in_own_rule_namespace = False
+                if (
+                    in_own_rule_namespace
+                    or (
+                        bool(_rid_prefix)
+                        and os.path.dirname(map_file_abs) == os.path.abspath(map_root)
+                        and legacy_name.startswith(_rid_prefix)
+                    )
+                ):
+                    candidates.append(map_file_abs)
+                else:
+                    logger.warning(
+                        "[맵격리] 다른 프로필/rule map_file 차단: %s",
+                        map_file,
+                    )
+
+            suffix = "boss_map.json" if is_boss else "map.json"
+            candidates.extend([
+                os.path.join(
+                    map_root,
+                    f"{_rid_prefix}{segment_idx:02d}_{seg_name}_{suffix}",
+                ),
+            ])
 
         seen = set()
         for candidate in candidates:
@@ -26030,6 +26148,22 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _apply_settings(self):
         # 이름은 액션 우클릭 메뉴에서 설정 (다른 액션과 동일하게)
+        from ..special_mode_profiles import normalize_special_mode_profile
+
+        selected_label = self._engine_profile_var.get()
+        selected_profile = self._engine_profile_id_by_label.get(selected_label)
+        if not selected_profile:
+            raise ValueError(f"알 수 없는 특화모드 알고리즘: {selected_label}")
+        selected_profile = normalize_special_mode_profile(selected_profile)
+        if (
+            self._config_rule_id
+            and selected_profile != self._original_engine_profile
+        ):
+            raise ValueError(
+                "기존 특화모드의 알고리즘 유형은 직접 변경할 수 없습니다. "
+                "다른 유형은 새 특화모드로 추가하세요."
+            )
+        self._config.engine_profile = selected_profile
         self._config.navigation_mode = self._nav_mode_var.get()
         try:
             self._config.analysis_interval = float(self._interval_var.get())
@@ -26076,12 +26210,28 @@ class GameModeDialog(ctk.CTkToplevel):
         # 좌표 모드: 경유지에서 최종 목표 인덱스 저장
         # (target_x/y는 하위호환용으로 유지하되 경유지 기반으로 설정)
 
+    def _validate_engine_profile_config(self):
+        """Fail closed when a config contains another engine's policy."""
+        from ..player.special_mode.akgui_v2 import AkguiV2CoordinateRunner
+        from ..player.special_mode.engines import get_special_mode_engine
+        from ..special_mode_profiles import AKGUI_V2_PROFILE
+
+        profile_id = self._config.engine_profile
+        get_special_mode_engine(profile_id)
+        if profile_id == AKGUI_V2_PROFILE:
+            AkguiV2CoordinateRunner.validate_config(self._config)
+
     def _save_config(self):
         """설정 저장 (JSON 파일만, messagebox 없음)"""
         import time as _time
         _save_start = _time.time()
         self._config.enabled = True
-        self._apply_settings()
+        try:
+            self._apply_settings()
+            self._validate_engine_profile_config()
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logger.error("[특화모드] 알고리즘 설정 검증 실패: %s", exc)
+            return False
 
         # 액션 목록에 게임모드 규칙 추가/업데이트
         display_name = self._config.name if self._config.name else "특화모드"
@@ -26128,12 +26278,27 @@ class GameModeDialog(ctk.CTkToplevel):
             logger.info(f"[특화모드] 설정 저장: {plan_file}")
         except Exception as e:
             logger.error(f"[특화모드] 설정 저장 실패: {e}")
+            return False
+
+        # A newly-created rule becomes immutable after its first successful
+        # save. This also keeps subsequent saves in the same open dialog valid.
+        self._original_engine_profile = self._config.engine_profile
+        if hasattr(self, "_engine_profile_selector"):
+            self._engine_profile_selector.configure(state="disabled")
+        if hasattr(self, "_engine_profile_help_label"):
+            from ..special_mode_profiles import get_special_mode_profile
+
+            profile = get_special_mode_profile(self._config.engine_profile)
+            self._engine_profile_help_label.configure(
+                text=f"{profile.description}  기존 특화모드는 알고리즘 변경이 잠겨 있습니다."
+            )
         # 경유지 제외한 설정을 기본값으로 저장 (새 플랜에서 자동 적용)
         self._save_game_mode_defaults()
 
         _save_elapsed = _time.time() - _save_start
         if _save_elapsed > 0.5:
             logger.warning(f"[특화모드] 설정 저장 느림: {_save_elapsed:.1f}초")
+        return True
 
     def _save_game_mode_defaults(self):
         """경유지 제외한 특화모드 설정을 기본값 파일로 저장"""
@@ -26141,7 +26306,7 @@ class GameModeDialog(ctk.CTkToplevel):
             defaults = self._config.to_dict()
             # 플랜별 고유 필드 제거 (경유지는 직접 설정)
             for key in ("name", "enabled", "waypoints", "target_x", "target_y",
-                        "final_waypoint_idx"):
+                        "final_waypoint_idx", "engine_profile"):
                 defaults.pop(key, None)
             defaults_file = DATA_DIR / "game_mode_defaults.json"
             with open(defaults_file, 'w', encoding='utf-8') as f:
@@ -26151,10 +26316,16 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def _save_config_with_msg(self):
         """저장 버튼 클릭 시: 설정 저장 + messagebox 표시"""
-        self._save_config()
+        from tkinter import messagebox
+        if not self._save_config():
+            messagebox.showerror(
+                "저장 실패",
+                "선택한 알고리즘과 설정이 맞지 않습니다.\n로그의 검증 사유를 확인하세요.",
+                parent=self,
+            )
+            return
 
         # messagebox를 GameModeDialog에 parenting (뒤에 숨기지 않음)
-        from tkinter import messagebox
         messagebox.showinfo("저장 완료", "설정이 저장되었습니다.", parent=self)
 
         # UI 갱신

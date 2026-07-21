@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "wongak_legacy_v1": {
+    "owner": "src/ui/player_view.py::GameModeDialog._run_wongak_legacy_coordinate_loop",
+    "sha256": "9c4fe29e4a9dc4a56fa0cbe15741a8e9554db26b29ea45323bed70be6c56d482",
+    "change_rule": "Only a user-requested Wongak change may update this method and hash."
+  },
+  "akgui_v2": {
+    "owner": "src/player/special_mode/akgui_v2.py",
+    "change_rule": "Akgui changes must not modify the Wongak method or its hash."
+  },
+  "shared_infrastructure_only": [
+    "coordinate OCR capture",
+    "input delivery",
+    "UI callback delivery",
+    "profile-aware map file I/O"
+  ]
+}

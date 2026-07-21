@@ -10,7 +10,11 @@ from src.ui.player_view import GameModeDialog
 
 def _make_view_with_waypoints(waypoints):
     view = GameModeDialog.__new__(GameModeDialog)
-    view._config = SimpleNamespace(waypoints=waypoints, name="test-mode")
+    view._config = SimpleNamespace(
+        waypoints=waypoints,
+        name="test-mode",
+        engine_profile="wongak_legacy_v1",
+    )
     return view
 
 
@@ -159,29 +163,8 @@ def test_no_start_segment_uses_transient_local_map_path():
     assert not view._get_segment_map_name(1).endswith("_local_map.json")
 
 
-def test_equivalent_rule_prefixes_ignore_orphan_game_modes():
-    waypoints = [
-        (13, 22, "cave1", {
-            "route_starts": [{"x": 9, "y": 3}],
-            "route_ends": [{"x": 13, "y": 22}],
-        }),
-    ]
-    view = _make_view_with_waypoints(waypoints)
-    view._config_rule_id = "rule_active1"
-    view._plan = SimpleNamespace(
-        initial_rules=[
-            SimpleNamespace(rule_id="rule_active1", action_type="game_mode", children=[]),
-            SimpleNamespace(rule_id="rule_active2", action_type="game_mode", children=[]),
-        ],
-        monitoring_rules=[],
-        game_modes={
-            "rule_active1": SimpleNamespace(waypoints=waypoints),
-            "rule_active2": SimpleNamespace(waypoints=waypoints),
-            "rule_orphan1": SimpleNamespace(waypoints=waypoints),
-        },
-    )
-
-    assert view._get_equivalent_rule_prefixes(0) == ["active2_"]
+def test_equivalent_rule_map_fallback_is_removed():
+    assert not hasattr(GameModeDialog, "_get_equivalent_rule_prefixes")
 
 
 def test_verify_saved_map_file_accepts_valid_saved_map(tmp_path):

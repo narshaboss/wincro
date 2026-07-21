@@ -1207,6 +1207,7 @@
   "game_modes": {
     "rule_65546d26": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "국내성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -1603,6 +1604,7 @@
     },
     "rule_8464965f": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "평양성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -3202,6 +3204,7 @@
     },
     "rule_9b87b454": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "졸본성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -4801,6 +4804,7 @@
     },
     "rule_b24119b9": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "숙군성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -6387,6 +6391,7 @@
     },
     "rule_0ecf31e4": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "선양성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -7986,6 +7991,7 @@
     },
     "rule_5e3053c3": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "집안성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -9616,6 +9622,7 @@
     },
     "rule_40ade31d": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "산해관 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -11260,6 +11267,7 @@
     },
     "rule_8fec6701": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "신성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -12935,6 +12943,7 @@
     },
     "rule_7f5eee4a": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "용성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -14611,6 +14620,7 @@
     },
     "rule_163037ce": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "개주 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
@@ -16288,6 +16298,7 @@
     },
     "rule_f24f702b": {
       "enabled": true,
+      "engine_profile": "wongak_legacy_v1",
       "name": "후연성 흑해골굴",
       "character_image": "game_character_trigger_20260130_015924_341.png",
       "target_image": "game_target_trigger_20260130_015118_673.png",
