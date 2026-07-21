@@ -1,5 +1,4 @@
 from pathlib import Path
-import json
 import ast
 import re
 
@@ -95,12 +94,13 @@ def test_release_versions_are_synchronized():
         assert match.group(1) == expected_string
 
 
-def test_packaged_config_defaults_to_fixed_korean_branding():
-    config = json.loads((ROOT / "data" / "config.json").read_text(encoding="utf-8"))
+def test_new_install_config_defaults_to_fixed_korean_branding():
+    from src.utils.config import UIConfig
 
-    assert config["ui"]["app_name"] == "업무지원도구"
-    assert config["ui"]["random_name_mode"] is False
-    assert config["ui"]["random_name_alias"] == ""
+    config = UIConfig()
+    assert config.app_name == "업무지원도구"
+    assert config.random_name_mode is False
+    assert config.random_name_alias == ""
 
 
 def test_packaged_custom_ctk_theme_is_bundled_and_has_startup_fallback():
