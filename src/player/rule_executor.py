@@ -5,6 +5,7 @@ WinCro 규칙 기반 실행 엔진
 시간 기반이 아닌 조건(이미지 감지 등) 기반으로 동작합니다.
 """
 
+import copy
 import time
 import random
 import threading
@@ -87,6 +88,7 @@ logger = get_logger(__name__)
 
 _MULTISCALE_FACTORS = (1.0, 1.1, 0.9, 1.25, 0.8, 1.4, 0.7, 1.5)
 PLAYLIST_SKIP_TRIGGER_MISSING = "playlist_skip:trigger_missing"
+SPECIAL_MODE_ROUTE_HANDOFF = "special_mode_route_handoff"
 PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS = 30.0
 TRIGGER_COORD_SEARCH_RADIUS = 220
 _screen_capture_lock = threading.Lock()
@@ -631,6 +633,18 @@ class RuleExecutionResult:
     monitoring_jump_rule_id: str = ""
 
 
+@dataclass(frozen=True)
+class SpecialModeRouteHandoff:
+    """RuleExecutor에서 UI 특화모드 디스패처로 넘길 실행 구간."""
+
+    rules: List[AutomationRule]
+    source_step: str
+    target_step: str
+    target_rule_id: str
+    target_name: str
+    previous_rule: Optional[AutomationRule] = None
+
+
 @dataclass
 class ExecutionProgress:
     """실행 진행 상태"""
@@ -716,6 +730,9 @@ class RuleExecutor:
         self._current_step_num = ""
         self._last_monitoring_route_detail: Dict[str, Any] = {}
         self._current_monitoring_wait_detail: Dict[str, Any] = {}
+        self._allow_special_mode_route_handoff = False
+        self._special_mode_route_handoff_lock = threading.Lock()
+        self._pending_special_mode_route_handoff: Optional[SpecialModeRouteHandoff] = None
 
 
     @property
@@ -732,6 +749,136 @@ class RuleExecutor:
     def results(self) -> List[RuleExecutionResult]:
         """실행 결과 목록"""
         return self._results.copy()
+
+    def take_special_mode_route_handoff(self) -> Optional[SpecialModeRouteHandoff]:
+        """UI가 대기 중인 특화모드 실행 구간을 한 번만 가져간다."""
+        with self._special_mode_route_handoff_lock:
+            handoff = self._pending_special_mode_route_handoff
+            self._pending_special_mode_route_handoff = None
+        return handoff
+
+    @staticmethod
+    def _rules_contain_configured_game_mode(rules, game_modes) -> bool:
+        for rule in rules or []:
+            if (
+                getattr(rule, "enabled", True)
+                and getattr(rule, "action_type", "") == "game_mode"
+                and game_modes.get(getattr(rule, "rule_id", ""))
+            ):
+                return True
+            if RuleExecutor._rules_contain_configured_game_mode(
+                getattr(rule, "children", None),
+                game_modes,
+            ):
+                return True
+        return False
+
+    def _build_special_mode_handoff_rules(
+        self,
+        source_rules,
+        target_rule: AutomationRule,
+    ) -> List[AutomationRule]:
+        """현재 특화모드부터 원본 순서를 보존한 UI 실행 구간을 만든다."""
+        source_rules = list(source_rules or [])
+        target_rule_id = str(getattr(target_rule, "rule_id", "") or "")
+
+        for index, candidate in enumerate(source_rules):
+            if candidate is target_rule or (
+                target_rule_id
+                and str(getattr(candidate, "rule_id", "") or "") == target_rule_id
+            ):
+                return list(source_rules[index:])
+
+        flat_rules = self._flatten_rules(source_rules)
+        target_index = next(
+            (
+                index
+                for index, candidate in enumerate(flat_rules)
+                if candidate is target_rule
+            ),
+            -1,
+        )
+        if target_index < 0 and target_rule_id:
+            target_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(flat_rules)
+                    if str(getattr(candidate, "rule_id", "") or "") == target_rule_id
+                ),
+                -1,
+            )
+        if target_index < 0:
+            return [target_rule]
+
+        continuation: List[AutomationRule] = []
+        skip_object_ids: set[int] = set()
+        for candidate in flat_rules[target_index:]:
+            if id(candidate) in skip_object_ids:
+                continue
+            candidate_copy = copy.copy(candidate)
+            if self._rule_repeats_child_actions(candidate):
+                candidate_copy.children = copy.deepcopy(getattr(candidate, "children", []) or [])
+                skip_object_ids.update(
+                    id(child)
+                    for child in self._flatten_rules(getattr(candidate, "children", []) or [])
+                )
+            else:
+                candidate_copy.children = []
+            continuation.append(candidate_copy)
+        return continuation
+
+    def _handoff_special_mode_rule(
+        self,
+        plan: AutomationPlan,
+        rule: AutomationRule,
+        *,
+        source_step: str,
+        target_step: str,
+        previous_rule: Optional[AutomationRule],
+    ) -> bool:
+        """격리 엔진을 직접 실행하지 않고 UI 디스패처에 남은 구간을 인계한다."""
+        if not self._allow_special_mode_route_handoff:
+            return False
+        config = getattr(plan, "game_modes", {}).get(getattr(rule, "rule_id", ""))
+        if not config:
+            return False
+
+        source_rules = list(
+            getattr(plan, "_original_initial_rules", None)
+            or getattr(plan, "initial_rules", None)
+            or []
+        )
+        source_rules.extend(list(getattr(plan, "monitoring_rules", None) or []))
+        continuation = self._build_special_mode_handoff_rules(source_rules, rule)
+        if not self._rules_contain_configured_game_mode(continuation, plan.game_modes):
+            return False
+
+        handoff = SpecialModeRouteHandoff(
+            rules=continuation,
+            source_step=str(source_step or ""),
+            target_step=str(target_step or ""),
+            target_rule_id=str(getattr(rule, "rule_id", "") or ""),
+            target_name=str(getattr(rule, "description", "") or getattr(config, "name", "") or "특화모드"),
+            previous_rule=previous_rule,
+        )
+        with self._special_mode_route_handoff_lock:
+            self._pending_special_mode_route_handoff = handoff
+
+        self._state = ExecutionState.COMPLETED
+        message = (
+            f"{SPECIAL_MODE_ROUTE_HANDOFF}: rule_id={handoff.target_rule_id} "
+            f"step={handoff.target_step} name={handoff.target_name}"
+        )
+        logger.info(
+            f"{_CYAN}↪ [{source_step}] 특화모드 경계 인계 → "
+            f"액션 [{target_step}] {handoff.target_name} (GameModeDialog){_RESET}"
+        )
+        self._update_progress(
+            f"[{source_step}] 특화모드 경계 인계 → 액션 {target_step}"
+        )
+        if self._on_complete:
+            self._on_complete(True, message)
+        return True
 
     @property
     def _step_prefix(self) -> str:
@@ -821,7 +968,12 @@ class RuleExecutor:
         self._on_complete = on_complete
         self._on_error = on_error
 
-    def execute_plan(self, plan: AutomationPlan) -> bool:
+    def execute_plan(
+        self,
+        plan: AutomationPlan,
+        *,
+        allow_special_mode_handoff: bool = False,
+    ) -> bool:
         """
         자동화 계획 실행
 
@@ -843,6 +995,9 @@ class RuleExecutor:
                 return False
 
         self._current_plan = plan
+        self._allow_special_mode_route_handoff = bool(allow_special_mode_handoff)
+        with self._special_mode_route_handoff_lock:
+            self._pending_special_mode_route_handoff = None
         self._results.clear()
         self._last_monitoring_route_detail = {}
         self._current_monitoring_wait_detail = {}
@@ -874,10 +1029,15 @@ class RuleExecutor:
         self,
         plan: AutomationPlan,
         on_complete: Optional[Callable[[bool], None]] = None,
+        *,
+        allow_special_mode_handoff: bool = False,
     ) -> None:
         """비동기 자동화 계획 실행"""
         def run():
-            success = self.execute_plan(plan)
+            success = self.execute_plan(
+                plan,
+                allow_special_mode_handoff=allow_special_mode_handoff,
+            )
             if on_complete:
                 on_complete(success)
 
@@ -1253,6 +1413,22 @@ class RuleExecutor:
                     self._progress.current_action_name = action_name
                     self._progress.current_action_is_monitoring = bool(is_monitoring)
                     self._update_progress(f"[{step_num}] {action_name}")
+
+                    if (
+                        rule.action_type == "game_mode"
+                        and self._handoff_special_mode_rule(
+                            plan,
+                            rule,
+                            source_step=step_num,
+                            target_step=display_step_num,
+                            previous_rule=(
+                                all_rules_with_step[i - 1][0]
+                                if i > 0
+                                else None
+                            ),
+                        )
+                    ):
+                        return
 
                     logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
                     if is_monitoring:

@@ -2582,16 +2582,26 @@ class MainWindow(ctk.CTk):
         try:
             self._mini_active_plan = plan
             self._mini_remaining_rules = []
-            has_game_mode = any(
-                getattr(rule, "enabled", True)
-                and rule.action_type == "game_mode"
-                and plan.game_modes.get(rule.rule_id)
-                for rule in plan.initial_rules
-            )
+            playback_rules = list(plan.initial_rules) + list(plan.monitoring_rules)
+
+            def _has_configured_game_mode(rules):
+                for rule in rules:
+                    if not getattr(rule, "enabled", True):
+                        continue
+                    if (
+                        rule.action_type == "game_mode"
+                        and plan.game_modes.get(rule.rule_id)
+                    ):
+                        return True
+                    if _has_configured_game_mode(getattr(rule, "children", []) or []):
+                        return True
+                return False
+
+            has_game_mode = _has_configured_game_mode(playback_rules)
 
             if has_game_mode:
                 logger.info("[mini-player] game_mode detected -> GameModeDialog chain")
-                self._mini_play_plan_rules(plan.initial_rules)
+                self._mini_play_plan_rules(playback_rules)
                 return
 
             run_plan = AutomationPlan(
@@ -2898,7 +2908,8 @@ class MainWindow(ctk.CTk):
         if not self._ensure_arduino_ready_for_mini("미니 플레이어 재생"):
             self._mini_on_repeat_complete(False, "아두이노 연결 필요")
             return
-        self._rule_executor = RuleExecutor()
+        executor = RuleExecutor()
+        self._rule_executor = executor
         callback_generation = getattr(self, "_mini_playback_generation", 0)
 
         def on_progress(progress):
@@ -2922,6 +2933,21 @@ class MainWindow(ctk.CTk):
                             "stopped",
                             playback_generation=g,
                         ),
+                    )
+                    return
+                handoff = executor.take_special_mode_route_handoff()
+                if success and handoff is not None:
+                    self._rule_executor = None
+                    self._mini_next_gm_previous_rule = handoff.previous_rule
+                    logger.info(
+                        "[mini-player] special-mode handoff -> GameModeDialog: "
+                        f"step={handoff.target_step} rule_id={handoff.target_rule_id}"
+                    )
+                    self.after(
+                        0,
+                        lambda rules=handoff.rules, g=callback_generation: self._mini_play_plan_rules(rules)
+                        if self._mini_is_current_playback_generation(g)
+                        else None,
                     )
                     return
                 if isinstance(message, str) and message.startswith(PLAYLIST_SKIP_TRIGGER_MISSING):
@@ -2951,11 +2977,14 @@ class MainWindow(ctk.CTk):
             except (tk.TclError, RuntimeError):
                 pass
 
-        self._rule_executor.set_callbacks(
+        executor.set_callbacks(
             on_progress=on_progress,
             on_complete=on_complete,
         )
-        self._rule_executor.execute_plan_async(plan_to_run)
+        executor.execute_plan_async(
+            plan_to_run,
+            allow_special_mode_handoff=True,
+        )
 
     def _mini_on_playlist_skip(self, message: str):
         """트리거 미감지 옵션으로 현재 재생목록만 종료하고 다음 시퀀스로 진행."""

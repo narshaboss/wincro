@@ -3768,6 +3768,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             try:
                 if not self.winfo_exists():
                     return
+                handoff = executor.take_special_mode_route_handoff()
+                if success and handoff is not None:
+                    self._running_executor = None
+                    self._gm_next_previous_rule = handoff.previous_rule
+                    logger.info(
+                        "[이어서실행] 특화모드 경계 인계 → GameModeDialog: "
+                        f"step={handoff.target_step}, rule_id={handoff.target_rule_id}"
+                    )
+                    self.after(0, lambda rules=handoff.rules: self._run_remaining_rules(rules))
+                    return
                 if success and chain_remaining:
                     # 다음 game_mode로 체이닝 (executor 정리 후 main thread에서)
                     self._running_executor = None
@@ -3799,7 +3809,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
         def run():
             try:
                 logger.info(f"[이어서실행] {len(rules_to_run)}개 액션 시작")
-                executor.execute_plan(partial_plan)
+                executor.execute_plan(
+                    partial_plan,
+                    allow_special_mode_handoff=True,
+                )
             except Exception as e:
                 logger.error(f"[이어서실행] 예외: {e}")
                 import traceback
@@ -3995,6 +4008,16 @@ class PlanDetailDialog(ctk.CTkToplevel):
             try:
                 if not self.winfo_exists():
                     return
+                handoff = executor.take_special_mode_route_handoff()
+                if success and handoff is not None:
+                    self._running_executor = None
+                    self._gm_next_previous_rule = handoff.previous_rule
+                    logger.info(
+                        "[부분실행] 특화모드 경계 인계 → GameModeDialog: "
+                        f"step={handoff.target_step}, rule_id={handoff.target_rule_id}"
+                    )
+                    self.after(0, lambda rules=handoff.rules: self._run_remaining_rules(rules))
+                    return
                 self.after(0, self._on_execution_complete)
                 # 창 복원
                 if config.ui.minimize_on_run and main_window:
@@ -4024,7 +4047,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
         def run():
             try:
                 logger.info(f"[부분실행] 시작!")
-                executor.execute_plan(partial_plan)
+                executor.execute_plan(
+                    partial_plan,
+                    allow_special_mode_handoff=True,
+                )
             except Exception as e:
                 logger.error(f"[부분실행] 예외: {e}")
                 import traceback
@@ -31201,7 +31227,11 @@ class PlayerView(BaseView):
         self._status_label.configure(text="▶ 자동화 실행 중...")
         self._status_indicator.configure(text_color=COLORS["accent_text"])
 
-        if _has_game_mode_rule(plan_to_execute.initial_rules):
+        playback_rules = (
+            list(plan_to_execute.initial_rules)
+            + list(plan_to_execute.monitoring_rules)
+        )
+        if _has_game_mode_rule(playback_rules):
             logger.info("[재생] game_mode 포함 → GameModeDialog 경유")
             self._rule_executor = None
             self._playback_active_plan = plan_to_execute
@@ -31209,7 +31239,7 @@ class PlayerView(BaseView):
             self._playback_next_previous_rule = None
             self._playback_gm_previous_rule = None
             self._playback_trigger_rewind_attempts = {}
-            self._play_plan_rules(plan_to_execute.initial_rules)
+            self._play_plan_rules(playback_rules)
             return
 
         # RuleExecutor 생성
@@ -31476,11 +31506,24 @@ class PlayerView(BaseView):
         partial_plan._original_initial_rules = active_plan.initial_rules
         partial_plan.game_modes = active_plan.game_modes
 
-        self._rule_executor = RuleExecutor()
+        executor = RuleExecutor()
+        self._rule_executor = executor
 
         def on_complete(success: bool, message: str):
             try:
                 if not self.winfo_exists():
+                    return
+                handoff = executor.take_special_mode_route_handoff()
+                if success and handoff is not None:
+                    self._rule_executor = None
+                    self._playback_next_previous_rule = handoff.previous_rule
+                    logger.info(
+                        "[재생] 특화모드 경계 인계 → GameModeDialog: "
+                        f"step={handoff.target_step}, rule_id={handoff.target_rule_id}"
+                    )
+                    self._player_ui_post(
+                        lambda rules=handoff.rules: self._play_plan_rules(rules)
+                    )
                     return
                 if success and chain_remaining:
                     self._rule_executor = None
@@ -31490,11 +31533,14 @@ class PlayerView(BaseView):
             except (tk.TclError, RuntimeError):
                 pass
 
-        self._rule_executor.set_callbacks(
+        executor.set_callbacks(
             on_progress=self._on_plan_progress_callback,
             on_complete=on_complete,
         )
-        self._rule_executor.execute_plan_async(partial_plan)
+        executor.execute_plan_async(
+            partial_plan,
+            allow_special_mode_handoff=True,
+        )
 
     def _on_plan_progress_callback(self, progress) -> None:
         """자동화 계획 진행 상태 콜백 (ExecutionProgress 객체)"""

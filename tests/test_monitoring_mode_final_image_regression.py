@@ -1,10 +1,11 @@
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from src.analyzer.automation_models import AutomationPlan, AutomationRule
+from src.analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig
 from src.player.rule_executor import ExecutionProgress, ExecutionState, RuleExecutor, RuleExecutionResult
 
 
@@ -59,6 +60,231 @@ def test_monitoring_jump_from_partial_run_can_switch_to_original_plan_target(mon
     executor._execution_loop()
 
     assert executed == ["다이쇼 시작"]
+
+
+def test_monitoring_jump_hands_off_before_isolated_game_mode(monkeypatch):
+    executor = RuleExecutor()
+    target = AutomationRule(
+        rule_id="target",
+        action_type="hotkey",
+        description="route target",
+        wait_after=0,
+    )
+    game_mode = AutomationRule(
+        rule_id="game_mode",
+        action_type="game_mode",
+        description="coordinate mode",
+        wait_after=0,
+    )
+    monitor = AutomationRule(
+        rule_id="monitor",
+        action_type="click",
+        description="monitor route",
+        is_monitoring_mode=True,
+        monitoring_watches=[{"image": "watch.png", "goto_rule_id": "target"}],
+        wait_after=0,
+    )
+    partial_plan = AutomationPlan(
+        name="partial",
+        initial_rules=[monitor],
+        monitoring_rules=[],
+    )
+    partial_plan._original_initial_rules = [target, game_mode, monitor]
+    partial_plan.game_modes = {
+        game_mode.rule_id: GameModeConfig(
+            name="coordinate mode",
+            engine_profile="wongak_legacy_v1",
+        )
+    }
+    executor._current_plan = partial_plan
+    executor._allow_special_mode_route_handoff = True
+    executor._state = ExecutionState.RUNNING_INITIAL
+    executor._progress = ExecutionProgress(state=ExecutionState.RUNNING_INITIAL)
+    executor._stop_event.clear()
+    executor._pause_event.set()
+    executed = []
+    completed = []
+
+    def fake_monitoring(rule, all_rules, current_index, step_num=""):
+        return RuleExecutionResult(
+            rule_id=rule.rule_id,
+            success=True,
+            message="jump to start",
+            monitoring_jump_rule_id="target",
+        )
+
+    def fake_execute(rule, *args, **kwargs):
+        executed.append(rule.rule_id)
+        return RuleExecutionResult(rule_id=rule.rule_id, success=True, message="ok")
+
+    monkeypatch.setattr(executor, "_execute_monitoring_mode", fake_monitoring)
+    monkeypatch.setattr(executor, "_execute_rule_with_retry", fake_execute)
+    monkeypatch.setattr(executor, "_update_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+    executor.set_callbacks(on_complete=lambda success, message: completed.append((success, message)))
+
+    executor._execution_loop()
+
+    assert executed == ["target"]
+    handoff = executor.take_special_mode_route_handoff()
+    assert handoff is not None
+    assert [rule.rule_id for rule in handoff.rules] == ["game_mode", "monitor"]
+    assert handoff.previous_rule is target
+    assert completed == [
+        (
+            True,
+            "special_mode_route_handoff: rule_id=game_mode step=2 name=coordinate mode",
+        )
+    ]
+    assert executor.take_special_mode_route_handoff() is None
+
+
+def test_nested_game_mode_handoff_builds_flat_continuation():
+    executor = RuleExecutor()
+    nested_game_mode = AutomationRule(
+        rule_id="nested_game_mode",
+        action_type="game_mode",
+        description="nested coordinate mode",
+    )
+    parent = AutomationRule(
+        rule_id="parent",
+        action_type="click",
+        children=[nested_game_mode],
+    )
+    after = AutomationRule(rule_id="after", action_type="hotkey")
+
+    continuation = executor._build_special_mode_handoff_rules(
+        [parent, after],
+        nested_game_mode,
+    )
+
+    assert [rule.rule_id for rule in continuation] == ["nested_game_mode", "after"]
+    assert all(not rule.children for rule in continuation)
+
+
+def test_special_mode_handoff_preserves_monitoring_rule_continuation(monkeypatch):
+    executor = RuleExecutor()
+    initial = AutomationRule(
+        rule_id="initial",
+        action_type="hotkey",
+        description="initial",
+        wait_after=0,
+    )
+    game_mode = AutomationRule(
+        rule_id="monitoring_game_mode",
+        action_type="game_mode",
+        description="monitoring coordinate mode",
+        wait_after=0,
+    )
+    after = AutomationRule(
+        rule_id="monitoring_after",
+        action_type="hotkey",
+        description="after monitoring coordinate mode",
+        wait_after=0,
+    )
+    plan = AutomationPlan(
+        name="monitoring-special-mode",
+        initial_rules=[initial],
+        monitoring_rules=[game_mode, after],
+    )
+    plan.game_modes = {
+        game_mode.rule_id: GameModeConfig(
+            name="monitoring coordinate mode",
+            engine_profile="wongak_legacy_v1",
+        )
+    }
+    executor._current_plan = plan
+    executor._allow_special_mode_route_handoff = True
+    executor._state = ExecutionState.RUNNING_INITIAL
+    executor._progress = ExecutionProgress(state=ExecutionState.RUNNING_INITIAL)
+    executor._stop_event.clear()
+    executor._pause_event.set()
+    executed = []
+
+    def fake_execute(rule, *args, **kwargs):
+        executed.append(rule.rule_id)
+        return RuleExecutionResult(rule_id=rule.rule_id, success=True, message="ok")
+
+    monkeypatch.setattr(executor, "_execute_rule_with_retry", fake_execute)
+    monkeypatch.setattr(executor, "_update_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+
+    executor._execution_loop()
+
+    assert executed == ["initial"]
+    handoff = executor.take_special_mode_route_handoff()
+    assert handoff is not None
+    assert [rule.rule_id for rule in handoff.rules] == [
+        "monitoring_game_mode",
+        "monitoring_after",
+    ]
+    assert handoff.previous_rule is initial
+
+
+def test_raid_monitoring_restart_hands_off_at_first_game_mode(monkeypatch):
+    plan_path = (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "plans"
+        / "plan_20260605_123819.json"
+    )
+    full_plan = AutomationPlan.from_dict(
+        json.loads(plan_path.read_text(encoding="utf-8"))
+    )
+    first_game_mode = next(
+        rule for rule in full_plan.initial_rules if rule.action_type == "game_mode"
+    )
+    monitor = next(
+        rule
+        for rule in full_plan.initial_rules
+        if getattr(rule, "is_monitoring_mode", False)
+        or getattr(rule, "monitoring_watches", None)
+    )
+    partial_plan = AutomationPlan(
+        name="raid-monitoring-partial",
+        initial_rules=[monitor],
+        monitoring_rules=[],
+    )
+    partial_plan._original_initial_rules = full_plan.initial_rules
+    partial_plan.game_modes = full_plan.game_modes
+
+    executor = RuleExecutor()
+    executor._current_plan = partial_plan
+    executor._allow_special_mode_route_handoff = True
+    executor._state = ExecutionState.RUNNING_INITIAL
+    executor._progress = ExecutionProgress(state=ExecutionState.RUNNING_INITIAL)
+    executor._stop_event.clear()
+    executor._pause_event.set()
+    executed = []
+
+    def fake_monitoring(rule, all_rules, current_index, step_num=""):
+        return RuleExecutionResult(
+            rule_id=rule.rule_id,
+            success=True,
+            message="raid restart",
+            monitoring_jump_rule_id=full_plan.initial_rules[0].rule_id,
+        )
+
+    def fake_execute(rule, *args, **kwargs):
+        executed.append(rule.rule_id)
+        return RuleExecutionResult(rule_id=rule.rule_id, success=True, message="ok")
+
+    monkeypatch.setattr(executor, "_execute_monitoring_mode", fake_monitoring)
+    monkeypatch.setattr(executor, "_execute_rule_with_retry", fake_execute)
+    monkeypatch.setattr(executor, "_update_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+
+    executor._execution_loop()
+
+    flat_original = executor._flatten_rules(full_plan.initial_rules)
+    first_game_mode_index = flat_original.index(first_game_mode)
+    assert executed == [rule.rule_id for rule in flat_original[:first_game_mode_index]]
+    assert first_game_mode.rule_id not in executed
+    handoff = executor.take_special_mode_route_handoff()
+    assert handoff is not None
+    assert handoff.rules[0].rule_id == first_game_mode.rule_id
+    assert handoff.rules[0].action_type == "game_mode"
+    assert handoff.previous_rule is flat_original[first_game_mode_index - 1]
 
 
 def test_monitoring_jump_rule_id_can_continue_from_child_action(monkeypatch):

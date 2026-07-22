@@ -16,6 +16,13 @@ Coordinate special mode must run through `GameModeDialog`. `RuleExecutor` and
 execution so the obsolete simplified engine cannot become a third behavior
 path.
 
+`RuleExecutor` may encounter a special-mode rule after a monitoring jump
+expands a partial run back to the original plan. UI playback callers must enable
+the special-mode route handoff for those partial runs, consume the handoff, and
+continue through their existing `GameModeDialog` chain. The executor may carry
+the remaining rule order across this boundary, but it must never run either
+coordinate engine itself.
+
 ## Ownership
 
 - Wongak algorithm changes belong only to the Wongak legacy runner.

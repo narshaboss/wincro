@@ -58,3 +58,24 @@ def test_mini_player_game_mode_wait_after_runs_before_next_playlist_step():
     assert "def _mini_continue_after_game_mode_wait(self, rule, callback) -> None:" in text
     assert "self._mini_continue_after_game_mode_wait(gm_rule, _continue_success)" in text
     assert "self._mini_cancel_game_mode_wait()" in text
+
+
+def test_rule_executor_special_mode_handoff_is_consumed_by_all_ui_playback_chains():
+    player_text = _player_view_text()
+    main_text = _main_window_text()
+
+    assert "handoff = executor.take_special_mode_route_handoff()" in main_text
+    assert "self._mini_next_gm_previous_rule = handoff.previous_rule" in main_text
+    assert "lambda rules=handoff.rules, g=callback_generation: self._mini_play_plan_rules(rules)" in main_text
+    assert "allow_special_mode_handoff=True" in main_text
+    assert "playback_rules = list(plan.initial_rules) + list(plan.monitoring_rules)" in main_text
+    assert "self._mini_play_plan_rules(playback_rules)" in main_text
+
+    assert player_text.count("handoff = executor.take_special_mode_route_handoff()") >= 3
+    assert player_text.count("_gm_next_previous_rule = handoff.previous_rule") >= 2
+    assert "self._playback_next_previous_rule = handoff.previous_rule" in player_text
+    assert "lambda rules=handoff.rules: self._run_remaining_rules(rules)" in player_text
+    assert "lambda rules=handoff.rules: self._play_plan_rules(rules)" in player_text
+    assert player_text.count("allow_special_mode_handoff=True") >= 3
+    assert "if _has_game_mode_rule(playback_rules):" in player_text
+    assert "self._play_plan_rules(playback_rules)" in player_text
