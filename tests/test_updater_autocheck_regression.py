@@ -58,6 +58,17 @@ def test_auto_update_refreshes_existing_shortcut_icons():
     assert "ie4uinit.exe -show" in service_text
 
 
+def test_auto_update_never_retargets_developer_shortcut():
+    service_text = Path(r"C:\Projects\wincro\src\utils\update_service.py").read_text(encoding="utf-8")
+    shortcut_text = Path(r"C:\Projects\wincro\create_shortcut.ps1").read_text(encoding="utf-8")
+
+    assert "$isDeveloperShortcut=($_.BaseName -eq 'WinCro 개발');" in service_text
+    assert "if((-not $isDeveloperShortcut) -and ($matchName -or $matchTarget)){" in service_text
+    assert "'WinCro 개발','작업도우미'" not in service_text
+    assert "[char]0xAC1C + [char]0xBC1C" in shortcut_text
+    assert "$Shortcut.TargetPath = 'cmd.exe'" in shortcut_text
+
+
 def test_transient_github_http_error_is_warning_not_error(monkeypatch, caplog):
     def raise_http_error(*_args, **_kwargs):
         raise urllib.error.HTTPError(
