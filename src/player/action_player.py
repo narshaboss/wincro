@@ -57,6 +57,11 @@ from .rule_executor import (
     get_rule_executor,
 )
 from .random_key_sequence import execute_random_key_sequence
+from .runtime_action_options import (
+    effective_action_repeat_count,
+    is_runtime_action_enabled,
+    should_skip_pumpkin_action,
+)
 
 logger = get_logger(__name__)
 
@@ -303,7 +308,12 @@ class ActionPlayer:
 
     def _get_enabled_actions(self, sequence: Sequence) -> List[Action]:
         """실행 대상 액션만 반환"""
-        return [action for action in sequence.actions if getattr(action, "enabled", True)]
+        return [
+            action
+            for action in sequence.actions
+            if is_runtime_action_enabled(action, self._config.player)
+            and not should_skip_pumpkin_action(action, self._config.player)
+        ]
 
     @property
     def state(self) -> PlayerState:
@@ -538,9 +548,7 @@ class ActionPlayer:
                             logger.warning(f"on_action_start 콜백 오류: {cb_err}")
 
                     # 액션 반복 횟수
-                    action_repeat = getattr(action, 'repeat_count', 1)
-                    if action_repeat < 1:
-                        action_repeat = 1
+                    action_repeat = effective_action_repeat_count(action, self._config.player)
 
                     # 반복 실행
                     success = True

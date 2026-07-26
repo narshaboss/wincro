@@ -69,8 +69,10 @@ def test_player_view_contains_rule_enable_toggle():
 def test_player_view_ignores_disabled_game_mode_in_chain_detection():
     src = PLAYER_VIEW.read_text(encoding="utf-8")
 
-    assert '_rule_is_enabled(rule) and rule.action_type == "game_mode"' in src
-    assert '_rule_is_enabled(r) and r.action_type == "game_mode"' in src
+    assert "is_runtime_action_enabled(rule, get_config().player)" in src
+    assert "is_runtime_action_enabled(r, get_config().player)" in src
+    assert "not should_skip_pumpkin_action(rule, get_config().player)" in src
+    assert "not should_skip_pumpkin_action(r, get_config().player)" in src
 
 
 def test_mini_player_ignores_disabled_game_mode_in_chain_detection():
@@ -84,7 +86,7 @@ def test_mini_player_ignores_disabled_game_mode_in_chain_detection():
         src.index("def _mini_game_mode_wait_seconds")
     ]
 
-    assert 'getattr(rule, "enabled", True)' in execute_slice
+    assert "is_runtime_action_enabled(rule, self._config.player)" in execute_slice
     assert 'rule.action_type == "game_mode"' in execute_slice
-    assert 'getattr(rule, "enabled", True)' in chain_slice
+    assert "is_runtime_action_enabled(rule, self._config.player)" in chain_slice
     assert 'rule.action_type == "game_mode"' in chain_slice

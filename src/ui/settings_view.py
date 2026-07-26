@@ -865,6 +865,121 @@ class SettingsView(BaseView):
             help_text="2번 누르면 즉시 중지"
         )
 
+        # PC별 호박 액션 옵션
+        pumpkin_options = ctk.CTkFrame(
+            scroll_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["separator"],
+        )
+        pumpkin_options.pack(fill="x", padx=10, pady=(4, 5))
+
+        pumpkin_header = ctk.CTkFrame(pumpkin_options, fg_color="transparent")
+        pumpkin_header.pack(fill="x", padx=10, pady=(8, 3))
+
+        ctk.CTkLabel(
+            pumpkin_header,
+            text="호박 액션",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        self._pumpkin_action_enabled_var = ctk.BooleanVar(value=True)
+        self._pumpkin_action_enabled_checkbox = ctk.CTkCheckBox(
+            pumpkin_header,
+            text="사용",
+            variable=self._pumpkin_action_enabled_var,
+            width=62,
+            height=24,
+            checkbox_width=22,
+            checkbox_height=22,
+            corner_radius=IOS_METRICS["control_radius_small"],
+            border_width=2,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["button_border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        self._pumpkin_action_enabled_checkbox.pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(
+            pumpkin_options,
+            text="OFF면 이름이 정확히 '호박'인 액션만 건너뜁니다",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        # 로그인 횟수는 호박 설정과 독립된 PC별 옵션이다.
+        login_options = ctk.CTkFrame(
+            scroll_frame,
+            fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["control_radius"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["separator"],
+        )
+        login_options.pack(fill="x", padx=10, pady=(5, 8))
+
+        login_repeat_frame = ctk.CTkFrame(login_options, fg_color="transparent")
+        login_repeat_frame.pack(fill="x", padx=10, pady=8)
+        ctk.CTkLabel(
+            login_repeat_frame,
+            text="로그인 횟수",
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left", padx=(0, 12))
+        self._login_action_repeat_count_var = ctk.StringVar(value="4")
+        self._login_action_repeat_count_entry = ctk.CTkEntry(
+            login_repeat_frame,
+            textvariable=self._login_action_repeat_count_var,
+            width=62,
+            height=32,
+            justify="center",
+            fg_color=COLORS["bg_elevated"],
+            border_color=COLORS["warning"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
+        self._login_action_repeat_count_entry.pack(side="left")
+
+        login_stepper = ctk.CTkFrame(login_repeat_frame, fg_color="transparent", width=28, height=32)
+        login_stepper.pack(side="left", padx=(4, 8))
+        login_stepper.pack_propagate(False)
+        ctk.CTkButton(
+            login_stepper,
+            text="▲",
+            width=28,
+            height=15,
+            corner_radius=IOS_METRICS["control_radius_small"],
+            fg_color=COLORS["warning"],
+            hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=9, weight="bold"),
+            command=lambda: self._adjust_login_action_repeat_count(1),
+        ).pack(fill="x", pady=(0, 1))
+        ctk.CTkButton(
+            login_stepper,
+            text="▼",
+            width=28,
+            height=15,
+            corner_radius=IOS_METRICS["control_radius_small"],
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            border_width=2,
+            border_color=COLORS["button_border"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=9, weight="bold"),
+            command=lambda: self._adjust_login_action_repeat_count(-1),
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            login_repeat_frame,
+            text="회  ·  이름이 정확히 '로그인횟수'인 액션에 적용",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left")
+
         # 구분선
         ctk.CTkFrame(scroll_frame, fg_color=COLORS["border"], height=1).pack(fill="x", padx=10, pady=10)
 
@@ -2707,6 +2822,12 @@ del "%~f0"
         self._stop_key_var.set(config.player.emergency_stop_key)
         self._auto_start_var.set(config.ui.auto_start)
         self._auto_run_enabled_var.set(config.player.auto_run_enabled)
+        self._pumpkin_action_enabled_var.set(
+            bool(getattr(config.player, "pumpkin_action_enabled", True))
+        )
+        self._login_action_repeat_count_var.set(
+            str(getattr(config.player, "login_action_repeat_count", 4) or 4)
+        )
 
         # 자동실행 그룹 설정
         self._seq_groups = normalize_plan_sequence_groups(config.player, mutate=True)
@@ -2818,6 +2939,17 @@ del "%~f0"
 
         config.player.emergency_stop_key = self._stop_key_var.get()
         config.player.auto_run_enabled = self._auto_run_enabled_var.get()
+        config.player.pumpkin_action_enabled = bool(self._pumpkin_action_enabled_var.get())
+        login_repeat_count = self._parse_int(
+            self._login_action_repeat_count_var.get(),
+            1,
+            1000,
+            "로그인 횟수",
+        )
+        if login_repeat_count is not None:
+            config.player.login_action_repeat_count = login_repeat_count
+        else:
+            validation_errors.append("로그인 횟수는 1-1000 사이 숫자여야 합니다.")
         self._seq_write_groups_to_config(config)
 
         # 자동 시작 설정
@@ -2901,6 +3033,14 @@ del "%~f0"
             if hasattr(self, "_shutdown_status_label"):
                 self._shutdown_status_label.configure(text="등록 오류", text_color=COLORS["error"])
             logger.error(f"[PC자동종료] 설정 반영 예외: {e}", exc_info=True)
+
+    def _adjust_login_action_repeat_count(self, delta: int) -> None:
+        """로그인 횟수 스테퍼를 1-1000 범위에서 조정한다."""
+        try:
+            current = int(self._login_action_repeat_count_var.get())
+        except (TypeError, ValueError):
+            current = 4
+        self._login_action_repeat_count_var.set(str(max(1, min(1000, current + delta))))
 
     def _parse_int(self, value: str, min_val: int, max_val: int, field_name: str) -> Optional[int]:
         """정수값 파싱 및 범위 검증"""

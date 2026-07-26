@@ -43,7 +43,9 @@ def test_play_mode_active_bar_truncates_dynamic_group_and_plan_names():
     assert "from .text_overflow import truncate_ui_text" in text
     assert "display_names = [truncate_ui_text(name, 34) for name in display_names]" in method
     assert "detail = truncate_ui_text(detail, 82)" in method
-    assert "width=280" in mini_slice
+    assert "width=72" in mini_slice
+    assert 'auto_state_frame.pack(side="right"' in mini_slice
+    assert 'auto_state_frame.pack(side="bottom"' not in mini_slice
 
 
 def test_player_view_truncates_playlist_selection_and_current_action_labels():

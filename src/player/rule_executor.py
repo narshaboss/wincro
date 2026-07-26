@@ -83,6 +83,12 @@ from ..utils.config import get_config
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, RuleType
 from ..analyzer.enhanced_matcher import get_enhanced_matcher
 from .random_key_sequence import execute_random_key_sequence
+from .runtime_action_options import (
+    effective_action_repeat_count,
+    is_runtime_action_enabled,
+    is_login_count_action,
+    should_skip_pumpkin_action,
+)
 
 logger = get_logger(__name__)
 
@@ -1177,19 +1183,39 @@ class RuleExecutor:
         """계층 구조를 평탄화하여 모든 규칙 반환 (자식 포함)"""
         result = []
         for rule in rules:
-            if not getattr(rule, "enabled", True):
+            if not self._is_runtime_action_enabled(rule):
                 continue
             result.append(rule)
             if rule.children:
                 result.extend(self._flatten_rules(rule.children))
         return result
 
+    def _should_skip_runtime_action(self, rule: AutomationRule) -> bool:
+        return should_skip_pumpkin_action(rule, self._config.player)
+
+    def _is_runtime_action_enabled(self, rule: AutomationRule) -> bool:
+        return is_runtime_action_enabled(rule, self._config.player)
+
+    def _effective_rule_repeat_count(self, rule: AutomationRule) -> int:
+        return effective_action_repeat_count(rule, self._config.player)
+
+    def _next_runtime_rule(
+        self,
+        rules: List[AutomationRule],
+        start_index: int,
+    ) -> Optional[AutomationRule]:
+        """Find the next action that will actually run under PC-local options."""
+        for candidate in rules[max(0, start_index):]:
+            if not self._should_skip_runtime_action(candidate):
+                return candidate
+        return None
+
     def _flatten_rules_with_step(self, rules: List[AutomationRule], parent_step: str = "") -> List[Tuple[AutomationRule, str]]:
         """계층 구조를 평탄화하면서 단계 번호 추적 (예: "1", "1-1", "1-2")"""
         result = []
         visible_index = 0
         for i, rule in enumerate(rules):
-            if not getattr(rule, "enabled", True):
+            if not self._is_runtime_action_enabled(rule):
                 continue
             visible_index += 1
             if parent_step:
@@ -1391,6 +1417,7 @@ class RuleExecutor:
                     step_num = self._format_step_alias(str(runtime_step_num), original_step_num)
                     self._current_step_num = display_step_num  # 현재 액션 번호 저장 (로깅용)
                     action_name = rule.description if rule.description else rule.action_type
+                    runtime_skip = self._should_skip_runtime_action(rule)
 
                     # 액션 헤더 (단계 번호 + 이름)
                     logger.info(f"{_CYAN}[{step_num}] {action_name}{_RESET}")
@@ -1407,7 +1434,10 @@ class RuleExecutor:
                     # 모니터링 모드인 경우 별도 처리
                     # is_monitoring_mode가 True이거나, monitoring_watches가 있으면 모니터링 모드로 실행
                     has_monitoring_watches = len(getattr(rule, 'monitoring_watches', []) or []) > 0
-                    is_monitoring = getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches
+                    is_monitoring = (
+                        not runtime_skip
+                        and (getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches)
+                    )
                     self._progress.current_rule = rule.rule_id
                     self._progress.current_action_number = str(display_step_num)
                     self._progress.current_action_name = action_name
@@ -1415,7 +1445,8 @@ class RuleExecutor:
                     self._update_progress(f"[{step_num}] {action_name}")
 
                     if (
-                        rule.action_type == "game_mode"
+                        not runtime_skip
+                        and rule.action_type == "game_mode"
                         and self._handoff_special_mode_rule(
                             plan,
                             rule,
@@ -1431,7 +1462,14 @@ class RuleExecutor:
                         return
 
                     logger.debug(f"[실행경로] rule={rule.description}, is_monitoring_mode={getattr(rule, 'is_monitoring_mode', False)}, watches={len(getattr(rule, 'monitoring_watches', []) or [])}, 최종판단={is_monitoring}")
-                    if is_monitoring:
+                    if runtime_skip:
+                        result = self._execute_rule_with_retry(
+                            rule,
+                            step_num=step_num,
+                            can_rewind_previous=i > 0,
+                        )
+                        self._results.append(result)
+                    elif is_monitoring:
                         trigger_result = self._handle_trigger_gate(
                             rule,
                             datetime.now(),
@@ -1450,12 +1488,13 @@ class RuleExecutor:
                         next_target_images = []
                         next_rule = None
                         if not self._rule_repeats_child_actions(rule) and i + 1 < len(all_rules):
-                            next_rule = all_rules[i + 1]
+                            next_rule = self._next_runtime_rule(all_rules, i + 1)
                             # 다음 액션이 모니터링이면 target_image는 종료 조건이므로 기다리지 않음
-                            next_has_watches = len(getattr(next_rule, 'monitoring_watches', []) or []) > 0
-                            next_is_monitoring = getattr(next_rule, 'is_monitoring_mode', False) or next_has_watches
-                            if not next_is_monitoring:
-                                next_target_images = self._target_images_for_rule(next_rule)
+                            if next_rule is not None:
+                                next_has_watches = len(getattr(next_rule, 'monitoring_watches', []) or []) > 0
+                                next_is_monitoring = getattr(next_rule, 'is_monitoring_mode', False) or next_has_watches
+                                if not next_is_monitoring:
+                                    next_target_images = self._target_images_for_rule(next_rule)
 
                         # 규칙 실행 (재시도 포함)
                         result = self._execute_rule_with_retry(
@@ -1925,6 +1964,17 @@ class RuleExecutor:
         next_rule이 skip_on_not_found=True면 wait_after 시간만 대기.
         """
         start_time = datetime.now()
+        if self._should_skip_runtime_action(rule):
+            logger.info(
+                f"{_YELLOW}{self._step_prefix}⏭ 호박 OFF: 액션 자체만 스킵, 하위 액션은 계속 실행{_RESET}"
+            )
+            return self._make_result(
+                rule,
+                True,
+                "호박 설정 OFF로 액션 자체만 스킵됨",
+                start_time,
+            )
+
         if isinstance(next_target_images, str):
             next_target_images = [next_target_images]
         else:
@@ -1951,11 +2001,13 @@ class RuleExecutor:
             and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
             and getattr(rule, "click_until_image_disappears", False)
         )
-        repeat_count = getattr(rule, 'repeat_count', 1)
+        repeat_count = self._effective_rule_repeat_count(rule)
         if click_until_disappears:
             repeat_count = 1
-        if repeat_count < 1:
-            repeat_count = 1
+        elif is_login_count_action(rule):
+            logger.info(
+                f"{_CYAN}{self._step_prefix}로그인 횟수 설정 적용: {repeat_count}회{_RESET}"
+            )
 
         for attempt in range(max_retries):
             if self._stop_event.is_set():
@@ -3362,7 +3414,11 @@ class RuleExecutor:
         parent_rule: AutomationRule,
         start_time: datetime,
     ) -> Optional[RuleExecutionResult]:
-        child_rules = [child for child in (getattr(parent_rule, "children", []) or []) if getattr(child, "enabled", True)]
+        child_rules = [
+            child
+            for child in (getattr(parent_rule, "children", []) or [])
+            if self._is_runtime_action_enabled(child)
+        ]
         if not child_rules:
             return None
 
@@ -3391,15 +3447,21 @@ class RuleExecutor:
         action_name = rule.description if rule.description else rule.action_type
         logger.info(f"{_CYAN}[{step_num}] 반복묶음 하위: {action_name}{_RESET}")
 
+        runtime_skip = self._should_skip_runtime_action(rule)
         has_monitoring_watches = len(getattr(rule, "monitoring_watches", []) or []) > 0
-        is_monitoring = getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches
+        is_monitoring = (
+            not runtime_skip
+            and (getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches)
+        )
         self._progress.current_rule = rule.rule_id
         self._progress.current_action_number = str(step_num)
         self._progress.current_action_name = action_name
         self._progress.current_action_is_monitoring = bool(is_monitoring)
         self._update_progress(f"[{step_num}] {action_name}")
 
-        if is_monitoring:
+        if runtime_skip:
+            result = self._execute_rule_with_retry(rule, step_num=step_num)
+        elif is_monitoring:
             trigger_result = self._handle_trigger_gate(rule, datetime.now(), step_num)
             if trigger_result is not None:
                 result = trigger_result
@@ -3423,8 +3485,13 @@ class RuleExecutor:
             self._current_step_num = previous_step
             return wait_result
 
-        if not self._rule_repeats_child_actions(rule):
-            for visible_index, child in enumerate([c for c in (getattr(rule, "children", []) or []) if getattr(c, "enabled", True)], 1):
+        if runtime_skip or not self._rule_repeats_child_actions(rule):
+            enabled_children = [
+                child
+                for child in (getattr(rule, "children", []) or [])
+                if self._is_runtime_action_enabled(child)
+            ]
+            for visible_index, child in enumerate(enabled_children, 1):
                 child_result = self._execute_rule_tree_once(child, f"{step_num}-{visible_index}")
                 if child_result is not None:
                     self._current_step_num = previous_step

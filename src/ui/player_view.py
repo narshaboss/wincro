@@ -48,6 +48,7 @@ from ..player.boss_state_machine import (
 from ..player.boss_detector import BossDetector, BossFrameEvidence
 from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
 from ..player.random_key_sequence import format_random_key_sequences_summary
+from ..player.runtime_action_options import is_runtime_action_enabled, should_skip_pumpkin_action
 from ..database import get_db, Sequence, Action
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, GameModeConfig, MinimapConfig
 from .main_window import BaseView
@@ -3689,7 +3690,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 첫 번째 game_mode 규칙 위치 찾기
         first_gm_idx = None
         for i, r in enumerate(rules_to_run):
-            if _rule_is_enabled(r) and r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id):
+            if (
+                is_runtime_action_enabled(r, get_config().player)
+                and not should_skip_pumpkin_action(r, get_config().player)
+                and r.action_type == "game_mode"
+                and self._plan.game_modes.get(r.rule_id)
+            ):
                 first_gm_idx = i
                 break
 
@@ -3942,7 +3948,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # → 있으면 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends/보스 지원)
         # → RuleExecutor 직접 경로는 격리 경계를 우회하므로 fail-closed 처리됨
         _has_game_mode = any(
-            _rule_is_enabled(r) and r.action_type == "game_mode" and self._plan.game_modes.get(r.rule_id)
+            is_runtime_action_enabled(r, get_config().player)
+            and not should_skip_pumpkin_action(r, get_config().player)
+            and r.action_type == "game_mode"
+            and self._plan.game_modes.get(r.rule_id)
             for r in rules_to_run
         )
         if _has_game_mode:
@@ -31214,9 +31223,11 @@ class PlayerView(BaseView):
 
         def _has_game_mode_rule(rules):
             for rule in rules or []:
-                if _rule_is_enabled(rule) and rule.action_type == "game_mode" and plan_to_execute.game_modes.get(rule.rule_id):
+                runtime_enabled = is_runtime_action_enabled(rule, get_config().player)
+                pumpkin_skipped = should_skip_pumpkin_action(rule, get_config().player)
+                if runtime_enabled and not pumpkin_skipped and rule.action_type == "game_mode" and plan_to_execute.game_modes.get(rule.rule_id):
                     return True
-                if _rule_is_enabled(rule) and rule.children and _has_game_mode_rule(rule.children):
+                if runtime_enabled and not pumpkin_skipped and rule.children and _has_game_mode_rule(rule.children):
                     return True
             return False
 
@@ -31297,7 +31308,12 @@ class PlayerView(BaseView):
 
         first_gm_idx = None
         for i, rule in enumerate(rules_to_run):
-            if _rule_is_enabled(rule) and rule.action_type == "game_mode" and active_plan.game_modes.get(rule.rule_id):
+            if (
+                is_runtime_action_enabled(rule, get_config().player)
+                and not should_skip_pumpkin_action(rule, get_config().player)
+                and rule.action_type == "game_mode"
+                and active_plan.game_modes.get(rule.rule_id)
+            ):
                 first_gm_idx = i
                 break
 

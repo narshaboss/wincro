@@ -44,6 +44,7 @@ from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
 from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
+from ..player.runtime_action_options import is_runtime_action_enabled, should_skip_pumpkin_action
 from .capture_cleanup import remove_auto_capture_source_after_crop
 from .text_overflow import truncate_ui_text
 from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
@@ -858,7 +859,7 @@ class MainWindow(ctk.CTk):
         active_frame.pack(fill="x", padx=10, pady=(0, 5))
 
         auto_state_frame = ctk.CTkFrame(active_frame, fg_color="transparent")
-        auto_state_frame.pack(side="right", padx=(4, 10), pady=5)
+        auto_state_frame.pack(side="right", padx=(2, 8), pady=5)
 
         self._mini_auto_shutdown_var = ctk.BooleanVar(
             value=bool(getattr(self._config.system, "shutdown_enabled", True))
@@ -866,10 +867,10 @@ class MainWindow(ctk.CTk):
         self._mini_auto_shutdown_label = ctk.CTkLabel(
             auto_state_frame,
             text="자동종료 확인 중",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
-        self._mini_auto_shutdown_label.pack(side="left", padx=(0, 4), pady=2)
+        self._mini_auto_shutdown_label.pack(side="left", padx=(0, 3), pady=2)
         self._mini_auto_shutdown_label.bind(
             "<Button-1>",
             lambda _event: self._toggle_mini_auto_shutdown_from_indicator(),
@@ -886,16 +887,16 @@ class MainWindow(ctk.CTk):
             border_color=COLORS["button_border"],
             command=self._toggle_mini_auto_shutdown_from_indicator,
         )
-        self._mini_auto_shutdown_indicator.pack(side="left", padx=(0, 10), pady=2)
+        self._mini_auto_shutdown_indicator.pack(side="left", padx=(0, 6), pady=2)
 
         self._mini_auto_update_var = ctk.BooleanVar(value=bool(self._config.update.auto_check))
         self._mini_auto_update_label = ctk.CTkLabel(
             auto_state_frame,
             text="자동업데이트 확인 중",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
-        self._mini_auto_update_label.pack(side="left", padx=(0, 4), pady=2)
+        self._mini_auto_update_label.pack(side="left", padx=(0, 3), pady=2)
         self._mini_auto_update_label.bind(
             "<Button-1>",
             lambda _event: self._toggle_mini_auto_update_from_indicator(),
@@ -912,36 +913,65 @@ class MainWindow(ctk.CTk):
             border_color=COLORS["button_border"],
             command=self._toggle_mini_auto_update_from_indicator,
         )
-        self._mini_auto_update_indicator.pack(side="left", pady=2)
+        self._mini_auto_update_indicator.pack(side="left", padx=(0, 6), pady=2)
+
+        self._mini_pumpkin_var = ctk.BooleanVar(
+            value=bool(getattr(self._config.player, "pumpkin_action_enabled", True))
+        )
+        self._mini_pumpkin_label = ctk.CTkLabel(
+            auto_state_frame,
+            text="호박 확인 중",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        self._mini_pumpkin_label.pack(side="left", padx=(0, 3), pady=2)
+        self._mini_pumpkin_label.bind(
+            "<Button-1>",
+            lambda _event: self._toggle_mini_pumpkin_from_indicator(),
+        )
+        self._mini_pumpkin_indicator = ctk.CTkButton(
+            auto_state_frame,
+            text="",
+            width=18,
+            height=18,
+            corner_radius=9,
+            fg_color=COLORS["success"],
+            hover_color=COLORS["green_hover"],
+            border_width=2,
+            border_color=COLORS["button_border"],
+            command=self._toggle_mini_pumpkin_from_indicator,
+        )
+        self._mini_pumpkin_indicator.pack(side="left", pady=2)
         self._update_mini_auto_shutdown_label()
         self._update_mini_auto_update_label()
+        self._update_mini_pumpkin_label()
 
         ctk.CTkLabel(
             active_frame,
             text="현재 실행",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(size=10, weight="bold"),
             text_color=COLORS["text_secondary"],
-        ).pack(side="left", padx=(12, 8), pady=7)
+        ).pack(side="left", padx=(10, 5), pady=7)
 
         self._mini_active_title = ctk.CTkLabel(
             active_frame,
             text="대기",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=10, weight="bold"),
             text_color=COLORS["accent_blue_text"],
             anchor="w",
-            width=52,
+            width=38,
         )
-        self._mini_active_title.pack(side="left", padx=(0, 8), pady=7)
+        self._mini_active_title.pack(side="left", padx=(0, 5), pady=7)
 
         self._mini_active_detail = ctk.CTkLabel(
             active_frame,
             text="실행 중인 재생목록 없음",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
             anchor="w",
-            width=280,
+            width=72,
         )
-        self._mini_active_detail.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=7)
+        self._mini_active_detail.pack(side="left", fill="x", expand=True, padx=(0, 4), pady=7)
         self._mini_update_active_bar("대기")
 
         # 컨트롤 프레임 (실행/중지 버튼)
@@ -1091,6 +1121,22 @@ class MainWindow(ctk.CTk):
         )
         if hasattr(self, "_mini_auto_shutdown_indicator"):
             self._mini_auto_shutdown_indicator.configure(
+                fg_color=status_color,
+                hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
+            )
+
+    def _update_mini_pumpkin_label(self):
+        """플레이 모드 호박 액션 상태 라벨 갱신."""
+        if not hasattr(self, "_mini_pumpkin_label"):
+            return
+        enabled = bool(self._mini_pumpkin_var.get())
+        status_color = COLORS["success"] if enabled else COLORS["error"]
+        self._mini_pumpkin_label.configure(
+            text=f"호박 {'ON' if enabled else 'OFF'}",
+            text_color=status_color,
+        )
+        if hasattr(self, "_mini_pumpkin_indicator"):
+            self._mini_pumpkin_indicator.configure(
                 fg_color=status_color,
                 hover_color=COLORS["green_hover"] if enabled else COLORS["danger_hover"],
             )
@@ -1541,6 +1587,11 @@ class MainWindow(ctk.CTk):
         self._mini_auto_shutdown_var.set(not bool(self._mini_auto_shutdown_var.get()))
         self._toggle_mini_auto_shutdown()
 
+    def _toggle_mini_pumpkin_from_indicator(self):
+        """원형 상태 표시 클릭 시 호박 액션 ON/OFF를 전환한다."""
+        self._mini_pumpkin_var.set(not bool(self._mini_pumpkin_var.get()))
+        self._toggle_mini_pumpkin()
+
     def _toggle_mini_auto_update(self):
         """플레이 모드에서 자동업데이트 설정을 즉시 저장한다."""
         enabled = bool(self._mini_auto_update_var.get())
@@ -1557,6 +1608,24 @@ class MainWindow(ctk.CTk):
             self._update_mini_auto_update_label()
             self._mini_status.configure(text="⚠ 자동업데이트 저장 실패")
             logger.error(f"[미니플레이어] 자동업데이트 설정 저장 실패: {e}")
+
+    def _toggle_mini_pumpkin(self):
+        """플레이 모드에서 호박 액션 설정을 즉시 저장한다."""
+        enabled = bool(self._mini_pumpkin_var.get())
+        previous = bool(getattr(self._config.player, "pumpkin_action_enabled", True))
+        try:
+            self._config.player.pumpkin_action_enabled = enabled
+            if not save_config():
+                raise RuntimeError("config save returned False")
+            self._update_mini_pumpkin_label()
+            self._mini_status.configure(text=f"호박 {'ON' if enabled else 'OFF'} 저장됨")
+            logger.info(f"[미니플레이어] 호박 액션 설정 변경: {enabled}")
+        except Exception as e:
+            self._config.player.pumpkin_action_enabled = previous
+            self._mini_pumpkin_var.set(previous)
+            self._update_mini_pumpkin_label()
+            self._mini_status.configure(text="⚠ 호박 설정 저장 실패")
+            logger.error(f"[미니플레이어] 호박 액션 설정 저장 실패: {e}")
 
     def _toggle_mini_auto_shutdown(self):
         """플레이 모드에서 PC 자동종료 설정을 즉시 저장하고 예약 작업을 동기화한다."""
@@ -2586,7 +2655,9 @@ class MainWindow(ctk.CTk):
 
             def _has_configured_game_mode(rules):
                 for rule in rules:
-                    if not getattr(rule, "enabled", True):
+                    if not is_runtime_action_enabled(rule, self._config.player):
+                        continue
+                    if should_skip_pumpkin_action(rule, self._config.player):
                         continue
                     if (
                         rule.action_type == "game_mode"
@@ -2646,7 +2717,8 @@ class MainWindow(ctk.CTk):
         first_gm_idx = None
         for i, rule in enumerate(rules_to_run):
             if (
-                getattr(rule, "enabled", True)
+                is_runtime_action_enabled(rule, self._config.player)
+                and not should_skip_pumpkin_action(rule, self._config.player)
                 and rule.action_type == "game_mode"
                 and active_plan.game_modes.get(rule.rule_id)
             ):

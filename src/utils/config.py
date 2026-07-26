@@ -36,7 +36,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 TEMPLATES_DIR = DATA_DIR / "templates"
 PACKAGED_NOTIFICATION_DEFAULTS_FILE = DATA_DIR / "notification_defaults.json"
 
-APP_VERSION = "1.0.284"
+APP_VERSION = "1.0.285"
 NOTIFICATION_PROFILE_VERSION = "discord_alerts_stuck180_v2"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
@@ -118,6 +118,8 @@ class PlayerConfig:
     plan_sequence_groups: List[dict] = field(default_factory=list)
     active_plan_sequence_group_id: str = ""
     auto_run_profile_version: str = ""
+    pumpkin_action_enabled: bool = True
+    login_action_repeat_count: int = 4
     image_search_region_a: Optional[List[int]] = None
     image_search_region_b: Optional[List[int]] = None
 
