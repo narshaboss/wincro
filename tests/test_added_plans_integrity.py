@@ -99,3 +99,42 @@ def test_tracked_plans_reference_only_tracked_release_assets():
     assert absolute_refs == []
     assert missing == []
     assert untracked_masks == []
+
+
+def test_auto_hunt_top_level_action_order_matches_the_restored_sequence():
+    plan_path = PLAN_DIR / "plan_20260118_174859.json"
+    data = json.loads(plan_path.read_text(encoding="utf-8-sig"))
+    rules = data["initial_rules"]
+
+    expected_rule_ids = [
+        "rule_0009",
+        "rule_0000",
+        "rule_0004",
+        "rule_645bae48",
+        "rule_7d656a1a",
+        "rule_17a4fe66",
+        "rule_1c06f502",
+        "rule_0007",
+        "rule_539f6503",
+        "rule_34d9dd72",
+        "rule_ecd5d910",
+        "rule_cd9afb77",
+        "rule_3d1eb89a",
+        "rule_becb6d10",
+    ]
+
+    assert [rule["rule_id"] for rule in rules] == expected_rule_ids
+    assert all(rule.get("parent_id") is None for rule in rules)
+
+    character_select = rules[4]
+    assert character_select["description"].strip() == "연+호동  캐릭터 선택후 접속"
+    assert len(character_select.get("children") or []) == 6
+
+    auto_hunt = rules[5]
+    benefits = next(
+        child for child in auto_hunt["children"] if child["rule_id"] == "rule_41a59d7d"
+    )
+    assert all(
+        child["rule_id"] != character_select["rule_id"]
+        for child in benefits.get("children") or []
+    )
