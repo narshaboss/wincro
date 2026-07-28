@@ -22,6 +22,9 @@ class ActionType(Enum):
     HOTKEY = "hotkey"
     KEY_PRESS = "key_press"
     RANDOM_KEY_SEQUENCE = "random_key_sequence"
+    AUTO_LIST = "auto_list"
+    AUTO_LIST_VALUE_INPUT = "auto_list_value_input"
+    ACTION_CALL = "action_call"
     WAIT = "wait"
     WAIT_FOR_IMAGE = "wait_for_image"  # 이미지가 나타날 때까지 대기
     SCREENSHOT = "screenshot"
@@ -74,6 +77,13 @@ class Action:
     alternate_mouse_route: bool = False  # 이미지 클릭 시 반대 우회 이동 경로 사용
     click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
     click_until_image_disappears_delay: float = 0.5  # 사라질 때까지 반복 클릭 전용 대기시간
+    repeat_from_auto_list_quantity: bool = False  # 자동 목록의 현재 처리수량만큼 이미지 클릭 반복
+    auto_list_repeat_confirm_image: Optional[str] = None  # 자동 목록 수량 반복 선택 확인 이미지
+    auto_list_repeat_confirm_region: Optional[List[int]] = None  # 선택 확인 이미지 검색 영역
+    auto_list_repeat_confirm_confidence: float = 0.9  # 선택 확인 이미지 인식률
+    auto_list_config: Dict[str, Any] = field(default_factory=dict)  # 자동 목록 처리 설정
+    action_call_rule_id: Optional[str] = None  # 호출할 원본 액션 ID
+    action_call_include_children: bool = True  # 호출 대상의 하위 액션 포함
     scroll_amount: int = 0  # 스크롤 양 (양수: 위, 음수: 아래)
     drag_to_x: Optional[int] = None  # 드래그 종료 X
     drag_to_y: Optional[int] = None  # 드래그 종료 Y
@@ -106,6 +116,17 @@ class Action:
             self.children = []
         if self.random_key_sequences is None:
             self.random_key_sequences = []
+        if self.action_type == ActionType.AUTO_LIST.value:
+            from ..utils.auto_list import normalize_auto_list_config
+            self.auto_list_config = normalize_auto_list_config(self.auto_list_config)
+        else:
+            self.auto_list_config = {}
+        if self.action_type == ActionType.ACTION_CALL.value:
+            self.action_call_rule_id = str(self.action_call_rule_id or "").strip() or None
+            self.action_call_include_children = bool(self.action_call_include_children)
+        else:
+            self.action_call_rule_id = None
+            self.action_call_include_children = True
         try:
             self.random_key_step_delay = max(0.0, float(self.random_key_step_delay or 0.0))
         except (TypeError, ValueError):
@@ -117,10 +138,23 @@ class Action:
             )
         except (TypeError, ValueError):
             self.click_until_image_disappears_delay = 0.5
+        self.repeat_from_auto_list_quantity = bool(self.repeat_from_auto_list_quantity)
+        try:
+            self.auto_list_repeat_confirm_confidence = min(
+                1.0,
+                max(0.1, float(self.auto_list_repeat_confirm_confidence or 0.9)),
+            )
+        except (TypeError, ValueError):
+            self.auto_list_repeat_confirm_confidence = 0.9
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
         result = asdict(self)
+        if self.action_type == ActionType.AUTO_LIST.value:
+            from ..utils.auto_list import auto_list_config_for_save
+            result["auto_list_config"] = auto_list_config_for_save(self.auto_list_config)
+        else:
+            result.pop("auto_list_config", None)
         # children을 재귀적으로 변환
         result["children"] = [child.to_dict() if hasattr(child, 'to_dict') else child for child in (self.children or [])]
         return result
@@ -137,7 +171,11 @@ class Action:
             'target_image', 'confidence', 'verify_image_color', 'verify_image_brightness',
             'search_radius', 'search_region',
             'alternate_mouse_route', 'click_until_image_disappears',
-            'click_until_image_disappears_delay',
+            'click_until_image_disappears_delay', 'repeat_from_auto_list_quantity',
+            'auto_list_repeat_confirm_image', 'auto_list_repeat_confirm_region',
+            'auto_list_repeat_confirm_confidence',
+            'auto_list_config',
+            'action_call_rule_id', 'action_call_include_children',
             'scroll_amount', 'drag_to_x', 'drag_to_y', 'drag_duration', 'timestamp',
             'description', 'wait_for_image', 'wait_for_image_timeout',
             'wait_for_image_disappear', 'repeat_count', 'repeat_delay',
@@ -148,6 +186,13 @@ class Action:
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
         if "click_until_image_disappears_delay" not in filtered_data:
             filtered_data["click_until_image_disappears_delay"] = data.get("repeat_delay", 0.5)
+        if "auto_list_config" in filtered_data:
+            from ..utils.auto_list import auto_list_config_from_saved
+            from ..utils.config import DATA_DIR
+            filtered_data["auto_list_config"] = auto_list_config_from_saved(
+                filtered_data["auto_list_config"],
+                DATA_DIR / "templates",
+            )
         # children 재귀적으로 처리
         children_data = data.get("children", [])
         children = [cls.from_dict(c) if isinstance(c, dict) else c for c in children_data]
@@ -170,6 +215,12 @@ class Action:
         elif self.action_type == ActionType.RANDOM_KEY_SEQUENCE.value:
             count = len(self.random_key_sequences or [])
             return f"랜덤키 입력: {count}개 묶음"
+        elif self.action_type == ActionType.AUTO_LIST.value:
+            return "자동 목록 처리"
+        elif self.action_type == ActionType.AUTO_LIST_VALUE_INPUT.value:
+            return "현재 처리수량 입력"
+        elif self.action_type == ActionType.ACTION_CALL.value:
+            return "액션 호출"
         elif self.action_type == ActionType.WAIT.value:
             return f"대기: {self.duration}초"
         elif self.action_type == ActionType.WAIT_FOR_IMAGE.value:

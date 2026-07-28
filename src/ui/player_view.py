@@ -19,6 +19,9 @@ from ..utils.logger import get_logger
 from ..utils.config import get_config, DATA_DIR
 from ..utils.json_utils import load_json_file
 from ..utils.plan_sequence_groups import sync_plan_repeat_in_groups
+from ..utils.auto_list import AUTO_LIST_EXTRACTION_BATCH_LIMIT
+from ..utils.action_call import ACTION_CALL_ACTION_TYPE
+from ..utils.action_timing import apply_bulk_random_waits
 from ..utils.input_controller import block_automation_input, get_input_controller, unblock_automation_input
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
@@ -65,6 +68,7 @@ from .constants import (
 from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
 from .random_key_sequence_dialog import RandomKeySequenceDialog
+from .auto_list_dialog import AutoListDialog, AutoListValueInputDialog
 from .analyzer_view import (
     ImageCropDialog,
     TemplateMediaSettings,
@@ -93,7 +97,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import tkinter as tk
-from tkinter import Canvas
+from tkinter import Canvas, messagebox
 
 logger = get_logger(__name__)
 
@@ -420,23 +424,41 @@ def _ios_state_button_style(active: bool) -> dict:
     }
 
 
-def _ios_repeat_button_style(repeat_count: int, until_disappears: bool) -> dict:
-    emphasized = bool(until_disappears or repeat_count > 1)
+def _ios_repeat_button_style(
+    repeat_count: int,
+    until_disappears: bool,
+    from_auto_list_quantity: bool = False,
+) -> dict:
+    emphasized = bool(until_disappears or from_auto_list_quantity or repeat_count > 1)
     return {
         "fg_color": COLORS["accent_orange"]
         if until_disappears
-        else (COLORS["accent_blue"] if repeat_count > 1 else COLORS["bg_card"]),
+        else (
+            COLORS["accent_blue"]
+            if from_auto_list_quantity or repeat_count > 1
+            else COLORS["bg_card"]
+        ),
         "hover_color": COLORS["confidence_amber_hover"]
         if until_disappears
-        else (COLORS["hover_blue"] if repeat_count > 1 else COLORS["bg_card_hover"]),
+        else (
+            COLORS["hover_blue"]
+            if from_auto_list_quantity or repeat_count > 1
+            else COLORS["bg_card_hover"]
+        ),
         "text_color": COLORS["text_on_accent"] if emphasized else COLORS["text_primary"],
         "border_width": 2,
         "border_color": COLORS["button_border"],
     }
 
 
-def _format_repeat_button_text(repeat_count: int, until_disappears: bool = False) -> str:
+def _format_repeat_button_text(
+    repeat_count: int,
+    until_disappears: bool = False,
+    from_auto_list_quantity: bool = False,
+) -> str:
     """반복 버튼은 폭 계산이 쉬운 짧은 칩 라벨로 통일한다."""
+    if from_auto_list_quantity:
+        return "↻ 등록항목"
     try:
         count = int(repeat_count)
     except (TypeError, ValueError):
@@ -589,6 +611,251 @@ def _ios_run_button_style(enabled: bool) -> dict:
     }
 
 
+def _build_click_until_help(parent) -> None:
+    """Show the click/child/recheck contract beside the repeat option."""
+    help_card = ctk.CTkFrame(
+        parent,
+        fg_color=COLORS["bg_card"],
+        border_width=IOS_METRICS["card_border_width"],
+        border_color=COLORS["border"],
+        corner_radius=IOS_METRICS["card_radius_compact"],
+    )
+    help_card.pack(fill="x", pady=(2, 6))
+    ctk.CTkLabel(
+        help_card,
+        text="사용 방법",
+        font=ctk.CTkFont(size=11, weight="bold"),
+        text_color=COLORS["accent_text"],
+    ).pack(anchor="w", padx=10, pady=(7, 2))
+    ctk.CTkLabel(
+        help_card,
+        text=(
+            "ENTER 등 반복할 동작은 이 이미지의 하위 액션으로 추가하세요.\n"
+            "실행: 이미지 클릭 → 하위 액션 → 이미지 재확인\n"
+            "이미지가 사라지면 종료하고, 계속 보이면 최대 클릭 수에서 다음 액션으로 이동합니다."
+        ),
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        wraplength=340,
+        justify="left",
+    ).pack(anchor="w", padx=10, pady=(0, 3))
+    ctk.CTkLabel(
+        help_card,
+        text="반복횟수 1~5는 안전 한도 최대 5회로 실행됩니다.",
+        font=ctk.CTkFont(size=10, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=10, pady=(0, 7))
+
+
+def _build_auto_list_quantity_repeat_controls(
+    parent,
+    dialog,
+    owner,
+    item,
+    *,
+    eligible: bool,
+    enabled_var,
+    click_until_var,
+) -> dict:
+    """Build compact controls for selecting rows registered by the parent auto-list."""
+    from tkinter import filedialog
+    import shutil
+    import uuid
+
+    confirm_image = {"value": str(getattr(item, "auto_list_repeat_confirm_image", "") or "")}
+    confirm_region = {"value": getattr(item, "auto_list_repeat_confirm_region", None)}
+    confidence = float(getattr(item, "auto_list_repeat_confirm_confidence", 0.9) or 0.9)
+
+    card = ctk.CTkFrame(
+        parent,
+        fg_color=COLORS["bg_card"],
+        border_width=IOS_METRICS["card_border_width"],
+        border_color=COLORS["border"],
+        corner_radius=IOS_METRICS["card_radius_compact"],
+    )
+    card.pack(fill="x", pady=(8, 4))
+
+    def select_quantity_mode():
+        if enabled_var.get():
+            click_until_var.set(False)
+
+    checkbox = ctk.CTkCheckBox(
+        card,
+        text="자동 목록 등록 항목 전부 선택",
+        variable=enabled_var,
+        command=select_quantity_mode,
+        font=ctk.CTkFont(size=13, weight="bold"),
+        state="normal" if eligible else "disabled",
+    )
+    checkbox.pack(anchor="w", padx=10, pady=(9, 3))
+    ctk.CTkLabel(
+        card,
+        text=(
+            "자동 목록에 등록된 이미지만 전부 검색하고, 한 번에 최대 "
+            f"{AUTO_LIST_EXTRACTION_BATCH_LIMIT}개까지 선택합니다. "
+            "등록되지 않은 이미지는 클릭하지 않습니다. "
+            "검색 범위도 부모 자동 목록의 등록 항목 범위만 사용합니다."
+            if eligible
+            else "자동 목록 처리 아래의 왼쪽 이미지 클릭 액션에서만 사용할 수 있습니다."
+        ),
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        wraplength=300,
+        justify="left",
+    ).pack(anchor="w", padx=10, pady=(0, 6))
+
+    def compact_image_name(path_value: str) -> str:
+        if not path_value:
+            return "체크 이미지 미설정"
+        name = Path(path_value).name
+        if len(name) <= 34:
+            return name
+        return f"{name[:16]}…{name[-15:]}"
+
+    image_row = ctk.CTkFrame(card, fg_color="transparent")
+    image_row.pack(fill="x", padx=10, pady=(2, 4))
+    image_label = ctk.CTkLabel(
+        image_row,
+        text=compact_image_name(confirm_image["value"]),
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    )
+    image_label.pack(side="left", fill="x", expand=True)
+
+    def select_confirm_image():
+        selected = filedialog.askopenfilename(
+            title="선택 체크 이미지 선택",
+            initialdir=str(DATA_DIR / "templates"),
+            filetypes=TEMPLATE_MEDIA_FILETYPES,
+            parent=dialog,
+        )
+        if not selected:
+            return
+        source = Path(selected)
+        if source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+            messagebox.showwarning("이미지 필요", "체크 표시는 이미지 파일로 선택하세요.", parent=dialog)
+            return
+        templates = DATA_DIR / "templates"
+        templates.mkdir(parents=True, exist_ok=True)
+        try:
+            if source.resolve().parent != templates.resolve():
+                destination = templates / f"selection_check_{uuid.uuid4().hex[:8]}{source.suffix.lower()}"
+                shutil.copy2(source, destination)
+                source = destination
+        except OSError as exc:
+            messagebox.showerror("이미지 저장 실패", str(exc), parent=dialog)
+            return
+        confirm_image["value"] = str(source)
+        image_label.configure(text=compact_image_name(str(source)))
+
+    ctk.CTkButton(
+        image_row,
+        text="체크 이미지",
+        width=92,
+        height=28,
+        command=select_confirm_image,
+        fg_color=COLORS["accent_blue"],
+        hover_color=COLORS["hover_blue"],
+        text_color=COLORS["text_on_accent"],
+        corner_radius=IOS_METRICS["control_radius_small"],
+    ).pack(side="right", padx=(6, 0))
+
+    region_row = ctk.CTkFrame(card, fg_color="transparent")
+    region_row.pack(fill="x", padx=10, pady=4)
+    region_label = ctk.CTkLabel(
+        region_row,
+        text=f"확인 범위: {confirm_region['value']}" if confirm_region["value"] else "확인 범위 미설정",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    )
+    region_label.pack(side="left", fill="x", expand=True)
+
+    def select_confirm_region():
+        from .analyzer_view import ScreenRegionSelector
+
+        def restore_dialog():
+            try:
+                if not dialog.winfo_exists():
+                    return
+                dialog.deiconify()
+                dialog.lift()
+                dialog.grab_set()
+                dialog.focus_force()
+            except (tk.TclError, RuntimeError):
+                pass
+
+        def on_select(x1, y1, x2, y2):
+            try:
+                confirm_region["value"] = [int(x1), int(y1), int(x2), int(y2)]
+                region_label.configure(text=f"확인 범위: {confirm_region['value']}")
+            finally:
+                restore_dialog()
+
+        def launch_selector():
+            try:
+                ScreenRegionSelector(
+                    owner,
+                    on_select,
+                    restore_dialog,
+                    existing_region=confirm_region["value"],
+                )
+            except Exception as exc:
+                restore_dialog()
+                logger.exception("자동 목록 선택 체크 범위 설정창 실행 실패")
+                messagebox.showerror("범위 설정 오류", str(exc), parent=dialog)
+
+        try:
+            dialog.grab_release()
+            dialog.withdraw()
+        except (tk.TclError, RuntimeError):
+            pass
+        dialog.after(100, launch_selector)
+
+    ctk.CTkButton(
+        region_row,
+        text="확인 범위",
+        width=92,
+        height=28,
+        command=select_confirm_region,
+        fg_color=COLORS["bg_elevated"],
+        hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        corner_radius=IOS_METRICS["control_radius_small"],
+    ).pack(side="right", padx=(6, 0))
+
+    confidence_row = ctk.CTkFrame(card, fg_color="transparent")
+    confidence_row.pack(fill="x", padx=10, pady=(4, 10))
+    confidence_var = ctk.StringVar(value=str(max(10, min(100, round(confidence * 100)))))
+    ctk.CTkLabel(
+        confidence_row,
+        text="체크 이미지 인식률",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    ).pack(side="left", fill="x", expand=True)
+    ctk.CTkEntry(
+        confidence_row,
+        textvariable=confidence_var,
+        width=52,
+        height=28,
+        justify="center",
+    ).pack(side="right", padx=(6, 0))
+    ctk.CTkLabel(
+        confidence_row,
+        text="%",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+    ).pack(side="right")
+
+    return {
+        "confirm_image": confirm_image,
+        "confirm_region": confirm_region,
+        "confidence_var": confidence_var,
+    }
+
+
 def _manual_partial_start_index(flat_rules: List[AutomationRule], rule: AutomationRule, rule_index: int) -> int:
     """부분실행은 사용자가 선택한 액션 자체부터 시작해야 한다.
 
@@ -601,11 +868,13 @@ def _manual_partial_start_index(flat_rules: List[AutomationRule], rule: Automati
 
 
 def _rule_repeats_child_actions_for_partial(rule: AutomationRule) -> bool:
-    """사라질 때까지 반복 클릭은 하위 액션 구조를 보존해야 한다."""
+    """부모가 실행 중 자식을 직접 반복·관리하면 부분실행에서도 트리를 보존한다."""
+    if not _rule_is_enabled(rule) or not getattr(rule, "children", None):
+        return False
+    if getattr(rule, "action_type", "") == "auto_list":
+        return True
     return bool(
-        _rule_is_enabled(rule)
-        and getattr(rule, "children", None)
-        and getattr(rule, "action_type", "") in {"click", "double_click", "right_click"}
+        getattr(rule, "action_type", "") in {"click", "double_click", "right_click"}
         and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
         and getattr(rule, "click_until_image_disappears", False)
     )
@@ -639,6 +908,22 @@ def _build_manual_partial_rules(flat_rules: List[AutomationRule], start_index: i
         rules_to_run.append(rule_copy)
 
     return rules_to_run
+
+
+def _find_runnable_game_mode_index(
+    rules: List[AutomationRule],
+    game_modes: dict,
+    player_config,
+) -> Optional[int]:
+    """Return the first configured special-mode action using runtime options."""
+    for index, rule in enumerate(rules or []):
+        if not is_runtime_action_enabled(rule, player_config):
+            continue
+        if should_skip_pumpkin_action(rule, player_config):
+            continue
+        if rule.action_type == "game_mode" and game_modes.get(rule.rule_id):
+            return index
+    return None
 
 
 def _index_by_identity(items: list, target) -> int:
@@ -678,6 +963,173 @@ def _find_item_path_by_id(root_items: list, target_id: str, id_attr: str) -> lis
         return []
 
     return visit(root_items, [])
+
+
+def _action_call_options(root_items: list, id_attr: str, caller_id: Optional[str] = None) -> list:
+    """Build stable action-number choices while excluding recursive targets."""
+    excluded_ids = set()
+    if caller_id:
+        caller_path = _find_item_path_by_id(root_items, caller_id, id_attr)
+        if caller_path:
+            stack = [caller_path[-1]]
+            while stack:
+                item = stack.pop()
+                item_id = str(getattr(item, id_attr, "") or "")
+                if item_id:
+                    excluded_ids.add(item_id)
+                stack.extend(getattr(item, "children", None) or [])
+
+    options = []
+
+    def visit(items: list, parent_step: str = "") -> None:
+        for index, item in enumerate(items or [], 1):
+            step = f"{parent_step}-{index}" if parent_step else str(index)
+            item_id = str(getattr(item, id_attr, "") or "")
+            action_type = str(getattr(item, "action_type", "") or "")
+            if (
+                item_id
+                and item_id not in excluded_ids
+                and bool(getattr(item, "enabled", True))
+                and action_type not in {ACTION_CALL_ACTION_TYPE, "auto_list", "game_mode"}
+                and not bool(getattr(item, "is_monitoring_mode", False))
+                and not bool(getattr(item, "monitoring_watches", None))
+            ):
+                name = str(
+                    getattr(item, "description", "")
+                    or ACTION_NAMES.get(action_type, action_type or "동작")
+                ).strip()
+                options.append((f"[{step}] {truncate_ui_text(name, 54)}", item_id))
+            visit(getattr(item, "children", None) or [], step)
+
+    visit(root_items)
+    return options
+
+
+def _action_call_target_label(root_items: list, id_attr: str, target_id: Optional[str]) -> str:
+    target_id = str(target_id or "")
+    for label, item_id in _action_call_options(root_items, id_attr):
+        if item_id == target_id:
+            return label
+    return "대상 미설정"
+
+
+def _show_action_call_dialog(
+    parent,
+    root_items: list,
+    id_attr: str,
+    *,
+    caller_id: Optional[str] = None,
+    current_target_id: Optional[str] = None,
+    include_children: bool = True,
+):
+    options = _action_call_options(root_items, id_attr, caller_id)
+    if not options:
+        messagebox.showwarning(
+            "호출 대상 없음",
+            "호출할 수 있는 일반 액션이 없습니다.",
+            parent=parent,
+        )
+        return None
+
+    label_to_id = {label: item_id for label, item_id in options}
+    selected_label = next(
+        (label for label, item_id in options if item_id == str(current_target_id or "")),
+        options[0][0],
+    )
+    result = {"value": None}
+    dialog = ctk.CTkToplevel(parent)
+    dialog.title("액션 호출 설정")
+    dialog.geometry("620x300")
+    dialog.minsize(560, 280)
+    dialog.resizable(True, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    card = ctk.CTkFrame(
+        dialog,
+        fg_color=COLORS["bg_card"],
+        border_width=IOS_METRICS["card_border_width"],
+        border_color=COLORS["border"],
+        corner_radius=IOS_METRICS["card_radius"],
+    )
+    card.pack(fill="both", expand=True, padx=18, pady=18)
+    ctk.CTkLabel(
+        card,
+        text="호출할 액션",
+        font=ctk.CTkFont(size=17, weight="bold"),
+        text_color=COLORS["text_primary"],
+        anchor="w",
+    ).pack(fill="x", padx=16, pady=(16, 6))
+    ctk.CTkLabel(
+        card,
+        text="선택한 액션을 실행한 뒤 현재 위치로 돌아옵니다.",
+        font=ctk.CTkFont(size=12),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    ).pack(fill="x", padx=16, pady=(0, 10))
+
+    selected_var = ctk.StringVar(value=selected_label)
+    ctk.CTkOptionMenu(
+        card,
+        variable=selected_var,
+        values=[label for label, _ in options],
+        dynamic_resizing=False,
+        width=540,
+        height=36,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    ).pack(fill="x", padx=16, pady=(0, 12))
+
+    include_var = ctk.BooleanVar(value=bool(include_children))
+    ctk.CTkCheckBox(
+        card,
+        text="하위 액션 포함",
+        variable=include_var,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        fg_color=COLORS["success"],
+        hover_color=COLORS["green_hover"],
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=16, pady=(0, 12))
+
+    footer = ctk.CTkFrame(card, fg_color="transparent")
+    footer.pack(fill="x", padx=16, pady=(0, 16))
+
+    def save() -> None:
+        target_id = label_to_id.get(selected_var.get())
+        if not target_id:
+            return
+        result["value"] = (target_id, bool(include_var.get()))
+        dialog.destroy()
+
+    ctk.CTkButton(
+        footer,
+        text="저장",
+        command=save,
+        height=34,
+        fg_color=COLORS["success"],
+        hover_color=COLORS["green_hover"],
+        text_color=COLORS["text_on_accent"],
+        font=ctk.CTkFont(size=12, weight="bold"),
+    ).pack(side="left", fill="x", expand=True, padx=(0, 5))
+    ctk.CTkButton(
+        footer,
+        text="취소",
+        command=dialog.destroy,
+        height=34,
+        fg_color=COLORS["bg_elevated"],
+        hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(size=12, weight="bold"),
+    ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+    parent.wait_window(dialog)
+    return result["value"]
 
 
 def _item_parent_id(parent, id_attr: str):
@@ -881,6 +1333,18 @@ class PlanDetailDialog(ctk.CTkToplevel):
             details.append(f"[{' + '.join(rule.action_keys).upper()}]")
         if getattr(rule, "action_type", None) == "random_key_sequence":
             details.append(format_random_key_sequences_summary(getattr(rule, "random_key_sequences", [])))
+        if getattr(rule, "action_type", None) == "auto_list":
+            details.append(f"항목 {len((getattr(rule, 'auto_list_config', {}) or {}).get('items', []))}개")
+        if getattr(rule, "action_type", None) == "auto_list_value_input":
+            details.append(f"입력영역 {getattr(rule, 'search_region', None) or '미설정'}")
+        if getattr(rule, "action_type", None) == ACTION_CALL_ACTION_TYPE:
+            details.append(
+                _action_call_target_label(
+                    self._plan.initial_rules,
+                    "rule_id",
+                    getattr(rule, "action_call_rule_id", None),
+                )
+            )
         if getattr(rule, "target_image", None) and getattr(rule, "alternate_mouse_route", False):
             details.append("이동경로 변경")
         if (
@@ -1341,6 +1805,34 @@ class PlanDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
 
+        # 여섯번째 줄: 랜덤키입력 바로 아래에 자동 목록 처리
+        btn_row6 = ctk.CTkFrame(btn_container, fg_color="transparent")
+        btn_row6.pack(fill="x", pady=(3, 0))
+        ctk.CTkButton(
+            btn_row6,
+            text="액션 호출",
+            command=self._add_action_call_action,
+            width=110,
+            height=28,
+            fg_color=COLORS["accent_orange"],
+            hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        ).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(
+            btn_row6,
+            text="자동 목록 처리",
+            command=self._add_auto_list_action,
+            width=110,
+            height=28,
+            fg_color=COLORS["accent_blue"],
+            hover_color=COLORS["hover_blue"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        ).pack(side="left")
+
         all_rules = self._plan.initial_rules + self._plan.monitoring_rules
         ctk.CTkLabel(
             main,
@@ -1580,11 +2072,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
                 and getattr(rule, "click_until_image_disappears", False)
             )
+            from_auto_list_quantity = bool(getattr(rule, "repeat_from_auto_list_quantity", False))
             btn = widgets["repeat_btn"]
-            repeat_text = _format_repeat_button_text(repeat_count, until_disappears)
+            repeat_text = _format_repeat_button_text(
+                repeat_count,
+                until_disappears,
+                from_auto_list_quantity,
+            )
             btn.configure(
                 text=repeat_text,
-                **_ios_repeat_button_style(repeat_count, until_disappears),
+                **_ios_repeat_button_style(
+                    repeat_count,
+                    until_disappears,
+                    from_auto_list_quantity,
+                ),
                 width=_action_chip_width(repeat_text, minimum=70),
             )
 
@@ -1692,14 +2193,17 @@ class PlanDetailDialog(ctk.CTkToplevel):
             return False
 
     def _update_rule_parent_summary(self, rule: AutomationRule) -> bool:
-        if getattr(self, "_compact_rule_rows", False):
-            return self._update_rule_row_in_place(rule)
         widget_data = getattr(self, "_rule_widgets", {}).get(getattr(rule, "rule_id", None))
         if not widget_data:
             return False
         child_count = len(getattr(rule, "children", []) or [])
-        child_count_label = widget_data.get("child_count_label")
         toggle_btn = widget_data.get("toggle_btn")
+        if getattr(self, "_compact_rule_rows", False):
+            # The first child replaces the leading spacer with a collapse button.
+            if (child_count > 0) != (toggle_btn is not None):
+                return False
+            return self._update_rule_row_in_place(rule)
+        child_count_label = widget_data.get("child_count_label")
         if child_count <= 0:
             if child_count_label is not None or toggle_btn is not None:
                 return False
@@ -2008,6 +2512,42 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._edit_random_key_action(r),
             ).pack(side="right", padx=3, pady=8)
+        elif rule.action_type == "auto_list":
+            ctk.CTkButton(
+                control_frame,
+                text="⚙",
+                width=30,
+                height=24,
+                fg_color=COLORS["accent_blue"],
+                hover_color=COLORS["hover_blue"],
+                text_color=COLORS["text_on_accent"],
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_auto_list_action(r),
+            ).pack(side="right", padx=3, pady=8)
+        elif rule.action_type == "auto_list_value_input":
+            ctk.CTkButton(
+                control_frame,
+                text="⚙",
+                width=30,
+                height=24,
+                fg_color=COLORS["success"],
+                hover_color=COLORS["green_hover"],
+                text_color=COLORS["text_on_accent"],
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_auto_list_value_input_action(r),
+            ).pack(side="right", padx=3, pady=8)
+        elif rule.action_type == ACTION_CALL_ACTION_TYPE:
+            ctk.CTkButton(
+                control_frame,
+                text="⚙",
+                width=30,
+                height=24,
+                fg_color=COLORS["accent_orange"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_primary"],
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_action_call_action(r),
+            ).pack(side="right", padx=3, pady=8)
 
         is_monitoring = getattr(rule, "is_monitoring_mode", False)
         ctk.CTkButton(
@@ -2060,14 +2600,23 @@ class PlanDetailDialog(ctk.CTkToplevel):
             (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
             and getattr(rule, "click_until_image_disappears", False)
         )
-        repeat_text = _format_repeat_button_text(repeat_count, until_disappears)
+        from_auto_list_quantity = bool(getattr(rule, "repeat_from_auto_list_quantity", False))
+        repeat_text = _format_repeat_button_text(
+            repeat_count,
+            until_disappears,
+            from_auto_list_quantity,
+        )
         repeat_btn = ctk.CTkButton(
             control_frame,
             text=repeat_text,
             width=_action_chip_width(repeat_text, minimum=70),
             height=26,
             font=self._font(12, "bold"),
-            **_ios_repeat_button_style(repeat_count, until_disappears),
+            **_ios_repeat_button_style(
+                repeat_count,
+                until_disappears,
+                from_auto_list_quantity,
+            ),
             corner_radius=IOS_METRICS["pill_radius"],
             command=lambda r=rule: self._edit_repeat_count(r),
         )
@@ -2470,6 +3019,45 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._edit_random_key_action(r),
             ).pack(side="right", padx=(4, 0))
+        elif rule.action_type == "auto_list":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                fg_color=COLORS["accent_blue"],
+                hover_color=COLORS["hover_blue"],
+                text_color=COLORS["text_on_accent"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_auto_list_action(r),
+            ).pack(side="right", padx=(4, 0))
+        elif rule.action_type == "auto_list_value_input":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                fg_color=COLORS["success"],
+                hover_color=COLORS["green_hover"],
+                text_color=COLORS["text_on_accent"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_auto_list_value_input_action(r),
+            ).pack(side="right", padx=(4, 0))
+        elif rule.action_type == ACTION_CALL_ACTION_TYPE:
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                fg_color=COLORS["accent_orange"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_primary"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda r=rule: self._edit_action_call_action(r),
+            ).pack(side="right", padx=(4, 0))
 
         # 대기시간 버튼 (랜덤 여부 표시)
         wait_random = getattr(rule, 'wait_random', False)
@@ -2494,12 +3082,21 @@ class PlanDetailDialog(ctk.CTkToplevel):
             (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
             and getattr(rule, "click_until_image_disappears", False)
         )
-        repeat_text = _format_repeat_button_text(repeat_count, until_disappears)
+        from_auto_list_quantity = bool(getattr(rule, "repeat_from_auto_list_quantity", False))
+        repeat_text = _format_repeat_button_text(
+            repeat_count,
+            until_disappears,
+            from_auto_list_quantity,
+        )
         repeat_btn = ctk.CTkButton(
             btn_frame,
             text=repeat_text,
             font=ctk.CTkFont(size=12, weight="bold"),
-            **_ios_repeat_button_style(repeat_count, until_disappears),
+            **_ios_repeat_button_style(
+                repeat_count,
+                until_disappears,
+                from_auto_list_quantity,
+            ),
             width=_action_chip_width(repeat_text, minimum=70),
             height=28,
             corner_radius=IOS_METRICS["pill_radius"],
@@ -2766,7 +3363,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             except (IOError, OSError, ValueError):
                 pass
 
-        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "key_press": "⌨", "random_key_sequence": "🎲", "scroll": "📜", "drag": "↔", "game_mode": "🎮"}
+        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "key_press": "⌨", "random_key_sequence": "🎲", "auto_list": "≡", "auto_list_value_input": "#", "action_call": "↪", "scroll": "📜", "drag": "↔", "game_mode": "🎮"}
         ctk.CTkLabel(
             parent,
             text=icons.get(rule.action_type, "📋"),
@@ -3167,10 +3764,20 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rule.action_type in ["click", "double_click", "right_click"]
             and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
         )
+        rule_path = _find_item_path_by_id(self._plan.initial_rules, rule.rule_id, "rule_id")
+        if not rule_path:
+            rule_path = _find_item_path_by_id(self._plan.monitoring_rules, rule.rule_id, "rule_id")
+        can_repeat_from_auto_list = bool(
+            is_image_click
+            and rule.action_type == "click"
+            and rule_path
+            and any(getattr(parent, "action_type", "") == "auto_list" for parent in rule_path[:-1])
+        )
         dialog = ctk.CTkToplevel(self)
         dialog.title("반복 설정")
-        dialog_height = 570 if is_image_click else 420
-        dialog.geometry(f"350x{dialog_height}")
+        dialog_width = 400 if is_image_click else 350
+        dialog_height = 720 if is_image_click else 420
+        dialog.geometry(f"{dialog_width}x{dialog_height}")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.transient(self)
@@ -3178,11 +3785,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         # 중앙 배치
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() - 350) // 2
+        x = (dialog.winfo_screenwidth() - dialog_width) // 2
         y = (dialog.winfo_screenheight() - dialog_height) // 2
         dialog.geometry(f"+{x}+{y}")
 
-        main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        main_frame = (
+            ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+            if is_image_click
+            else ctk.CTkFrame(dialog, fg_color="transparent")
+        )
         main_frame.pack(fill="both", expand=True, padx=20, pady=15)
 
         # 반복 횟수
@@ -3197,22 +3808,24 @@ class PlanDetailDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
 
         click_until_var = ctk.BooleanVar(value=bool(getattr(rule, "click_until_image_disappears", False)))
+        auto_list_repeat_var = ctk.BooleanVar(
+            value=bool(can_repeat_from_auto_list and getattr(rule, "repeat_from_auto_list_quantity", False))
+        )
         click_until_delay_entry = None
+        auto_list_repeat_controls = None
         if is_image_click:
+            def select_click_until_mode():
+                if click_until_var.get():
+                    auto_list_repeat_var.set(False)
+
             ctk.CTkCheckBox(
                 main_frame,
                 text="이미지가 사라질 때까지 반복 클릭",
                 variable=click_until_var,
+                command=select_click_until_mode,
                 font=ctk.CTkFont(size=13, weight="bold"),
             ).pack(anchor="w", pady=(12, 4))
-            ctk.CTkLabel(
-                main_frame,
-                text="켜면 매번 이미지를 다시 찾아 클릭합니다. 반복 횟수는 안전 최대 클릭 수입니다.",
-                font=ctk.CTkFont(size=10),
-                text_color=COLORS["text_muted"],
-                wraplength=300,
-                justify="left",
-            ).pack(anchor="w", pady=(0, 4))
+            _build_click_until_help(main_frame)
             click_until_delay_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
             click_until_delay_frame.pack(anchor="w", pady=(4, 0))
             ctk.CTkLabel(
@@ -3238,14 +3851,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
-            ctk.CTkLabel(
+            auto_list_repeat_controls = _build_auto_list_quantity_repeat_controls(
                 main_frame,
-                text="클릭과 하위액션 실행 후 다음 이미지 재검색 전 대기합니다.",
-                font=ctk.CTkFont(size=10),
-                text_color=COLORS["text_muted"],
-                wraplength=300,
-                justify="left",
-            ).pack(anchor="w", pady=(3, 0))
+                dialog,
+                self,
+                rule,
+                eligible=can_repeat_from_auto_list,
+                enabled_var=auto_list_repeat_var,
+                click_until_var=click_until_var,
+            )
 
         # 반복 대기시간
         ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
@@ -3281,7 +3895,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 delay = float(delay_entry.get().strip().replace(',', '.'))
                 delay_range = float(delay_range_entry.get().strip().replace(',', '.'))
                 click_until_delay = delay
-                click_until_enabled = bool(is_image_click and click_until_var.get())
+                auto_list_repeat_enabled = bool(
+                    is_image_click and can_repeat_from_auto_list and auto_list_repeat_var.get()
+                )
+                click_until_enabled = bool(
+                    is_image_click and click_until_var.get() and not auto_list_repeat_enabled
+                )
                 if click_until_delay_entry is not None:
                     raw_click_until_delay = click_until_delay_entry.get().strip().replace(',', '.')
                     if raw_click_until_delay:
@@ -3306,12 +3925,34 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     from tkinter import messagebox
                     messagebox.showerror("오류", "전용 반복 대기시간은 0 이상이어야 합니다")
                     return
+                confirm_image = getattr(rule, "auto_list_repeat_confirm_image", None)
+                confirm_region = getattr(rule, "auto_list_repeat_confirm_region", None)
+                confirm_confidence = float(getattr(rule, "auto_list_repeat_confirm_confidence", 0.9) or 0.9)
+                if auto_list_repeat_enabled and auto_list_repeat_controls is not None:
+                    confirm_image = auto_list_repeat_controls["confirm_image"]["value"]
+                    confirm_region = auto_list_repeat_controls["confirm_region"]["value"]
+                    if not confirm_image:
+                        messagebox.showerror("오류", "선택 체크 이미지를 설정하세요", parent=dialog)
+                        return
+                    if not confirm_region:
+                        messagebox.showerror("오류", "선택 체크 확인 범위를 설정하세요", parent=dialog)
+                        return
+                    confirm_confidence = float(
+                        auto_list_repeat_controls["confidence_var"].get().strip().replace(',', '.')
+                    ) / 100.0
+                    if not 0.1 <= confirm_confidence <= 1.0:
+                        messagebox.showerror("오류", "체크 이미지 인식률은 10~100 사이로 입력하세요", parent=dialog)
+                        return
                 rule.repeat_count = count
                 rule.repeat_delay = delay
                 rule.repeat_delay_random = delay_random_var.get()
                 rule.repeat_delay_random_range = delay_range
                 rule.click_until_image_disappears = click_until_enabled
                 rule.click_until_image_disappears_delay = click_until_delay
+                rule.repeat_from_auto_list_quantity = auto_list_repeat_enabled
+                rule.auto_list_repeat_confirm_image = confirm_image
+                rule.auto_list_repeat_confirm_region = confirm_region
+                rule.auto_list_repeat_confirm_confidence = confirm_confidence
                 result["saved"] = True
                 dialog.destroy()
             except ValueError:
@@ -3334,7 +3975,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 self._update_rule_buttons(rule)
             logger.info(
                 f"반복 설정: {rule.repeat_count}회, 대기 {rule.repeat_delay}초 "
-                f"(랜덤: {rule.repeat_delay_random}, 사라질때까지: {getattr(rule, 'click_until_image_disappears', False)})"
+                f"(랜덤: {rule.repeat_delay_random}, 사라질때까지: {getattr(rule, 'click_until_image_disappears', False)}, "
+                f"등록항목전체선택: {getattr(rule, 'repeat_from_auto_list_quantity', False)})"
             )
 
     def _edit_rule_name(self, rule: AutomationRule):
@@ -3687,17 +4329,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._notify_player_partial_run_stopped()
             return
 
-        # 첫 번째 game_mode 규칙 위치 찾기
-        first_gm_idx = None
-        for i, r in enumerate(rules_to_run):
-            if (
-                is_runtime_action_enabled(r, get_config().player)
-                and not should_skip_pumpkin_action(r, get_config().player)
-                and r.action_type == "game_mode"
-                and self._plan.game_modes.get(r.rule_id)
-            ):
-                first_gm_idx = i
-                break
+        # 전체실행과 동일한 런타임 옵션 판정으로 첫 특화모드 경계를 찾는다.
+        first_gm_idx = _find_runnable_game_mode_index(
+            rules_to_run,
+            self._plan.game_modes,
+            get_config().player,
+        )
 
         if first_gm_idx is None:
             # game_mode 없음 → 전부 RuleExecutor
@@ -3731,10 +4368,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
             rules_to_run: 실행할 규칙 리스트
             chain_remaining: 완료 시 _run_remaining_rules(chain_remaining) 체이닝 (None이면 종료)
         """
-        from ..player.rule_executor import get_rule_executor
         from ..analyzer.automation_models import AutomationPlan
-        import threading
-
         if not self._ensure_arduino_ready_for_playback("재생 실행"):
             if self._is_running:
                 self._on_execution_complete()
@@ -3749,28 +4383,40 @@ class PlanDetailDialog(ctk.CTkToplevel):
         partial_plan._original_initial_rules = self._plan.initial_rules
         partial_plan.game_modes = self._plan.game_modes
 
-        executor = get_rule_executor()
-        self._running_executor = executor
+        self._start_partial_executor(
+            partial_plan,
+            chain_remaining=chain_remaining,
+            log_label="이어서실행",
+        )
 
-        if executor.state.value in ["running_initial", "monitoring"]:
-            executor.stop()
+    def _start_partial_executor(self, partial_plan, *, chain_remaining=None, log_label: str):
+        """Start every non-special partial segment through one isolated executor path."""
+        import threading
+
+        # 부분실행은 전용 실행기를 사용해 이전 실행의 stop/callback 상태와 격리한다.
+        executor = RuleExecutor()
+        self._running_executor = executor
 
         # 실행 중 상태 유지
         self._is_running = True
-        self.title("▶ 이어서 실행 중... (아무 ▶ 버튼 클릭시 중지)")
-        self.update_idletasks()
+        self.title(f"▶ {log_label} 중... (아무 ▶ 버튼 클릭시 중지)")
+        self.configure(fg_color=COLORS["bg_dark"])
 
         try:
             self.grab_release()
         except tk.TclError:
             pass
 
-        from ..utils.config import get_config
         config = get_config()
         main_window = self.winfo_toplevel().master
+        if config.ui.minimize_on_run and main_window:
+            try:
+                main_window.iconify()
+            except (tk.TclError, KeyError, AttributeError):
+                pass
 
         def on_complete(success, msg):
-            logger.info(f"[이어서실행] 완료: {msg}")
+            logger.info(f"[{log_label}] 완료: {msg}")
             try:
                 if not self.winfo_exists():
                     return
@@ -3779,7 +4425,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     self._running_executor = None
                     self._gm_next_previous_rule = handoff.previous_rule
                     logger.info(
-                        "[이어서실행] 특화모드 경계 인계 → GameModeDialog: "
+                        f"[{log_label}] 특화모드 경계 인계 → GameModeDialog: "
                         f"step={handoff.target_step}, rule_id={handoff.target_rule_id}"
                     )
                     self.after(0, lambda rules=handoff.rules: self._run_remaining_rules(rules))
@@ -3796,7 +4442,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 pass
 
         def on_error(msg, failed_rule):
-            logger.error(f"[이어서실행] 오류: {msg}")
+            logger.error(f"[{log_label}] 오류: {msg}")
             try:
                 if not self.winfo_exists():
                     return
@@ -3814,25 +4460,52 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         def run():
             try:
-                logger.info(f"[이어서실행] {len(rules_to_run)}개 액션 시작")
+                logger.info(f"[{log_label}] {len(partial_plan.initial_rules)}개 액션 시작")
                 executor.execute_plan(
                     partial_plan,
                     allow_special_mode_handoff=True,
                 )
-            except Exception as e:
-                logger.error(f"[이어서실행] 예외: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+            except Exception:
+                logger.exception(f"[{log_label}] 실행기 예외")
+                try:
+                    if self.winfo_exists():
+                        self.after(0, self._on_execution_complete)
+                except (tk.TclError, RuntimeError, AttributeError):
+                    pass
 
         threading.Thread(target=run, daemon=True).start()
 
     def _test_run_rule(self, rule: AutomationRule):
+        """부분실행 UI 경계. 내부 오류를 무반응 상태로 남기지 않는다."""
+        try:
+            return self._test_run_rule_impl(rule)
+        except Exception as error:
+            logger.exception(
+                "[부분실행] 시작 실패: rule_id=%s action=%s",
+                getattr(rule, "rule_id", ""),
+                getattr(rule, "description", "") or getattr(rule, "action_type", ""),
+            )
+            self._running_executor = None
+            self._is_running = False
+            try:
+                self._stop_partial_run_visual()
+                self._notify_player_partial_run_stopped()
+                self.title(f"계획 수정 - {self._plan.name}")
+            except (tk.TclError, RuntimeError, AttributeError):
+                pass
+            try:
+                from tkinter import messagebox
+
+                messagebox.showerror("부분실행 오류", f"부분실행을 시작하지 못했습니다.\n\n{error}")
+            except (tk.TclError, RuntimeError, AttributeError):
+                pass
+            return None
+
+    def _test_run_rule_impl(self, rule: AutomationRule):
         """해당 규칙부터 끝까지 실행 (토글 방식: 실행 중이면 중지)"""
         logger.info(f"[부분실행] 클릭됨: {rule.description or rule.action_type}, rule_id={rule.rule_id}")
         from tkinter import messagebox
-        from ..player.rule_executor import get_rule_executor
         from ..analyzer.automation_models import AutomationPlan
-        import threading
 
         # 이미 실행 중이면 중지
         if self._is_running:
@@ -3947,13 +4620,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # game_mode 규칙 포함 여부 확인
         # → 있으면 _run_remaining_rules 경유 (GameModeDialog 사용, route_ends/보스 지원)
         # → RuleExecutor 직접 경로는 격리 경계를 우회하므로 fail-closed 처리됨
-        _has_game_mode = any(
-            is_runtime_action_enabled(r, get_config().player)
-            and not should_skip_pumpkin_action(r, get_config().player)
-            and r.action_type == "game_mode"
-            and self._plan.game_modes.get(r.rule_id)
-            for r in rules_to_run
-        )
+        _has_game_mode = _find_runnable_game_mode_index(
+            rules_to_run,
+            self._plan.game_modes,
+            get_config().player,
+        ) is not None
         if _has_game_mode:
             logger.info(f"[부분실행] game_mode 포함 → _run_remaining_rules 경유 (GameModeDialog 사용)")
             self._is_running = True
@@ -3980,92 +4651,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
         # 특화모드 설정 복사
         partial_plan.game_modes = self._plan.game_modes
 
-        # 전역 executor 사용
-        executor = get_rule_executor()
-        self._running_executor = executor
-
-        # 이미 실행 중이면 중지 (비차단)
-        if executor.state.value in ["running_initial", "monitoring"]:
-            executor.stop()
-
         # 실행 중 상태 표시
         self._is_running = True
         self._start_partial_run_visual(rule.rule_id)
         self._notify_player_partial_run_started("부분실행")
-        self.title("▶ 실행 중... (아무 ▶ 버튼 클릭시 중지)")
-        self.configure(fg_color=COLORS["bg_dark"])
-
-        # grab 해제 (다른 윈도우 조작 가능하게)
-        try:
-            self.grab_release()
-        except tk.TclError:
-            pass
-
-        # 설정에 따라 메인 창 최소화 (pyautogui 간섭 방지)
-        from ..utils.config import get_config
-        config = get_config()
-        main_window = self.winfo_toplevel().master  # 메인 윈도우 참조
-        if config.ui.minimize_on_run and main_window:
-            try:
-                main_window.iconify()
-            except (tk.TclError, KeyError, AttributeError):
-                pass
-
-        def on_complete(success, msg):
-            logger.info(f"[부분실행] 완료: {msg}")
-            # UI 스레드에서 상태 복원
-            try:
-                if not self.winfo_exists():
-                    return
-                handoff = executor.take_special_mode_route_handoff()
-                if success and handoff is not None:
-                    self._running_executor = None
-                    self._gm_next_previous_rule = handoff.previous_rule
-                    logger.info(
-                        "[부분실행] 특화모드 경계 인계 → GameModeDialog: "
-                        f"step={handoff.target_step}, rule_id={handoff.target_rule_id}"
-                    )
-                    self.after(0, lambda rules=handoff.rules: self._run_remaining_rules(rules))
-                    return
-                self.after(0, self._on_execution_complete)
-                # 창 복원
-                if config.ui.minimize_on_run and main_window:
-                    self.after(100, lambda: main_window.deiconify())
-            except (tk.TclError, KeyError, AttributeError, RuntimeError):
-                pass
-
-        def on_error(msg, failed_rule):
-            logger.error(f"[부분실행] 오류: {msg}")
-            try:
-                if not self.winfo_exists():
-                    return
-                self.after(0, self._on_execution_complete)
-                # 창 복원
-                if config.ui.minimize_on_run and main_window:
-                    self.after(100, lambda: main_window.deiconify())
-            except (tk.TclError, RuntimeError):
-                pass
-
-        executor.set_callbacks(
-            on_progress=self._make_partial_progress_callback(),
-            on_complete=on_complete,
-            on_error=on_error,
-        )
-
-        # 별도 스레드에서 실행 시작
-        def run():
-            try:
-                logger.info(f"[부분실행] 시작!")
-                executor.execute_plan(
-                    partial_plan,
-                    allow_special_mode_handoff=True,
-                )
-            except Exception as e:
-                logger.error(f"[부분실행] 예외: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-
-        threading.Thread(target=run, daemon=True).start()
+        self._start_partial_executor(partial_plan, log_label="부분실행")
 
     def _on_execution_complete(self):
         """실행 완료 후 UI 복원"""
@@ -5736,6 +6326,155 @@ class PlanDetailDialog(ctk.CTkToplevel):
             self._refresh_rule_row(rule.rule_id)
         logger.info(f"랜덤키 액션 수정: {format_random_key_sequences_summary(sequences)}")
 
+    def _add_auto_list_action(self):
+        """자동 목록 처리 액션 추가."""
+        import uuid
+
+        config = AutoListDialog(self).get_result()
+        if not config:
+            return
+        new_rule = AutomationRule(
+            rule_id=f"rule_{uuid.uuid4().hex[:8]}",
+            action_type="auto_list",
+            description="자동 목록 처리",
+            auto_list_config=config,
+            wait_after=0.5,
+        )
+        parent_rule = self._add_rule_to_current_parent(new_rule)
+        self._modified = True
+        self._refresh_after_rule_added(parent_rule, new_rule)
+        if not self._save_plan(show_message=False):
+            messagebox.showerror(
+                "저장 실패",
+                "자동 목록 처리는 추가되었지만 플랜 파일 저장에 실패했습니다.",
+                parent=self,
+            )
+            return
+        suffix = f" (하위: {parent_rule.rule_id})" if parent_rule else ""
+        logger.info(f"자동 목록 처리 추가{suffix}: 항목 {len(config.get('items', []))}개")
+
+    def _edit_auto_list_action(self, rule: AutomationRule):
+        """자동 목록 처리 액션 설정 수정."""
+        config = AutoListDialog(self, config=getattr(rule, "auto_list_config", {})).get_result()
+        if not config:
+            return
+        rule.auto_list_config = config
+        rule.description = rule.description or "자동 목록 처리"
+        self._modified = True
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
+        if not self._save_plan(show_message=False):
+            messagebox.showerror(
+                "저장 실패",
+                "자동 목록 처리 설정은 적용되었지만 플랜 파일 저장에 실패했습니다.",
+                parent=self,
+            )
+            return
+        logger.info(f"자동 목록 처리 수정: 항목 {len(config.get('items', []))}개")
+
+    def _add_action_call_action(self):
+        """Add a call that runs an existing action tree and then returns."""
+        import uuid
+
+        selected = _show_action_call_dialog(
+            self,
+            self._plan.initial_rules,
+            "rule_id",
+        )
+        if not selected:
+            return
+        target_rule_id, include_children = selected
+        new_rule = AutomationRule(
+            rule_id=f"rule_{uuid.uuid4().hex[:8]}",
+            action_type=ACTION_CALL_ACTION_TYPE,
+            description="액션 호출",
+            action_call_rule_id=target_rule_id,
+            action_call_include_children=include_children,
+            wait_after=0.0,
+        )
+        parent_rule = self._add_rule_to_current_parent(new_rule)
+        self._modified = True
+        self._refresh_after_rule_added(parent_rule, new_rule)
+        if not self._save_plan(show_message=False):
+            messagebox.showerror("저장 실패", "액션 호출 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(
+            "액션 호출 추가: target=%s include_children=%s",
+            target_rule_id,
+            include_children,
+        )
+
+    def _edit_action_call_action(self, rule: AutomationRule):
+        selected = _show_action_call_dialog(
+            self,
+            self._plan.initial_rules,
+            "rule_id",
+            caller_id=getattr(rule, "rule_id", None),
+            current_target_id=getattr(rule, "action_call_rule_id", None),
+            include_children=bool(getattr(rule, "action_call_include_children", True)),
+        )
+        if not selected:
+            return
+        rule.action_call_rule_id, rule.action_call_include_children = selected
+        rule.description = rule.description or "액션 호출"
+        self._modified = True
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
+        if not self._save_plan(show_message=False):
+            messagebox.showerror("저장 실패", "액션 호출 설정 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(
+            "액션 호출 수정: target=%s include_children=%s",
+            rule.action_call_rule_id,
+            rule.action_call_include_children,
+        )
+
+    def _add_auto_list_value_input_action(self):
+        """Add an action that types the accepted automatic-list quantity."""
+        import uuid
+
+        selected = getattr(self, "_selected_rule", None)
+        selected_id = getattr(selected, "rule_id", None)
+        path = _find_item_path_by_id(self._plan.initial_rules, selected_id, "rule_id") if selected_id else None
+        if not path or not any(getattr(item, "action_type", None) == "auto_list" for item in path):
+            messagebox.showwarning(
+                "자동 목록 하위 액션 필요",
+                "먼저 자동 목록 처리 액션 또는 그 하위 액션을 선택하세요.",
+                parent=self,
+            )
+            return
+        region = AutoListValueInputDialog(self).get_result()
+        if not region:
+            return
+        new_rule = AutomationRule(
+            rule_id=f"rule_{uuid.uuid4().hex[:8]}",
+            action_type="auto_list_value_input",
+            description="현재 처리수량 입력",
+            search_region=region,
+            wait_after=0.3,
+        )
+        parent_rule = self._add_rule_to_current_parent(new_rule)
+        self._modified = True
+        self._refresh_after_rule_added(parent_rule, new_rule)
+        if not self._save_plan(show_message=False):
+            messagebox.showerror("저장 실패", "현재 처리수량 입력 액션 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(f"현재 처리수량 입력 추가: region={region}")
+
+    def _edit_auto_list_value_input_action(self, rule: AutomationRule):
+        region = AutoListValueInputDialog(self, region=getattr(rule, "search_region", None)).get_result()
+        if not region:
+            return
+        rule.search_region = region
+        rule.description = "현재 처리수량 입력"
+        self._modified = True
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
+        if not self._save_plan(show_message=False):
+            messagebox.showerror("저장 실패", "현재 처리수량 입력 설정 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(f"현재 처리수량 입력 수정: region={region}")
+
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
         import uuid
@@ -5949,37 +6688,15 @@ class PlanDetailDialog(ctk.CTkToplevel):
         logger.debug(f"규칙 선택: {current_id}")
 
     def _randomize_all_delays(self):
-        """전체 액션의 랜덤 대기시간 체크 토글"""
-        # 현재 상태 확인 (하나라도 False면 전체 True로, 전부 True면 전체 False로)
-        all_random = True
-        def check_random(rules):
-            nonlocal all_random
-            for rule in rules:
-                if not getattr(rule, 'wait_random', False):
-                    all_random = False
-                    return
-                if rule.children:
-                    check_random(rule.children)
-        check_random(self._plan.initial_rules)
-
-        # 토글 적용
-        new_state = not all_random
-        count = 0
-        def apply_random(rules):
-            nonlocal count
-            for rule in rules:
-                rule.wait_random = new_state
-                if new_state and (not hasattr(rule, 'wait_random_range') or rule.wait_random_range is None or rule.wait_random_range == 0):
-                    rule.wait_random_range = 0.3
-                count += 1
-                if rule.children:
-                    apply_random(rule.children)
-
-        apply_random(self._plan.initial_rules)
+        """전체 액션에 안전한 범위의 랜덤 대기시간을 일괄 적용한다."""
+        count, updated_count = apply_bulk_random_waits(self._plan.initial_rules)
 
         self._modified = True
         self._update_visible_rule_rows_in_place()
-        logger.info(f"전체 랜덤 {'활성화' if new_state else '비활성화'}: {count}개 액션")
+        logger.info(
+            f"전체 랜덤 적용: {count}개 액션, 기본 대기시간 변경 {updated_count}개 "
+            "(2초 이상 보존)"
+        )
 
     def _toggle_all_children(self):
         """모든 액션을 1번 액션의 하위로 종속/해제 토글"""
@@ -26873,6 +27590,34 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
 
+        # 여섯번째 줄: 랜덤키입력 바로 아래
+        btn_row6 = ctk.CTkFrame(btn_container, fg_color="transparent")
+        btn_row6.pack(fill="x", pady=(3, 0))
+        ctk.CTkButton(
+            btn_row6,
+            text="자동 목록 처리",
+            command=self._add_auto_list_action,
+            width=110,
+            height=28,
+            fg_color=COLORS["accent_blue"],
+            hover_color=COLORS["hover_blue"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        ).pack(side="left")
+        ctk.CTkButton(
+            btn_row6,
+            text="액션 호출",
+            command=self._add_action_call_action,
+            width=110,
+            height=28,
+            fg_color=COLORS["accent_orange"],
+            hover_color=COLORS["confidence_amber_hover"],
+            text_color=COLORS["text_on_accent"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        ).pack(side="left", padx=(5, 0))
+
         created_str = self._sequence.created_at.strftime("%Y-%m-%d") if self._sequence.created_at else "알 수 없음"
         ctk.CTkLabel(
             main,
@@ -27058,11 +27803,20 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         if "repeat_btn" in widgets:
             repeat_count = getattr(action, 'repeat_count', 1)
             until_disappears = bool(getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False))
+            from_auto_list_quantity = bool(getattr(action, "repeat_from_auto_list_quantity", False))
             btn = widgets["repeat_btn"]
-            repeat_text = _format_repeat_button_text(repeat_count, until_disappears)
+            repeat_text = _format_repeat_button_text(
+                repeat_count,
+                until_disappears,
+                from_auto_list_quantity,
+            )
             btn.configure(
                 text=repeat_text,
-                **_ios_repeat_button_style(repeat_count, until_disappears),
+                **_ios_repeat_button_style(
+                    repeat_count,
+                    until_disappears,
+                    from_auto_list_quantity,
+                ),
                 width=_action_chip_width(repeat_text, minimum=70),
             )
 
@@ -27096,6 +27850,18 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             details.append("+".join(action.keys).upper())
         if getattr(action, "action_type", None) == "random_key_sequence":
             details.append(format_random_key_sequences_summary(getattr(action, "random_key_sequences", [])))
+        if getattr(action, "action_type", None) == "auto_list":
+            details.append(f"항목 {len((getattr(action, 'auto_list_config', {}) or {}).get('items', []))}개")
+        if getattr(action, "action_type", None) == "auto_list_value_input":
+            details.append(f"입력영역 {getattr(action, 'search_region', None) or '미설정'}")
+        if getattr(action, "action_type", None) == ACTION_CALL_ACTION_TYPE:
+            details.append(
+                _action_call_target_label(
+                    self._sequence.actions,
+                    "action_id",
+                    getattr(action, "action_call_rule_id", None),
+                )
+            )
         if action.text:
             details.append(truncate_ui_text(action.text, 22))
         if getattr(action, "target_image", None):
@@ -27123,6 +27889,18 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 truncate_ui_text(format_random_key_sequences_summary(getattr(action, "random_key_sequences", [])), 42)
                 if compact
                 else format_random_key_sequences_summary(getattr(action, "random_key_sequences", []))
+            )
+        if getattr(action, "action_type", None) == "auto_list":
+            details.append(f"항목 {len((getattr(action, 'auto_list_config', {}) or {}).get('items', []))}개")
+        if getattr(action, "action_type", None) == "auto_list_value_input":
+            details.append(f"입력영역 {getattr(action, 'search_region', None) or '미설정'}")
+        if getattr(action, "action_type", None) == ACTION_CALL_ACTION_TYPE:
+            details.append(
+                _action_call_target_label(
+                    self._sequence.actions,
+                    "action_id",
+                    getattr(action, "action_call_rule_id", None),
+                )
             )
         if getattr(action, "target_image", None):
             if compact:
@@ -27201,14 +27979,17 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             return False
 
     def _update_action_parent_summary(self, action: Action) -> bool:
-        if getattr(self, "_compact_action_rows", False):
-            return self._update_compact_action_row(action)
         widget_data = getattr(self, "_action_widgets", {}).get(getattr(action, "action_id", None))
         if not widget_data:
             return False
         child_count = len(getattr(action, "children", []) or [])
-        child_count_label = widget_data.get("child_count_label")
         toggle_btn = widget_data.get("toggle_btn")
+        if getattr(self, "_compact_action_rows", False):
+            # The first child replaces the leading spacer with a collapse button.
+            if (child_count > 0) != (toggle_btn is not None):
+                return False
+            return self._update_compact_action_row(action)
+        child_count_label = widget_data.get("child_count_label")
         if child_count <= 0:
             if child_count_label is not None or toggle_btn is not None:
                 return False
@@ -27348,6 +28129,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 command=lambda a=action: self._toggle_item_collapse(a.action_id),
             )
             toggle_btn.pack(side="left", padx=(6, 1), pady=8)
+            self._action_widgets[action.action_id]["toggle_btn"] = toggle_btn
         else:
             ctk.CTkLabel(row, text="", width=22).pack(side="left", padx=(6, 1), pady=8)
 
@@ -27412,14 +28194,23 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         repeat_count = getattr(action, "repeat_count", 1)
         until_disappears = bool(getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False))
-        repeat_text = _format_repeat_button_text(repeat_count, until_disappears)
+        from_auto_list_quantity = bool(getattr(action, "repeat_from_auto_list_quantity", False))
+        repeat_text = _format_repeat_button_text(
+            repeat_count,
+            until_disappears,
+            from_auto_list_quantity,
+        )
         repeat_btn = ctk.CTkButton(
             control_frame,
             text=repeat_text,
             width=_action_chip_width(repeat_text, minimum=70),
             height=26,
             font=self._font(11, "bold"),
-            **_ios_repeat_button_style(repeat_count, until_disappears),
+            **_ios_repeat_button_style(
+                repeat_count,
+                until_disappears,
+                from_auto_list_quantity,
+            ),
             corner_radius=IOS_METRICS["pill_radius"],
             command=lambda a=action: self._edit_repeat_count_action(a),
         )
@@ -27785,6 +28576,45 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda a=action: self._edit_random_key_action(a),
             ).pack(side="right", padx=(4, 0))
+        elif action.action_type == "auto_list":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=self._font(12, "bold"),
+                fg_color=COLORS["accent_blue"],
+                hover_color=COLORS["hover_blue"],
+                text_color=COLORS["text_on_accent"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda a=action: self._edit_auto_list_action(a),
+            ).pack(side="right", padx=(4, 0))
+        elif action.action_type == "auto_list_value_input":
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=self._font(12, "bold"),
+                fg_color=COLORS["success"],
+                hover_color=COLORS["green_hover"],
+                text_color=COLORS["text_on_accent"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda a=action: self._edit_auto_list_value_input_action(a),
+            ).pack(side="right", padx=(4, 0))
+        elif action.action_type == ACTION_CALL_ACTION_TYPE:
+            ctk.CTkButton(
+                btn_frame,
+                text="⚙",
+                font=self._font(12, "bold"),
+                fg_color=COLORS["accent_orange"],
+                hover_color=COLORS["confidence_amber_hover"],
+                text_color=COLORS["text_primary"],
+                width=30,
+                height=26,
+                corner_radius=IOS_METRICS["control_radius_small"],
+                command=lambda a=action: self._edit_action_call_action(a),
+            ).pack(side="right", padx=(4, 0))
 
         # 스킵 모드 버튼 (S) - 이미지 못찾으면 스킵
         is_skip_action = getattr(action, 'skip_on_not_found', False)
@@ -27804,12 +28634,21 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         # 반복 횟수 버튼
         repeat_count = getattr(action, 'repeat_count', 1)
         until_disappears = bool(getattr(action, "target_image", None) and getattr(action, "click_until_image_disappears", False))
-        repeat_text = _format_repeat_button_text(repeat_count, until_disappears)
+        from_auto_list_quantity = bool(getattr(action, "repeat_from_auto_list_quantity", False))
+        repeat_text = _format_repeat_button_text(
+            repeat_count,
+            until_disappears,
+            from_auto_list_quantity,
+        )
         repeat_btn = ctk.CTkButton(
             btn_frame,
             text=repeat_text,
             font=self._font(11),
-            **_ios_repeat_button_style(repeat_count, until_disappears),
+            **_ios_repeat_button_style(
+                repeat_count,
+                until_disappears,
+                from_auto_list_quantity,
+            ),
             width=_action_chip_width(repeat_text, minimum=70),
             height=28,
             corner_radius=IOS_METRICS["pill_radius"],
@@ -27999,7 +28838,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             except (IOError, OSError, ValueError):
                 pass
 
-        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "key_press": "⌨", "random_key_sequence": "🎲", "scroll": "📜", "drag": "↔", "wait": "⏳", "wait_for_image": "🔍", "game_mode": "🎮"}
+        icons = {"click": "🖱", "type": "⌨", "hotkey": "⌨", "key_press": "⌨", "random_key_sequence": "🎲", "auto_list": "≡", "auto_list_value_input": "#", "action_call": "↪", "scroll": "📜", "drag": "↔", "wait": "⏳", "wait_for_image": "🔍", "game_mode": "🎮"}
         ctk.CTkLabel(
             parent,
             text=icons.get(action.action_type, "📋"),
@@ -28109,18 +28948,29 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
     def _save_sequence(self):
         """재생 저장"""
-        try:
-            if self._sequence.id:
-                self._db.update_sequence(self._sequence)
-                logger.info(f"재생 저장: {self._sequence.name}")
-                self._modified = False
+        return self._save_sequence_with_options(show_message=True)
 
+    def _save_sequence_silent(self) -> bool:
+        """Save without a completion popup for nested action editors."""
+        return self._save_sequence_with_options(show_message=False)
+
+    def _save_sequence_with_options(self, *, show_message: bool) -> bool:
+        try:
+            if not self._sequence.id:
+                raise ValueError("저장할 재생목록 ID가 없습니다.")
+            self._db.update_sequence(self._sequence)
+            logger.info(f"재생 저장: {self._sequence.name}")
+            self._modified = False
+            if show_message:
                 from tkinter import messagebox
                 messagebox.showinfo("저장 완료", "재생가 저장되었습니다.")
+            return True
         except Exception as e:
             logger.error(f"재생 저장 실패: {e}")
-            from tkinter import messagebox
-            messagebox.showerror("저장 실패", f"저장 중 오류가 발생했습니다:\n{e}")
+            if show_message:
+                from tkinter import messagebox
+                messagebox.showerror("저장 실패", f"저장 중 오류가 발생했습니다:\n{e}")
+            return False
 
     def _delete_action(self, action: Action):
         """액션 삭제"""
@@ -28360,10 +29210,18 @@ class SequenceDetailDialog(ctk.CTkToplevel):
     def _edit_repeat_count_action(self, action: Action):
         """반복 설정 (횟수 + 반복 대기시간 + 랜덤)"""
         is_image_click = bool(action.action_type in ["click", "double_click", "right_click"] and getattr(action, "target_image", None))
+        action_path = _find_item_path_by_id(self._sequence.actions, action.action_id, "action_id")
+        can_repeat_from_auto_list = bool(
+            is_image_click
+            and action.action_type == "click"
+            and action_path
+            and any(getattr(parent, "action_type", "") == "auto_list" for parent in action_path[:-1])
+        )
         dialog = ctk.CTkToplevel(self)
         dialog.title("반복 설정")
-        dialog_height = 570 if is_image_click else 420
-        dialog.geometry(f"350x{dialog_height}")
+        dialog_width = 400 if is_image_click else 350
+        dialog_height = 720 if is_image_click else 420
+        dialog.geometry(f"{dialog_width}x{dialog_height}")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.transient(self)
@@ -28371,11 +29229,15 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         # 중앙 배치
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() - 350) // 2
+        x = (dialog.winfo_screenwidth() - dialog_width) // 2
         y = (dialog.winfo_screenheight() - dialog_height) // 2
         dialog.geometry(f"+{x}+{y}")
 
-        main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        main_frame = (
+            ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+            if is_image_click
+            else ctk.CTkFrame(dialog, fg_color="transparent")
+        )
         main_frame.pack(fill="both", expand=True, padx=20, pady=15)
 
         # 반복 횟수
@@ -28390,22 +29252,24 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
 
         click_until_var = ctk.BooleanVar(value=bool(getattr(action, "click_until_image_disappears", False)))
+        auto_list_repeat_var = ctk.BooleanVar(
+            value=bool(can_repeat_from_auto_list and getattr(action, "repeat_from_auto_list_quantity", False))
+        )
         click_until_delay_entry = None
+        auto_list_repeat_controls = None
         if is_image_click:
+            def select_click_until_mode():
+                if click_until_var.get():
+                    auto_list_repeat_var.set(False)
+
             ctk.CTkCheckBox(
                 main_frame,
                 text="이미지가 사라질 때까지 반복 클릭",
                 variable=click_until_var,
+                command=select_click_until_mode,
                 font=ctk.CTkFont(size=13, weight="bold"),
             ).pack(anchor="w", pady=(12, 4))
-            ctk.CTkLabel(
-                main_frame,
-                text="켜면 매번 이미지를 다시 찾아 클릭합니다. 반복 횟수는 안전 최대 클릭 수입니다.",
-                font=ctk.CTkFont(size=10),
-                text_color=COLORS["text_muted"],
-                wraplength=300,
-                justify="left",
-            ).pack(anchor="w", pady=(0, 4))
+            _build_click_until_help(main_frame)
             click_until_delay_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
             click_until_delay_frame.pack(anchor="w", pady=(4, 0))
             ctk.CTkLabel(
@@ -28431,14 +29295,15 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
-            ctk.CTkLabel(
+            auto_list_repeat_controls = _build_auto_list_quantity_repeat_controls(
                 main_frame,
-                text="클릭과 하위액션 실행 후 다음 이미지 재검색 전 대기합니다.",
-                font=ctk.CTkFont(size=10),
-                text_color=COLORS["text_muted"],
-                wraplength=300,
-                justify="left",
-            ).pack(anchor="w", pady=(3, 0))
+                dialog,
+                self,
+                action,
+                eligible=can_repeat_from_auto_list,
+                enabled_var=auto_list_repeat_var,
+                click_until_var=click_until_var,
+            )
 
         # 반복 대기시간
         ctk.CTkLabel(main_frame, text="반복 대기시간 (초)",
@@ -28474,7 +29339,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 delay = float(delay_entry.get().strip().replace(',', '.'))
                 delay_range = float(delay_range_entry.get().strip().replace(',', '.'))
                 click_until_delay = delay
-                click_until_enabled = bool(is_image_click and click_until_var.get())
+                auto_list_repeat_enabled = bool(
+                    is_image_click and can_repeat_from_auto_list and auto_list_repeat_var.get()
+                )
+                click_until_enabled = bool(
+                    is_image_click and click_until_var.get() and not auto_list_repeat_enabled
+                )
                 if click_until_delay_entry is not None:
                     raw_click_until_delay = click_until_delay_entry.get().strip().replace(',', '.')
                     if raw_click_until_delay:
@@ -28499,12 +29369,34 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     from tkinter import messagebox
                     messagebox.showerror("오류", "전용 반복 대기시간은 0 이상이어야 합니다")
                     return
+                confirm_image = getattr(action, "auto_list_repeat_confirm_image", None)
+                confirm_region = getattr(action, "auto_list_repeat_confirm_region", None)
+                confirm_confidence = float(getattr(action, "auto_list_repeat_confirm_confidence", 0.9) or 0.9)
+                if auto_list_repeat_enabled and auto_list_repeat_controls is not None:
+                    confirm_image = auto_list_repeat_controls["confirm_image"]["value"]
+                    confirm_region = auto_list_repeat_controls["confirm_region"]["value"]
+                    if not confirm_image:
+                        messagebox.showerror("오류", "선택 체크 이미지를 설정하세요", parent=dialog)
+                        return
+                    if not confirm_region:
+                        messagebox.showerror("오류", "선택 체크 확인 범위를 설정하세요", parent=dialog)
+                        return
+                    confirm_confidence = float(
+                        auto_list_repeat_controls["confidence_var"].get().strip().replace(',', '.')
+                    ) / 100.0
+                    if not 0.1 <= confirm_confidence <= 1.0:
+                        messagebox.showerror("오류", "체크 이미지 인식률은 10~100 사이로 입력하세요", parent=dialog)
+                        return
                 action.repeat_count = count
                 action.repeat_delay = delay
                 action.repeat_delay_random = delay_random_var.get()
                 action.repeat_delay_random_range = delay_range
                 action.click_until_image_disappears = click_until_enabled
                 action.click_until_image_disappears_delay = click_until_delay
+                action.repeat_from_auto_list_quantity = auto_list_repeat_enabled
+                action.auto_list_repeat_confirm_image = confirm_image
+                action.auto_list_repeat_confirm_region = confirm_region
+                action.auto_list_repeat_confirm_confidence = confirm_confidence
                 result["saved"] = True
                 dialog.destroy()
             except ValueError:
@@ -28527,7 +29419,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 self._update_action_buttons(action)
             logger.info(
                 f"반복 설정: {action.repeat_count}회, 대기 {action.repeat_delay}초 "
-                f"(랜덤: {action.repeat_delay_random}, 사라질때까지: {getattr(action, 'click_until_image_disappears', False)})"
+                f"(랜덤: {action.repeat_delay_random}, 사라질때까지: {getattr(action, 'click_until_image_disappears', False)}, "
+                f"등록항목전체선택: {getattr(action, 'repeat_from_auto_list_quantity', False)})"
             )
 
     def _edit_action_name(self, action: Action):
@@ -28963,6 +29856,147 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             self._refresh_action_row(action)
         logger.info(f"랜덤키 액션 수정: {format_random_key_sequences_summary(sequences)}")
 
+    def _add_auto_list_action(self):
+        """자동 목록 처리 액션 추가."""
+        config = AutoListDialog(self).get_result()
+        if not config:
+            return
+        new_action = Action(
+            action_type="auto_list",
+            description="자동 목록 처리",
+            auto_list_config=config,
+            timestamp=0,
+            wait_after=0.5,
+        )
+        parent_action = self._add_action_to_current_parent(new_action)
+        self._modified = True
+        self._refresh_after_action_added(parent_action, new_action)
+        if not self._save_sequence_silent():
+            messagebox.showerror(
+                "저장 실패",
+                "자동 목록 처리는 추가되었지만 재생목록 저장에 실패했습니다.",
+                parent=self,
+            )
+            return
+        suffix = f" (하위: {parent_action.action_id})" if parent_action else ""
+        logger.info(f"자동 목록 처리 추가{suffix}: 항목 {len(config.get('items', []))}개")
+
+    def _edit_auto_list_action(self, action: Action):
+        """자동 목록 처리 액션 설정 수정."""
+        config = AutoListDialog(self, config=getattr(action, "auto_list_config", {})).get_result()
+        if not config:
+            return
+        action.auto_list_config = config
+        action.description = action.description or "자동 목록 처리"
+        self._modified = True
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
+        if not self._save_sequence_silent():
+            messagebox.showerror(
+                "저장 실패",
+                "자동 목록 처리 설정은 적용되었지만 재생목록 저장에 실패했습니다.",
+                parent=self,
+            )
+            return
+        logger.info(f"자동 목록 처리 수정: 항목 {len(config.get('items', []))}개")
+
+    def _add_action_call_action(self):
+        selected = _show_action_call_dialog(
+            self,
+            self._sequence.actions,
+            "action_id",
+        )
+        if not selected:
+            return
+        target_action_id, include_children = selected
+        new_action = Action(
+            action_type=ACTION_CALL_ACTION_TYPE,
+            description="액션 호출",
+            action_call_rule_id=target_action_id,
+            action_call_include_children=include_children,
+            timestamp=0,
+            wait_after=0.0,
+        )
+        parent_action = self._add_action_to_current_parent(new_action)
+        self._modified = True
+        self._refresh_after_action_added(parent_action, new_action)
+        if not self._save_sequence_silent():
+            messagebox.showerror("저장 실패", "액션 호출 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(
+            "액션 호출 추가: target=%s include_children=%s",
+            target_action_id,
+            include_children,
+        )
+
+    def _edit_action_call_action(self, action: Action):
+        selected = _show_action_call_dialog(
+            self,
+            self._sequence.actions,
+            "action_id",
+            caller_id=getattr(action, "action_id", None),
+            current_target_id=getattr(action, "action_call_rule_id", None),
+            include_children=bool(getattr(action, "action_call_include_children", True)),
+        )
+        if not selected:
+            return
+        action.action_call_rule_id, action.action_call_include_children = selected
+        action.description = action.description or "액션 호출"
+        self._modified = True
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
+        if not self._save_sequence_silent():
+            messagebox.showerror("저장 실패", "액션 호출 설정 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(
+            "액션 호출 수정: target=%s include_children=%s",
+            action.action_call_rule_id,
+            action.action_call_include_children,
+        )
+
+    def _add_auto_list_value_input_action(self):
+        selected = getattr(self, "_selected_action", None)
+        selected_id = getattr(selected, "action_id", None)
+        path = _find_item_path_by_id(self._sequence.actions, selected_id, "action_id") if selected_id else None
+        if not path or not any(getattr(item, "action_type", None) == "auto_list" for item in path):
+            messagebox.showwarning(
+                "자동 목록 하위 액션 필요",
+                "먼저 자동 목록 처리 액션 또는 그 하위 액션을 선택하세요.",
+                parent=self,
+            )
+            return
+        region = AutoListValueInputDialog(self).get_result()
+        if not region:
+            return
+        new_action = Action(
+            action_type="auto_list_value_input",
+            description="현재 처리수량 입력",
+            search_region=region,
+            timestamp=0,
+            wait_after=0.3,
+        )
+        parent_action = self._add_action_to_current_parent(new_action)
+        self._modified = True
+        self._refresh_after_action_added(parent_action, new_action)
+        if not self._save_sequence_silent():
+            messagebox.showerror("저장 실패", "현재 처리수량 입력 액션 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(f"현재 처리수량 입력 추가: region={region}")
+
+    def _edit_auto_list_value_input_action(self, action: Action):
+        region = AutoListValueInputDialog(self, region=getattr(action, "search_region", None)).get_result()
+        if not region:
+            return
+        action.search_region = region
+        action.description = "현재 처리수량 입력"
+        self._modified = True
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
+        if not self._save_sequence_silent():
+            messagebox.showerror("저장 실패", "현재 처리수량 입력 설정 저장에 실패했습니다.", parent=self)
+            return
+        logger.info(f"현재 처리수량 입력 수정: region={region}")
+
     def _add_mouse_action(self):
         """마우스 클릭 액션 추가"""
         from tkinter import simpledialog
@@ -29178,37 +30212,15 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         logger.debug(f"액션 선택: {current_id}")
 
     def _randomize_all_delays(self):
-        """전체 액션의 랜덤 대기시간 체크 토글"""
-        # 현재 상태 확인 (하나라도 False면 전체 True로, 전부 True면 전체 False로)
-        all_random = True
-        def check_random(actions):
-            nonlocal all_random
-            for action in actions:
-                if not getattr(action, 'wait_random', False):
-                    all_random = False
-                    return
-                if action.children:
-                    check_random(action.children)
-        check_random(self._sequence.actions)
-
-        # 토글 적용
-        new_state = not all_random
-        count = 0
-        def apply_random(actions):
-            nonlocal count
-            for action in actions:
-                action.wait_random = new_state
-                if new_state and (not hasattr(action, 'wait_random_range') or action.wait_random_range is None or action.wait_random_range == 0):
-                    action.wait_random_range = 0.3
-                count += 1
-                if action.children:
-                    apply_random(action.children)
-
-        apply_random(self._sequence.actions)
+        """전체 액션에 안전한 범위의 랜덤 대기시간을 일괄 적용한다."""
+        count, updated_count = apply_bulk_random_waits(self._sequence.actions)
 
         self._modified = True
         self._update_visible_action_rows_in_place()
-        logger.info(f"전체 랜덤 {'활성화' if new_state else '비활성화'}: {count}개 액션")
+        logger.info(
+            f"전체 랜덤 적용: {count}개 액션, 기본 대기시간 변경 {updated_count}개 "
+            "(2초 이상 보존)"
+        )
 
     def _toggle_all_children(self):
         """모든 액션을 1번 액션의 하위로 종속/해제 토글"""
@@ -31023,6 +32035,9 @@ class PlayerView(BaseView):
             "scroll",
             "key_press",
             "random_key_sequence",
+            "auto_list",
+            "auto_list_value_input",
+            "action_call",
             "wait",
             "game_mode",
         }:
@@ -31040,6 +32055,9 @@ class PlayerView(BaseView):
             action_key_events=list(getattr(action, "key_events", None) or []),
             random_key_sequences=list(getattr(action, "random_key_sequences", None) or []),
             random_key_step_delay=getattr(action, "random_key_step_delay", 0.8),
+            auto_list_config=getattr(action, "auto_list_config", {}) or {},
+            action_call_rule_id=getattr(action, "action_call_rule_id", None),
+            action_call_include_children=getattr(action, "action_call_include_children", True),
             drag_to_x=getattr(action, "drag_to_x", None),
             drag_to_y=getattr(action, "drag_to_y", None),
             drag_duration=getattr(action, "drag_duration", None),
@@ -31055,6 +32073,10 @@ class PlayerView(BaseView):
                 "click_until_image_disappears_delay",
                 getattr(action, "repeat_delay", 0.5),
             ),
+            repeat_from_auto_list_quantity=getattr(action, "repeat_from_auto_list_quantity", False),
+            auto_list_repeat_confirm_image=getattr(action, "auto_list_repeat_confirm_image", None),
+            auto_list_repeat_confirm_region=getattr(action, "auto_list_repeat_confirm_region", None),
+            auto_list_repeat_confirm_confidence=getattr(action, "auto_list_repeat_confirm_confidence", 0.9),
             wait_after=getattr(action, "wait_after", 0.0),
             wait_random=getattr(action, "wait_random", False),
             wait_random_range=getattr(action, "wait_random_range", 0.3),

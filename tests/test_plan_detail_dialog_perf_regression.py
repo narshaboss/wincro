@@ -956,6 +956,42 @@ def test_sequence_add_child_splices_only_new_visible_action():
     assert [item["index_str"] for item in updated] == ["1", "1-1"]
 
 
+def test_plan_first_child_requires_parent_row_rebuild_for_collapse_button():
+    parent = AutomationRule(action_type="click", rule_id="parent")
+    parent.children.append(AutomationRule(action_type="key_press", rule_id="child", parent_id="parent"))
+    dialog = _make_plan_dialog_stub([parent], set())
+    dialog._compact_rule_rows = True
+    dialog._rule_widgets = {
+        parent.rule_id: {
+            "widget": _FakeWidget(),
+            "rule": parent,
+        }
+    }
+    updated = []
+    dialog._update_rule_row_in_place = lambda rule: updated.append(rule.rule_id) or True
+
+    assert dialog._update_rule_parent_summary(parent) is False
+    assert updated == []
+
+
+def test_sequence_first_child_requires_parent_row_rebuild_for_collapse_button():
+    parent = Action(action_type="click", action_id="parent")
+    parent.children.append(Action(action_type="key_press", action_id="child", parent_id="parent"))
+    dialog = _make_sequence_dialog_stub(Sequence(name="seq", actions=[parent]), set())
+    dialog._compact_action_rows = True
+    dialog._action_widgets = {
+        parent.action_id: {
+            "widget": _FakeWidget(),
+            "action": parent,
+        }
+    }
+    updated = []
+    dialog._update_compact_action_row = lambda action: updated.append(action.action_id) or True
+
+    assert dialog._update_action_parent_summary(parent) is False
+    assert updated == []
+
+
 def test_plan_add_child_updates_existing_parent_summary_without_row_rebuild():
     parent = AutomationRule(action_type="click", rule_id="parent")
     existing = AutomationRule(action_type="click", rule_id="existing", parent_id="parent")
@@ -2635,10 +2671,10 @@ def test_sequence_add_button_resolves_selected_parent_by_id_after_refresh():
 
 def test_action_add_buttons_route_through_selected_parent_helpers():
     text = _read_text()
-    assert text.count("self._add_rule_to_current_parent(new_rule)") == 6
-    assert text.count("self._add_action_to_current_parent(new_action)") == 6
-    assert text.count("self._refresh_after_rule_added(parent_rule, new_rule)") == 6
-    assert text.count("self._refresh_after_action_added(parent_action, new_action)") == 6
+    assert text.count("self._add_rule_to_current_parent(new_rule)") == 9
+    assert text.count("self._add_action_to_current_parent(new_action)") == 9
+    assert text.count("self._refresh_after_rule_added(parent_rule, new_rule)") == 9
+    assert text.count("self._refresh_after_action_added(parent_action, new_action)") == 9
 
 
 def test_paste_uses_local_insert_refresh_helpers():

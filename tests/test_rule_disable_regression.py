@@ -4,6 +4,7 @@ from unittest.mock import patch
 import importlib
 
 from src.analyzer.automation_models import AutomationRule
+from src.ui.player_view import _find_runnable_game_mode_index
 
 
 PLAYER_VIEW = Path(r"C:\Projects\wincro\src\ui\player_view.py")
@@ -67,12 +68,15 @@ def test_player_view_contains_rule_enable_toggle():
 
 
 def test_player_view_ignores_disabled_game_mode_in_chain_detection():
-    src = PLAYER_VIEW.read_text(encoding="utf-8")
+    disabled = AutomationRule(rule_id="disabled", action_type="game_mode", enabled=False)
+    pumpkin = AutomationRule(rule_id="pumpkin", action_type="game_mode", description="호박")
+    runnable = AutomationRule(rule_id="runnable", action_type="game_mode")
 
-    assert "is_runtime_action_enabled(rule, get_config().player)" in src
-    assert "is_runtime_action_enabled(r, get_config().player)" in src
-    assert "not should_skip_pumpkin_action(rule, get_config().player)" in src
-    assert "not should_skip_pumpkin_action(r, get_config().player)" in src
+    assert _find_runnable_game_mode_index(
+        [disabled, pumpkin, runnable],
+        {"disabled": object(), "pumpkin": object(), "runnable": object()},
+        SimpleNamespace(pumpkin_action_enabled=False),
+    ) == 2
 
 
 def test_mini_player_ignores_disabled_game_mode_in_chain_detection():

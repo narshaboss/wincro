@@ -27,20 +27,20 @@
   ],
   "navigation_mode": "coordinate",
   "coord_x_region": [
-    896,
-    759,
-    953,
-    785
+    1487,
+    892,
+    1537,
+    915
   ],
   "coord_y_region": [
-    958,
-    760,
-    1015,
-    784
+    1547,
+    894,
+    1590,
+    915
   ],
-  "coord_anchor_enabled": true,
-  "coord_x_anchor_image": "coord_x_anchor_1781088175989.png",
-  "coord_y_anchor_image": "coord_y_anchor_1781088182723.png",
+  "coord_anchor_enabled": false,
+  "coord_x_anchor_image": null,
+  "coord_y_anchor_image": null,
   "coord_anchor_search_region": null,
   "coord_x_anchor_offset": null,
   "coord_y_anchor_offset": null,
@@ -50,7 +50,7 @@
   "diagonal_movement_enabled": false,
   "oscillation_threshold": 3,
   "detour_distance_max": 8,
-  "escape_skill_enabled": false,
+  "escape_skill_enabled": true,
   "escape_skill_key": "q",
   "escape_skill_cooldown": 4.0,
   "escape_skill_stuck_threshold": 10,
@@ -58,11 +58,11 @@
   "escape_skill_wait_after": 0.5,
   "minimap_config": null,
   "mapping_enabled": true,
-  "boss_skill_enabled": false,
+  "boss_skill_enabled": true,
   "boss_skill_key": "q",
   "boss_skill_cooldown": 4.0,
   "move_skill_enabled": false,
-  "auto_skill_enabled": false,
+  "auto_skill_enabled": true,
   "move_skill_cooldown": 5.0,
   "auto_skill_cooldown": 5.0
 }

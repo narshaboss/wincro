@@ -71,11 +71,14 @@ def test_rule_executor_special_mode_handoff_is_consumed_by_all_ui_playback_chain
     assert "playback_rules = list(plan.initial_rules) + list(plan.monitoring_rules)" in main_text
     assert "self._mini_play_plan_rules(playback_rules)" in main_text
 
-    assert player_text.count("handoff = executor.take_special_mode_route_handoff()") >= 3
-    assert player_text.count("_gm_next_previous_rule = handoff.previous_rule") >= 2
+    assert "def _start_partial_executor(self, partial_plan" in player_text
+    assert "self._start_partial_executor(\n            partial_plan," in player_text
+    assert 'self._start_partial_executor(partial_plan, log_label="부분실행")' in player_text
+    assert player_text.count("handoff = executor.take_special_mode_route_handoff()") >= 2
+    assert "_gm_next_previous_rule = handoff.previous_rule" in player_text
     assert "self._playback_next_previous_rule = handoff.previous_rule" in player_text
     assert "lambda rules=handoff.rules: self._run_remaining_rules(rules)" in player_text
     assert "lambda rules=handoff.rules: self._play_plan_rules(rules)" in player_text
-    assert player_text.count("allow_special_mode_handoff=True") >= 3
+    assert player_text.count("allow_special_mode_handoff=True") >= 2
     assert "if _has_game_mode_rule(playback_rules):" in player_text
     assert "self._play_plan_rules(playback_rules)" in player_text

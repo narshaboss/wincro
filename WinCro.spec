@@ -7,6 +7,9 @@ from PyInstaller.utils.hooks import collect_all
 def collect_packaged_data():
     """Bundle stable data assets without leaking runtime state into releases."""
     data_root = Path("data")
+    excluded_top_level_dirs = {
+        "recordings",
+    }
     excluded_names = {
         "wincro.db",
         "업무지원도구.db",
@@ -27,6 +30,8 @@ def collect_packaged_data():
             continue
         rel = path.relative_to(data_root)
         rel_parts = set(rel.parts)
+        if rel.parts and rel.parts[0] in excluded_top_level_dirs:
+            continue
         if "__pycache__" in rel_parts:
             continue
         if path.name in excluded_names:

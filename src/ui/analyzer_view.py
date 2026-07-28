@@ -4102,6 +4102,9 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             "hotkey": COLORS["accent_orange"],
             "key_press": COLORS["accent_orange"],
             "random_key_sequence": COLORS["accent_orange"],
+            "auto_list": COLORS["accent_blue"],
+            "auto_list_value_input": COLORS["success"],
+            "action_call": COLORS["accent_orange"],
             "scroll": COLORS["scroll_purple"],
             "drag": COLORS["warning"],
         }
@@ -4126,6 +4129,9 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             "hotkey": "단축키",
             "key_press": "키 입력",
             "random_key_sequence": "랜덤키 입력",
+            "auto_list": "자동 목록 처리",
+            "auto_list_value_input": "현재 처리수량 입력",
+            "action_call": "액션 호출",
             "scroll": "스크롤",
             "drag": "드래그",
         }
@@ -4201,6 +4207,9 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                 "hotkey": "K",
                 "key_press": "K",
                 "random_key_sequence": "R",
+                "auto_list": "L",
+                "auto_list_value_input": "V",
+                "action_call": "C",
                 "scroll": "S",
                 "drag": "D",
             }

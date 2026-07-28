@@ -11,6 +11,7 @@ ADDED_OR_UPDATED_PLANS = (
     "plan_20260519_152141.json",
     "plan_20260502_164945.json",
     "plan_20260205_000742.json",
+    "plan_20260727_105458.json",
 )
 
 
@@ -22,7 +23,12 @@ def _image_exists(image_name: str) -> bool:
 
 
 def _git_ls_files() -> set[str]:
-    output = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True)
+    output = subprocess.check_output(
+        ["git", "-c", "core.quotepath=false", "ls-files"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+    )
     return {line.strip().replace("\\", "/") for line in output.splitlines() if line.strip()}
 
 

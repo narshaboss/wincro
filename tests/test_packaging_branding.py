@@ -54,6 +54,7 @@ def test_pyinstaller_data_collector_excludes_runtime_files_when_executed():
     assert "data/update_cache.json" not in collected_sources
     assert "data/wincro.db" not in collected_sources
     assert "data/digit_templates/debug_region_1.png" not in collected_sources
+    assert not any(path.startswith("data/recordings/") for path in collected_sources)
     assert not any(path.endswith(".bak1") for path in collected_sources)
     assert any(path.startswith("data/plans/") and path.endswith(".json") for path in collected_sources)
 

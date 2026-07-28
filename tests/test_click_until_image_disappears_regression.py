@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from src.analyzer.automation_models import AutomationRule
@@ -104,9 +105,17 @@ def test_player_repeat_dialog_exposes_disappear_click_option():
     assert "click_until_image_disappears_delay" in text
     assert "전용 반복 대기시간:" in text
     assert "이미지가 사라질 때까지 반복 클릭" in text
-    assert "켜면 매번 이미지를 다시 찾아 클릭합니다." in text
+    assert "def _build_click_until_help(parent)" in text
+    assert "ENTER 등 반복할 동작은 이 이미지의 하위 액션으로 추가하세요." in text
+    assert "실행: 이미지 클릭 → 하위 액션 → 이미지 재확인" in text
+    assert "반복횟수 1~5는 안전 한도 최대 5회로 실행됩니다." in text
+    assert text.count("_build_click_until_help(main_frame)") == 2
+    assert "dialog_width = 400 if is_image_click else 350" in text
+    assert "dialog_height = 720 if is_image_click else 420" in text
+    assert "ctk.CTkScrollableFrame(dialog, fg_color=\"transparent\")" in text
     assert 'text="사라짐" if until_disappears' not in text
-    assert "_format_repeat_button_text(repeat_count, until_disappears)" in text
+    assert "_format_repeat_button_text(" in text
+    assert "from_auto_list_quantity" in text
     assert 'if until_disappears' in text
     assert 'COLORS["accent_orange"]' in text
     assert 'click_until_image_disappears=getattr(action, "click_until_image_disappears", False)' in text
@@ -214,6 +223,68 @@ def test_click_until_image_disappears_repeats_only_child_actions(tmp_path, monke
     assert execution_order == ["click", "child", "click", "child"]
     assert child.rule_id in executor._child_rules_executed_with_parent
     assert sibling.rule_id not in executor._child_rules_executed_with_parent
+
+
+def test_previous_click_does_not_wait_for_next_click_until_disappears_target(monkeypatch):
+    current = AutomationRule(action_type="click", target_image="current.png")
+    next_rule = AutomationRule(
+        action_type="double_click",
+        target_image="optional.png",
+        click_until_image_disappears=True,
+    )
+    executor = RuleExecutor()
+    search_calls = []
+
+    monkeypatch.setattr(
+        executor,
+        "_execute_rule",
+        lambda rule, step_num="": executor._make_result(rule, True, "클릭 완료", datetime.now()),
+    )
+    monkeypatch.setattr(
+        executor,
+        "_find_image_on_screen",
+        lambda *args, **kwargs: search_calls.append((args, kwargs)) or None,
+    )
+
+    result = executor._execute_rule_with_retry(
+        current,
+        next_target_images=["optional.png"],
+        next_rule=next_rule,
+        max_retries=1,
+        step_num="3.2",
+    )
+
+    assert result.success is True
+    assert search_calls == []
+
+
+def test_click_until_disappears_finishes_when_target_is_absent_from_first_check(tmp_path, monkeypatch):
+    target = tmp_path / "target.png"
+    target.write_bytes(b"fake")
+    parent = AutomationRule(
+        action_type="double_click",
+        target_image=str(target),
+        click_until_image_disappears=True,
+    )
+    child = AutomationRule(action_type="hotkey", action_keys=["enter"])
+    parent.children = [child]
+    executor = RuleExecutor()
+    child_calls = []
+
+    monkeypatch.setattr(executor, "_find_rule_image_click_target", lambda *_args: None)
+    monkeypatch.setattr(
+        executor,
+        "_execute_child_rules_for_repeat_click",
+        lambda *_args: child_calls.append(True) or None,
+    )
+    monkeypatch.setattr("src.player.rule_executor.time.sleep", lambda *_args: None)
+
+    result = executor._execute_rule_with_retry(parent, max_retries=1, step_num="3.3")
+
+    assert result.success is True
+    assert "이미지 없음" in result.message
+    assert child_calls == []
+    assert child.rule_id in executor._child_rules_executed_with_parent
 
 
 def test_click_until_image_disappears_guard_limit_does_not_stop_playlist(tmp_path, monkeypatch):

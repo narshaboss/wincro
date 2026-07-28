@@ -1,10 +1,15 @@
 from pathlib import Path
+from types import SimpleNamespace
+import threading
 
-from src.analyzer.automation_models import AutomationRule
+from src.analyzer.automation_models import AutomationPlan, AutomationRule
 from src.database.models import Action
+import src.ui.player_view as player_view_module
 from src.ui.player_view import (
+    PlanDetailDialog,
     _build_manual_partial_rules,
     _detach_child_after_parent,
+    _find_runnable_game_mode_index,
     _find_item_path_by_id,
     _flatten_children_after_parent,
     _manual_partial_start_index,
@@ -83,6 +88,23 @@ def test_manual_partial_run_preserves_click_until_children_without_duplicate():
     assert [rule.rule_id for rule in rules_to_run[0].children] == ["child"]
 
 
+def test_manual_partial_run_preserves_auto_list_children_without_duplicate():
+    craft = AutomationRule(rule_id="craft", action_type="click")
+    extract = AutomationRule(rule_id="extract", action_type="click")
+    parent = AutomationRule(
+        rule_id="auto-list",
+        action_type="auto_list",
+        children=[craft, extract],
+    )
+    after = AutomationRule(rule_id="after", action_type="wait")
+    flat_rules = [parent, craft, extract, after]
+
+    rules_to_run = _build_manual_partial_rules(flat_rules, 0)
+
+    assert [rule.rule_id for rule in rules_to_run] == ["auto-list", "after"]
+    assert [rule.rule_id for rule in rules_to_run[0].children] == ["craft", "extract"]
+
+
 def test_manual_partial_run_still_flattens_normal_parent_children():
     child = AutomationRule(rule_id="child", action_type="key_press", action_keys=["enter"])
     parent = AutomationRule(rule_id="parent", action_type="click", children=[child])
@@ -92,6 +114,159 @@ def test_manual_partial_run_still_flattens_normal_parent_children():
 
     assert [rule.rule_id for rule in rules_to_run] == ["parent", "child"]
     assert rules_to_run[0].children == []
+
+
+def test_partial_game_mode_boundary_uses_shared_runtime_option_filter():
+    disabled = AutomationRule(rule_id="disabled", action_type="game_mode", enabled=False)
+    runnable = AutomationRule(rule_id="runnable", action_type="game_mode")
+    config = SimpleNamespace(pumpkin_action_enabled=True)
+
+    assert _find_runnable_game_mode_index(
+        [disabled, runnable],
+        {"disabled": object(), "runnable": object()},
+        config,
+    ) == 1
+
+
+def test_partial_run_config_accessor_is_not_shadowed_by_a_local_import():
+    for method in (
+        PlanDetailDialog._test_run_rule_impl,
+        PlanDetailDialog._run_remaining_via_executor,
+        PlanDetailDialog._start_partial_executor,
+    ):
+        assert "get_config" not in method.__code__.co_varnames
+        assert "get_rule_executor" not in method.__code__.co_names
+
+
+def test_partial_run_button_reaches_dedicated_executor(monkeypatch):
+    rule = AutomationRule(rule_id="partial-start", action_type="wait", description="부분실행 시작")
+    plan = AutomationPlan(name="partial-test", initial_rules=[rule], monitoring_rules=[])
+    executed = []
+
+    class FakeExecutor:
+        def __init__(self):
+            self.callbacks = None
+
+        def set_callbacks(self, **callbacks):
+            self.callbacks = callbacks
+
+        def execute_plan(self, partial_plan, **kwargs):
+            executed.append((partial_plan, kwargs))
+
+    class ImmediateThread:
+        def __init__(self, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    dialog = object.__new__(PlanDetailDialog)
+    dialog._plan = plan
+    dialog._is_running = False
+    dialog._modified = False
+    dialog._running_executor = None
+    dialog._ensure_arduino_ready_for_playback = lambda _label: True
+    dialog._start_partial_run_visual = lambda _rule_id: None
+    dialog._stop_partial_run_visual = lambda: None
+    dialog._notify_player_partial_run_started = lambda _mode: None
+    dialog._notify_player_partial_run_stopped = lambda: None
+    dialog._make_partial_progress_callback = lambda: None
+    dialog.title = lambda *_args: None
+    dialog.configure = lambda **_kwargs: None
+    dialog.grab_release = lambda: None
+    dialog.winfo_toplevel = lambda: SimpleNamespace(master=None)
+
+    monkeypatch.setattr(player_view_module, "RuleExecutor", FakeExecutor)
+    monkeypatch.setattr(
+        player_view_module,
+        "get_config",
+        lambda: SimpleNamespace(
+            player=SimpleNamespace(pumpkin_action_enabled=True),
+            ui=SimpleNamespace(minimize_on_run=False),
+        ),
+    )
+    monkeypatch.setattr(threading, "Thread", ImmediateThread)
+
+    dialog._test_run_rule(rule)
+
+    assert len(executed) == 1
+    partial_plan, kwargs = executed[0]
+    assert [item.rule_id for item in partial_plan.initial_rules] == [rule.rule_id]
+    assert partial_plan._original_initial_rules is plan.initial_rules
+    assert kwargs == {"allow_special_mode_handoff": True}
+    assert isinstance(dialog._running_executor, FakeExecutor)
+
+
+def test_partial_run_start_error_restores_idle_state(monkeypatch):
+    rule = AutomationRule(rule_id="broken-start", action_type="wait", description="broken")
+    dialog = object.__new__(PlanDetailDialog)
+    dialog._plan = SimpleNamespace(name="partial-test")
+    dialog._is_running = True
+    dialog._running_executor = object()
+    stopped = []
+    shown = []
+    dialog._test_run_rule_impl = lambda _rule: (_ for _ in ()).throw(RuntimeError("start failed"))
+    dialog._stop_partial_run_visual = lambda: stopped.append("visual")
+    dialog._notify_player_partial_run_stopped = lambda: stopped.append("notify")
+    dialog.title = lambda *_args: None
+
+    import tkinter.messagebox as messagebox
+
+    monkeypatch.setattr(messagebox, "showerror", lambda *args: shown.append(args))
+
+    dialog._test_run_rule(rule)
+
+    assert dialog._is_running is False
+    assert dialog._running_executor is None
+    assert stopped == ["visual", "notify"]
+    assert shown and "start failed" in shown[0][1]
+
+
+def test_partial_executor_thread_error_restores_ui_state(monkeypatch):
+    partial_plan = AutomationPlan(
+        name="partial-thread-error",
+        initial_rules=[AutomationRule(rule_id="wait", action_type="wait")],
+        monitoring_rules=[],
+    )
+    completed = []
+
+    class FailingExecutor:
+        def set_callbacks(self, **_callbacks):
+            return None
+
+        def execute_plan(self, *_args, **_kwargs):
+            raise RuntimeError("executor failed")
+
+    class ImmediateThread:
+        def __init__(self, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    dialog = object.__new__(PlanDetailDialog)
+    dialog._running_executor = None
+    dialog._is_running = False
+    dialog.title = lambda *_args: None
+    dialog.configure = lambda **_kwargs: None
+    dialog.grab_release = lambda: None
+    dialog.winfo_toplevel = lambda: SimpleNamespace(master=None)
+    dialog.winfo_exists = lambda: True
+    dialog.after = lambda _delay, callback: callback()
+    dialog._make_partial_progress_callback = lambda: None
+    dialog._on_execution_complete = lambda: completed.append(True)
+
+    monkeypatch.setattr(player_view_module, "RuleExecutor", FailingExecutor)
+    monkeypatch.setattr(
+        player_view_module,
+        "get_config",
+        lambda: SimpleNamespace(ui=SimpleNamespace(minimize_on_run=False)),
+    )
+    monkeypatch.setattr(threading, "Thread", ImmediateThread)
+
+    dialog._start_partial_executor(partial_plan, log_label="부분실행")
+
+    assert completed == [True]
 
 
 def test_detach_rule_places_child_immediately_after_top_level_parent():

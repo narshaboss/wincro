@@ -300,7 +300,8 @@ def test_editor_action_rows_use_ios_cards_without_changing_virtual_scroll_contra
     assert 'corner_radius=IOS_METRICS["card_radius_compact"]' in player_view
     assert 'fg_color=COLORS["bg_elevated"]' in player_view
     assert "**_ios_state_button_style(is_skip)" in player_view
-    assert "**_ios_repeat_button_style(repeat_count, until_disappears)" in player_view
+    assert "**_ios_repeat_button_style(" in player_view
+    assert "from_auto_list_quantity" in player_view
     assert "**_ios_run_button_style(is_enabled)" in player_view
     assert "item_height=76" in player_view
 

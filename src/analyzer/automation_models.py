@@ -18,6 +18,13 @@ from ..special_mode_profiles import (
     infer_legacy_special_mode_profile,
     normalize_special_mode_profile,
 )
+from ..utils.auto_list import (
+    AUTO_LIST_ACTION_TYPE,
+    auto_list_config_for_save,
+    auto_list_config_from_saved,
+    normalize_auto_list_config,
+)
+from ..utils.action_call import ACTION_CALL_ACTION_TYPE
 
 
 def _to_relative_path(abs_path: Optional[str]) -> Optional[str]:
@@ -96,6 +103,13 @@ class AutomationRule:
     alternate_mouse_route: bool = False  # 이미지 클릭 시 기본 직선 이동 대신 반대 우회 경로로 접근
     click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
     click_until_image_disappears_delay: float = 0.5  # 사라질 때까지 반복 클릭 전용 대기시간
+    repeat_from_auto_list_quantity: bool = False  # 자동 목록의 현재 처리수량만큼 이미지 클릭 반복
+    auto_list_repeat_confirm_image: Optional[str] = None  # 자동 목록 수량 반복 선택 확인 이미지
+    auto_list_repeat_confirm_region: Optional[List[int]] = None  # 선택 확인 이미지 검색 영역
+    auto_list_repeat_confirm_confidence: float = 0.9  # 선택 확인 이미지 인식률
+    auto_list_config: Dict[str, Any] = field(default_factory=dict)  # 자동 목록 처리 설정
+    action_call_rule_id: Optional[str] = None  # 호출할 원본 액션 ID
+    action_call_include_children: bool = True  # 호출 대상의 하위 액션 포함
 
     # ????
     wait_after: float = 0.5  # ??? ???????? (??
@@ -156,6 +170,17 @@ class AutomationRule:
             self.random_key_step_delay = 0.8
         if self.target_images is None:
             self.target_images = []
+        self.auto_list_config = (
+            normalize_auto_list_config(self.auto_list_config)
+            if self.action_type == AUTO_LIST_ACTION_TYPE
+            else {}
+        )
+        if self.action_type == ACTION_CALL_ACTION_TYPE:
+            self.action_call_rule_id = str(self.action_call_rule_id or "").strip() or None
+            self.action_call_include_children = bool(self.action_call_include_children)
+        else:
+            self.action_call_rule_id = None
+            self.action_call_include_children = True
         if self.trigger_missing_keys is None:
             self.trigger_missing_keys = []
         if self.trigger_missing_rewind_keys is None:
@@ -218,6 +243,14 @@ class AutomationRule:
             )
         except (TypeError, ValueError):
             self.click_until_image_disappears_delay = 0.5
+        self.repeat_from_auto_list_quantity = bool(self.repeat_from_auto_list_quantity)
+        try:
+            self.auto_list_repeat_confirm_confidence = min(
+                1.0,
+                max(0.1, float(self.auto_list_repeat_confirm_confidence or 0.9)),
+            )
+        except (TypeError, ValueError):
+            self.auto_list_repeat_confirm_confidence = 0.9
         if self.children is None:
             self.children = []
         if self.monitoring_watches is None:
@@ -257,7 +290,7 @@ class AutomationRule:
                 watch_copy["monitor_actions"] = actions_copy
             watches_for_save.append(watch_copy)
 
-        return {
+        result = {
             "rule_id": self.rule_id,
             "rule_type": self.rule_type,
             "description": self.description,
@@ -287,6 +320,12 @@ class AutomationRule:
             "alternate_mouse_route": self.alternate_mouse_route,
             "click_until_image_disappears": self.click_until_image_disappears,
             "click_until_image_disappears_delay": self.click_until_image_disappears_delay,
+            "repeat_from_auto_list_quantity": self.repeat_from_auto_list_quantity,
+            "auto_list_repeat_confirm_image": _to_relative_path(self.auto_list_repeat_confirm_image),
+            "auto_list_repeat_confirm_region": self.auto_list_repeat_confirm_region,
+            "auto_list_repeat_confirm_confidence": self.auto_list_repeat_confirm_confidence,
+            "action_call_rule_id": self.action_call_rule_id,
+            "action_call_include_children": self.action_call_include_children,
             "wait_after": self.wait_after,
             "wait_random": self.wait_random,
             "enabled": self.enabled,
@@ -323,6 +362,9 @@ class AutomationRule:
             "monitoring_final_image": _to_relative_path(self.monitoring_final_image),
             "monitoring_watches": watches_for_save,
         }
+        if self.action_type == AUTO_LIST_ACTION_TYPE:
+            result["auto_list_config"] = auto_list_config_for_save(self.auto_list_config)
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], templates_dir: Optional[Path] = None) -> "AutomationRule":
@@ -408,6 +450,16 @@ class AutomationRule:
                 "click_until_image_disappears_delay",
                 data.get("repeat_delay", 0.5),
             ),
+            repeat_from_auto_list_quantity=data.get("repeat_from_auto_list_quantity", False),
+            auto_list_repeat_confirm_image=_to_absolute_path(
+                data.get("auto_list_repeat_confirm_image"),
+                templates_dir,
+            ),
+            auto_list_repeat_confirm_region=data.get("auto_list_repeat_confirm_region"),
+            auto_list_repeat_confirm_confidence=data.get("auto_list_repeat_confirm_confidence", 0.9),
+            auto_list_config=auto_list_config_from_saved(data.get("auto_list_config", {}), templates_dir),
+            action_call_rule_id=data.get("action_call_rule_id"),
+            action_call_include_children=data.get("action_call_include_children", True),
             wait_after=data.get("wait_after", 0.5),
             wait_random=data.get("wait_random", False),
             wait_random_range=data.get("wait_random_range", 0.3),

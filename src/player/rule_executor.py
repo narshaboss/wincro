@@ -83,6 +83,20 @@ from ..utils.config import get_config
 from ..analyzer.automation_models import AutomationPlan, AutomationRule, RuleType
 from ..analyzer.enhanced_matcher import get_enhanced_matcher
 from .random_key_sequence import execute_random_key_sequence
+from ..utils.auto_list import (
+    AUTO_LIST_ACTION_TYPE,
+    AUTO_LIST_EXTRACTION_BATCH_LIMIT,
+    AUTO_LIST_MIN_ITEM_TIMEOUT,
+    AUTO_LIST_MODE_UNTIL_EXHAUSTED,
+    AUTO_LIST_VALUE_INPUT_ACTION_TYPE,
+    candidate_values,
+    classify_colour_state,
+    crop_bgr_region,
+    majority_colour_state,
+    normalize_auto_list_config,
+    translate_screen_region,
+)
+from ..utils.action_call import ACTION_CALL_ACTION_TYPE, ACTION_CALL_MAX_DEPTH
 from .runtime_action_options import (
     effective_action_repeat_count,
     is_runtime_action_enabled,
@@ -710,6 +724,10 @@ class RuleExecutor:
         self._results: List[RuleExecutionResult] = []
         self._child_rules_executed_with_parent: set[str] = set()
         self._trigger_missing_rewind_attempts: dict[str, int] = {}
+        self._auto_list_current_value: Optional[int] = None
+        self._auto_list_current_item: Optional[Dict[str, Any]] = None
+        self._auto_list_registered_items: List[Dict[str, Any]] = []
+        self._action_call_stack: List[str] = []
 
         # 콜백
         self._on_progress: Optional[Callable[[ExecutionProgress], None]] = None
@@ -1005,6 +1023,10 @@ class RuleExecutor:
         with self._special_mode_route_handoff_lock:
             self._pending_special_mode_route_handoff = None
         self._results.clear()
+        self._auto_list_current_value = None
+        self._auto_list_current_item = None
+        self._auto_list_registered_items = []
+        self._action_call_stack = []
         self._last_monitoring_route_detail = {}
         self._current_monitoring_wait_detail = {}
         unblock_automation_input()
@@ -1947,6 +1969,17 @@ class RuleExecutor:
             seen.add(text_path)
         return images
 
+    @staticmethod
+    def _next_rule_allows_target_absence(rule: Optional[AutomationRule]) -> bool:
+        """Return whether the next image action treats an absent target as success."""
+        if rule is None:
+            return False
+        return bool(
+            getattr(rule, "action_type", "") in ["click", "double_click", "right_click"]
+            and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
+            and getattr(rule, "click_until_image_disappears", False)
+        )
+
     def _execute_rule_with_retry(
         self,
         rule: AutomationRule,
@@ -2001,15 +2034,74 @@ class RuleExecutor:
             and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
             and getattr(rule, "click_until_image_disappears", False)
         )
+        repeat_from_auto_list = bool(getattr(rule, "repeat_from_auto_list_quantity", False))
+        auto_list_quantity = None
+        auto_list_registered_items = None
+        auto_list_current_item = None
+        if repeat_from_auto_list:
+            auto_list_quantity = self._auto_list_current_value
+            auto_list_current_item = self._auto_list_current_item
+            auto_list_registered_items = self._auto_list_registered_items
+            if auto_list_quantity is None:
+                partial_context = self._resolve_partial_auto_list_context(rule)
+                if partial_context is not None:
+                    auto_list_quantity = AUTO_LIST_EXTRACTION_BATCH_LIMIT
+                    auto_list_registered_items = partial_context["registered_items"]
+                    auto_list_current_item = partial_context["current_item"]
+                    logger.info(
+                        f"{_CYAN}{self._step_prefix}부분실행 자동 목록 문맥 복원: "
+                        f"parent={partial_context['parent_rule_id']} "
+                        f"등록={len(auto_list_registered_items)}종{_RESET}"
+                    )
+
+            current_item_image = str((auto_list_current_item or {}).get("image") or "")
+            registered_image = next(
+                (
+                    str(item.get("image") or "")
+                    for item in (auto_list_registered_items or [])
+                    if isinstance(item, dict) and item.get("image")
+                ),
+                "",
+            )
+            has_selection_image = bool(
+                registered_image
+                or current_item_image
+                or getattr(rule, "target_image", None)
+                or getattr(rule, "target_images", None)
+            )
+            if rule.action_type != "click" or not has_selection_image:
+                return self._make_result(
+                    rule,
+                    False,
+                    "자동 목록 등록 항목 선택은 왼쪽 이미지 클릭 액션에서만 사용할 수 있습니다",
+                    start_time,
+                )
+            if auto_list_quantity is None:
+                return self._make_result(
+                    rule,
+                    False,
+                    "자동 목록 등록 항목 선택은 자동 목록 처리의 하위 액션에서만 사용할 수 있습니다",
+                    start_time,
+                )
+            auto_list_quantity = max(1, int(auto_list_quantity))
+            click_until_disappears = False
+
         repeat_count = self._effective_rule_repeat_count(rule)
-        if click_until_disappears:
+        if repeat_from_auto_list:
+            repeat_count = 1
+            logger.info(
+                f"{_CYAN}{self._step_prefix}자동 목록 등록 항목 전체 선택 적용: "
+                f"이번 제작={auto_list_quantity}개, 기존 잔여 포함{_RESET}"
+            )
+        elif click_until_disappears:
             repeat_count = 1
         elif is_login_count_action(rule):
             logger.info(
                 f"{_CYAN}{self._step_prefix}로그인 횟수 설정 적용: {repeat_count}회{_RESET}"
             )
 
-        for attempt in range(max_retries):
+        retry_count = 1 if repeat_from_auto_list else max_retries
+        for attempt in range(retry_count):
             if self._stop_event.is_set():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
@@ -2027,7 +2119,16 @@ class RuleExecutor:
                     logger.info(f"{_CYAN}  [반복 {rep + 1}/{repeat_count}] {rule.description or rule.action_type}{_RESET}")
 
                 # 규칙 실행
-                result = self._execute_rule(rule, step_num=step_num)
+                if repeat_from_auto_list:
+                    result = self._execute_auto_list_quantity_image_clicks(
+                        rule,
+                        start_time,
+                        int(auto_list_quantity),
+                        registered_items=auto_list_registered_items,
+                        current_item=auto_list_current_item,
+                    )
+                else:
+                    result = self._execute_rule(rule, step_num=step_num)
 
                 if not result.success:
                     break  # 실패하면 반복 중단
@@ -2045,15 +2146,22 @@ class RuleExecutor:
                         time.sleep(actual_delay)
 
             if not result.success:
-                logger.warning(f"{_YELLOW}  ✗ 동작 실패 (시도 {attempt + 1}/{max_retries}): {result.message}{_RESET}")
-                if attempt < max_retries - 1:
+                logger.warning(f"{_YELLOW}  ✗ 동작 실패 (시도 {attempt + 1}/{retry_count}): {result.message}{_RESET}")
+                if attempt < retry_count - 1:
                     time.sleep(0.5)
                     continue
                 return result
 
             # 클릭 동작이고 다음 타겟 이미지가 있으면 확인 (스킵된 경우 제외)
             is_skipped = "스킵됨" in result.message if result.message else False
-            if is_click_action and next_target_images and not is_skipped:
+            next_target_absence_allowed = self._next_rule_allows_target_absence(next_rule)
+            if (
+                is_click_action
+                and not repeat_from_auto_list
+                and next_target_images
+                and not is_skipped
+                and not next_target_absence_allowed
+            ):
                 check_interval = 0.5
                 waited = 0.0
                 # 다음 액션에 스킵 설정이 있으면 wait_after 시간만 대기
@@ -2254,6 +2362,15 @@ class RuleExecutor:
         action_type = rule.action_type
 
         try:
+            if action_type == AUTO_LIST_ACTION_TYPE:
+                return self._execute_auto_list(rule, start_time)
+
+            if action_type == AUTO_LIST_VALUE_INPUT_ACTION_TYPE:
+                return self._execute_auto_list_value_input(rule, start_time)
+
+            if action_type == ACTION_CALL_ACTION_TYPE:
+                return self._execute_action_call(rule, start_time)
+
             if action_type == "wait":
                 wait_duration = getattr(rule, 'duration', None)
                 if wait_duration is None:
@@ -3382,9 +3499,12 @@ class RuleExecutor:
         return max(0.05, delay)
 
     def _rule_repeats_child_actions(self, rule: AutomationRule) -> bool:
+        if not getattr(rule, "children", None):
+            return False
+        if rule.action_type == AUTO_LIST_ACTION_TYPE:
+            return True
         return bool(
-            getattr(rule, "children", None)
-            and rule.action_type in ["click", "double_click", "right_click"]
+            rule.action_type in ["click", "double_click", "right_click"]
             and (getattr(rule, "target_image", None) or getattr(rule, "target_images", None))
             and getattr(rule, "click_until_image_disappears", False)
         )
@@ -3436,6 +3556,505 @@ class RuleExecutor:
             self._current_step_num = previous_step
 
         return None
+
+    def _execute_child_rules_for_auto_list(
+        self,
+        parent_rule: AutomationRule,
+        start_time: datetime,
+        accepted_value: int,
+        current_item: Dict[str, Any],
+    ) -> Optional[RuleExecutionResult]:
+        """Run the common processing actions once for an accepted list value."""
+        child_rules = [
+            child
+            for child in (getattr(parent_rule, "children", []) or [])
+            if self._is_runtime_action_enabled(child)
+        ]
+        if not child_rules:
+            return self._make_result(parent_rule, False, "실행할 하위 액션이 없습니다", start_time)
+
+        previous_step = self._current_step_num
+        previous_value = self._auto_list_current_value
+        previous_item = self._auto_list_current_item
+        previous_registered_items = self._auto_list_registered_items
+        parent_step = previous_step or "목록"
+        self._auto_list_current_value = int(accepted_value)
+        self._auto_list_current_item = dict(current_item or {})
+        parent_config = normalize_auto_list_config(getattr(parent_rule, "auto_list_config", {}))
+        self._auto_list_registered_items = [
+            dict(item)
+            for item in parent_config["items"]
+            if item.get("enabled") and item.get("image")
+        ]
+        try:
+            logger.info(
+                f"{_CYAN}{self._step_prefix}↳ 처리 하위 액션 {len(child_rules)}개 실행 "
+                f"(항목={self._auto_list_current_item.get('name') or '-'}, "
+                f"확정수량={accepted_value}){_RESET}"
+            )
+            for visible_index, child in enumerate(child_rules, 1):
+                result = self._execute_rule_tree_once(child, f"{parent_step}-{visible_index}")
+                if result is not None:
+                    return result
+        finally:
+            self._auto_list_current_value = previous_value
+            self._auto_list_current_item = previous_item
+            self._auto_list_registered_items = previous_registered_items
+            self._current_step_num = previous_step
+        return None
+
+    def _auto_list_wait(self, seconds: float) -> bool:
+        """Wait without losing stop/pause responsiveness."""
+        remaining = max(0.0, float(seconds or 0.0))
+        while remaining > 0:
+            if self._wait_for_resume() or self._stop_event.is_set():
+                return False
+            interval = min(0.1, remaining)
+            started = time.monotonic()
+            if self._stop_event.wait(interval):
+                return False
+            remaining -= max(0.0, time.monotonic() - started)
+        return not self._stop_event.is_set()
+
+    def _auto_list_input_value(self, region: list[int], value: int) -> bool:
+        try:
+            x1, y1, x2, y2 = (int(part) for part in region)
+        except (TypeError, ValueError, IndexError):
+            return False
+        if x2 <= x1 or y2 <= y1:
+            return False
+        x = (x1 + x2) // 2
+        y = (y1 + y2) // 2
+        controller = get_input_controller()
+        quantity_move_duration = max(0.0, float(self._mouse_duration or 0.0)) * 2.0
+        if not controller.double_click(x, y, duration=quantity_move_duration):
+            return False
+        if not self._auto_list_wait(0.05):
+            return False
+        if not controller.hotkey("ctrl", "a"):
+            return False
+        for digit in str(max(0, int(value))):
+            if not controller.press(digit):
+                return False
+        return True
+
+    def _execute_auto_list_value_input(
+        self,
+        rule: AutomationRule,
+        start_time: datetime,
+    ) -> RuleExecutionResult:
+        value = self._auto_list_current_value
+        if value is None:
+            return self._make_result(
+                rule,
+                False,
+                "현재 처리수량 입력은 자동 목록 처리의 하위 액션에서만 사용할 수 있습니다",
+                start_time,
+            )
+        region = getattr(rule, "search_region", None)
+        if not region:
+            return self._make_result(rule, False, "현재 처리수량 입력 영역이 설정되지 않았습니다", start_time)
+        if not self._auto_list_input_value(region, value):
+            return self._make_result(rule, False, f"현재 처리수량 {value} 입력 실패", start_time)
+        logger.info(f"{_GREEN}{self._step_prefix}✓ 현재 처리수량 입력 완료: {value}{_RESET}")
+        return self._make_result(rule, True, f"현재 처리수량 {value} 입력 완료", start_time)
+
+    def _action_call_source_rules(self) -> List[AutomationRule]:
+        """Return the full original rule tree so partial runs resolve stable IDs."""
+        plan = self._current_plan
+        if plan is None:
+            return []
+        initial_rules = list(
+            getattr(plan, "_original_initial_rules", None)
+            or getattr(plan, "initial_rules", None)
+            or []
+        )
+        monitoring_rules = list(getattr(plan, "monitoring_rules", None) or [])
+        return [*initial_rules, *monitoring_rules]
+
+    @staticmethod
+    def _find_action_call_target(
+        rules: List[AutomationRule],
+        target_rule_id: str,
+    ) -> Optional[AutomationRule]:
+        for candidate in rules or []:
+            if str(getattr(candidate, "rule_id", "") or "") == target_rule_id:
+                return candidate
+            found = RuleExecutor._find_action_call_target(
+                list(getattr(candidate, "children", None) or []),
+                target_rule_id,
+            )
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _action_call_subtree_contains(rule: AutomationRule, rule_id: str) -> bool:
+        if str(getattr(rule, "rule_id", "") or "") == rule_id:
+            return True
+        return any(
+            RuleExecutor._action_call_subtree_contains(child, rule_id)
+            for child in (getattr(rule, "children", None) or [])
+        )
+
+    @classmethod
+    def _clone_action_call_target(
+        cls,
+        target: AutomationRule,
+        caller_rule_id: str,
+        include_children: bool,
+    ) -> AutomationRule:
+        """Clone a target while removing the branch that contains the caller."""
+        target_copy = copy.copy(target)
+        if not include_children:
+            target_copy.children = []
+            return target_copy
+
+        target_copy.children = [
+            copy.deepcopy(child)
+            for child in (getattr(target, "children", None) or [])
+            if not cls._action_call_subtree_contains(child, caller_rule_id)
+        ]
+        return target_copy
+
+    def _execute_action_call(
+        self,
+        rule: AutomationRule,
+        start_time: datetime,
+    ) -> RuleExecutionResult:
+        """Execute an existing action tree and return to the current caller."""
+        caller_rule_id = str(getattr(rule, "rule_id", "") or "")
+        target_rule_id = str(getattr(rule, "action_call_rule_id", "") or "").strip()
+        if not target_rule_id:
+            return self._make_result(rule, False, "호출할 액션이 설정되지 않았습니다", start_time)
+        if target_rule_id == caller_rule_id:
+            return self._make_result(rule, False, "액션 호출은 자기 자신을 호출할 수 없습니다", start_time)
+        if len(self._action_call_stack) >= ACTION_CALL_MAX_DEPTH:
+            return self._make_result(
+                rule,
+                False,
+                f"액션 호출 깊이 제한({ACTION_CALL_MAX_DEPTH})을 초과했습니다",
+                start_time,
+            )
+        if target_rule_id in self._action_call_stack:
+            return self._make_result(rule, False, "순환 액션 호출이 감지되었습니다", start_time)
+
+        source_rules = self._action_call_source_rules()
+        target = self._find_action_call_target(source_rules, target_rule_id)
+        if target is None:
+            return self._make_result(rule, False, "호출 대상 액션을 찾을 수 없습니다", start_time)
+        if not bool(getattr(target, "enabled", True)):
+            return self._make_result(rule, False, "호출 대상 액션이 비활성 상태입니다", start_time)
+        if getattr(target, "action_type", "") in {ACTION_CALL_ACTION_TYPE, AUTO_LIST_ACTION_TYPE}:
+            return self._make_result(
+                rule,
+                False,
+                "액션 호출 또는 자동 목록 처리 액션은 직접 호출할 수 없습니다",
+                start_time,
+            )
+        if (
+            getattr(target, "action_type", "") == "game_mode"
+            or bool(getattr(target, "is_monitoring_mode", False))
+            or bool(getattr(target, "monitoring_watches", None))
+        ):
+            return self._make_result(
+                rule,
+                False,
+                "특화모드 또는 모니터링 액션은 호출할 수 없습니다",
+                start_time,
+            )
+
+        include_children = bool(getattr(rule, "action_call_include_children", True))
+        target_copy = self._clone_action_call_target(
+            target,
+            caller_rule_id,
+            include_children,
+        )
+        step_map = self._rule_id_step_map(source_rules)
+        target_step = step_map.get(target_rule_id, "?")
+        target_name = str(
+            getattr(target, "description", "")
+            or getattr(target, "action_type", "")
+            or "액션"
+        )
+        call_step = f"{self._current_step_num}→{target_step}" if self._current_step_num else target_step
+        skipped_branch = include_children and len(getattr(target_copy, "children", []) or []) < len(
+            getattr(target, "children", []) or []
+        )
+        logger.info(
+            f"{_CYAN}{self._step_prefix}↪ 액션 호출: [{target_step}] {target_name} "
+            f"(하위={'포함' if include_children else '제외'}, "
+            f"호출자 분기={'제외' if skipped_branch else '없음'}){_RESET}"
+        )
+
+        self._action_call_stack.append(target_rule_id)
+        try:
+            called_result = self._execute_rule_tree_once(target_copy, call_step)
+        finally:
+            self._action_call_stack.pop()
+
+        if called_result is not None:
+            return self._make_result(
+                rule,
+                False,
+                f"호출 액션 실패: {called_result.message}",
+                start_time,
+                skip_current_playlist=bool(getattr(called_result, "skip_current_playlist", False)),
+                rewind_previous_action=bool(getattr(called_result, "rewind_previous_action", False)),
+                rewind_delay=float(getattr(called_result, "rewind_delay", 0.0) or 0.0),
+                monitoring_jump_index=int(getattr(called_result, "monitoring_jump_index", -1) or -1),
+                monitoring_jump_rule_id=str(getattr(called_result, "monitoring_jump_rule_id", "") or ""),
+            )
+
+        logger.info(f"{_GREEN}{self._step_prefix}↩ 액션 호출 완료: [{target_step}] {target_name}{_RESET}")
+        return self._make_result(
+            rule,
+            True,
+            f"액션 [{target_step}] {target_name} 호출 후 복귀 완료",
+            start_time,
+        )
+
+    def _auto_list_colour_state(self, config: Dict[str, Any]):
+        results = []
+        sample_count = int(config["sample_count"])
+        for sample_index in range(sample_count):
+            if self._wait_for_resume() or self._stop_event.is_set():
+                return None
+            frame = _grab_screen_bgr()
+            origin_x = origin_y = 0
+            if mss is not None:
+                try:
+                    origin_x = ctypes.windll.user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+                    origin_y = ctypes.windll.user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+                except (AttributeError, OSError):
+                    origin_x = origin_y = 0
+            frame_region = translate_screen_region(config["status_region"], origin_x, origin_y)
+            crop = crop_bgr_region(frame, frame_region)
+            results.append(
+                classify_colour_state(
+                    crop,
+                    red_min_pixels=config["red_min_pixels"],
+                    green_min_pixels=config["green_min_pixels"],
+                )
+            )
+            if sample_index < sample_count - 1 and not self._auto_list_wait(config["sample_interval"]):
+                return None
+        return majority_colour_state(results)
+
+    def _auto_list_wait_for_item(self, item: Dict[str, Any], timeout: float):
+        remaining = max(AUTO_LIST_MIN_ITEM_TIMEOUT, float(timeout or 0.0))
+        while not self._stop_event.is_set() and remaining > 0:
+            if self._wait_for_resume():
+                return None
+            active_started = time.monotonic()
+            result = self._find_image_on_screen(
+                item["image"],
+                item["confidence"],
+                search_region=item.get("search_region"),
+            )
+            if result:
+                return result
+            remaining -= max(0.0, time.monotonic() - active_started)
+            interval = min(0.2, max(0.0, remaining))
+            if interval > 0 and not self._auto_list_wait(interval):
+                return None
+            remaining -= interval
+        return None
+
+    def _execute_auto_list(self, rule: AutomationRule, start_time: datetime) -> RuleExecutionResult:
+        config = normalize_auto_list_config(getattr(rule, "auto_list_config", {}))
+        items = [item for item in config["items"] if item["enabled"]]
+        if not items:
+            return self._make_result(rule, False, "자동 목록에 활성 항목이 없습니다", start_time)
+        if not config["quantity_region"]:
+            return self._make_result(rule, False, "값 입력 영역이 설정되지 않았습니다", start_time)
+        if not config["status_region"]:
+            return self._make_result(rule, False, "상태 판정 영역이 설정되지 않았습니다", start_time)
+        if not getattr(rule, "children", None):
+            return self._make_result(rule, False, "처리할 하위 액션이 없습니다", start_time)
+
+        exhaustion_mode = config["processing_mode"] == AUTO_LIST_MODE_UNTIL_EXHAUSTED
+        mode_label = "재료 소진까지" if exhaustion_mode else "목표수량까지"
+        total_processed = 0
+        logger.info(
+            f"{_CYAN}{self._step_prefix}▶ 자동 목록 처리 시작: "
+            f"항목 {len(items)}개, 방식={mode_label}, "
+            f"입력 {config['min_value']}~{config['max_value']}, "
+            f"반복 재선택={'ON' if config['reselect_each_cycle'] else 'OFF'}, "
+            f"검색 제한={config['item_timeout']:.1f}초, "
+            f"없는 항목={'건너뜀' if config['skip_missing_item'] else '실패'}{_RESET}"
+        )
+        for item_index, item in enumerate(items, 1):
+            if self._wait_for_resume() or self._stop_event.is_set():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+            item_name = item["name"]
+            target_label = "재료 소진까지" if exhaustion_mode else f"목표 {item['target_count']}"
+            logger.info(
+                f"{_CYAN}{self._step_prefix}[항목 {item_index}/{len(items)}] "
+                f"{item_name} {target_label}, "
+                f"검색범위={item.get('search_region') or '전체'}{_RESET}"
+            )
+            if not item["image"] or not Path(item["image"]).exists():
+                message = f"항목 이미지 없음: {item_name}"
+                if config["skip_missing_item"]:
+                    logger.warning(f"{_YELLOW}{self._step_prefix}⚠ {message} → 건너뜀{_RESET}")
+                    continue
+                return self._make_result(rule, False, message, start_time)
+
+            remaining = int(item["target_count"])
+            item_processed = 0
+            cycle_count = 0
+            material_exhausted = False
+            item_skipped = False
+            item_started = time.monotonic()
+            while not self._stop_event.is_set():
+                if not exhaustion_mode and remaining <= 0:
+                    break
+                if cycle_count >= int(config["max_cycles_per_item"]):
+                    return self._make_result(
+                        rule,
+                        False,
+                        f"항목 반복 보호 한도 도달: {item_name}, {cycle_count}회",
+                        start_time,
+                    )
+                item_elapsed = time.monotonic() - item_started
+                if item_elapsed >= float(config["max_runtime_per_item"]):
+                    return self._make_result(
+                        rule,
+                        False,
+                        f"항목 처리 시간 한도 도달: {item_name}, {item_elapsed:.0f}초",
+                        start_time,
+                    )
+
+                if cycle_count == 0 or config["reselect_each_cycle"]:
+                    logger.info(
+                        f"{self._step_prefix}[{item_name}] 반복 {cycle_count + 1}: 항목 이미지 검색"
+                    )
+                    found = self._auto_list_wait_for_item(item, config["item_timeout"])
+                    if not found:
+                        if self._stop_event.is_set():
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+                        if cycle_count > 0 and exhaustion_mode:
+                            material_exhausted = True
+                            logger.info(
+                                f"{_YELLOW}{self._step_prefix}[{item_name}] "
+                                "처리 후 항목이 목록에서 사라짐 → 완료로 판정, 다음 항목"
+                                f"{_RESET}"
+                            )
+                            break
+                        if cycle_count == 0 and config["skip_missing_item"]:
+                            logger.warning(
+                                f"{_YELLOW}{self._step_prefix}⚠ 항목을 찾지 못함: "
+                                f"{item_name} ({config['item_timeout']:.1f}초 확인) → 건너뜀{_RESET}"
+                            )
+                            item_skipped = True
+                            break
+                        failure_stage = "초기 검색" if cycle_count == 0 else "처리 후 재선택"
+                        return self._make_result(
+                            rule,
+                            False,
+                            f"항목 이미지 {failure_stage} 실패: {item_name}",
+                            start_time,
+                        )
+
+                    click_result = self._execute_click_at(
+                        rule,
+                        "click",
+                        int(found[0]),
+                        int(found[1]),
+                        start_time,
+                        image_click=True,
+                    )
+                    if not click_result.success:
+                        return click_result
+                    if not self._auto_list_wait(config["render_wait"]):
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
+
+                desired = int(config["max_value"])
+                if not exhaustion_mode:
+                    desired = min(desired, remaining)
+                accepted = None
+                for candidate in candidate_values(desired, int(config["min_value"])):
+                    if not self._auto_list_input_value(config["quantity_region"], candidate):
+                        return self._make_result(rule, False, "값 입력 실패", start_time)
+                    if not self._auto_list_wait(config["render_wait"]):
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
+
+                    state_result = None
+                    for _ in range(int(config["unknown_retries"])):
+                        state_result = self._auto_list_colour_state(config)
+                        if state_result is None:
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+                        if state_result.state != "unknown":
+                            break
+                        if not self._auto_list_wait(config["sample_interval"]):
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+
+                    logger.info(
+                        f"{self._step_prefix}[{item_name}] 입력 {candidate}: "
+                        f"상태={state_result.state} red={state_result.red_pixels} "
+                        f"green={state_result.green_pixels}"
+                    )
+                    if state_result.state == "unknown":
+                        return self._make_result(
+                            rule,
+                            False,
+                            f"색상 판정 불명: {item_name}, 입력 {candidate}",
+                            start_time,
+                        )
+                    if state_result.is_available:
+                        accepted = candidate
+                        break
+
+                if accepted is None:
+                    material_exhausted = True
+                    logger.info(
+                        f"{_YELLOW}{self._step_prefix}[{item_name}] "
+                        f"최소 입력값 {config['min_value']}도 불가 → 재료 소진, 다음 항목{_RESET}"
+                    )
+                    break
+
+                child_result = self._execute_child_rules_for_auto_list(
+                    rule,
+                    start_time,
+                    accepted,
+                    item,
+                )
+                if child_result is not None:
+                    return child_result
+                cycle_count += 1
+                if not exhaustion_mode:
+                    remaining -= accepted
+                item_processed += accepted
+                total_processed += accepted
+                progress_label = (
+                    f"누적 {item_processed}, 재료 소진까지"
+                    if exhaustion_mode
+                    else f"누적 {item_processed}/{item['target_count']}"
+                )
+                logger.info(
+                    f"{_GREEN}{self._step_prefix}[{item_name}] {accepted} 처리 완료 "
+                    f"(반복 {cycle_count}, {progress_label}){_RESET}"
+                )
+                should_continue = exhaustion_mode or remaining > 0
+                if should_continue and not self._auto_list_wait(config["after_process_wait"]):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            if item_skipped:
+                continue
+            status = "재료 소진" if material_exhausted else "목표 완료"
+            logger.info(
+                f"{_GREEN}{self._step_prefix}[항목 {item_index}/{len(items)}] "
+                f"{item_name}: {status}, 반복 {cycle_count}, 처리 {item_processed}{_RESET}"
+            )
+
+        self._mark_child_rules_handled_by_parent(rule)
+        return self._make_result(
+            rule,
+            True,
+            f"자동 목록 처리 완료 ({len(items)}개 항목, 총 {total_processed})",
+            start_time,
+        )
 
     def _execute_rule_tree_once(
         self,
@@ -3499,6 +4118,342 @@ class RuleExecutor:
 
         self._current_step_num = previous_step
         return None
+
+    def _resolve_partial_auto_list_context(
+        self,
+        rule: AutomationRule,
+    ) -> Optional[Dict[str, Any]]:
+        """Recover the nearest auto-list parent when a descendant is run directly."""
+        plan = self._current_plan
+        source_rules = list(
+            getattr(plan, "_original_initial_rules", None)
+            or getattr(plan, "initial_rules", None)
+            or []
+        ) if plan else []
+        target_rule_id = str(getattr(rule, "rule_id", "") or "")
+        if not source_rules or not target_rule_id:
+            return None
+
+        matching_paths: List[List[AutomationRule]] = []
+
+        def visit(rules: List[AutomationRule], ancestors: List[AutomationRule]) -> None:
+            for candidate in rules or []:
+                path = [*ancestors, candidate]
+                if str(getattr(candidate, "rule_id", "") or "") == target_rule_id:
+                    matching_paths.append(path)
+                visit(list(getattr(candidate, "children", []) or []), path)
+
+        visit(source_rules, [])
+        if not matching_paths:
+            return None
+
+        matching_path = next(
+            (
+                path
+                for path in matching_paths
+                if getattr(path[-1], "action_type", "") == getattr(rule, "action_type", "")
+                and getattr(path[-1], "description", "") == getattr(rule, "description", "")
+            ),
+            matching_paths[0],
+        )
+        parent_rule = next(
+            (
+                candidate
+                for candidate in reversed(matching_path[:-1])
+                if getattr(candidate, "action_type", "") == AUTO_LIST_ACTION_TYPE
+            ),
+            None,
+        )
+        if parent_rule is None:
+            return None
+
+        config = normalize_auto_list_config(getattr(parent_rule, "auto_list_config", {}))
+        registered_items = [
+            dict(item)
+            for item in config["items"]
+            if item.get("enabled") and item.get("image")
+        ]
+        if not registered_items:
+            return None
+        return {
+            "parent_rule_id": str(getattr(parent_rule, "rule_id", "") or ""),
+            "registered_items": registered_items,
+            "current_item": dict(registered_items[0]),
+        }
+
+    def _execute_auto_list_quantity_image_clicks(
+        self,
+        rule: AutomationRule,
+        start_time: datetime,
+        expected_count: int,
+        *,
+        registered_items: Optional[List[Dict[str, Any]]] = None,
+        current_item: Optional[Dict[str, Any]] = None,
+    ) -> RuleExecutionResult:
+        """Select every visible row matching an image registered by the parent auto-list."""
+        if current_item is None:
+            current_item = self._auto_list_current_item
+        current_item = current_item if isinstance(current_item, dict) else {}
+        if registered_items is None:
+            registered_items = self._auto_list_registered_items
+        configured_registered_items = [
+            dict(item)
+            for item in (registered_items or [])
+            if isinstance(item, dict) and item.get("image")
+        ]
+        missing_registered_items = [
+            str(item.get("name") or Path(str(item["image"])).stem)
+            for item in configured_registered_items
+            if not Path(str(item["image"])).exists()
+        ]
+        if missing_registered_items:
+            return self._make_result(
+                rule,
+                False,
+                "자동 목록 추출 이미지 파일 없음: " + ", ".join(missing_registered_items),
+                start_time,
+            )
+        registered_items = configured_registered_items
+        select_all_registered = bool(registered_items)
+        source_entries: List[Dict[str, Any]] = registered_items
+        if not source_entries:
+            current_item_image = str(current_item.get("image") or "")
+            if current_item_image and Path(current_item_image).exists():
+                source_entries = [
+                    {
+                        "image": current_item_image,
+                        "name": str(current_item.get("name") or Path(current_item_image).stem),
+                        "confidence": current_item.get("confidence", rule.confidence),
+                        "search_region": current_item.get("search_region"),
+                    }
+                ]
+            else:
+                source_entries = [
+                    {
+                        "image": image_path,
+                        "name": Path(image_path).stem,
+                        "confidence": rule.confidence,
+                    }
+                    for image_path in self._target_images_for_rule(rule)
+                    if image_path and Path(image_path).exists()
+                ]
+        confirm_image = str(getattr(rule, "auto_list_repeat_confirm_image", "") or "")
+        confirm_region = getattr(rule, "auto_list_repeat_confirm_region", None)
+        try:
+            confirm_confidence = min(
+                1.0,
+                max(0.1, float(getattr(rule, "auto_list_repeat_confirm_confidence", 0.9) or 0.9)),
+            )
+        except (TypeError, ValueError):
+            confirm_confidence = 0.9
+
+        if not source_entries:
+            return self._make_result(rule, False, "자동 목록에 유효한 추출 대상 이미지가 없습니다", start_time)
+        if not confirm_image or not Path(confirm_image).exists():
+            return self._make_result(rule, False, "선택 체크 이미지가 설정되지 않았거나 파일이 없습니다", start_time)
+        if not confirm_region:
+            return self._make_result(rule, False, "선택 체크 확인 범위가 설정되지 않았습니다", start_time)
+
+        target_region = self._image_search_region_for_rule(rule)
+        target_heights = []
+        for entry in source_entries:
+            template = _get_cached_template(str(entry["image"]))
+            if template is not None:
+                target_heights.append(int(template[1]))
+        confirm_template = _get_cached_template(confirm_image)
+        target_height = max(target_heights) if target_heights else 10
+        confirm_height = int(confirm_template[1]) if confirm_template is not None else 10
+        # 목록 행 간격이 템플릿 높이와 비슷하므로 전체 높이를 허용치로 쓰면
+        # 바로 위/아래 행의 체크를 현재 행 체크로 오인할 수 있다.
+        row_tolerance = max(6, min(12, (max(target_height, confirm_height) // 2) + 3))
+        expected_count = max(1, int(expected_count))
+
+        def find_confirmations() -> List[tuple]:
+            return self._find_all_images_on_screen(
+                confirm_image,
+                confirm_confidence,
+                search_region=confirm_region,
+            )
+
+        def find_targets() -> List[Dict[str, Any]]:
+            matches: List[Dict[str, Any]] = []
+            for entry in source_entries:
+                image_path = str(entry["image"])
+                # Registered automatic-list mode is isolated from the child
+                # click action's original image/range. Falling back to that
+                # range can search a creation preview or the full game window
+                # instead of the extraction list.
+                if select_all_registered:
+                    entry_region = entry.get("search_region")
+                    entry_search_radius = 0
+                else:
+                    entry_region = entry.get("search_region") or target_region
+                    entry_search_radius = (
+                        0 if entry_region is not None else getattr(rule, "search_radius", 0)
+                    )
+                try:
+                    confidence = min(1.0, max(0.3, float(entry.get("confidence", rule.confidence))))
+                except (TypeError, ValueError):
+                    confidence = float(rule.confidence)
+                for match in self._find_all_images_on_screen(
+                    image_path,
+                    confidence,
+                    search_radius=entry_search_radius,
+                    center_x=rule.action_x,
+                    center_y=rule.action_y,
+                    search_region=entry_region,
+                    verify_color=bool(getattr(rule, "verify_image_color", False)),
+                    verify_brightness=bool(getattr(rule, "verify_image_brightness", False)),
+                ):
+                    if not any(
+                        abs(existing["x"] - match[0]) <= row_tolerance
+                        and abs(existing["y"] - match[1]) <= row_tolerance
+                        for existing in matches
+                    ):
+                        matches.append(
+                            {
+                                "x": int(match[0]),
+                                "y": int(match[1]),
+                                "score": float(match[2]) if len(match) > 2 else 0.0,
+                                "name": str(entry.get("name") or Path(image_path).stem),
+                                "image": image_path,
+                            }
+                        )
+            return sorted(matches, key=lambda item: (item["y"], item["x"]))
+
+        if select_all_registered:
+            registered_regions = list(
+                dict.fromkeys(
+                    str(entry.get("search_region") or "전체")
+                    for entry in source_entries
+                )
+            )
+            logger.info(
+                f"{_CYAN}{self._step_prefix}자동 목록 추출 검색 기준: "
+                f"등록항목={len(source_entries)}종, 범위={registered_regions}, "
+                f"하위액션범위={target_region or '전체'}(미사용){_RESET}"
+            )
+
+        targets = find_targets()
+        if not targets:
+            scope = f"등록 이미지 {len(source_entries)}개" if select_all_registered else "현재 항목"
+            return self._make_result(
+                rule,
+                False,
+                f"추출 목록에서 {scope}에 해당하는 행을 찾지 못했습니다",
+                start_time,
+            )
+
+        def relevant_confirmations() -> List[tuple]:
+            relevant = []
+            for checked in sorted(find_confirmations(), key=lambda item: (item[1], item[0])):
+                if not any(abs(target["y"] - checked[1]) <= row_tolerance for target in targets):
+                    continue
+                if any(abs(existing[1] - checked[1]) <= row_tolerance for existing in relevant):
+                    continue
+                relevant.append(checked)
+            return relevant
+
+        confirmations = relevant_confirmations()
+        goal_count = (
+            min(AUTO_LIST_EXTRACTION_BATCH_LIMIT, len(targets))
+            if select_all_registered
+            else min(AUTO_LIST_EXTRACTION_BATCH_LIMIT, expected_count, len(targets))
+        )
+        if len(confirmations) > goal_count:
+            return self._make_result(
+                rule,
+                False,
+                f"등록 항목 선택 체크가 발견 행보다 많습니다: {len(confirmations)}/{goal_count}",
+                start_time,
+            )
+
+        matched_names = list(dict.fromkeys(target["name"] for target in targets))
+        selection_label = (
+            f"등록 {len(source_entries)}종 검색, 회당 최대 {AUTO_LIST_EXTRACTION_BATCH_LIMIT}개"
+            if select_all_registered
+            else f"현재 제작수량 {expected_count}개, 회당 최대 {AUTO_LIST_EXTRACTION_BATCH_LIMIT}개"
+        )
+        logger.info(
+            f"{_CYAN}{self._step_prefix}▶ 자동 목록 추출 선택 시작: "
+            f"기준={selection_label}, 발견 종류={matched_names}, "
+            f"발견 행 {len(targets)}개, 기존 체크 {len(confirmations)}개{_RESET}"
+        )
+        while len(confirmations) < goal_count:
+            if self._wait_for_resume() or self._stop_event.is_set():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            before_count = len(confirmations)
+            candidates = [
+                target
+                for target in targets
+                if not any(abs(target["y"] - checked[1]) <= row_tolerance for checked in confirmations)
+            ]
+            if not candidates:
+                return self._make_result(
+                    rule,
+                    False,
+                    f"미선택 등록 항목을 찾지 못했습니다: 체크 {before_count}/{goal_count}",
+                    start_time,
+                )
+
+            target = candidates[0]
+            click_result = self._execute_click_at(
+                rule,
+                "click",
+                target["x"],
+                target["y"],
+                start_time,
+                image_click=True,
+            )
+            if not click_result.success:
+                return click_result
+
+            confirm_deadline = time.monotonic() + min(10.0, max(1.0, float(getattr(rule, "timeout", 5.0) or 5.0)))
+            while time.monotonic() < confirm_deadline:
+                if self._wait_for_resume() or self._stop_event.is_set():
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+                confirmations = relevant_confirmations()
+                clicked_row_confirmed = any(
+                    abs(target["y"] - checked[1]) <= row_tolerance
+                    for checked in confirmations
+                )
+                if len(confirmations) > before_count and clicked_row_confirmed:
+                    logger.info(
+                        f"{_GREEN}{self._step_prefix}✓ 선택 체크 확인: "
+                        f"{target['name']} {len(confirmations)}/{goal_count}{_RESET}"
+                    )
+                    break
+                if self._stop_event.wait(0.15):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+            else:
+                return self._make_result(
+                    rule,
+                    False,
+                    f"클릭 후 선택 체크가 증가하지 않았습니다: "
+                    f"{target['name']} {before_count}/{goal_count}",
+                    start_time,
+                )
+
+            if len(confirmations) > goal_count:
+                return self._make_result(
+                    rule,
+                    False,
+                    f"선택 체크 수가 등록 항목 행을 초과했습니다: {len(confirmations)}/{goal_count}",
+                    start_time,
+                )
+
+            if len(confirmations) < goal_count:
+                delay = self._repeat_delay_for_rule(rule)
+                if self._stop_event.wait(timeout=delay):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+
+        return self._make_result(
+            rule,
+            True,
+            f"자동 목록 등록 항목 선택 완료 ({len(confirmations)}/{goal_count})",
+            start_time,
+        )
 
     def _execute_click_until_image_disappears(
         self,
