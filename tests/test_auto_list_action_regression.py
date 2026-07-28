@@ -951,7 +951,7 @@ def test_auto_list_quantity_repeat_selects_all_registered_rows_only(monkeypatch,
     assert "3/3" in result.message
 
 
-def test_auto_list_quantity_repeat_prefers_each_registered_item_region(monkeypatch, tmp_path):
+def test_auto_list_quantity_repeat_prefers_extraction_selector_region(monkeypatch, tmp_path):
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
     check = tmp_path / "check.png"
@@ -1016,10 +1016,13 @@ def test_auto_list_quantity_repeat_prefers_each_registered_item_region(monkeypat
 
     assert result.success is True
     assert clicked == [(20, 40), (20, 60)]
-    assert searched_regions == [shared_region, shared_region]
+    assert searched_regions == [[0, 0, 1920, 1080], [0, 0, 1920, 1080]]
 
 
-def test_auto_list_quantity_repeat_never_falls_back_to_child_action_region(monkeypatch, tmp_path):
+def test_auto_list_quantity_repeat_uses_selector_region_when_registered_region_is_missing(
+    monkeypatch,
+    tmp_path,
+):
     registered = tmp_path / "registered.png"
     check = tmp_path / "check.png"
     registered.write_bytes(b"registered")
@@ -1069,7 +1072,82 @@ def test_auto_list_quantity_repeat_never_falls_back_to_child_action_region(monke
 
     assert result.success is True
     assert clicked == [(20, 40)]
-    assert searches == [(None, 0)]
+    assert searches == [([700, 600, 1000, 800], 0)]
+
+
+def test_auto_list_quantity_repeat_falls_back_to_registered_region_without_selector_region(
+    monkeypatch,
+    tmp_path,
+):
+    registered = tmp_path / "registered.png"
+    check = tmp_path / "check.png"
+    registered.write_bytes(b"registered")
+    check.write_bytes(b"check")
+    registered_region = [10, 20, 210, 320]
+    rule = AutomationRule(
+        rule_id="registered_range_fallback",
+        action_type="click",
+        target_image=str(registered),
+        search_region=None,
+        repeat_from_auto_list_quantity=True,
+        auto_list_repeat_confirm_image=str(check),
+        auto_list_repeat_confirm_region=[150, 20, 220, 320],
+        repeat_delay=0,
+        wait_after=0,
+    )
+    executor = RuleExecutor()
+    executor._auto_list_current_value = 1
+    executor._auto_list_registered_items = [
+        {
+            "image": str(registered),
+            "name": "registered",
+            "confidence": 0.8,
+            "search_region": registered_region,
+        }
+    ]
+    clicked = []
+    searches = []
+
+    def find_all(image_path, *_args, **kwargs):
+        if str(image_path) == str(check):
+            return [(180, y, 0.99) for _x, y in clicked]
+        searches.append((kwargs.get("search_region"), kwargs.get("search_radius")))
+        return [(20, 40, 0.99)]
+
+    def click_at(active_rule, _kind, x, y, started, **_kwargs):
+        clicked.append((x, y))
+        return executor._make_result(active_rule, True, "click complete", started)
+
+    monkeypatch.setattr(executor, "_find_all_images_on_screen", find_all)
+    monkeypatch.setattr(executor, "_execute_click_at", click_at)
+
+    result = executor._execute_rule_with_retry(rule)
+
+    assert result.success is True
+    assert clicked == [(20, 40)]
+    assert searches == [(registered_region, 0)]
+
+
+def test_auto_list_parent_failure_does_not_retry_whole_transaction(monkeypatch):
+    rule = AutomationRule(rule_id="auto-list-parent", action_type="auto_list")
+    executor = RuleExecutor()
+    attempts = []
+
+    def fail_once(active_rule, step_num=""):
+        attempts.append((active_rule.rule_id, step_num))
+        return executor._make_result(
+            active_rule,
+            False,
+            "child extraction failed",
+            datetime.now(),
+        )
+
+    monkeypatch.setattr(executor, "_execute_rule", fail_once)
+
+    result = executor._execute_rule_with_retry(rule, max_retries=3, step_num="4-3")
+
+    assert result.success is False
+    assert attempts == [(rule.rule_id, "4-3")]
 
 
 def test_auto_list_quantity_repeat_skips_generic_next_screen_infinite_wait(monkeypatch, tmp_path):
@@ -1272,7 +1350,7 @@ def test_partial_run_selection_recovers_context_from_runtime_plan_when_original_
 
     assert result.success is True
     assert clicked == [(20, 40)]
-    assert searched_regions == [shared_region]
+    assert searched_regions == [[700, 600, 1000, 800]]
 
 
 def test_auto_list_quantity_repeat_caps_each_extraction_batch_at_ten(monkeypatch, tmp_path):

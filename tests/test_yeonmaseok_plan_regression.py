@@ -282,5 +282,5 @@ def test_yeonmaseok_partial_extraction_uses_all_registered_regions_and_continues
     assert {image for image, _region, _radius in searched} == {
         item["image"] for item in parent.auto_list_config["items"]
     }
-    assert all(region == [13, 181, 265, 706] for _image, region, _radius in searched)
+    assert all(region == [0, 0, 827, 795] for _image, region, _radius in searched)
     assert all(radius == 0 for _image, _region, radius in searched)

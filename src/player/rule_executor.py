@@ -2100,7 +2100,15 @@ class RuleExecutor:
                 f"{_CYAN}{self._step_prefix}로그인 횟수 설정 적용: {repeat_count}회{_RESET}"
             )
 
-        retry_count = 1 if repeat_from_auto_list else max_retries
+        # Automatic-list execution changes screens and consumes materials. Replaying
+        # the whole parent after a child failure resumes from the wrong screen and
+        # can duplicate already completed work. The action owns its internal retry
+        # policy, so the generic outer retry must run it only once.
+        retry_count = (
+            1
+            if repeat_from_auto_list or rule.action_type == AUTO_LIST_ACTION_TYPE
+            else max_retries
+        )
         for attempt in range(retry_count):
             if self._stop_event.is_set():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
@@ -4448,12 +4456,11 @@ class RuleExecutor:
             matches: List[Dict[str, Any]] = []
             for entry in source_entries:
                 image_path = str(entry["image"])
-                # Registered automatic-list mode is isolated from the child
-                # click action's original image/range. Falling back to that
-                # range can search a creation preview or the full game window
-                # instead of the extraction list.
                 if select_all_registered:
-                    entry_region = entry.get("search_region")
+                    # Registered entries provide the templates, but their ranges
+                    # belong to the creation screen. The selector action's range
+                    # is the extraction-list range and must take precedence.
+                    entry_region = target_region or entry.get("search_region")
                     entry_search_radius = 0
                 else:
                     entry_region = entry.get("search_region") or target_region
@@ -4497,10 +4504,16 @@ class RuleExecutor:
                     for entry in source_entries
                 )
             )
+            active_region = target_region or "등록항목별 범위"
+            fallback_label = (
+                "미사용"
+                if target_region
+                else f"사용={registered_regions}"
+            )
             logger.info(
                 f"{_CYAN}{self._step_prefix}자동 목록 추출 검색 기준: "
-                f"등록항목={len(source_entries)}종, 범위={registered_regions}, "
-                f"하위액션범위={target_region or '전체'}(미사용){_RESET}"
+                f"등록항목={len(source_entries)}종, 추출범위={active_region}, "
+                f"제작목록범위={fallback_label}{_RESET}"
             )
 
         targets = find_targets()
