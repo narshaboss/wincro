@@ -68,18 +68,153 @@ def test_quantity_point_is_migrated_to_region_without_changing_click_center():
 def test_executor_clicks_quantity_region_center_before_typing(monkeypatch):
     clicks = []
     key_events = []
+    clipboard = {"value": "사용자 클립보드"}
+    field = {"focused": False, "selected": False, "value": "1"}
+
+    def double_click(x, y, duration=0.0):
+        clicks.append((x, y, duration))
+        field["focused"] = True
+        field["selected"] = True
+        return True
+
+    def hotkey(*keys):
+        key_events.append(keys)
+        if keys == ("ctrl", "a") and field["focused"]:
+            field["selected"] = True
+        elif keys == ("ctrl", "c") and field["focused"]:
+            clipboard["value"] = field["value"]
+        return True
+
+    def press(key):
+        key_events.append(key)
+        if field["selected"]:
+            field["value"] = ""
+            field["selected"] = False
+        field["value"] += key
+        return True
+
     controller = SimpleNamespace(
-        double_click=lambda x, y, duration=0.0: clicks.append((x, y, duration)) or True,
-        hotkey=lambda *keys: key_events.append(keys) or True,
-        press=lambda key: key_events.append(key) or True,
+        double_click=double_click,
+        hotkey=hotkey,
+        press=press,
+    )
+    import src.player.rule_executor as executor_module
+    monkeypatch.setattr(executor_module, "get_input_controller", lambda: controller)
+    monkeypatch.setattr(executor_module.pyperclip, "copy", lambda value: clipboard.update(value=value))
+    monkeypatch.setattr(executor_module.pyperclip, "paste", lambda: clipboard["value"])
+
+    executor = RuleExecutor()
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda _seconds: True)
+    monkeypatch.setattr(executor, "_auto_list_capture_input_region", lambda _region: None)
+    assert executor._auto_list_input_value([100, 200, 140, 240], 10) is True
+    assert clicks == [(120, 220, executor._mouse_duration * 2.0)]
+    assert field["value"] == "10"
+    assert clipboard["value"] == "사용자 클립보드"
+    assert key_events == [
+        ("ctrl", "a"),
+        ("ctrl", "c"),
+        "1",
+        "0",
+        ("ctrl", "a"),
+        ("ctrl", "c"),
+    ]
+
+
+def test_auto_list_quantity_input_retries_until_focus_is_confirmed(monkeypatch):
+    clipboard = {"value": "original"}
+    field = {"attempt": 0, "focused": False, "selected": False, "value": "1"}
+    typed = []
+
+    def double_click(_x, _y, duration=0.0):
+        field["attempt"] += 1
+        field["focused"] = field["attempt"] >= 2
+        field["selected"] = field["focused"]
+        return True
+
+    def hotkey(*keys):
+        if keys == ("ctrl", "a") and field["focused"]:
+            field["selected"] = True
+        elif keys == ("ctrl", "c") and field["focused"]:
+            clipboard["value"] = field["value"]
+        return True
+
+    def press(key):
+        typed.append(key)
+        if field["selected"]:
+            field["value"] = ""
+            field["selected"] = False
+        field["value"] += key
+        return True
+
+    controller = SimpleNamespace(double_click=double_click, hotkey=hotkey, press=press)
+    import src.player.rule_executor as executor_module
+    monkeypatch.setattr(executor_module, "get_input_controller", lambda: controller)
+    monkeypatch.setattr(executor_module.pyperclip, "copy", lambda value: clipboard.update(value=value))
+    monkeypatch.setattr(executor_module.pyperclip, "paste", lambda: clipboard["value"])
+
+    executor = RuleExecutor()
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda _seconds: True)
+    monkeypatch.setattr(executor, "_auto_list_capture_input_region", lambda _region: None)
+
+    assert executor._auto_list_input_value([10, 20, 110, 40], 9) is True
+    assert field["attempt"] == 2
+    assert typed == ["9"]
+    assert field["value"] == "9"
+    assert clipboard["value"] == "original"
+
+
+def test_auto_list_quantity_input_never_types_without_confirmed_focus(monkeypatch):
+    clipboard = {"value": "original"}
+    typed = []
+    controller = SimpleNamespace(
+        double_click=lambda *_args, **_kwargs: True,
+        hotkey=lambda *_keys: True,
+        press=lambda key: typed.append(key) or True,
+    )
+    import src.player.rule_executor as executor_module
+    monkeypatch.setattr(executor_module, "get_input_controller", lambda: controller)
+    monkeypatch.setattr(executor_module.pyperclip, "copy", lambda value: clipboard.update(value=value))
+    monkeypatch.setattr(executor_module.pyperclip, "paste", lambda: clipboard["value"])
+
+    executor = RuleExecutor()
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda _seconds: True)
+    monkeypatch.setattr(executor, "_auto_list_capture_input_region", lambda _region: None)
+
+    assert executor._auto_list_input_value([10, 20, 110, 40], 10) is False
+    assert typed == []
+    assert clipboard["value"] == "original"
+
+
+def test_auto_list_quantity_selection_detects_dark_active_background():
+    before = np.full((20, 100, 3), 240, dtype=np.uint8)
+    after = before.copy()
+    after[3:17, 72:92] = 10
+
+    assert RuleExecutor._auto_list_input_selection_visible(before, after) is True
+    assert RuleExecutor._auto_list_input_selection_visible(before, before.copy()) is False
+
+
+def test_auto_list_quantity_input_uses_visual_focus_when_copy_is_unsupported(monkeypatch):
+    typed = []
+    controller = SimpleNamespace(
+        double_click=lambda *_args, **_kwargs: True,
+        hotkey=lambda *keys: False if keys == ("ctrl", "c") else True,
+        press=lambda key: typed.append(key) or True,
     )
     import src.player.rule_executor as executor_module
     monkeypatch.setattr(executor_module, "get_input_controller", lambda: controller)
 
+    before = np.full((20, 100, 3), 240, dtype=np.uint8)
+    selected = before.copy()
+    selected[3:17, 72:92] = 10
+    captures = iter([before, selected, selected])
+
     executor = RuleExecutor()
-    assert executor._auto_list_input_value([100, 200, 140, 240], 10) is True
-    assert clicks == [(120, 220, executor._mouse_duration * 2.0)]
-    assert key_events == [("ctrl", "a"), "1", "0"]
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda _seconds: True)
+    monkeypatch.setattr(executor, "_auto_list_capture_input_region", lambda _region: next(captures))
+
+    assert executor._auto_list_input_value([10, 20, 110, 40], 10) is True
+    assert typed == ["1", "0"]
 
 
 def test_auto_list_config_normalizes_item_values():

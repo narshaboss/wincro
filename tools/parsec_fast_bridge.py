@@ -922,7 +922,7 @@ def command_key(args: argparse.Namespace) -> dict[str, Any]:
     window = None
     vks = parse_key_combo(args.keys)
     assert_key_combo_allowed(vks, force=args.force_dangerous)
-    if args.activate:
+    if args.execute and args.activate:
         window = find_window(args.title)
     if args.execute:
         if not window:

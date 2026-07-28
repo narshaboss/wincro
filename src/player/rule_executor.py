@@ -3616,6 +3616,45 @@ class RuleExecutor:
             remaining -= max(0.0, time.monotonic() - started)
         return not self._stop_event.is_set()
 
+    @staticmethod
+    def _auto_list_input_selection_visible(
+        before: Optional[np.ndarray],
+        after: Optional[np.ndarray],
+    ) -> bool:
+        """Detect the dark selection background shown by the quantity input."""
+        if before is None or after is None or before.size == 0 or after.size == 0:
+            return False
+        if before.shape != after.shape:
+            return False
+
+        before_gray = cv2.cvtColor(before, cv2.COLOR_BGR2GRAY)
+        after_gray = cv2.cvtColor(after, cv2.COLOR_BGR2GRAY)
+        if min(after_gray.shape[:2]) > 4:
+            before_gray = before_gray[2:-2, 2:-2]
+            after_gray = after_gray[2:-2, 2:-2]
+
+        before_dark = float(np.mean(before_gray < 70))
+        after_dark = float(np.mean(after_gray < 70))
+        changed = float(np.mean(cv2.absdiff(before_gray, after_gray) >= 35))
+        return after_dark >= 0.035 and (
+            after_dark >= before_dark + 0.018 or changed >= 0.025
+        )
+
+    def _auto_list_capture_input_region(self, region: list[int]) -> Optional[np.ndarray]:
+        frame = _grab_screen_bgr()
+        if frame is None:
+            return None
+        origin_x = origin_y = 0
+        if mss is not None:
+            try:
+                origin_x = ctypes.windll.user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+                origin_y = ctypes.windll.user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+            except (AttributeError, OSError):
+                origin_x = origin_y = 0
+        translated = translate_screen_region(region, origin_x, origin_y)
+        crop = crop_bgr_region(frame, translated)
+        return None if crop is None else crop.copy()
+
     def _auto_list_input_value(self, region: list[int], value: int) -> bool:
         try:
             x1, y1, x2, y2 = (int(part) for part in region)
@@ -3627,16 +3666,118 @@ class RuleExecutor:
         y = (y1 + y2) // 2
         controller = get_input_controller()
         quantity_move_duration = max(0.0, float(self._mouse_duration or 0.0)) * 2.0
-        if not controller.double_click(x, y, duration=quantity_move_duration):
+        expected = str(max(0, int(value)))
+        clipboard_available = True
+        try:
+            original_clipboard = pyperclip.paste()
+        except (OSError, pyperclip.PyperclipException):
+            clipboard_available = False
+            original_clipboard = None
+
+        try:
+            for attempt in range(1, 4):
+                before = self._auto_list_capture_input_region(region)
+                if not controller.double_click(x, y, duration=quantity_move_duration):
+                    continue
+                if not self._auto_list_wait(0.15):
+                    return False
+                if not controller.hotkey("ctrl", "a"):
+                    continue
+                if not self._auto_list_wait(0.08):
+                    return False
+
+                selected = self._auto_list_capture_input_region(region)
+                visual_focus = self._auto_list_input_selection_visible(before, selected)
+                copied_before = None
+                if clipboard_available:
+                    marker = f"__WINCRO_AUTO_LIST_{time.monotonic_ns()}__"
+                    try:
+                        pyperclip.copy(marker)
+                        if not controller.hotkey("ctrl", "c"):
+                            clipboard_available = False
+                        else:
+                            if not self._auto_list_wait(0.05):
+                                return False
+                            copied_before = str(pyperclip.paste()).strip()
+                    except (OSError, pyperclip.PyperclipException):
+                        clipboard_available = False
+                        copied_before = None
+                    else:
+                        clipboard_focus = copied_before is not None and copied_before != marker
+                        if clipboard_available and not clipboard_focus and not visual_focus:
+                            logger.warning(
+                                "자동 목록 수량 입력칸 활성화 확인 실패: "
+                                f"시도 {attempt}/3 region={region}"
+                            )
+                            continue
+                    if not clipboard_available and not visual_focus:
+                        logger.warning(
+                            "자동 목록 수량 입력칸 활성화 확인 실패: "
+                            f"시도 {attempt}/3 region={region}"
+                        )
+                        continue
+                elif not visual_focus:
+                    logger.warning(
+                        "자동 목록 수량 입력칸 활성화 확인 실패: "
+                        f"시도 {attempt}/3 region={region}"
+                    )
+                    continue
+
+                for digit in expected:
+                    if not controller.press(digit):
+                        return False
+                if not self._auto_list_wait(0.08):
+                    return False
+
+                # Keep the field selected so both clipboard-capable and custom game
+                # input controls can prove that focus did not leave the quantity box.
+                if not controller.hotkey("ctrl", "a"):
+                    continue
+                if not self._auto_list_wait(0.05):
+                    return False
+                final_selected = self._auto_list_capture_input_region(region)
+                final_visual_focus = self._auto_list_input_selection_visible(selected, final_selected)
+
+                if clipboard_available:
+                    marker = f"__WINCRO_AUTO_LIST_VERIFY_{time.monotonic_ns()}__"
+                    try:
+                        pyperclip.copy(marker)
+                        if not controller.hotkey("ctrl", "c"):
+                            clipboard_available = False
+                        else:
+                            if not self._auto_list_wait(0.05):
+                                return False
+                            copied_after = str(pyperclip.paste()).strip()
+                    except (OSError, pyperclip.PyperclipException):
+                        clipboard_available = False
+                    else:
+                        if clipboard_available and copied_after == expected:
+                            if attempt > 1:
+                                logger.info(f"자동 목록 수량 입력 재시도 성공: {attempt}/3")
+                            return True
+                        if clipboard_available and copied_after != marker:
+                            logger.warning(
+                                "자동 목록 수량 입력값 검증 실패: "
+                                f"시도 {attempt}/3 expected={expected!r} actual={copied_after!r}"
+                            )
+                            continue
+
+                if visual_focus or final_visual_focus:
+                    if attempt > 1:
+                        logger.info(f"자동 목록 수량 입력 재시도 성공: {attempt}/3")
+                    return True
+
+                logger.warning(
+                    "자동 목록 수량 입력 후 포커스 확인 실패: "
+                    f"시도 {attempt}/3 region={region}"
+                )
             return False
-        if not self._auto_list_wait(0.05):
-            return False
-        if not controller.hotkey("ctrl", "a"):
-            return False
-        for digit in str(max(0, int(value))):
-            if not controller.press(digit):
-                return False
-        return True
+        finally:
+            if original_clipboard is not None:
+                try:
+                    pyperclip.copy(original_clipboard)
+                except (OSError, pyperclip.PyperclipException):
+                    pass
 
     def _execute_auto_list_value_input(
         self,

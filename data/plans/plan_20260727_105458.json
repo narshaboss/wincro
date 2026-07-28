@@ -651,7 +651,7 @@
           "auto_list_repeat_confirm_confidence": 0.9,
           "action_call_rule_id": null,
           "action_call_include_children": true,
-          "wait_after": 0.65,
+          "wait_after": 1.5,
           "wait_random": true,
           "enabled": true,
           "wait_random_range": 0.98,
@@ -958,7 +958,7 @@
           "auto_list_repeat_confirm_confidence": 0.9,
           "action_call_rule_id": null,
           "action_call_include_children": true,
-          "wait_after": 0.51,
+          "wait_after": 1.3,
           "wait_random": true,
           "enabled": true,
           "wait_random_range": 0.98,
@@ -1871,7 +1871,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": true,
-          "click_until_image_disappears_delay": 0.5,
+          "click_until_image_disappears_delay": 10.0,
           "repeat_from_auto_list_quantity": false,
           "auto_list_repeat_confirm_image": null,
           "auto_list_repeat_confirm_region": null,
@@ -2111,7 +2111,7 @@
           "move_mouse_before_search": false,
           "alternate_mouse_route": false,
           "click_until_image_disappears": true,
-          "click_until_image_disappears_delay": 0.5,
+          "click_until_image_disappears_delay": 10.0,
           "repeat_from_auto_list_quantity": false,
           "auto_list_repeat_confirm_image": null,
           "auto_list_repeat_confirm_region": null,
@@ -3635,14 +3635,8 @@
           "is_monitoring_mode": false,
           "monitoring_final_image": null,
           "monitoring_watches": [],
-    "auto_list_config": {
-      "item_search_region": [
-        13,
-        181,
-        265,
-        706
-      ],
-      "items": [
+          "auto_list_config": {
+            "items": [
               {
                 "name": "trigger_20260727_131221_910_crop_8121e3",
                 "image": "trigger_20260727_131221_910_crop_8121e3.png",
@@ -3661,12 +3655,12 @@
                 "image": "trigger_20260727_131242_143_crop_61f3aa.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3674,12 +3668,12 @@
                 "image": "trigger_20260727_131306_145_crop_286aaf.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3687,12 +3681,12 @@
                 "image": "trigger_20260727_131126_519_crop_8e06de.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3700,12 +3694,12 @@
                 "image": "trigger_20260727_131145_562_crop_bcacb1.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3713,12 +3707,12 @@
                 "image": "trigger_20260727_131159_722_crop_4d5c24.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3726,12 +3720,12 @@
                 "image": "trigger_20260727_131341_513_crop_0f95e5.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3739,12 +3733,12 @@
                 "image": "trigger_20260727_131355_914_crop_0f8c6d.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               },
               {
@@ -3752,24 +3746,30 @@
                 "image": "trigger_20260727_131411_727_crop_f0a675.png",
                 "target_count": 1,
                 "confidence": 0.8,
-          "search_region": [
-            13,
-            181,
-            265,
-            706
-          ],
+                "search_region": [
+                  13,
+                  181,
+                  265,
+                  706
+                ],
                 "enabled": true
               }
             ],
+            "item_search_region": [
+              13,
+              181,
+              265,
+              706
+            ],
             "quantity_region": [
-              531,
-              559,
-              633,
-              573
+              526,
+              551,
+              635,
+              579
             ],
             "quantity_point": [
-              582,
-              566
+              580,
+              565
             ],
             "status_region": [
               495,

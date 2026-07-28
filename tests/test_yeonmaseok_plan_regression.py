@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from src.analyzer.automation_models import AutomationPlan
 from src.player.rule_executor import RuleExecutor
-from src.utils.auto_list import AUTO_LIST_MODE_UNTIL_EXHAUSTED
+from src.utils.auto_list import AUTO_LIST_MODE_UNTIL_EXHAUSTED, region_center
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -76,7 +76,10 @@ def test_yeonmaseok_auto_list_configuration_is_complete_and_portable():
     assert config["max_value"] == 10
     assert config["min_value"] == 1
     assert config["item_timeout"] == 0.5
-    assert config["quantity_region"] == [531, 559, 633, 573]
+    assert len(config["quantity_region"]) == 4
+    assert config["quantity_region"][2] > config["quantity_region"][0]
+    assert config["quantity_region"][3] > config["quantity_region"][1]
+    assert config["quantity_point"] == region_center(config["quantity_region"])
     assert config["status_region"] == [495, 522, 605, 544]
     assert config["item_search_region"] == [13, 181, 265, 706]
     assert len(config["items"]) == 9
@@ -194,7 +197,7 @@ def test_yeonmaseok_auto_list_processes_one_batch_then_continues_all_items(monke
 
     assert result.success is True
     assert "총 10" in result.message
-    assert entered == [([531, 559, 633, 573], 10)]
+    assert entered == [(rule.auto_list_config["quantity_region"], 10)]
     assert child_runs == [(10, items[0]["name"])]
     assert [name for name, _timeout, _region in searches] == [
         items[0]["name"],
