@@ -378,17 +378,18 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
         option_row = self._row(self._detail_frame, "확인 옵션")
         option_grid = ctk.CTkFrame(option_row, fg_color="transparent")
         option_grid.pack(side="left", fill="x", expand=True)
-        for index, (key, label) in enumerate((
-            ("verify_image_color", "색상 확인"),
-            ("verify_image_brightness", "밝기 확인"),
-            ("alternate_mouse_route", "직각 이동"),
-            ("click_until_image_disappears", "사라질 때까지 반복"),
-            ("skip_on_not_found", "못찾으면 스킵"),
+        for index, (key, label, default) in enumerate((
+            ("verify_image_color", "색상 확인", False),
+            ("verify_image_brightness", "밝기 확인", False),
+            ("alternate_mouse_route", "직각 이동", False),
+            ("click_until_image_disappears", "사라질 때까지 반복", False),
+            ("click_until_image_disappears_safety_enabled", "반복 안전장치", True),
+            ("skip_on_not_found", "못찾으면 스킵", False),
         )):
             ctk.CTkCheckBox(
                 option_grid,
                 text=label,
-                variable=self._bool_var(key, False),
+                variable=self._bool_var(key, default),
                 font=self._font(11),
                 text_color=COLORS["text_secondary"],
                 fg_color=COLORS["accent_blue"],
@@ -924,6 +925,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
                 "verify_image_color",
                 "verify_image_brightness",
                 "click_until_image_disappears",
+                "click_until_image_disappears_safety_enabled",
                 "skip_on_not_found",
             ):
                 var = self._field_vars.get(key)

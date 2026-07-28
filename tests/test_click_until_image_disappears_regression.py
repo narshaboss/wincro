@@ -1,8 +1,12 @@
 from datetime import datetime
 from pathlib import Path
 
-from src.analyzer.automation_models import AutomationRule
-from src.database.models import Action
+import json
+from types import SimpleNamespace
+
+from src.analyzer.automation_models import AutomationPlan, AutomationRule
+from src.database.models import Action, Sequence
+from src.database.db_manager import DatabaseManager
 from src.player.rule_executor import RuleExecutor
 
 
@@ -26,16 +30,19 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
         repeat_delay=1.2,
         click_until_image_disappears=True,
         click_until_image_disappears_delay=0.15,
+        click_until_image_disappears_safety_enabled=False,
     )
     saved_rule = rule.to_dict()
 
     assert saved_rule["click_until_image_disappears"] is True
     assert saved_rule["click_until_image_disappears_delay"] == 0.15
+    assert saved_rule["click_until_image_disappears_safety_enabled"] is False
     assert saved_rule["verify_image_color"] is False
     assert saved_rule["verify_image_brightness"] is False
     restored_rule = AutomationRule.from_dict(saved_rule, templates_dir=tmp_path)
     assert restored_rule.click_until_image_disappears is True
     assert restored_rule.click_until_image_disappears_delay == 0.15
+    assert restored_rule.click_until_image_disappears_safety_enabled is False
     assert restored_rule.verify_image_color is False
     assert restored_rule.verify_image_brightness is False
     verified_rule = AutomationRule.from_dict(
@@ -59,6 +66,7 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
         templates_dir=tmp_path,
     )
     assert legacy_rule.click_until_image_disappears_delay == 0.9
+    assert legacy_rule.click_until_image_disappears_safety_enabled is True
 
     action = Action.from_dict(
         {
@@ -68,12 +76,14 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
             "repeat_delay": 1.1,
             "click_until_image_disappears": True,
             "click_until_image_disappears_delay": 0.2,
+            "click_until_image_disappears_safety_enabled": False,
         }
     )
 
     assert action.click_until_image_disappears is True
     assert action.to_dict()["click_until_image_disappears"] is True
     assert action.click_until_image_disappears_delay == 0.2
+    assert action.click_until_image_disappears_safety_enabled is False
     assert action.to_dict()["click_until_image_disappears_delay"] == 0.2
     assert action.verify_image_color is False
     assert action.verify_image_brightness is False
@@ -96,6 +106,7 @@ def test_click_until_image_disappears_persists_for_rule_and_action(tmp_path):
         }
     )
     assert legacy_action.click_until_image_disappears_delay == 0.8
+    assert legacy_action.click_until_image_disappears_safety_enabled is True
 
 
 def test_player_repeat_dialog_exposes_disappear_click_option():
@@ -103,12 +114,15 @@ def test_player_repeat_dialog_exposes_disappear_click_option():
 
     assert "click_until_delay_entry" in text
     assert "click_until_image_disappears_delay" in text
+    assert "click_until_image_disappears_safety_enabled" in text
+    assert "안전장치 ON" in text
+    assert "안전장치 OFF" in text
     assert "전용 반복 대기시간:" in text
     assert "이미지가 사라질 때까지 반복 클릭" in text
     assert "def _build_click_until_help(parent)" in text
     assert "ENTER 등 반복할 동작은 이 이미지의 하위 액션으로 추가하세요." in text
     assert "실행: 이미지 클릭 → 하위 액션 → 이미지 재확인" in text
-    assert "반복횟수 1~5는 안전 한도 최대 5회로 실행됩니다." in text
+    assert "안전장치 ON: 최대 클릭 수 또는 30초 후 다음 액션으로 이동" in text
     assert text.count("_build_click_until_help(main_frame)") == 2
     assert "dialog_width = 400 if is_image_click else 350" in text
     assert "dialog_height = 720 if is_image_click else 420" in text
@@ -330,3 +344,118 @@ def test_click_until_image_disappears_guard_limit_does_not_stop_playlist(tmp_pat
     assert len(click_calls) == 5
     assert child_calls == [parent.rule_id] * 5
     assert child.rule_id in executor._child_rules_executed_with_parent
+
+
+def test_click_until_image_disappears_safety_off_ignores_click_guard(tmp_path, monkeypatch):
+    target = tmp_path / "target.png"
+    target.write_bytes(b"fake")
+    rule = AutomationRule(
+        action_type="click",
+        target_image=str(target),
+        repeat_count=1,
+        click_until_image_disappears=True,
+        click_until_image_disappears_delay=0,
+        click_until_image_disappears_safety_enabled=False,
+    )
+    executor = RuleExecutor()
+    found = {
+        "x": 10,
+        "y": 20,
+        "confidence": 1.0,
+        "image": str(target),
+        "method": "test",
+        "locations": [(10, 20, 1.0)],
+    }
+    results = iter([found] * 7 + [None, None])
+    monkeypatch.setattr(executor, "_find_rule_image_click_target", lambda *_: next(results))
+    monkeypatch.setattr(executor, "_repeat_delay_for_rule", lambda _rule: 0)
+    clicks = []
+    monkeypatch.setattr(
+        executor,
+        "_execute_click_at",
+        lambda active_rule, *_args, **_kwargs: clicks.append(True)
+        or executor._make_result(active_rule, True, "클릭 완료", datetime.now()),
+    )
+    monkeypatch.setattr(executor, "_execute_child_rules_for_repeat_click", lambda *_: None)
+    monkeypatch.setattr("src.player.rule_executor.time.sleep", lambda *_: None)
+
+    result = executor._execute_rule_with_retry(rule, max_retries=1)
+
+    assert result.success is True
+    assert "이미지 사라짐" in result.message
+    assert len(clicks) == 7
+
+
+def test_monitor_click_until_disappears_safety_off_ignores_click_guard(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "monitor.png"
+    target.write_bytes(b"fake")
+    executor = RuleExecutor()
+    locations = iter([(10, 20, 0.99)] * 7 + [None, None])
+    monkeypatch.setattr(executor, "_find_image_on_screen", lambda *_args, **_kwargs: next(locations))
+    monkeypatch.setattr("src.player.rule_executor.time.sleep", lambda *_: None)
+    clicks = []
+    controller = SimpleNamespace(
+        move_to=lambda *_args, **_kwargs: True,
+        click=lambda: clicks.append("click") or True,
+        double_click=lambda: clicks.append("double_click") or True,
+        right_click=lambda: clicks.append("right_click") or True,
+    )
+    monkeypatch.setattr("src.player.rule_executor.get_input_controller", lambda: controller)
+
+    result = executor._execute_monitor_image_click_until_disappears(
+        {
+            "repeat_count": 1,
+            "click_until_image_disappears_delay": 0,
+            "click_until_image_disappears_safety_enabled": False,
+        },
+        str(target),
+        "click",
+        0.8,
+        None,
+        False,
+    )
+
+    assert result == "이미지 사라짐: monitor.png (7회)"
+    assert clicks == ["click"] * 7
+
+
+def test_click_until_safety_setting_survives_plan_json_and_sequence_db_reload(tmp_path):
+    rule = AutomationRule(
+        action_type="click",
+        target_image=str(tmp_path / "target.png"),
+        click_until_image_disappears=True,
+        click_until_image_disappears_safety_enabled=False,
+    )
+    plan = AutomationPlan(name="안전장치 저장", initial_rules=[rule])
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan.to_dict(), ensure_ascii=False), encoding="utf-8")
+    loaded_plan = AutomationPlan.from_dict(
+        json.loads(plan_path.read_text(encoding="utf-8")),
+        templates_dir=tmp_path,
+    )
+    assert loaded_plan.initial_rules[0].click_until_image_disappears_safety_enabled is False
+
+    action = Action(
+        action_type="click",
+        click_until_image_disappears=True,
+        click_until_image_disappears_safety_enabled=False,
+    )
+    sequence = Sequence(name="안전장치 저장", actions=[action])
+    manager = DatabaseManager()
+    original_path = manager._db_path
+    original_wal = manager._wal_initialized
+    try:
+        manager._db_path = tmp_path / "round_trip.db"
+        manager._wal_initialized = False
+        manager._ensure_database()
+        sequence.id = manager.create_sequence(sequence)
+        loaded_sequence = manager.get_sequence(sequence.id)
+    finally:
+        manager._db_path = original_path
+        manager._wal_initialized = original_wal
+
+    assert loaded_sequence is not None
+    assert loaded_sequence.actions[0].click_until_image_disappears_safety_enabled is False

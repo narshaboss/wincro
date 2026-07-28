@@ -393,6 +393,11 @@ def _convert_action_to_monitor_dict(action):
             'click_until_image_disappears_delay',
             getattr(action, 'repeat_delay', 0.5),
         )
+        monitor_action["click_until_image_disappears_safety_enabled"] = getattr(
+            action,
+            'click_until_image_disappears_safety_enabled',
+            True,
+        )
         monitor_action["repeat_count"] = getattr(action, 'repeat_count', 1)
         monitor_action["repeat_delay"] = getattr(action, 'repeat_delay', 0.5)
         monitor_action["repeat_delay_random"] = getattr(action, 'repeat_delay_random', False)
@@ -632,7 +637,7 @@ def _build_click_until_help(parent) -> None:
         text=(
             "ENTER 등 반복할 동작은 이 이미지의 하위 액션으로 추가하세요.\n"
             "실행: 이미지 클릭 → 하위 액션 → 이미지 재확인\n"
-            "이미지가 사라지면 종료하고, 계속 보이면 최대 클릭 수에서 다음 액션으로 이동합니다."
+            "이미지가 사라지면 종료하며, 안전장치 OFF에서는 사라질 때까지 계속 실행합니다."
         ),
         font=ctk.CTkFont(size=10),
         text_color=COLORS["text_secondary"],
@@ -641,10 +646,38 @@ def _build_click_until_help(parent) -> None:
     ).pack(anchor="w", padx=10, pady=(0, 3))
     ctk.CTkLabel(
         help_card,
-        text="반복횟수 1~5는 안전 한도 최대 5회로 실행됩니다.",
+        text="안전장치 ON: 최대 클릭 수 또는 30초 후 다음 액션으로 이동",
         font=ctk.CTkFont(size=10, weight="bold"),
         text_color=COLORS["text_primary"],
     ).pack(anchor="w", padx=10, pady=(0, 7))
+
+
+def _build_click_until_safety_control(parent, enabled_var) -> None:
+    """Build the shared safety toggle used by both repeat editors."""
+    row = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=10)
+    row.pack(fill="x", pady=(5, 2))
+    state_text = ctk.StringVar()
+
+    def sync_text():
+        state_text.set("안전장치 ON" if enabled_var.get() else "안전장치 OFF")
+
+    sync_text()
+    ctk.CTkSwitch(
+        row,
+        textvariable=state_text,
+        variable=enabled_var,
+        command=sync_text,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        progress_color=COLORS["accent_orange"],
+    ).pack(anchor="w", padx=10, pady=(8, 2))
+    ctk.CTkLabel(
+        row,
+        text="OFF: 클릭 횟수와 30초 제한 없이 이미지가 사라질 때까지 반복",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        wraplength=330,
+        justify="left",
+    ).pack(anchor="w", padx=10, pady=(0, 8))
 
 
 def _build_auto_list_quantity_repeat_controls(
@@ -3808,6 +3841,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
 
         click_until_var = ctk.BooleanVar(value=bool(getattr(rule, "click_until_image_disappears", False)))
+        click_until_safety_var = ctk.BooleanVar(
+            value=bool(getattr(rule, "click_until_image_disappears_safety_enabled", True))
+        )
         auto_list_repeat_var = ctk.BooleanVar(
             value=bool(can_repeat_from_auto_list and getattr(rule, "repeat_from_auto_list_quantity", False))
         )
@@ -3851,6 +3887,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
+            _build_click_until_safety_control(main_frame, click_until_safety_var)
             auto_list_repeat_controls = _build_auto_list_quantity_repeat_controls(
                 main_frame,
                 dialog,
@@ -3949,6 +3986,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 rule.repeat_delay_random_range = delay_range
                 rule.click_until_image_disappears = click_until_enabled
                 rule.click_until_image_disappears_delay = click_until_delay
+                rule.click_until_image_disappears_safety_enabled = bool(
+                    click_until_safety_var.get()
+                )
                 rule.repeat_from_auto_list_quantity = auto_list_repeat_enabled
                 rule.auto_list_repeat_confirm_image = confirm_image
                 rule.auto_list_repeat_confirm_region = confirm_region
@@ -3971,6 +4011,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         if result["saved"]:
             self._modified = True
+            if not self._save_plan(show_message=False):
+                logger.error("반복 설정 저장 실패: 계획 JSON을 기록하지 못했습니다")
             if not self._update_rule_row_in_place(rule) and not self._refresh_rule_row(rule.rule_id):
                 self._update_rule_buttons(rule)
             logger.info(
@@ -29252,6 +29294,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(5, 0))
 
         click_until_var = ctk.BooleanVar(value=bool(getattr(action, "click_until_image_disappears", False)))
+        click_until_safety_var = ctk.BooleanVar(
+            value=bool(getattr(action, "click_until_image_disappears_safety_enabled", True))
+        )
         auto_list_repeat_var = ctk.BooleanVar(
             value=bool(can_repeat_from_auto_list and getattr(action, "repeat_from_auto_list_quantity", False))
         )
@@ -29295,6 +29340,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(side="left")
+            _build_click_until_safety_control(main_frame, click_until_safety_var)
             auto_list_repeat_controls = _build_auto_list_quantity_repeat_controls(
                 main_frame,
                 dialog,
@@ -29393,6 +29439,9 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 action.repeat_delay_random_range = delay_range
                 action.click_until_image_disappears = click_until_enabled
                 action.click_until_image_disappears_delay = click_until_delay
+                action.click_until_image_disappears_safety_enabled = bool(
+                    click_until_safety_var.get()
+                )
                 action.repeat_from_auto_list_quantity = auto_list_repeat_enabled
                 action.auto_list_repeat_confirm_image = confirm_image
                 action.auto_list_repeat_confirm_region = confirm_region
@@ -29415,6 +29464,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         if result["saved"]:
             self._modified = True
+            if not self._save_sequence_silent():
+                logger.error("반복 설정 저장 실패: 재생목록 DB를 기록하지 못했습니다")
             if not self._update_compact_action_row(action) and not self._refresh_action_row(action):
                 self._update_action_buttons(action)
             logger.info(
@@ -29690,6 +29741,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 clipboard,
                 'click_until_image_disappears_delay',
                 getattr(clipboard, 'repeat_delay', 0.5),
+            )
+            monitor_action["click_until_image_disappears_safety_enabled"] = getattr(
+                clipboard,
+                'click_until_image_disappears_safety_enabled',
+                True,
             )
             monitor_action["search_radius"] = getattr(clipboard, 'search_radius', 0)
             monitor_action["search_region"] = getattr(clipboard, 'search_region', None)
@@ -32072,6 +32128,11 @@ class PlayerView(BaseView):
                 action,
                 "click_until_image_disappears_delay",
                 getattr(action, "repeat_delay", 0.5),
+            ),
+            click_until_image_disappears_safety_enabled=getattr(
+                action,
+                "click_until_image_disappears_safety_enabled",
+                True,
             ),
             repeat_from_auto_list_quantity=getattr(action, "repeat_from_auto_list_quantity", False),
             auto_list_repeat_confirm_image=getattr(action, "auto_list_repeat_confirm_image", None),

@@ -77,6 +77,7 @@ class Action:
     alternate_mouse_route: bool = False  # 이미지 클릭 시 반대 우회 이동 경로 사용
     click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
     click_until_image_disappears_delay: float = 0.5  # 사라질 때까지 반복 클릭 전용 대기시간
+    click_until_image_disappears_safety_enabled: bool = True  # 최대 클릭/시간 안전장치
     repeat_from_auto_list_quantity: bool = False  # 자동 목록의 현재 처리수량만큼 이미지 클릭 반복
     auto_list_repeat_confirm_image: Optional[str] = None  # 자동 목록 수량 반복 선택 확인 이미지
     auto_list_repeat_confirm_region: Optional[List[int]] = None  # 선택 확인 이미지 검색 영역
@@ -138,6 +139,9 @@ class Action:
             )
         except (TypeError, ValueError):
             self.click_until_image_disappears_delay = 0.5
+        self.click_until_image_disappears_safety_enabled = bool(
+            self.click_until_image_disappears_safety_enabled
+        )
         self.repeat_from_auto_list_quantity = bool(self.repeat_from_auto_list_quantity)
         try:
             self.auto_list_repeat_confirm_confidence = min(
@@ -171,7 +175,9 @@ class Action:
             'target_image', 'confidence', 'verify_image_color', 'verify_image_brightness',
             'search_radius', 'search_region',
             'alternate_mouse_route', 'click_until_image_disappears',
-            'click_until_image_disappears_delay', 'repeat_from_auto_list_quantity',
+            'click_until_image_disappears_delay',
+            'click_until_image_disappears_safety_enabled',
+            'repeat_from_auto_list_quantity',
             'auto_list_repeat_confirm_image', 'auto_list_repeat_confirm_region',
             'auto_list_repeat_confirm_confidence',
             'auto_list_config',
@@ -186,6 +192,8 @@ class Action:
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
         if "click_until_image_disappears_delay" not in filtered_data:
             filtered_data["click_until_image_disappears_delay"] = data.get("repeat_delay", 0.5)
+        if "click_until_image_disappears_safety_enabled" not in filtered_data:
+            filtered_data["click_until_image_disappears_safety_enabled"] = True
         if "auto_list_config" in filtered_data:
             from ..utils.auto_list import auto_list_config_from_saved
             from ..utils.config import DATA_DIR

@@ -207,6 +207,7 @@ def convert_to_monitor_action(action) -> Optional[Dict[str, Any]]:
                  'repeat_delay', 'repeat_delay_random', 'repeat_delay_random_range',
                  'skip', 'skip_on_not_found', 'name', 'search_region', 'confidence', 'alternate_mouse_route',
                  'click_until_image_disappears', 'click_until_image_disappears_delay',
+                 'click_until_image_disappears_safety_enabled',
                  'verify_image_color', 'verify_image_brightness']:
         val = getattr(action, attr, None)
         if val is not None:

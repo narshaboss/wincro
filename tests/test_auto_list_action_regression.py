@@ -166,8 +166,9 @@ def test_auto_list_quantity_input_retries_until_focus_is_confirmed(monkeypatch):
 def test_auto_list_quantity_input_never_types_without_confirmed_focus(monkeypatch):
     clipboard = {"value": "original"}
     typed = []
+    attempts = []
     controller = SimpleNamespace(
-        double_click=lambda *_args, **_kwargs: True,
+        double_click=lambda *_args, **_kwargs: attempts.append("click") or True,
         hotkey=lambda *_keys: True,
         press=lambda key: typed.append(key) or True,
     )
@@ -181,6 +182,7 @@ def test_auto_list_quantity_input_never_types_without_confirmed_focus(monkeypatc
     monkeypatch.setattr(executor, "_auto_list_capture_input_region", lambda _region: None)
 
     assert executor._auto_list_input_value([10, 20, 110, 40], 10) is False
+    assert len(attempts) == 5
     assert typed == []
     assert clipboard["value"] == "original"
 
@@ -653,6 +655,79 @@ def test_auto_list_quickly_skips_missing_items_and_continues_in_order(monkeypatc
 
     assert result.success is True
     assert searched == [("1번", 1.0), ("4번", 1.0)]
+
+
+def test_auto_list_focus_failure_skips_current_item_and_continues_playback(
+    monkeypatch,
+    tmp_path,
+):
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    child = AutomationRule(rule_id="child", action_type="hotkey", action_keys=["enter"])
+    rule = AutomationRule(
+        rule_id="parent",
+        action_type="auto_list",
+        children=[child],
+        auto_list_config={
+            "items": [
+                {"image": str(first), "name": "포커스 실패 항목", "target_count": 1},
+                {"image": str(second), "name": "다음 항목", "target_count": 1},
+            ],
+            "quantity_region": [8, 18, 13, 23],
+            "status_region": [0, 0, 10, 10],
+            "max_value": 1,
+            "min_value": 1,
+            "render_wait": 0.05,
+            "after_process_wait": 0.0,
+        },
+    )
+    executor = RuleExecutor()
+    searched = []
+    input_items = []
+
+    def find_item(item, _timeout):
+        searched.append(item["name"])
+        return (20, 30, 0.99)
+
+    def input_value(_region, _value):
+        current = searched[-1]
+        input_items.append(current)
+        return current == "다음 항목"
+
+    monkeypatch.setattr(executor, "_auto_list_wait_for_item", find_item)
+    monkeypatch.setattr(
+        executor,
+        "_execute_click_at",
+        lambda *_args, **_kwargs: SimpleNamespace(success=True),
+    )
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda *_: True)
+    monkeypatch.setattr(executor, "_auto_list_input_value", input_value)
+    monkeypatch.setattr(
+        executor,
+        "_auto_list_colour_state",
+        lambda _config: SimpleNamespace(
+            state="available",
+            is_available=True,
+            red_pixels=0,
+            green_pixels=10,
+        ),
+    )
+    processed = []
+    monkeypatch.setattr(
+        executor,
+        "_execute_child_rules_for_auto_list",
+        lambda _rule, _started, value, item: processed.append((item["name"], value)) or None,
+    )
+
+    result = executor._execute_fixed_action(rule, datetime.now())
+
+    assert result.success is True
+    assert searched == ["포커스 실패 항목", "다음 항목"]
+    assert input_items == ["포커스 실패 항목", "다음 항목"]
+    assert processed == [("다음 항목", 1)]
+    assert "총 1" in result.message
 
 
 def test_current_auto_list_value_input_requires_context_and_uses_configured_region(monkeypatch):

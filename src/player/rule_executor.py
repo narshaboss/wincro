@@ -3773,7 +3773,7 @@ class RuleExecutor:
                         if clipboard_available and copied_after != marker:
                             logger.warning(
                                 "자동 목록 수량 입력값 검증 실패: "
-                                f"시도 {attempt}/3 expected={expected!r} actual={copied_after!r}"
+                                f"시도 {attempt}/5 expected={expected!r} actual={copied_after!r}"
                             )
                             continue
 
@@ -4130,9 +4130,18 @@ class RuleExecutor:
                 if not exhaustion_mode:
                     desired = min(desired, remaining)
                 accepted = None
+                quantity_input_failed = False
                 for candidate in candidate_values(desired, int(config["min_value"])):
                     if not self._auto_list_input_value(config["quantity_region"], candidate):
-                        return self._make_result(rule, False, "값 입력 실패", start_time)
+                        if self._stop_event.is_set():
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
+                        quantity_input_failed = True
+                        logger.warning(
+                            f"{_YELLOW}{self._step_prefix}⚠ [{item_name}] 수량 입력 포커스 확인 "
+                            "5회 실패 → 현재 항목 건너뜀, 재생 계속"
+                            f"{_RESET}"
+                        )
+                        break
                     if not self._auto_list_wait(config["render_wait"]):
                         return self._make_result(rule, False, "실행 중지됨", start_time)
 
@@ -4161,6 +4170,10 @@ class RuleExecutor:
                     if state_result.is_available:
                         accepted = candidate
                         break
+
+                if quantity_input_failed:
+                    item_skipped = True
+                    break
 
                 if accepted is None:
                     material_exhausted = True
@@ -4624,6 +4637,9 @@ class RuleExecutor:
             configured_count = int(getattr(rule, "repeat_count", 1) or 1)
         except (TypeError, ValueError):
             configured_count = 1
+        safety_enabled = bool(
+            getattr(rule, "click_until_image_disappears_safety_enabled", True)
+        )
         max_clicks = max(IMAGE_CLICK_UNTIL_DISAPPEAR_MIN_CLICKS, configured_count)
         max_seconds = IMAGE_CLICK_UNTIL_DISAPPEAR_MAX_SECONDS
         miss_confirm = IMAGE_CLICK_UNTIL_DISAPPEAR_MISS_CONFIRM
@@ -4631,10 +4647,15 @@ class RuleExecutor:
         clicks = 0
         misses = 0
         target = first_target
+        guard_label = (
+            f"최대 {max_clicks}회/{max_seconds:.0f}초"
+            if safety_enabled
+            else "안전장치 OFF/무제한"
+        )
 
         logger.info(
             f"{_CYAN}{self._step_prefix}↻ 이미지 사라질 때까지 반복 클릭 시작 "
-            f"(최대 {max_clicks}회/{max_seconds:.0f}초){_RESET}"
+            f"({guard_label}){_RESET}"
         )
 
         def _finish_guarded(reason: str) -> RuleExecutionResult:
@@ -4657,9 +4678,9 @@ class RuleExecutor:
             )
 
         while not self._stop_event.is_set():
-            if time.time() - started >= max_seconds:
+            if safety_enabled and time.time() - started >= max_seconds:
                 return _finish_guarded("시간초과")
-            if clicks >= max_clicks:
+            if safety_enabled and clicks >= max_clicks:
                 return _finish_guarded("한도 도달")
 
             if target is None:
@@ -5822,6 +5843,9 @@ class RuleExecutor:
             configured_count = int(monitor_action.get("repeat_count", 1) or 1)
         except (TypeError, ValueError):
             configured_count = 1
+        safety_enabled = bool(
+            monitor_action.get("click_until_image_disappears_safety_enabled", True)
+        )
         max_clicks = max(IMAGE_CLICK_UNTIL_DISAPPEAR_MIN_CLICKS, configured_count)
         delay = self._safe_float(
             monitor_action.get(
@@ -5837,9 +5861,12 @@ class RuleExecutor:
         image_name = Path(image_path).name
 
         while not self._stop_event.is_set():
-            if time.time() - started >= IMAGE_CLICK_UNTIL_DISAPPEAR_MAX_SECONDS:
+            if (
+                safety_enabled
+                and time.time() - started >= IMAGE_CLICK_UNTIL_DISAPPEAR_MAX_SECONDS
+            ):
                 return f"이미지 반복 클릭 시간초과: {image_name} ({clicks}회)"
-            if clicks >= max_clicks:
+            if safety_enabled and clicks >= max_clicks:
                 return f"이미지 반복 클릭 한도 도달: {image_name} ({clicks}회)"
 
             location = self._find_image_on_screen(

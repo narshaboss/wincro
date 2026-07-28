@@ -103,6 +103,7 @@ class AutomationRule:
     alternate_mouse_route: bool = False  # 이미지 클릭 시 기본 직선 이동 대신 반대 우회 경로로 접근
     click_until_image_disappears: bool = False  # 이미지가 사라질 때까지 반복 클릭
     click_until_image_disappears_delay: float = 0.5  # 사라질 때까지 반복 클릭 전용 대기시간
+    click_until_image_disappears_safety_enabled: bool = True  # 최대 클릭/시간 안전장치
     repeat_from_auto_list_quantity: bool = False  # 자동 목록의 현재 처리수량만큼 이미지 클릭 반복
     auto_list_repeat_confirm_image: Optional[str] = None  # 자동 목록 수량 반복 선택 확인 이미지
     auto_list_repeat_confirm_region: Optional[List[int]] = None  # 선택 확인 이미지 검색 영역
@@ -243,6 +244,9 @@ class AutomationRule:
             )
         except (TypeError, ValueError):
             self.click_until_image_disappears_delay = 0.5
+        self.click_until_image_disappears_safety_enabled = bool(
+            self.click_until_image_disappears_safety_enabled
+        )
         self.repeat_from_auto_list_quantity = bool(self.repeat_from_auto_list_quantity)
         try:
             self.auto_list_repeat_confirm_confidence = min(
@@ -320,6 +324,9 @@ class AutomationRule:
             "alternate_mouse_route": self.alternate_mouse_route,
             "click_until_image_disappears": self.click_until_image_disappears,
             "click_until_image_disappears_delay": self.click_until_image_disappears_delay,
+            "click_until_image_disappears_safety_enabled": (
+                self.click_until_image_disappears_safety_enabled
+            ),
             "repeat_from_auto_list_quantity": self.repeat_from_auto_list_quantity,
             "auto_list_repeat_confirm_image": _to_relative_path(self.auto_list_repeat_confirm_image),
             "auto_list_repeat_confirm_region": self.auto_list_repeat_confirm_region,
@@ -449,6 +456,10 @@ class AutomationRule:
             click_until_image_disappears_delay=data.get(
                 "click_until_image_disappears_delay",
                 data.get("repeat_delay", 0.5),
+            ),
+            click_until_image_disappears_safety_enabled=data.get(
+                "click_until_image_disappears_safety_enabled",
+                True,
             ),
             repeat_from_auto_list_quantity=data.get("repeat_from_auto_list_quantity", False),
             auto_list_repeat_confirm_image=_to_absolute_path(
