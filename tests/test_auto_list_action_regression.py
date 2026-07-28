@@ -191,6 +191,7 @@ def test_auto_list_quantity_selection_detects_dark_active_background():
     after[3:17, 72:92] = 10
 
     assert RuleExecutor._auto_list_input_selection_visible(before, after) is True
+    assert RuleExecutor._auto_list_input_selection_visible(after, after.copy()) is True
     assert RuleExecutor._auto_list_input_selection_visible(before, before.copy()) is False
 
 

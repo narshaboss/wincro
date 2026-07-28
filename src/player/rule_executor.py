@@ -3636,8 +3636,13 @@ class RuleExecutor:
         before_dark = float(np.mean(before_gray < 70))
         after_dark = float(np.mean(after_gray < 70))
         changed = float(np.mean(cv2.absdiff(before_gray, after_gray) >= 35))
-        return after_dark >= 0.035 and (
-            after_dark >= before_dark + 0.018 or changed >= 0.025
+        # The field can already be selected when the next candidate value is
+        # entered. In that case there is little frame-to-frame change, but the
+        # dark selection rectangle itself is still a reliable focus signal.
+        return after_dark >= 0.025 and (
+            after_dark >= 0.05
+            or after_dark >= before_dark + 0.012
+            or changed >= 0.018
         )
 
     def _auto_list_capture_input_region(self, region: list[int]) -> Optional[np.ndarray]:
@@ -3675,15 +3680,25 @@ class RuleExecutor:
             original_clipboard = None
 
         try:
-            for attempt in range(1, 4):
+            for attempt in range(1, 6):
                 before = self._auto_list_capture_input_region(region)
-                if not controller.double_click(x, y, duration=quantity_move_duration):
+                click_ok = False
+                manual_click = getattr(controller, "click", None)
+                if attempt >= 4 and callable(manual_click):
+                    click_ok = bool(manual_click(x, y, duration=quantity_move_duration))
+                    if click_ok and self._auto_list_wait(0.12):
+                        click_ok = bool(manual_click(x, y, duration=0.0))
+                else:
+                    click_ok = bool(
+                        controller.double_click(x, y, duration=quantity_move_duration)
+                    )
+                if not click_ok:
                     continue
-                if not self._auto_list_wait(0.15):
+                if not self._auto_list_wait(0.25):
                     return False
                 if not controller.hotkey("ctrl", "a"):
                     continue
-                if not self._auto_list_wait(0.08):
+                if not self._auto_list_wait(0.12):
                     return False
 
                 selected = self._auto_list_capture_input_region(region)
@@ -3707,19 +3722,19 @@ class RuleExecutor:
                         if clipboard_available and not clipboard_focus and not visual_focus:
                             logger.warning(
                                 "자동 목록 수량 입력칸 활성화 확인 실패: "
-                                f"시도 {attempt}/3 region={region}"
+                                f"시도 {attempt}/5 region={region}"
                             )
                             continue
                     if not clipboard_available and not visual_focus:
                         logger.warning(
                             "자동 목록 수량 입력칸 활성화 확인 실패: "
-                            f"시도 {attempt}/3 region={region}"
+                            f"시도 {attempt}/5 region={region}"
                         )
                         continue
                 elif not visual_focus:
                     logger.warning(
                         "자동 목록 수량 입력칸 활성화 확인 실패: "
-                        f"시도 {attempt}/3 region={region}"
+                        f"시도 {attempt}/5 region={region}"
                     )
                     continue
 
@@ -3753,7 +3768,7 @@ class RuleExecutor:
                     else:
                         if clipboard_available and copied_after == expected:
                             if attempt > 1:
-                                logger.info(f"자동 목록 수량 입력 재시도 성공: {attempt}/3")
+                                logger.info(f"자동 목록 수량 입력 재시도 성공: {attempt}/5")
                             return True
                         if clipboard_available and copied_after != marker:
                             logger.warning(
@@ -3764,12 +3779,12 @@ class RuleExecutor:
 
                 if visual_focus or final_visual_focus:
                     if attempt > 1:
-                        logger.info(f"자동 목록 수량 입력 재시도 성공: {attempt}/3")
+                        logger.info(f"자동 목록 수량 입력 재시도 성공: {attempt}/5")
                     return True
 
                 logger.warning(
                     "자동 목록 수량 입력 후 포커스 확인 실패: "
-                    f"시도 {attempt}/3 region={region}"
+                    f"시도 {attempt}/5 region={region}"
                 )
             return False
         finally:
