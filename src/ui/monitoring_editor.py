@@ -44,6 +44,7 @@ from .key_input_dialog import KeyInputDialog, format_key_combo
 from .random_key_sequence_dialog import RandomKeySequenceDialog
 from .text_overflow import truncate_ui_text
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
+from .ui_batcher import resolve_widget_ui_post
 from ..player.random_key_sequence import (
     format_random_key_sequences_summary,
     normalize_random_key_sequences,
@@ -672,6 +673,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
             "condition_verify_image_color": bool(self._field_vars.get("verify_image_color").get()) if self._field_vars.get("verify_image_color") is not None else False,
             "condition_verify_image_brightness": bool(self._field_vars.get("verify_image_brightness").get()) if self._field_vars.get("verify_image_brightness") is not None else False,
         }
+        ui_post = resolve_widget_ui_post(self)
 
         def worker() -> None:
             try:
@@ -709,10 +711,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
                     detail.append(f"검증옵션: {result.get('verify')}")
                 messagebox.showinfo("\uc601\uc0c1 \ud14c\uc2a4\ud2b8", "\n".join(detail), parent=self)
 
-            try:
-                self.after(0, show_result)
-            except tk.TclError:
-                pass
+            ui_post(show_result)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1001,6 +1000,8 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._route_jump_rows: dict[int, ctk.CTkFrame] = {}
         self._route_action_toggle_buttons: dict[int, ctk.CTkButton] = {}
         self._route_render_generation = 0
+        self._render_after_ids: set[str] = set()
+        self._closed = False
         self._route_count_label = None
         self._save_status_label = None
         self._action_options: list[tuple[str, int]] = []
@@ -1031,6 +1032,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self.configure(fg_color=COLORS["bg_dark"])
         self.transient(self._owner)
         self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
         self.update_idletasks()
         x = max(0, (self.winfo_screenwidth() - 1080) // 2)
@@ -1529,9 +1531,12 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         self._pending_thumbnail_labels[pending_key] = waiters
         if len(waiters) > 1:
             return
+        ui_post = resolve_widget_ui_post(self)
 
         def load_thumbnail():
             try:
+                if self._closed:
+                    return
                 if is_video_media_path(source):
                     cap = cv2.VideoCapture(source)
                     try:
@@ -1570,6 +1575,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
 
                 def apply_thumbnail():
                     try:
+                        if self._closed:
+                            self._pending_thumbnail_labels.pop(pending_key, None)
+                            return
                         ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(new_w, new_h))
                         set_cached_thumbnail(cache_source, size, ctk_img)
                         waiters = self._pending_thumbnail_labels.pop(pending_key, [])
@@ -1583,15 +1591,17 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     except (tk.TclError, RuntimeError):
                         pass
 
-                try:
-                    self.after(0, apply_thumbnail)
-                except (tk.TclError, RuntimeError):
-                    self._pending_thumbnail_labels.pop(pending_key, None)
+                ui_post(apply_thumbnail)
             except Exception as exc:
-                self._pending_thumbnail_labels.pop(pending_key, None)
+                ui_post(lambda: self._pending_thumbnail_labels.pop(pending_key, None))
                 logger.warning("monitoring thumbnail load failed: %s - %s", source, exc)
 
-        submit_thumbnail_task(load_thumbnail)
+        submit_thumbnail_task(
+            load_thumbnail,
+            on_drop=lambda: ui_post(
+                lambda: self._pending_thumbnail_labels.pop(pending_key, None)
+            ),
+        )
 
     @staticmethod
     def _widget_exists(widget) -> bool:
@@ -2596,6 +2606,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if not Path(image_path).exists():
             messagebox.showerror("\uc870\uac74 \ud14c\uc2a4\ud2b8", f"\uc870\uac74 \ud30c\uc77c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.\n{image_path}", parent=parent or self)
             return
+        ui_post = resolve_widget_ui_post(self)
 
         def worker() -> None:
             try:
@@ -2632,10 +2643,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                     detail.append(f"검증옵션: {result.get('verify')}")
                 messagebox.showinfo("\uc870\uac74 \ud14c\uc2a4\ud2b8", "\n".join(detail), parent=target_parent)
 
-            try:
-                self.after(0, show_result)
-            except tk.TclError:
-                pass
+            ui_post(show_result)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2975,6 +2983,25 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         if 0 <= idx < len(self._route_watches):
             self._route_watches[idx]["condition_jump_when_visible"] = value == "보이면 점프"
 
+    def _schedule_render_callback(self, callback, delay_ms: int = _MONITORING_RENDER_BATCH_DELAY_MS) -> None:
+        if self._closed:
+            return
+        holder = {}
+
+        def _run() -> None:
+            after_id = holder.get("id")
+            if after_id is not None:
+                self._render_after_ids.discard(after_id)
+            if not self._closed:
+                callback()
+
+        try:
+            after_id = self.after(max(0, int(delay_ms)), _run)
+        except (tk.TclError, RuntimeError):
+            return
+        holder["id"] = after_id
+        self._render_after_ids.add(after_id)
+
     def _refresh_route_list(self) -> None:
         self._update_route_count_label()
         if self._routes_frame is None:
@@ -3001,7 +3028,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
         for idx in range(end_idx):
             self._append_route_slot(idx)
         if end_idx < len(self._route_watches):
-            self.after(_MONITORING_RENDER_BATCH_DELAY_MS, lambda: self._render_route_batch(end_idx, generation))
+            self._schedule_render_callback(
+                lambda: self._render_route_batch(end_idx, generation)
+            )
 
     def _render_route_batch(self, start_idx: int, generation: int) -> None:
         if generation != self._route_render_generation:
@@ -3013,7 +3042,9 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             if idx not in self._route_slots:
                 self._append_route_slot(idx)
         if end_idx < len(self._route_watches):
-            self.after(_MONITORING_RENDER_BATCH_DELAY_MS, lambda: self._render_route_batch(end_idx, generation))
+            self._schedule_render_callback(
+                lambda: self._render_route_batch(end_idx, generation)
+            )
 
     def _append_route_slot(self, idx: int) -> None:
         if self._routes_frame is None or not 0 <= idx < len(self._route_watches):
@@ -3482,8 +3513,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
                 separator.pack(fill="x", padx=10, pady=(4, 0))
                 separator.pack_propagate(False)
         if len(actions) > _MONITORING_ACTION_RENDER_BATCH_SIZE:
-            self.after(
-                _MONITORING_RENDER_BATCH_DELAY_MS,
+            self._schedule_render_callback(
                 lambda: self._render_route_action_batch(
                     preview,
                     route_idx,
@@ -3506,8 +3536,7 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             self._append_route_action_slot(preview, route_idx, action_idx, actions[action_idx], len(actions))
 
         if end_idx < len(actions):
-            self.after(
-                _MONITORING_RENDER_BATCH_DELAY_MS,
+            self._schedule_render_callback(
                 lambda: self._render_route_action_batch(preview, route_idx, actions, end_idx),
             )
 
@@ -3960,3 +3989,26 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             sum(1 for item in valid_watches if self._watch_goto_index(item) >= 0),
         )
         self._complete_save("저장됨")
+
+    def destroy(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        self._route_render_generation += 1
+        for after_id in list(getattr(self, "_render_after_ids", set())):
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError, ValueError):
+                pass
+        self._render_after_ids.clear()
+        self._pending_thumbnail_labels.clear()
+        self._route_slots.clear()
+        self._route_action_slots.clear()
+        self._route_action_preview_hosts.clear()
+        self._route_jump_rows.clear()
+        self._route_action_toggle_buttons.clear()
+        try:
+            self.grab_release()
+        except (tk.TclError, RuntimeError):
+            pass
+        super().destroy()

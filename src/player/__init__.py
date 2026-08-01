@@ -1,37 +1,54 @@
-"""
-동작 재현 모듈
+"""Playback package with compatibility-preserving lazy exports.
 
-- action_player.py: 액션 실행
-- rule_executor.py: 규칙 실행
+Importing one engine must not construct the unrelated ActionPlayer singleton.
 """
 
-from .action_player import (
-    ActionPlayer,
-    action_player,
-    get_action_player,
-    PlayerState,
-    PlaybackProgress,
-    EmergencyStopHandler,
-)
+from importlib import import_module
+from typing import TYPE_CHECKING
 
-from .rule_executor import (
-    RuleExecutor,
-    get_rule_executor,
-    ExecutionState,
-    ExecutionProgress,
-)
 
-__all__ = [
-    # Action Player
-    "ActionPlayer",
-    "action_player",
-    "get_action_player",
-    "PlayerState",
-    "PlaybackProgress",
-    "EmergencyStopHandler",
-    # Rule Executor
-    "RuleExecutor",
-    "get_rule_executor",
-    "ExecutionState",
-    "ExecutionProgress",
-]
+_LAZY_EXPORTS = {
+    "ActionPlayer": (".action_player", "ActionPlayer"),
+    "action_player": (".action_player", "action_player"),
+    "get_action_player": (".action_player", "get_action_player"),
+    "PlayerState": (".action_player", "PlayerState"),
+    "PlaybackProgress": (".action_player", "PlaybackProgress"),
+    "EmergencyStopHandler": (".action_player", "EmergencyStopHandler"),
+    "RuleExecutor": (".rule_executor", "RuleExecutor"),
+    "get_rule_executor": (".rule_executor", "get_rule_executor"),
+    "ExecutionState": (".rule_executor", "ExecutionState"),
+    "ExecutionProgress": (".rule_executor", "ExecutionProgress"),
+}
+
+__all__ = list(_LAZY_EXPORTS)
+
+
+def __getattr__(name: str):
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
+
+if TYPE_CHECKING:
+    from .action_player import (
+        ActionPlayer,
+        EmergencyStopHandler,
+        PlaybackProgress,
+        PlayerState,
+        action_player,
+        get_action_player,
+    )
+    from .rule_executor import (
+        ExecutionProgress,
+        ExecutionState,
+        RuleExecutor,
+        get_rule_executor,
+    )

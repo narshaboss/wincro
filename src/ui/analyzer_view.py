@@ -17,6 +17,7 @@ import time
 import cv2
 import numpy as np
 import json
+from collections import OrderedDict, deque
 from PIL import Image, ImageTk
 
 from ..utils.logger import get_logger
@@ -38,7 +39,7 @@ from .image_crop_utils import (
     load_sidecar_mask,
     normalize_binary_mask,
 )
-from .ui_batcher import UiCallbackDispatcher
+from .ui_batcher import LatestOnlyWorker, UiCallbackDispatcher, resolve_widget_ui_post
 from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
@@ -53,18 +54,41 @@ UI_ASSETS_DIR = Path(__file__).with_name("assets")
 VIDEO_PLAY_ICON_FILE = UI_ASSETS_DIR / "bootstrap_play_circle_fill.png"
 
 # 썸네일 캐시 (성능 최적화)
-_thumbnail_cache = {}  # {cache_key: CTkImage}
+_thumbnail_cache = OrderedDict()  # {cache_key: CTkImage}
 _thumbnail_cache_lock = threading.Lock()
 MAX_THUMBNAIL_CACHE = 100
-_thumbnail_task_queue = queue.Queue()
+MAX_DIALOG_THUMBNAIL_REFS = 192
+MAX_THUMBNAIL_TASK_QUEUE = 256
+_thumbnail_task_queue = queue.Queue(maxsize=MAX_THUMBNAIL_TASK_QUEUE)
 _thumbnail_worker_lock = threading.Lock()
 _thumbnail_workers_started = False
 _THUMBNAIL_WORKER_COUNT = 4
+_thumbnail_tasks_dropped = 0
 
 
-def submit_thumbnail_task(task):
-    """Run thumbnail decoding on a small daemon worker pool instead of one thread per image."""
-    global _thumbnail_workers_started
+class _QueuedThumbnailTask:
+    """Thumbnail work item with optional cleanup when stale work is evicted."""
+
+    def __init__(self, callback, on_drop=None):
+        self._callback = callback
+        self._on_drop = on_drop
+
+    def __call__(self):
+        self._callback()
+
+    def discard(self) -> None:
+        callback = self._on_drop
+        self._on_drop = None
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                pass
+
+
+def submit_thumbnail_task(task, on_drop=None):
+    """Queue thumbnail decoding while bounding obsolete scroll work."""
+    global _thumbnail_workers_started, _thumbnail_tasks_dropped
     if not _thumbnail_workers_started:
         with _thumbnail_worker_lock:
             if not _thumbnail_workers_started:
@@ -76,7 +100,40 @@ def submit_thumbnail_task(task):
                     )
                     worker.start()
                 _thumbnail_workers_started = True
-    _thumbnail_task_queue.put(task)
+    queued_task = _QueuedThumbnailTask(task, on_drop=on_drop)
+    dropped = _enqueue_thumbnail_task(_thumbnail_task_queue, queued_task)
+    if dropped:
+        with _thumbnail_worker_lock:
+            _thumbnail_tasks_dropped += dropped
+
+
+def _enqueue_thumbnail_task(task_queue: queue.Queue, task) -> int:
+    """Insert newest work without ever blocking the Tk event thread."""
+    dropped = 0
+    while True:
+        try:
+            task_queue.put_nowait(task)
+            return dropped
+        except queue.Full:
+            try:
+                discarded = task_queue.get_nowait()
+                task_queue.task_done()
+                dropped += 1
+                discard = getattr(discarded, "discard", None)
+                if callable(discard):
+                    discard()
+            except queue.Empty:
+                continue
+
+
+def get_thumbnail_task_stats() -> dict:
+    """Return bounded worker queue diagnostics for tests and support logs."""
+    return {
+        "pending": _thumbnail_task_queue.qsize(),
+        "capacity": MAX_THUMBNAIL_TASK_QUEUE,
+        "dropped": _thumbnail_tasks_dropped,
+        "workers": _THUMBNAIL_WORKER_COUNT,
+    }
 
 
 def _thumbnail_worker_loop():
@@ -94,17 +151,20 @@ def get_cached_thumbnail(image_path: str, size: tuple):
     """캐시된 썸네일 가져오기"""
     cache_key = f"{image_path}_{size[0]}x{size[1]}"
     with _thumbnail_cache_lock:
-        return _thumbnail_cache.get(cache_key)
+        cached = _thumbnail_cache.get(cache_key)
+        if cached is not None:
+            _thumbnail_cache.move_to_end(cache_key)
+        return cached
 
 
 def set_cached_thumbnail(image_path: str, size: tuple, ctk_image):
     """썸네일 캐시에 저장"""
     cache_key = f"{image_path}_{size[0]}x{size[1]}"
     with _thumbnail_cache_lock:
-        if len(_thumbnail_cache) >= MAX_THUMBNAIL_CACHE:
-            oldest_key = next(iter(_thumbnail_cache))
-            del _thumbnail_cache[oldest_key]
+        _thumbnail_cache.pop(cache_key, None)
         _thumbnail_cache[cache_key] = ctk_image
+        while len(_thumbnail_cache) > MAX_THUMBNAIL_CACHE:
+            _thumbnail_cache.popitem(last=False)
 
 
 def invalidate_thumbnail_cache(image_path: str):
@@ -3146,7 +3206,7 @@ class AltImageDialog(ctk.CTkToplevel):
 
         self._rule = rule
         self._on_change = on_change
-        self._thumbnail_refs = []
+        self._thumbnail_refs = deque(maxlen=MAX_DIALOG_THUMBNAIL_REFS)
 
         self.title("멀티이미지 관리")
         self.geometry("500x400")
@@ -3510,7 +3570,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
         self._plan = plan
         self._result = False
-        self._thumbnail_refs = []
+        self._thumbnail_refs = deque(maxlen=MAX_DIALOG_THUMBNAIL_REFS)
+        self._thumbnail_closed = False
         self._collapsed_items = set()  # 접힌 항목 ID
         self._all_collapsed = True  # 기본: 접힌 상태
         self._scrollable = None
@@ -4256,9 +4317,12 @@ class AutomationPlanDialog(ctk.CTkToplevel):
             text_color=COLORS["text_muted"],
         )
         placeholder.pack(expand=True)
+        ui_post = resolve_widget_ui_post(self)
 
         def load_thumbnail(path=image_path, target_rule=rule, placeholder_widget=placeholder):
             try:
+                if self._thumbnail_closed:
+                    return
                 img_arr = np.fromfile(path, np.uint8)
                 img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                 if img is None:
@@ -4272,6 +4336,8 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
                 def apply_thumbnail():
                     try:
+                        if self._thumbnail_closed:
+                            return
                         if getattr(target_rule, "target_image", None) != path:
                             return
                         if not placeholder_widget.winfo_exists():
@@ -4287,13 +4353,10 @@ class AutomationPlanDialog(ctk.CTkToplevel):
                     except (tk.TclError, RuntimeError):
                         pass
 
-                self.after(0, apply_thumbnail)
+                ui_post(apply_thumbnail)
             except Exception as e:
                 logger.warning(f"Thumbnail load failed: {path} - {e}")
-                try:
-                    self.after(0, lambda: placeholder_widget.configure(text="ERR"))
-                except (tk.TclError, RuntimeError):
-                    pass
+                ui_post(lambda: placeholder_widget.configure(text="ERR"))
 
         submit_thumbnail_task(load_thumbnail)
 
@@ -4456,6 +4519,7 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
     def _cleanup_resources(self):
         """다이얼로그 리소스 정리"""
+        self._thumbnail_closed = True
         self._cancel_action_list_render_batch()
         # 썸네일 이미지 참조 해제 (메모리 누수 방지)
         self._thumbnail_refs.clear()
@@ -4519,6 +4583,14 @@ class AnalyzerView(BaseView):
         self._recording_items = []
         self._recording_index_by_id = {}
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=72)
+        self._plans_loader = LatestOnlyWorker(
+            "wincro-analyzer-plans",
+            lambda exc: logger.error(f"plan list background load failed: {exc}"),
+        )
+        self._recordings_loader = LatestOnlyWorker(
+            "wincro-analyzer-recordings",
+            lambda exc: logger.error(f"recording list background load failed: {exc}"),
+        )
 
         self._setup_ui()
         self.after(0, self._deferred_load)  # UI ?? ? ??? ??
@@ -4607,7 +4679,7 @@ class AnalyzerView(BaseView):
                         logger.error(f"계획 로드 실패: {plan_file} - {e}")
             self._analyzer_ui_post(lambda: self._apply_plans(plans, current_gen))
 
-        threading.Thread(target=_load, daemon=True).start()
+        self._plans_loader.submit(_load)
 
     def _apply_plans(self, plans, generation=None):
         """백그라운드에서 로드된 플랜을 UI에 적용"""
@@ -5012,7 +5084,7 @@ class AnalyzerView(BaseView):
             recordings = self._db.get_all_recordings()
             self._analyzer_ui_post(lambda: self._apply_recordings(recordings, current_gen))
 
-        threading.Thread(target=_load, daemon=True).start()
+        self._recordings_loader.submit(_load)
 
     def _apply_recordings(self, recordings, generation=None):
         if generation is not None and generation < self._recordings_load_generation:
@@ -5558,6 +5630,10 @@ class AnalyzerView(BaseView):
         self._load_plans_async()
 
     def cleanup(self):
+        for loader_name in ("_plans_loader", "_recordings_loader"):
+            loader = getattr(self, loader_name, None)
+            if loader is not None:
+                loader.close()
         dispatcher = getattr(self, "_ui_dispatcher", None)
         if dispatcher is not None:
             dispatcher.close()

@@ -8,6 +8,95 @@ from typing import Callable, Deque, Generic, List, Optional, TypeVar
 T = TypeVar("T")
 
 
+def resolve_widget_ui_post(widget) -> Callable[[Callable[[], None]], None]:
+    """Resolve a thread-safe UI poster while still on the Tk main thread."""
+    current = widget
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        dispatcher = getattr(current, "_ui_dispatcher", None)
+        post = getattr(dispatcher, "post", None)
+        if callable(post):
+            return post
+        current = getattr(current, "master", None)
+
+    def _fallback(callback: Callable[[], None]) -> None:
+        if threading.current_thread() is threading.main_thread():
+            callback()
+            return
+        try:
+            widget.after(0, callback)
+        except (tk.TclError, RuntimeError, AttributeError):
+            pass
+
+    return _fallback
+
+
+class LatestOnlyWorker:
+    """Run one background job at a time and coalesce bursts to the latest job."""
+
+    def __init__(
+        self,
+        name: str,
+        error_callback: Optional[Callable[[Exception], None]] = None,
+    ):
+        self._name = str(name or "wincro-latest-worker")
+        self._error_callback = error_callback
+        self._lock = threading.Lock()
+        self._pending_job: Optional[Callable[[], None]] = None
+        self._active = False
+        self._closed = False
+
+    def submit(self, job: Callable[[], None]) -> bool:
+        """Keep the newest pending job; return True only when a worker starts."""
+        if not callable(job):
+            raise TypeError("job must be callable")
+        with self._lock:
+            if self._closed:
+                return False
+            self._pending_job = job
+            if self._active:
+                return False
+            self._active = True
+        threading.Thread(target=self._run, name=self._name, daemon=True).start()
+        return True
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._pending_job = None
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._active
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return int(self._pending_job is not None)
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if self._closed:
+                    self._pending_job = None
+                    self._active = False
+                    return
+                job = self._pending_job
+                self._pending_job = None
+                if job is None:
+                    self._active = False
+                    return
+            try:
+                job()
+            except Exception as exc:
+                callback = self._error_callback
+                if callback is not None:
+                    try:
+                        callback(exc)
+                    except Exception:
+                        pass
+
+
 def dispatch_widget_after(widget, dispatcher, direct_after: Callable, ms, func=None, *args):
     """Route worker-thread after() calls onto the Tk main thread."""
     if func is None:
@@ -28,7 +117,12 @@ def dispatch_widget_after(widget, dispatcher, direct_after: Callable, ms, func=N
 
 
 class UiCallbackDispatcher:
-    """Batch UI callbacks onto the Tk main thread at a steady cadence."""
+    """Batch UI callbacks onto the Tk main thread.
+
+    Child widgets reuse the nearest ancestor dispatcher.  That keeps editor
+    views from each installing their own 20 ms Tk polling timer while still
+    preserving per-view queues and close semantics.
+    """
 
     def __init__(
         self,
@@ -48,7 +142,22 @@ class UiCallbackDispatcher:
         self._after_id: Optional[str] = None
         self._closed = False
         self._dropped_count = 0
-        self._schedule_tick()
+        self._parent_dispatcher = self._find_parent_dispatcher(widget)
+        self._delegated_drain_enqueued = False
+        if self._parent_dispatcher is None:
+            self._schedule_tick()
+
+    @staticmethod
+    def _find_parent_dispatcher(widget):
+        current = getattr(widget, "master", None)
+        seen = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            dispatcher = getattr(current, "_ui_dispatcher", None)
+            if isinstance(dispatcher, UiCallbackDispatcher) and not dispatcher._closed:
+                return dispatcher
+            current = getattr(current, "master", None)
+        return None
 
     def post(self, callback: Callable[[], None]) -> None:
         if self._closed:
@@ -59,19 +168,30 @@ class UiCallbackDispatcher:
             except (tk.TclError, RuntimeError):
                 pass
             return
+        delegate = None
         with self._lock:
+            if self._closed:
+                return
             while len(self._queue) >= self._max_queue_items:
                 self._queue.popleft()
                 self._dropped_count += 1
             self._queue.append(callback)
+            if self._parent_dispatcher is not None and not self._delegated_drain_enqueued:
+                self._delegated_drain_enqueued = True
+                delegate = self._parent_dispatcher
+        if delegate is not None:
+            delegate.post(self._drain)
 
     def clear(self) -> None:
         with self._lock:
             self._queue.clear()
 
     def close(self) -> None:
-        self._closed = True
-        self.clear()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._queue.clear()
         try:
             if self._after_id is not None and self._widget.winfo_exists():
                 self._widget.after_cancel(self._after_id)
@@ -88,7 +208,7 @@ class UiCallbackDispatcher:
             return self._dropped_count
 
     def _schedule_tick(self) -> None:
-        if self._closed:
+        if self._closed or self._parent_dispatcher is not None:
             return
         try:
             if self._widget.winfo_exists():
@@ -115,7 +235,22 @@ class UiCallbackDispatcher:
                     break
         finally:
             self._after_id = None
-            self._schedule_tick()
+            if self._parent_dispatcher is None:
+                self._schedule_tick()
+            else:
+                has_more = False
+                with self._lock:
+                    self._delegated_drain_enqueued = False
+                    if self._queue and not self._closed:
+                        self._delegated_drain_enqueued = True
+                        has_more = True
+                if has_more:
+                    try:
+                        if self._widget.winfo_exists():
+                            self._after_id = self._widget.after(0, self._drain)
+                    except (tk.TclError, RuntimeError):
+                        with self._lock:
+                            self._delegated_drain_enqueued = False
 
 
 class BufferedRecordPump(Generic[T]):

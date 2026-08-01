@@ -12,6 +12,7 @@ import ctypes
 import os
 import cv2
 import numpy as np
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -25,7 +26,7 @@ from ..recorder import RecordingSession, get_screen_recorder
 from ..database import Recording, get_db
 from .main_window import BaseView, COLORS
 from .theme import IOS_FONTS, IOS_METRICS
-from .ui_batcher import UiCallbackDispatcher
+from .ui_batcher import LatestOnlyWorker, UiCallbackDispatcher, resolve_widget_ui_post
 from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
@@ -69,11 +70,15 @@ class RecorderView(BaseView):
         self._async_result_name = None
         self._recordings_load_generation = 0
         self._recording_items = []
-        self._media_thumbnail_cache = {}
-        self._media_thumbnail_refs = []
+        self._media_thumbnail_cache = OrderedDict()
+        self._media_thumbnail_refs = deque(maxlen=192)
         self._label_text_cache = {}
         self._label_color_cache = {}
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=48)
+        self._recordings_loader = LatestOnlyWorker(
+            "wincro-recorder-media",
+            lambda exc: logger.error(f"template media background load failed: {exc}"),
+        )
 
         self._setup_ui()
         self._setup_hotkeys()
@@ -406,7 +411,7 @@ class RecorderView(BaseView):
                 preserve_scroll=preserve_scroll,
             ))
 
-        threading.Thread(target=_load, daemon=True).start()
+        self._recordings_loader.submit(_load)
 
     def _load_template_media_items(self):
         """템플릿 폴더의 이미지/동영상 파일을 최신순으로 로드."""
@@ -531,31 +536,10 @@ class RecorderView(BaseView):
         content = ctk.CTkFrame(item, fg_color="transparent")
         content.pack(fill="x", padx=12, pady=9)
 
-        thumb = self._get_media_thumbnail(media)
-        if thumb is not None:
-            thumb_btn = ctk.CTkButton(
-                content,
-                image=thumb,
-                text="",
-                width=58,
-                height=58,
-                fg_color="transparent",
-                hover_color=COLORS["bg_card_hover"],
-                corner_radius=IOS_METRICS["control_radius_small"],
-                command=lambda p=media.path: self._open_media_editor(p),
-            )
-            thumb_btn.pack(side="left", padx=(0, 10))
-            self._media_thumbnail_refs.append(thumb)
-        else:
-            icon = "🎬" if media.media_type == "video" else "🖼"
-            icon_color = COLORS["accent_text"] if media.media_type == "video" else COLORS["accent"]
-            ctk.CTkLabel(
-                content,
-                text=icon,
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=22, weight="bold"),
-                text_color=icon_color,
-                width=52,
-            ).pack(side="left", padx=(0, 8))
+        thumb_host = ctk.CTkFrame(content, width=58, height=58, fg_color="transparent")
+        thumb_host.pack(side="left", padx=(0, 10))
+        thumb_host.pack_propagate(False)
+        self._render_media_thumbnail(thumb_host, media)
 
         info = ctk.CTkFrame(content, fg_color="transparent")
         info.pack(side="left", fill="x", expand=True)
@@ -602,11 +586,74 @@ class RecorderView(BaseView):
 
         return item
 
-    def _get_media_thumbnail(self, media: TemplateMediaItem):
-        cache_key = f"{media.path}|58"
+    def _media_thumbnail_cache_key(self, media: TemplateMediaItem) -> str:
+        return f"{media.path}|58|{media.modified_at.timestamp():.6f}"
+
+    def _render_media_thumbnail(self, host, media: TemplateMediaItem) -> None:
+        cache_key = self._media_thumbnail_cache_key(media)
         cached = self._media_thumbnail_cache.get(cache_key)
         if cached is not None:
-            return cached
+            self._media_thumbnail_cache.move_to_end(cache_key)
+            self._create_media_thumbnail_button(host, media, cached)
+            return
+
+        icon = "🎬" if media.media_type == "video" else "🖼"
+        icon_color = COLORS["accent_text"] if media.media_type == "video" else COLORS["accent"]
+        ctk.CTkLabel(
+            host,
+            text=icon,
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=22, weight="bold"),
+            text_color=icon_color,
+        ).pack(fill="both", expand=True)
+        ui_post = resolve_widget_ui_post(self)
+
+        def _load() -> None:
+            decoded = self._decode_media_thumbnail(media)
+            if decoded is None:
+                return
+            pil_image, new_w, new_h = decoded
+
+            def _apply() -> None:
+                try:
+                    if not host.winfo_exists():
+                        return
+                    ctk_image = ctk.CTkImage(
+                        light_image=pil_image,
+                        dark_image=pil_image,
+                        size=(new_w, new_h),
+                    )
+                    self._media_thumbnail_cache.pop(cache_key, None)
+                    self._media_thumbnail_cache[cache_key] = ctk_image
+                    while len(self._media_thumbnail_cache) > 160:
+                        self._media_thumbnail_cache.popitem(last=False)
+                    for child in host.winfo_children():
+                        child.destroy()
+                    self._create_media_thumbnail_button(host, media, ctk_image)
+                except (tk.TclError, RuntimeError):
+                    pass
+
+            ui_post(_apply)
+
+        from .analyzer_view import submit_thumbnail_task
+
+        submit_thumbnail_task(_load)
+
+    def _create_media_thumbnail_button(self, host, media: TemplateMediaItem, thumbnail) -> None:
+        thumb_btn = ctk.CTkButton(
+            host,
+            image=thumbnail,
+            text="",
+            width=58,
+            height=58,
+            fg_color="transparent",
+            hover_color=COLORS["bg_card_hover"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+            command=lambda p=media.path: self._open_media_editor(p),
+        )
+        thumb_btn.pack(fill="both", expand=True)
+        self._media_thumbnail_refs.append(thumbnail)
+
+    def _decode_media_thumbnail(self, media: TemplateMediaItem):
 
         path = Path(media.path)
         try:
@@ -636,11 +683,7 @@ class RecorderView(BaseView):
             new_h = max(1, int(h * scale))
             resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
             pil_image = Image.fromarray(resized)
-            ctk_image = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_w, new_h))
-            if len(self._media_thumbnail_cache) > 160:
-                self._media_thumbnail_cache.clear()
-            self._media_thumbnail_cache[cache_key] = ctk_image
-            return ctk_image
+            return pil_image, new_w, new_h
         except Exception as exc:
             logger.debug(f"미디어 썸네일 로드 실패: {path} ({exc})")
             return None
@@ -809,24 +852,24 @@ class RecorderView(BaseView):
                     msg = f"동기화 완료!\n\n다운로드: {result['downloaded']}개\n건너뜀: {result['skipped']}개"
                     if result["failed"] > 0:
                         msg += f"\n실패: {result['failed']}개"
-                    self.after(0, lambda: messagebox.showinfo("녹화 동기화", msg))
-                    self.after(0, self._refresh_recordings_list)
+                    self._recorder_ui_post(lambda: messagebox.showinfo("녹화 동기화", msg))
+                    self._recorder_ui_post(self._refresh_recordings_list)
                 elif result["skipped"] > 0:
-                    self.after(0, lambda: messagebox.showinfo(
+                    self._recorder_ui_post(lambda: messagebox.showinfo(
                         "녹화 동기화",
                         f"새로운 녹화 파일이 없습니다.\n(이미 {result['skipped']}개 존재)"
                     ))
                 else:
                     # 업로드 안내 표시
                     info = upload_recording_info().format(repo=repo)
-                    self.after(0, lambda: messagebox.showinfo(
+                    self._recorder_ui_post(lambda: messagebox.showinfo(
                         "녹화 동기화",
                         f"원격에 공유된 녹화 파일이 없습니다.\n\n{info}"
                     ))
 
             except Exception as e:
                 logger.error(f"녹화 동기화 오류: {e}")
-                self.after(0, lambda: messagebox.showerror("동기화 오류", str(e)))
+                self._recorder_ui_post(lambda: messagebox.showerror("동기화 오류", str(e)))
 
         thread = threading.Thread(target=sync_thread, daemon=True)
         thread.start()
@@ -1069,10 +1112,10 @@ class RecorderView(BaseView):
         try:
             result = self._recording_session.stop()
             # UI 업데이트는 메인 스레드에서
-            self.after(0, lambda: self._on_recording_stopped(result))
+            self._recorder_ui_post(lambda: self._on_recording_stopped(result))
         except Exception as e:
             logger.error(f"녹화 중지 오류: {e}")
-            self.after(0, lambda: self._on_recording_stop_failed(str(e)))
+            self._recorder_ui_post(lambda: self._on_recording_stop_failed(str(e)))
 
     def _on_recording_stopped(self, result):
         """녹화 중지 완료 (메인 스레드에서 호출)"""
@@ -1204,7 +1247,7 @@ class RecorderView(BaseView):
     def _on_trigger_captured(self, filepath: str):
         """F8 트리거 이미지 캡쳐 완료 콜백"""
         # UI 스레드에서 실행
-        self.after(0, lambda: self._show_trigger_capture_notification(filepath))
+        self._recorder_ui_post(lambda: self._show_trigger_capture_notification(filepath))
 
     def _show_trigger_capture_notification(self, filepath: str):
         """트리거 이미지 캡쳐 알림 표시"""
@@ -1263,7 +1306,7 @@ class RecorderView(BaseView):
                 # 녹화 중이 아니면 시작 (시작 중이 아닐 때만)
                 elif not self._is_recording and not self._starting:
                     try:
-                        self.after(0, self._on_start_recording)
+                        self._recorder_ui_post(self._on_start_recording)
                     except Exception as e:
                         logger.error(f"녹화 시작 요청 실패: {e}")
 
@@ -1305,7 +1348,7 @@ class RecorderView(BaseView):
                             self._stop_recording_from_hotkey()
                         elif not self._is_recording and not self._starting:
                             try:
-                                self.after(0, self._on_start_recording)
+                                self._recorder_ui_post(self._on_start_recording)
                             except Exception as e:
                                 logger.error(f"녹화 시작 요청 실패: {e}")
 
@@ -1339,7 +1382,7 @@ class RecorderView(BaseView):
 
         # 2. UI 스레드에서 _on_stop_recording 호출
         try:
-            self.after(0, self._on_stop_recording)
+            self._recorder_ui_post(self._on_stop_recording)
         except Exception as e:
             logger.error(f"F7: 녹화 중지 요청 실패: {e}")
             self._window_restored = False  # 실패 시 플래그 리셋
@@ -1406,6 +1449,9 @@ class RecorderView(BaseView):
 
     def cleanup(self):
         """cleanup"""
+        loader = getattr(self, "_recordings_loader", None)
+        if loader is not None:
+            loader.close()
         dispatcher = getattr(self, "_ui_dispatcher", None)
         if dispatcher is not None:
             dispatcher.close()

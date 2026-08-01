@@ -236,7 +236,7 @@ def test_recorder_view_uses_virtual_list_and_async_apply():
     text = _read_text(RECORDER_VIEW)
 
     assert 'from .virtual_scroll import VirtualScrollFrame' in text
-    assert 'from .ui_batcher import UiCallbackDispatcher' in text
+    assert 'from .ui_batcher import LatestOnlyWorker, UiCallbackDispatcher, resolve_widget_ui_post' in text
     assert 'self._recordings_scroll = VirtualScrollFrame(' in text
     assert 'def _refresh_recordings_list_async(self, preserve_scroll: bool = True):' in text
     assert 'def _apply_recordings_list(self, recordings, generation=None, preserve_scroll: bool = True):' in text
@@ -517,11 +517,14 @@ def test_monitoring_editor_thumbnails_do_not_decode_on_ui_thread():
     assert "cv2.VideoCapture(source)" in helper
     assert "img.shape[2] == 4" in helper
     assert "alpha = img[:, :, 3:4]" in helper
-    assert "submit_thumbnail_task(load_thumbnail)" in helper
+    assert "submit_thumbnail_task(" in helper
+    assert "load_thumbnail," in helper
+    assert "on_drop=lambda: ui_post(" in helper
     assert "def _widget_exists(widget) -> bool:" in text
     assert "ctk.CTkImage(" in helper
     assert helper.index("def load_thumbnail(") < helper.index("ctk.CTkImage(")
-    assert "self.after(0, apply_thumbnail)" in helper
+    assert "ui_post = resolve_widget_ui_post(self)" in helper
+    assert "ui_post(apply_thumbnail)" in helper
     assert "self._schedule_thumbnail(watch_thumb, image_path, size=(52, 38))" in text
     assert "self._schedule_thumbnail(thumb, image_path, size=(30, 22))" in text
     assert "self._schedule_thumbnail(condition_thumb, condition_image, size=(44, 30))" in text

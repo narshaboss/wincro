@@ -6,7 +6,7 @@ WinCro 실행 화면 모듈
 
 import customtkinter as ctk
 from typing import Optional, List
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 import json
 import math
@@ -65,7 +65,13 @@ from ..analyzer.automation_models import (
 from .main_window import BaseView
 from .player_map_runtime import GameModeMapRuntime
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
-from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
+from .ui_batcher import (
+    BufferedRecordPump,
+    LatestOnlyWorker,
+    UiCallbackDispatcher,
+    dispatch_widget_after,
+    resolve_widget_ui_post,
+)
 from .text_overflow import truncate_ui_text
 from .constants import (
     ACTION_NAMES, ACTION_NAMES_SHORT, ACTION_COLORS,
@@ -130,9 +136,10 @@ VIDEO_MEDIA_FILETYPES = [
 import threading
 
 # 썸네일 캐시 (성능 최적화)
-_thumbnail_cache = {}  # {cache_key: CTkImage}
+_thumbnail_cache = OrderedDict()  # {cache_key: CTkImage}
 _thumbnail_cache_lock = threading.Lock()
 MAX_THUMBNAIL_CACHE = 100  # 최대 캐시 개수
+MAX_DIALOG_THUMBNAIL_REFS = 192
 _active_game_mode_dialogs = weakref.WeakSet()
 _active_game_mode_dialogs_lock = threading.Lock()
 
@@ -325,7 +332,10 @@ def get_cached_thumbnail(image_path: str, size: tuple):
     mtime = _get_file_mtime(image_path)
     cache_key = f"{image_path}_{size[0]}x{size[1]}_{mtime}"
     with _thumbnail_cache_lock:
-        return _thumbnail_cache.get(cache_key)
+        cached = _thumbnail_cache.get(cache_key)
+        if cached is not None:
+            _thumbnail_cache.move_to_end(cache_key)
+        return cached
 
 
 def set_cached_thumbnail(image_path: str, size: tuple, ctk_image):
@@ -333,15 +343,10 @@ def set_cached_thumbnail(image_path: str, size: tuple, ctk_image):
     mtime = _get_file_mtime(image_path)
     cache_key = f"{image_path}_{size[0]}x{size[1]}_{mtime}"
     with _thumbnail_cache_lock:
-        # 캐시가 너무 크면 오래된 항목 제거
-        if len(_thumbnail_cache) >= MAX_THUMBNAIL_CACHE:
-            # 첫 번째 항목 제거 (간단한 LRU)
-            try:
-                first_key = next(iter(_thumbnail_cache))
-                del _thumbnail_cache[first_key]
-            except (StopIteration, KeyError, RuntimeError):
-                pass
+        _thumbnail_cache.pop(cache_key, None)
         _thumbnail_cache[cache_key] = ctk_image
+        while len(_thumbnail_cache) > MAX_THUMBNAIL_CACHE:
+            _thumbnail_cache.popitem(last=False)
 
 
 def invalidate_thumbnail_cache(image_path: str):
@@ -1323,7 +1328,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
         self._player_view = parent
         self._plan = plan
-        self._thumbnail_refs = []
+        self._thumbnail_refs = deque(maxlen=MAX_DIALOG_THUMBNAIL_REFS)
+        self._thumbnail_closed = False
         self._modified = False
         self._scrollable = None
         self._collapsed_items = set()  # 접힌 규칙 ID
@@ -3458,9 +3464,12 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     text_color=COLORS["text_muted"],
                 )
                 placeholder.pack(expand=True)
+                ui_post = resolve_widget_ui_post(self)
 
                 def _load_thumb(path=image_path, r=rule, ph=placeholder, pr=parent, thumb_size=size, btn_size=button_size):
                     try:
+                        if self._thumbnail_closed:
+                            return
                         img_arr = np.fromfile(path, np.uint8)
                         img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                         if img is None:
@@ -3474,6 +3483,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
                         def _apply():
                             try:
+                                if self._thumbnail_closed:
+                                    return
                                 ctk_img = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_w, new_h))
                                 set_cached_thumbnail(path, target_size, ctk_img)
                                 ph.destroy()
@@ -3490,7 +3501,7 @@ class PlanDetailDialog(ctk.CTkToplevel):
                             except (tk.TclError, RuntimeError):
                                 pass
 
-                        self.after(0, _apply)
+                        ui_post(_apply)
                     except (IOError, OSError, ValueError):
                         pass
 
@@ -8006,6 +8017,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             from tkinter import messagebox
             if messagebox.askyesno("저장 확인", "수정된 내용이 있습니다. 저장하시겠습니까?"):
                 self._save_plan()
+        self._thumbnail_closed = True
+        self._thumbnail_refs.clear()
         self.destroy()
 
 
@@ -8020,7 +8033,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._plan = plan
         self._save_callback = save_callback
         self._refresh_callback = refresh_callback
-        self._thumbnail_refs = []
+        self._thumbnail_refs = deque(maxlen=MAX_DIALOG_THUMBNAIL_REFS)
         self._is_running = False
         self._completed_normally = False
         self._last_runtime_activity_at = time.monotonic()
@@ -27787,7 +27800,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
         self._sequence = sequence
         self._db = db
-        self._thumbnail_refs = []
+        self._thumbnail_refs = deque(maxlen=MAX_DIALOG_THUMBNAIL_REFS)
+        self._thumbnail_closed = False
         self._modified = False
         self._scrollable = None
         self._collapsed_items = set()  # 접힌 액션 인덱스
@@ -29372,9 +29386,12 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     text_color=COLORS["text_muted"],
                 )
                 placeholder.pack(expand=True)
+                ui_post = resolve_widget_ui_post(self)
 
                 def _load_thumb(path=image_path, a=action, ph=placeholder, pr=parent, thumb_size=size, btn_size=button_size):
                     try:
+                        if self._thumbnail_closed:
+                            return
                         img_arr = np.fromfile(path, np.uint8)
                         img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                         if img is None:
@@ -29388,6 +29405,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
 
                         def _apply():
                             try:
+                                if self._thumbnail_closed:
+                                    return
                                 ctk_img = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_w, new_h))
                                 set_cached_thumbnail(path, target_size, ctk_img)
                                 ph.destroy()
@@ -29404,7 +29423,7 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                             except (tk.TclError, RuntimeError):
                                 pass
 
-                        self.after(0, _apply)
+                        ui_post(_apply)
                     except (IOError, OSError, ValueError):
                         pass
 
@@ -31564,6 +31583,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             from tkinter import messagebox
             if messagebox.askyesno("저장 확인", "수정된 내용이 있습니다. 저장하시겠습니까?"):
                 self._save_sequence()
+        self._thumbnail_closed = True
+        self._thumbnail_refs.clear()
         self.destroy()
 
 
@@ -31598,6 +31619,10 @@ class PlayerView(BaseView):
         self._plan_lock_cache: dict = {}  # plan_id → locked 캐시
         self._load_generation: int = 0  # async/sync 로드 경쟁 방지 카운터
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=72)
+        self._sequence_loader = LatestOnlyWorker(
+            "wincro-player-sequences",
+            lambda exc: logger.error(f"player list background load failed: {exc}"),
+        )
         self._player_ui_lock = threading.Lock()
         self._pending_plan_progress = None
         self._plan_progress_scheduled = False
@@ -31763,17 +31788,24 @@ class PlayerView(BaseView):
                     except Exception as e:
                         logger.error(f"자동화 계획 로드 실패 ({plan_file}): {e}")
             plans.sort(key=lambda p: p.created_at, reverse=True)
-            # plan_id → locked 캐시도 백그라운드에서 구축 (UI 차단 방지)
-            lock_cache = {}
-            for plan in plans:
-                recording = self._db.get_recording_by_plan_id(plan.plan_id)
-                lock_cache[plan.plan_id] = recording.locked if recording else False
+            # Build the lock cache from one query. The previous per-plan lookup
+            # became an N+1 database bottleneck as playlists accumulated.
+            recordings = self._db.get_all_recordings()
+            recordings_by_plan = {
+                recording.automation_plan_id: recording
+                for recording in recordings
+                if recording.automation_plan_id
+            }
+            lock_cache = {
+                plan.plan_id: bool(getattr(recordings_by_plan.get(plan.plan_id), "locked", False))
+                for plan in plans
+            }
             try:
                 self._player_ui_post(lambda: self._apply_loaded_data(sequences, plans, current_gen, lock_cache))
             except (tk.TclError, RuntimeError):
                 pass
 
-        threading.Thread(target=_load, daemon=True).start()
+        self._sequence_loader.submit(_load)
 
     def _apply_loaded_data(self, sequences, plans, generation=None, lock_cache=None):
         """로드 완료 후 UI 갱신"""
@@ -33162,11 +33194,13 @@ class PlayerView(BaseView):
 
         def on_complete(success: bool, message: str):
             try:
+                executor.clear_callbacks()
+                if self._rule_executor is executor:
+                    self._rule_executor = None
                 if not self.winfo_exists():
                     return
                 handoff = executor.take_special_mode_route_handoff()
                 if success and handoff is not None:
-                    self._rule_executor = None
                     self._playback_next_previous_rule = handoff.previous_rule
                     logger.info(
                         "[재생] 특화모드 경계 인계 → GameModeDialog: "
@@ -33177,7 +33211,6 @@ class PlayerView(BaseView):
                     )
                     return
                 if success and chain_remaining:
-                    self._rule_executor = None
                     self._player_ui_post(lambda: self._play_plan_rules(chain_remaining))
                 else:
                     self._player_ui_post(lambda s=success, m=message: self._show_plan_complete(s, m))
@@ -33258,6 +33291,8 @@ class PlayerView(BaseView):
         self._current_action_label.configure(text="-")
         self._last_plan_progress_snapshot = None
         self._last_action_text = "-"
+        if self._rule_executor is not None:
+            self._rule_executor.clear_callbacks()
         self._rule_executor = None
         self._playback_active_plan = None
         self._playback_remaining_rules = []
@@ -33516,6 +33551,9 @@ class PlayerView(BaseView):
 
     def cleanup(self) -> None:
         """리소스 정리"""
+        loader = getattr(self, "_sequence_loader", None)
+        if loader is not None:
+            loader.close()
         try:
             external_owner = getattr(self, "_external_execution_owner", None)
             if external_owner is not None:
@@ -33558,6 +33596,10 @@ class PlayerView(BaseView):
                 self._rule_executor.stop()
             except Exception as e:
                 logger.warning(f"rule_executor 정리 오류: {e}")
+            try:
+                self._rule_executor.clear_callbacks()
+            except Exception:
+                pass
             self._rule_executor = None
         dispatcher = getattr(self, "_ui_dispatcher", None)
         if dispatcher is not None:

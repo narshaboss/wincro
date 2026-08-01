@@ -394,7 +394,8 @@ def test_analyzer_playlist_thumbnails_load_off_ui_thread():
     assert "def load_thumbnail(" in method
     assert "submit_thumbnail_task(load_thumbnail)" in method
     assert "threading.Thread(target=load_thumbnail" not in method
-    assert "self.after(0, apply_thumbnail)" in method
+    assert "ui_post = resolve_widget_ui_post(self)" in method
+    assert "ui_post(apply_thumbnail)" in method
     assert "ctk.CTkImage(" in method
     assert method.index("def load_thumbnail(") < method.index("ctk.CTkImage(")
 
@@ -405,10 +406,13 @@ def test_analyzer_playlist_thumbnails_use_bounded_daemon_worker_queue():
 
     assert "import queue" in module_setup
     assert "_THUMBNAIL_WORKER_COUNT = 4" in module_setup
-    assert "def submit_thumbnail_task(task):" in text
+    assert "MAX_THUMBNAIL_TASK_QUEUE = 256" in module_setup
+    assert "queue.Queue(maxsize=MAX_THUMBNAIL_TASK_QUEUE)" in module_setup
+    assert "def submit_thumbnail_task(task, on_drop=None):" in text
     assert "target=_thumbnail_worker_loop" in text
     assert "daemon=True" in text
-    assert "_thumbnail_task_queue.put(task)" in text
+    assert "task_queue.put_nowait(task)" in text
+    assert "except queue.Full:" in text
 
 
 def test_image_confidence_dialog_supports_left_right_arrow_adjustment():

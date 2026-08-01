@@ -27,6 +27,7 @@ def test_action_player_closes_per_run_execution_logger_handlers(tmp_path):
     assert player._execution_logger is None
     assert handler not in logger.handlers
     assert handler.stream is None
+    assert logger.name not in logging.Logger.manager.loggerDict
 
 
 def test_execution_logger_is_unique_and_does_not_propagate_to_root():
@@ -86,3 +87,15 @@ def test_game_mode_destroy_closes_dialog_local_ui_queues():
     assert "setattr(self, attr, None)" in cleanup_method
     assert "self._close_runtime_ui_queues()" in destroy_method
     assert "self._close_runtime_ui_queues()" in on_close_method
+
+
+def test_player_view_cleanup_releases_rule_executor_callbacks():
+    text = _read_text(ROOT / "src" / "ui" / "player_view.py")
+    player_view_text = text[text.index("class PlayerView(BaseView):"):]
+    cleanup_method = player_view_text[player_view_text.index("def cleanup(self) -> None:"):]
+
+    assert "self._rule_executor.stop()" in cleanup_method
+    assert "self._rule_executor.clear_callbacks()" in cleanup_method
+    assert cleanup_method.index("self._rule_executor.clear_callbacks()") < cleanup_method.index(
+        "self._rule_executor = None"
+    )

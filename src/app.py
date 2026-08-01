@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 import atexit
+import os
 import threading
 import sys
 
@@ -22,7 +23,6 @@ from .utils.config import (
 )
 from .utils.plan_sequence_groups import get_active_plan_sequence
 from pathlib import Path
-from .database import get_db
 
 # 플레이 모드 경량화: MainWindow만 먼저 import, 나머지는 필요할 때 import
 from .ui.main_window import MainWindow
@@ -77,8 +77,11 @@ class WinCroApp:
     def __init__(self):
         """애플리케이션 초기화"""
         self._config = get_config()
-        self._db = get_db()
+        # Statistics are rarely requested and playback does not need this owner.
+        # Views/executors initialize their own shared DB manager when required.
+        self._db = None
         self._main_window: Optional[MainWindow] = None
+        self._mode_switch_restart = os.environ.pop("WINCRO_MODE_SWITCH_RESTART", "") == "1"
 
         # 성능 설정 적용 (DEBUG 로그 비활성화 등)
         apply_performance_config()
@@ -116,11 +119,16 @@ class WinCroApp:
                     f"[config] startup save skipped: status={get_config_load_status()} error={get_config_load_error()}"
                 )
 
-            # Packaged playlists are authoritative after update; old plan backups are discarded.
-            self._sync_shutdown_schedule_async()
-            self._sync_startup_registry_async()
-            self._refresh_shortcut_icons_async()
-            self._discard_legacy_plan_backup()
+            # An in-app mode switch already completed these machine-wide checks
+            # in the same session. Repeating them delays the replacement window.
+            if self._mode_switch_restart:
+                logger.info("[모드변경] 동일 세션 시작 점검 생략")
+            else:
+                # Packaged playlists are authoritative after update; old plan backups are discarded.
+                self._sync_shutdown_schedule_async()
+                self._sync_startup_registry_async()
+                self._refresh_shortcut_icons_async()
+                self._discard_legacy_plan_backup()
 
             # 메인 윈도우 생성
             self._main_window = MainWindow()
@@ -258,11 +266,18 @@ class WinCroApp:
             # 자동 업데이트 확인 (설정된 경우)
             # 업데이트 확인 완료 후에 자동 실행 시작 (업데이트 있으면 실행 안 함)
             logger.info(f"[자동업데이트] auto_check={self._config.update.auto_check}, github_repo={self._config.update.github_repo}, window_mode={self._config.ui.window_mode}")
-            if self._config.update.auto_check and self._config.update.github_repo:
+            if (
+                self._config.update.auto_check
+                and self._config.update.github_repo
+                and not self._mode_switch_restart
+            ):
                 logger.info("[자동업데이트] 2초 후 업데이트 확인 예약 (완료 후 자동실행 판단)")
                 self._main_window.after(UPDATE_CHECK_DELAY_MS, self._auto_check_update)
             else:
-                logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
+                if self._mode_switch_restart and self._config.update.auto_check:
+                    logger.info("[모드변경] 동일 세션 자동업데이트 재확인 생략")
+                else:
+                    logger.warning(f"[자동업데이트] 자동 업데이트가 비활성화됨 - auto_check={self._config.update.auto_check}")
                 # 업데이트 확인 비활성화 시 바로 자동 실행 시작
                 plan_paths, _repeats, group = get_active_plan_sequence(self._config.player)
                 if self._config.ui.window_mode == "play" and self._config.player.auto_run_enabled and plan_paths:
@@ -289,14 +304,18 @@ class WinCroApp:
     def _cleanup(self) -> None:
         """리소스 정리"""
         try:
-            # 생성된 뷰만 정리 (지연 생성으로 None일 수 있음)
-            for view in (self._recorder_view, self._analyzer_view, self._player_view,
-                         self._settings_view, self._guide_view):
-                if view and hasattr(view, 'cleanup'):
-                    try:
-                        view.cleanup()
-                    except Exception as e:
-                        logger.debug(f"뷰 정리 오류: {e}")
+            cleanup_window = getattr(self._main_window, "cleanup_resources", None)
+            if callable(cleanup_window):
+                cleanup_window()
+            else:
+                # 생성된 뷰만 정리 (지연 생성으로 None일 수 있음)
+                for view in (self._recorder_view, self._analyzer_view, self._player_view,
+                             self._settings_view, self._guide_view):
+                    if view and hasattr(view, 'cleanup'):
+                        try:
+                            view.cleanup()
+                        except Exception as e:
+                            logger.debug(f"뷰 정리 오류: {e}")
 
             # 설정 저장
             save_config()
@@ -318,6 +337,10 @@ class WinCroApp:
 
     def get_statistics(self) -> dict:
         """애플리케이션 통계 조회"""
+        if self._db is None:
+            from .database import get_db
+
+            self._db = get_db()
         return self._db.get_statistics()
 
     def _auto_run_sequence(self) -> None:

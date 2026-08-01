@@ -7,6 +7,7 @@ pyautogui를 사용하여 녹화된 동작을 재현합니다.
 import time
 import random
 import threading
+import logging
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable, Tuple, Generator
@@ -331,11 +332,12 @@ class ActionPlayer:
         return self._state in [PlayerState.RUNNING, PlayerState.PAUSED]
 
     def _close_execution_logger(self) -> None:
-        """Close per-run file handlers so repeated playback does not leak handles."""
+        """Close and unregister per-run loggers so repeated playback stays bounded."""
         execution_logger = getattr(self, "_execution_logger", None)
         if execution_logger is None:
             return
 
+        logger_name = str(getattr(execution_logger, "name", "") or "")
         try:
             handlers = list(getattr(execution_logger, "handlers", []) or [])
             for handler in handlers:
@@ -352,6 +354,10 @@ class ActionPlayer:
                 except Exception:
                     pass
         finally:
+            if logger_name:
+                logger_registry = logging.Logger.manager.loggerDict
+                if logger_registry.get(logger_name) is execution_logger:
+                    logger_registry.pop(logger_name, None)
             self._execution_logger = None
 
     def set_callbacks(

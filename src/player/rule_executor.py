@@ -6,6 +6,7 @@ WinCro 규칙 기반 실행 엔진
 """
 
 import copy
+import os
 import time
 import random
 import threading
@@ -118,6 +119,7 @@ SPECIAL_MODE_ROUTE_HANDOFF = "special_mode_route_handoff"
 PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS = 30.0
 TRIGGER_COORD_SEARCH_RADIUS = 220
 _screen_capture_lock = threading.Lock()
+_SHARED_SCREEN_FRAME_UNSET = object()
 
 
 def _resize_template_gray(template_gray: np.ndarray, scale: float):
@@ -761,6 +763,10 @@ class RuleExecutor:
         self._current_step_num = ""
         self._last_monitoring_route_detail: Dict[str, Any] = {}
         self._current_monitoring_wait_detail: Dict[str, Any] = {}
+        self._shared_image_scan_active = False
+        self._shared_image_scan_frame = _SHARED_SCREEN_FRAME_UNSET
+        self._stop_join_lock = threading.Lock()
+        self._stop_join_worker_active = False
         self._allow_special_mode_route_handoff = False
         self._special_mode_route_handoff_lock = threading.Lock()
         self._pending_special_mode_route_handoff: Optional[SpecialModeRouteHandoff] = None
@@ -999,6 +1005,13 @@ class RuleExecutor:
         self._on_complete = on_complete
         self._on_error = on_error
 
+    def clear_callbacks(self) -> None:
+        """Release UI callback references after a run has finished."""
+        self._on_progress = None
+        self._on_rule_executed = None
+        self._on_complete = None
+        self._on_error = None
+
     def execute_plan(
         self,
         plan: AutomationPlan,
@@ -1036,6 +1049,7 @@ class RuleExecutor:
         self._action_call_stack = []
         self._last_monitoring_route_detail = {}
         self._current_monitoring_wait_detail = {}
+        self._end_shared_image_scan()
         unblock_automation_input()
         self._stop_event.clear()
         self._pause_event.set()
@@ -1124,16 +1138,29 @@ class RuleExecutor:
 
             # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
             def _join_threads():
-                if self._execution_thread and self._execution_thread.is_alive():
-                    self._execution_thread.join(timeout=3.0)
-                    if self._execution_thread.is_alive():
-                        logger.warning("실행 스레드가 3초 후에도 응답 없음")
-                if self._monitor_thread and self._monitor_thread.is_alive():
-                    self._monitor_thread.join(timeout=2.0)
-                    if self._monitor_thread.is_alive():
-                        logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
+                try:
+                    if self._execution_thread and self._execution_thread.is_alive():
+                        self._execution_thread.join(timeout=3.0)
+                        if self._execution_thread.is_alive():
+                            logger.warning("실행 스레드가 3초 후에도 응답 없음")
+                    if self._monitor_thread and self._monitor_thread.is_alive():
+                        self._monitor_thread.join(timeout=2.0)
+                        if self._monitor_thread.is_alive():
+                            logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
+                finally:
+                    with self._stop_join_lock:
+                        self._stop_join_worker_active = False
 
-            threading.Thread(target=_join_threads, daemon=True).start()
+            with self._stop_join_lock:
+                start_join_worker = not self._stop_join_worker_active
+                if start_join_worker:
+                    self._stop_join_worker_active = True
+            if start_join_worker:
+                threading.Thread(
+                    target=_join_threads,
+                    name="wincro-rule-stop-join",
+                    daemon=True,
+                ).start()
 
             logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
         except Exception as e:
@@ -1835,6 +1862,64 @@ class RuleExecutor:
         x1, y1, x2, y2 = region
         return x1 <= int(x) <= x2 and y1 <= int(y) <= y2
 
+    @staticmethod
+    def _capture_trigger_input_window() -> int:
+        """Remember the external foreground window that should receive timeout keys."""
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = int(user32.GetForegroundWindow() or 0)
+            if hwnd <= 0 or not user32.IsWindow(ctypes.wintypes.HWND(hwnd)):
+                return 0
+
+            process_id = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(
+                ctypes.wintypes.HWND(hwnd),
+                ctypes.byref(process_id),
+            )
+            if int(process_id.value) == int(os.getpid()):
+                return 0
+            return hwnd
+        except Exception as exc:
+            logger.debug(f"[트리거] 입력 대상 창 기록 실패: {exc}")
+            return 0
+
+    @staticmethod
+    def _restore_trigger_input_window(hwnd: int) -> bool:
+        """Restore the captured external window before sending timeout keys."""
+        try:
+            target_hwnd = int(hwnd or 0)
+            if target_hwnd <= 0:
+                return False
+
+            user32 = ctypes.windll.user32
+            target = ctypes.wintypes.HWND(target_hwnd)
+            if not user32.IsWindow(target) or user32.IsIconic(target):
+                return False
+            if int(user32.GetForegroundWindow() or 0) == target_hwnd:
+                return True
+
+            # Windows restricts SetForegroundWindow. A short ALT transition is
+            # the same guarded technique already used after trigger detection.
+            vk_menu = 0x12
+            keyeventf_extendedkey = 0x0001
+            keyeventf_keyup = 0x0002
+            user32.keybd_event(vk_menu, 0, keyeventf_extendedkey, 0)
+            try:
+                user32.SetForegroundWindow(target)
+                user32.BringWindowToTop(target)
+            finally:
+                user32.keybd_event(
+                    vk_menu,
+                    0,
+                    keyeventf_extendedkey | keyeventf_keyup,
+                    0,
+                )
+            time.sleep(0.06)
+            return int(user32.GetForegroundWindow() or 0) == target_hwnd
+        except Exception as exc:
+            logger.debug(f"[트리거] 입력 대상 창 복원 실패: {exc}")
+            return False
+
     def _execute_trigger_missing_keys(
         self,
         rule: AutomationRule,
@@ -1848,6 +1933,7 @@ class RuleExecutor:
         key_sequences_attr: Optional[str] = None,
         key_sequence_settings_attr: Optional[str] = None,
         log_label: str = "트리거 미감지 종료 전 키입력",
+        target_window_handle: int = 0,
     ) -> bool:
         """트리거 미감지 처리 직전에 지정 키 목록을 순서대로 반복 입력한다."""
         keys = [
@@ -1888,6 +1974,24 @@ class RuleExecutor:
         )
 
         input_ctrl = get_input_controller()
+        if target_window_handle:
+            focus_restored = self._restore_trigger_input_window(target_window_handle)
+            focus_label = "성공" if focus_restored else "실패"
+            logger.info(
+                f"{_YELLOW}{step_prefix}{log_label} 대상 창 포커스 복원: "
+                f"{focus_label} (hwnd={int(target_window_handle)}){_RESET}"
+            )
+
+        # A previous action may have left a modifier or direction key pressed.
+        # Clear that state before executing the configured recovery sequence.
+        release_all = getattr(input_ctrl, "release_all", None)
+        if callable(release_all):
+            try:
+                release_all()
+            except Exception as exc:
+                logger.warning(
+                    f"{_YELLOW}{step_prefix}{log_label} 입력 상태 초기화 실패: {exc}{_RESET}"
+                )
         key_labels = [" + ".join(key.upper() for key in combo) for combo in key_sequences]
         key_label = " → ".join(key_labels)
         scheduled_inputs = []
@@ -2010,6 +2114,7 @@ class RuleExecutor:
         else:
             mode_desc = "무제한"
         search_region = self._trigger_search_region_for_rule(rule)
+        trigger_input_window = self._capture_trigger_input_window()
 
         logger.info(f"{_YELLOW}{step_prefix}⏳ 트리거 대기 중... ({mode_desc}){_RESET}")
         if search_region:
@@ -2047,6 +2152,7 @@ class RuleExecutor:
                         key_sequences_attr="trigger_missing_rewind_key_sequences",
                         key_sequence_settings_attr="trigger_missing_rewind_key_sequence_settings",
                         log_label=f"트리거 미감지 복귀 전 키입력({rewind_target_label})",
+                        target_window_handle=trigger_input_window,
                     )
                     if not keys_ok:
                         if self._stop_event.is_set():
@@ -2095,6 +2201,7 @@ class RuleExecutor:
                     step_prefix,
                     key_sequences_attr="trigger_missing_key_sequences",
                     key_sequence_settings_attr="trigger_missing_key_sequence_settings",
+                    target_window_handle=trigger_input_window,
                 )
                 if not keys_ok:
                     if self._stop_event.is_set():
@@ -2994,6 +3101,15 @@ class RuleExecutor:
                         except (OSError, pyperclip.PyperclipException):
                             pass
 
+    def _begin_shared_image_scan(self) -> None:
+        """Share one immutable capture across a single monitoring scan."""
+        self._shared_image_scan_active = True
+        self._shared_image_scan_frame = _SHARED_SCREEN_FRAME_UNSET
+
+    def _end_shared_image_scan(self) -> None:
+        self._shared_image_scan_active = False
+        self._shared_image_scan_frame = _SHARED_SCREEN_FRAME_UNSET
+
     def _find_image_on_screen(
         self,
         image_path: str,
@@ -3036,7 +3152,14 @@ class RuleExecutor:
                 return None
 
             capture_start = time.time()
-            screenshot_bgr = _grab_screen_bgr()
+            if self._shared_image_scan_active:
+                shared_frame = self._shared_image_scan_frame
+                if shared_frame is _SHARED_SCREEN_FRAME_UNSET:
+                    shared_frame = _grab_screen_bgr()
+                    self._shared_image_scan_frame = shared_frame
+                screenshot_bgr = shared_frame
+            else:
+                screenshot_bgr = _grab_screen_bgr()
             if screenshot_bgr is None:
                 logger.warning("화면 캡처 실패")
                 return None
@@ -5120,8 +5243,10 @@ class RuleExecutor:
                 self._log_monitoring_stop_context("wait_for_resume_stopped", step_prefix, start_time)
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
+            self._begin_shared_image_scan()
             final_result = self._find_monitoring_final_image(rule, final_images, final_search_region, base_confidence)
             if final_result is not None:
+                self._end_shared_image_scan()
                 final_image, found = final_result
                 final_confidence = found[2] if len(found) > 2 else 0
                 logger.info(
@@ -5165,6 +5290,8 @@ class RuleExecutor:
                     )
                     continue
                 if goto_index >= 0:
+                    # Dedicated actions and condition checks must observe a fresh frame.
+                    self._end_shared_image_scan()
                     watch_no = self._safe_int(watch.get("_watch_order", 0), 0) + 1
                     image_no = self._safe_int(watch.get("_image_order", 0), 0) + 1
                     image_priority = self._safe_int(watch.get("_image_priority", 999), 999)
@@ -5311,6 +5438,7 @@ class RuleExecutor:
                         monitoring_jump_rule_id=resolved_goto_rule_id,
                     )
 
+            self._end_shared_image_scan()
             wait_count += 1
             now = time.time()
             if now - last_status >= 10.0:

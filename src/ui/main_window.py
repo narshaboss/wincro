@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Callable, Dict
 from collections import deque
@@ -47,7 +48,7 @@ from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
 from ..player.runtime_action_options import is_runtime_action_enabled, should_skip_pumpkin_action
 from .capture_cleanup import remove_auto_capture_source_after_crop
 from .text_overflow import truncate_ui_text
-from .ui_batcher import BufferedRecordPump, UiCallbackDispatcher, dispatch_widget_after
+from .ui_batcher import BufferedRecordPump, LatestOnlyWorker, UiCallbackDispatcher, dispatch_widget_after
 
 PLANS_DIR = DATA_DIR / "plans"
 WHITE_GOLD_CTK_THEME = Path(__file__).with_name("ctk_white_gold_theme.json")
@@ -58,6 +59,67 @@ APP_ICON_PREVIEW_FILE = PROJECT_ROOT / "icon_preview.png"
 APP_USER_MODEL_ID = "WinCro.BusinessSupportTool"
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class MiniPlanSummary:
+    """Lightweight playlist metadata used by the compact player picker."""
+
+    name: str
+    plan_id: str
+    total_repeat_count: int
+    _source_file: str
+
+
+def _load_mini_plan_summaries(plans_dir: Path) -> list[MiniPlanSummary]:
+    """Read picker metadata without materializing every action in every plan."""
+    plans: list[MiniPlanSummary] = []
+    if not plans_dir.exists():
+        return plans
+    for plan_file in plans_dir.glob("*.json"):
+        try:
+            data = load_json_file(plan_file)
+            if not isinstance(data, dict):
+                raise TypeError("plan root must be an object")
+            plan_id = str(data.get("plan_id") or plan_file.stem)
+            plans.append(MiniPlanSummary(
+                name=str(data.get("name") or plan_id),
+                plan_id=plan_id,
+                total_repeat_count=normalize_repeat_count(data.get("total_repeat_count", 1)),
+                _source_file=str(plan_file),
+            ))
+        except Exception as exc:
+            logger.error(f"[미니플레이어] 플랜 인덱스 로드 실패: {plan_file} - {exc}")
+    return plans
+
+
+def _persist_mini_plan_repeat(plan_file: Path, repeat_count: int) -> None:
+    """Durably update only the plan repeat field and verify it from disk."""
+    import json
+
+    plan_file = Path(plan_file)
+    data = load_json_file(plan_file)
+    if not isinstance(data, dict):
+        raise TypeError("plan root must be an object")
+    normalized = normalize_repeat_count(repeat_count)
+    data["total_repeat_count"] = normalized
+    temp_file = plan_file.with_name(
+        f".{plan_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        with temp_file.open("w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_file, plan_file)
+        saved = load_json_file(plan_file)
+        if normalize_repeat_count(saved.get("total_repeat_count", 1)) != normalized:
+            raise OSError("saved repeat count verification failed")
+    finally:
+        try:
+            temp_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 # 컬러/치수 토큰 (theme.py에서 통합 관리)
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
@@ -511,6 +573,8 @@ class MainWindow(ctk.CTk):
 
         self.configure(fg_color=COLORS["bg_content"])
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=96)
+        self._resources_cleaned = False
+        self._mode_change_in_progress = False
         self._mini_active_bar_snapshot = None
 
         # 테마 설정
@@ -527,6 +591,7 @@ class MainWindow(ctk.CTk):
         self._view_titles: Dict[str, str] = {}
         self._pending_view_id: Optional[str] = None
         self._view_switch_token = 0
+        self._view_switch_after_id = None
         self._dirty_views = set()
 
         # 전역 F8 캡쳐 기능
@@ -698,6 +763,10 @@ class MainWindow(ctk.CTk):
         self._mini_notification_last_progress_snapshot = {}
         self._mini_notification_started_at = time.monotonic()
         self._mini_notification_last_sent_at = {}
+        self._mini_plan_loader = LatestOnlyWorker(
+            "wincro-mini-plans",
+            lambda exc: logger.error(f"mini-player plan list background load failed: {exc}"),
+        )
 
         # UI 먼저 생성 (빠르게)
         self._create_mini_player_ui()
@@ -705,21 +774,8 @@ class MainWindow(ctk.CTk):
         # 플랜 파일 로드는 백그라운드에서 수행
         def _load_plans_bg():
             try:
-                import json
-                plans = []
                 logger.info(f"[미니플레이어] 플랜 폴더: {PLANS_DIR}")
-                if PLANS_DIR.exists():
-                    templates_dir = DATA_DIR / "templates"
-                    for plan_file in PLANS_DIR.glob("*.json"):
-                        try:
-                            data = load_json_file(plan_file)
-                            plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                            # 원래 파일 경로 저장 (나중에 저장할 때 사용)
-                            plan._source_file = str(plan_file)
-                            plans.append(plan)
-                            logger.info(f"[미니플레이어] 플랜 로드 성공: {plan.name}")
-                        except Exception as e:
-                            logger.error(f"플랜 로드 실패: {plan_file} - {e}")
+                plans = _load_mini_plan_summaries(PLANS_DIR)
                 logger.info(f"[미니플레이어] 총 {len(plans)}개 플랜 로드됨")
 
                 def _apply_plans():
@@ -747,7 +803,7 @@ class MainWindow(ctk.CTk):
                 except (tk.TclError, RuntimeError):
                     pass
 
-        threading.Thread(target=_load_plans_bg, daemon=True).start()
+        self._mini_plan_loader.submit(_load_plans_bg)
 
     def _create_mini_player_ui(self):
         """미니 플레이어 UI 요소 생성"""
@@ -792,7 +848,7 @@ class MainWindow(ctk.CTk):
         self._mini_version_label.pack(side="left", padx=(8, 4), pady=8)
 
         # 에디터 모드 전환 버튼 (오른쪽 끝)
-        ctk.CTkButton(
+        self._mode_switch_btn = ctk.CTkButton(
             top_frame,
             text="에디터",
             width=78,
@@ -803,7 +859,8 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["text_on_accent"],
             corner_radius=IOS_METRICS["pill_radius"],
             command=lambda: self._change_window_mode("editor"),
-        ).pack(side="right", padx=(4, 10), pady=8)
+        )
+        self._mode_switch_btn.pack(side="right", padx=(4, 10), pady=8)
 
         # 횟수 설정 (오른쪽)
         self._mini_repeat_var = ctk.StringVar(value="1")
@@ -1768,21 +1825,8 @@ class MainWindow(ctk.CTk):
 
     def _refresh_mini_plans_sync(self):
         """플랜 목록 새로고침 - 디스크에서 최신 버전 로드 (백그라운드 스레드에서 호출)"""
-        import json
         old_count = len(self._mini_plans)
-        plans = []
-        if PLANS_DIR.exists():
-            templates_dir = DATA_DIR / "templates"
-            for plan_file in PLANS_DIR.glob("*.json"):
-                try:
-                    data = load_json_file(plan_file)
-                    plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                    # 원래 파일 경로 저장
-                    plan._source_file = str(plan_file)
-                    plans.append(plan)
-                except Exception as e:
-                    logger.error(f"[미니플레이어] 플랜 새로고침 실패: {plan_file} - {e}")
-        self._mini_plans = plans
+        self._mini_plans = _load_mini_plan_summaries(PLANS_DIR)
         logger.info(f"[미니플레이어] 플랜 새로고침 완료: {old_count} → {len(self._mini_plans)}개")
 
     def _refresh_mini_plans(self):
@@ -1796,7 +1840,11 @@ class MainWindow(ctk.CTk):
             except (tk.TclError, RuntimeError):
                 pass
 
-        threading.Thread(target=_load_and_update, daemon=True).start()
+        loader = getattr(self, "_mini_plan_loader", None)
+        if loader is not None:
+            loader.submit(_load_and_update)
+        else:
+            threading.Thread(target=_load_and_update, daemon=True).start()
 
     def _update_mini_plan_dropdown(self):
         """플랜 드롭다운 UI 업데이트 (메인 스레드에서 호출)"""
@@ -1993,7 +2041,15 @@ class MainWindow(ctk.CTk):
         """창 모드 변경 후 자동 재시작"""
         import sys
         import subprocess
-        import os
+
+        if self._mode_change_in_progress or mode == self._window_mode:
+            return
+        self._mode_change_in_progress = True
+        previous_mode = self._config.ui.window_mode
+        try:
+            self._mode_switch_btn.configure(state="disabled")
+        except (AttributeError, tk.TclError):
+            pass
 
         logger.info(f"[모드변경] 현재 auto_check={self._config.update.auto_check}, 변경할 모드={mode}")
 
@@ -2008,30 +2064,31 @@ class MainWindow(ctk.CTk):
             self._is_running = False
 
         self._config.ui.window_mode = mode
-        save_config()
+        if not save_config():
+            self._config.ui.window_mode = previous_mode
+            self._mode_change_in_progress = False
+            try:
+                self._mode_switch_btn.configure(state="normal")
+            except (AttributeError, tk.TclError):
+                pass
+            logger.error("[모드변경] 설정 저장 실패로 전환 취소")
+            return
         logger.info(f"[모드변경] 설정 저장 완료, auto_check={self._config.update.auto_check}")
 
         logger.info(f"창 모드 변경: {mode}, 자동 재시작...")
 
-        # 리소스 정리 먼저 수행
-        self._stop_template_video_capture_for_shutdown()
-
-        if self._keyboard_listener:
-            try:
-                self._keyboard_listener.stop()
-                self._keyboard_listener = None
-            except (OSError, RuntimeError):
-                pass
-
         # 새 프로세스 시작 (부모 프로세스와 분리)
         try:
+            child_env = os.environ.copy()
+            child_env["WINCRO_MODE_SWITCH_RESTART"] = "1"
             if getattr(sys, 'frozen', False):
                 # exe로 실행 중 - 인자 없이 실행
                 exe_path = sys.executable
                 # DETACHED_PROCESS로 완전히 분리된 프로세스 생성
                 subprocess.Popen(
                     [exe_path],
-                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                    env=child_env,
                 )
             else:
                 # 스크립트로 실행 중
@@ -2039,11 +2096,25 @@ class MainWindow(ctk.CTk):
                 script = sys.argv[0]
                 subprocess.Popen(
                     [python, script],
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    env=child_env,
                 )
             logger.info("[모드변경] 새 프로세스 시작됨")
         except Exception as e:
             logger.error(f"[모드변경] 프로세스 시작 실패: {e}")
+            self._config.ui.window_mode = previous_mode
+            save_config()
+            self._mode_change_in_progress = False
+            try:
+                self._mode_switch_btn.configure(state="normal")
+            except (AttributeError, tk.TclError):
+                pass
+            return
+
+        try:
+            self.cleanup_resources()
+        except Exception as e:
+            logger.error(f"[모드변경] 기존 창 리소스 정리 실패: {e}")
 
         # 데이터베이스 정리
         try:
@@ -2089,7 +2160,6 @@ class MainWindow(ctk.CTk):
 
     def _save_mini_repeat_count(self):
         """미니 플레이어 - 재생횟수 저장"""
-        import json
         plan_name = self._mini_plan_var.get()
         if not plan_name or plan_name == "(플랜 없음)":
             self._mini_status.configure(text="⚠ 플랜을 선택하세요")
@@ -2142,17 +2212,14 @@ class MainWindow(ctk.CTk):
             return
 
         try:
-            selected_plan.total_repeat_count = repeat_count
-
             # 플랜 파일에 저장 (원래 파일 경로가 있으면 그 경로에, 없으면 plan_id.json)
-            from .player_view import PLANS_DIR
             PLANS_DIR.mkdir(parents=True, exist_ok=True)
             if hasattr(selected_plan, '_source_file') and selected_plan._source_file:
                 plan_file = Path(selected_plan._source_file)
             else:
                 plan_file = PLANS_DIR / f"{selected_plan.plan_id}.json"
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(selected_plan.to_dict(), f, ensure_ascii=False, indent=2)
+            _persist_mini_plan_repeat(plan_file, repeat_count)
+            selected_plan.total_repeat_count = repeat_count
 
             # config의 plan_sequence_repeats도 동기화
             config = get_config()
@@ -2259,10 +2326,8 @@ class MainWindow(ctk.CTk):
         import threading
         def load_and_start():
             try:
-                # 플랜 새로고침 (디스크 I/O - 백그라운드에서)
-                self._refresh_mini_plans_sync()
-
-                # 플랜 찾기
+                # Picker metadata is already indexed. Hydrate only the selected
+                # plan so one click never reparses every playlist in the folder.
                 cached_plan = None
                 for p in self._mini_plans:
                     if p.name == plan_name:
@@ -2283,32 +2348,31 @@ class MainWindow(ctk.CTk):
                     return
 
                 # JSON에서 최신 플랜 로드 (원래 파일 경로 사용)
-                import json
-                from .player_view import PLANS_DIR
                 if hasattr(cached_plan, '_source_file') and cached_plan._source_file:
                     plan_file = Path(cached_plan._source_file)
                 else:
                     plan_file = PLANS_DIR / f"{cached_plan.plan_id}.json"
-                selected_plan = None
-                if plan_file.exists():
-                    try:
-                        data = load_json_file(plan_file)
-                        templates_dir = DATA_DIR / "templates"
-                        selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-                        # 원래 파일 경로 유지
-                        selected_plan._source_file = str(plan_file)
+                if not plan_file.exists():
+                    raise FileNotFoundError(f"플랜 파일 없음: {plan_file}")
+                try:
+                    data = load_json_file(plan_file)
+                    templates_dir = DATA_DIR / "templates"
+                    selected_plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
+                    # 원래 파일 경로 유지
+                    selected_plan._source_file = str(plan_file)
+                    if logger.isEnabledFor(logging.DEBUG):
                         for idx, rule in enumerate(selected_plan.initial_rules):
                             rule_conf = getattr(rule, 'confidence', 0)
-                            logger.info(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
+                            logger.debug(f"[미니플레이어] 룰 {idx+1}: {rule.action_type}, 인식률={rule_conf:.0%}")
                             if getattr(rule, 'is_monitoring_mode', False):
                                 watches = getattr(rule, 'monitoring_watches', []) or []
-                                logger.info(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
-                        logger.info(f"[미니플레이어] 플랜 최신 버전 로드: {plan_name}")
-                    except Exception as e:
-                        logger.warning(f"[미니플레이어] 플랜 재로드 실패, 캐시 사용: {e}")
-                        selected_plan = cached_plan
-                else:
-                    selected_plan = cached_plan
+                                logger.debug(f"[미니플레이어] 룰 {idx+1}: 모니터링모드=True, 감시={len(watches)}개")
+                    logger.info(
+                        f"[미니플레이어] 플랜 최신 버전 로드: {plan_name} "
+                        f"({len(selected_plan.initial_rules)}개 액션)"
+                    )
+                except Exception as e:
+                    raise RuntimeError(f"플랜 재로드 실패: {e}") from e
 
                 # 플랜 객체에 반복횟수 설정 (rule_executor에서 사용)
                 selected_plan.total_repeat_count = repeat_count
@@ -3012,6 +3076,9 @@ class MainWindow(ctk.CTk):
 
         def on_complete(success: bool, message: str):
             try:
+                executor.clear_callbacks()
+                if self._rule_executor is executor:
+                    self._rule_executor = None
                 if not self.winfo_exists():
                     return
                 if not self._mini_is_current_playback_generation(callback_generation):
@@ -4206,7 +4273,7 @@ class MainWindow(ctk.CTk):
         # 뷰가 아직 생성 안 됐으면 팩토리로 지연 생성
         if view_id not in self._views and view_id in self._view_factories:
             self._show_loading_view(view_id)
-            self.after_idle(
+            self._schedule_latest_view_switch(
                 lambda tok=token, target=view_id, previous=previous_view: self._materialize_view(tok, target, previous)
             )
             return
@@ -4215,7 +4282,28 @@ class MainWindow(ctk.CTk):
             self._pending_view_id = None
             return
 
-        self.after_idle(lambda tok=token, target=view_id: self._show_ready_view(tok, target))
+        self._schedule_latest_view_switch(
+            lambda tok=token, target=view_id: self._show_ready_view(tok, target)
+        )
+
+    def _schedule_latest_view_switch(self, callback: Callable[[], None]) -> None:
+        """Keep only the latest pending Tk idle callback for tab switching."""
+        pending_after_id = getattr(self, "_view_switch_after_id", None)
+        if pending_after_id is not None:
+            try:
+                self.after_cancel(pending_after_id)
+            except (tk.TclError, ValueError):
+                pass
+            self._view_switch_after_id = None
+
+        def _run_latest() -> None:
+            self._view_switch_after_id = None
+            callback()
+
+        try:
+            self._view_switch_after_id = self.after_idle(_run_latest)
+        except (tk.TclError, RuntimeError):
+            self._view_switch_after_id = None
 
     def _set_nav_button_state(self, active_view_id: Optional[str]):
         for btn_id, btn in self._nav_buttons.items():
@@ -4367,6 +4455,85 @@ class MainWindow(ctk.CTk):
         """탭 프레임 반환 (하위 호환성)"""
         return self._view_container
 
+    def cleanup_resources(self) -> None:
+        """Release resources owned by this window exactly once."""
+        if getattr(self, "_resources_cleaned", False):
+            return
+        self._resources_cleaned = True
+
+        pending_view_switch = getattr(self, "_view_switch_after_id", None)
+        if pending_view_switch is not None:
+            try:
+                self.after_cancel(pending_view_switch)
+            except (tk.TclError, ValueError):
+                pass
+            self._view_switch_after_id = None
+
+        try:
+            self._stop_template_video_capture_for_shutdown()
+        except Exception as exc:
+            logger.debug(f"템플릿 동영상 정리 오류: {exc}")
+
+        listener = getattr(self, "_keyboard_listener", None)
+        if listener is not None:
+            try:
+                listener.stop()
+            except (OSError, RuntimeError):
+                pass
+            self._keyboard_listener = None
+
+        executor = getattr(self, "_rule_executor", None)
+        if executor is not None:
+            try:
+                executor.stop()
+            except Exception as exc:
+                logger.debug(f"미니 플레이어 실행 정리 오류: {exc}")
+            try:
+                executor.clear_callbacks()
+            except Exception:
+                pass
+            self._rule_executor = None
+
+        for cancel_name in ("_mini_cancel_notification_watchdog", "_mini_cancel_game_mode_wait"):
+            cancel = getattr(self, cancel_name, None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
+
+        mini_plan_loader = getattr(self, "_mini_plan_loader", None)
+        if mini_plan_loader is not None:
+            mini_plan_loader.close()
+
+        mini_log_handler = getattr(self, "_mini_log_handler", None)
+        if mini_log_handler is not None:
+            try:
+                logging.getLogger().removeHandler(mini_log_handler)
+            except (ValueError, RuntimeError):
+                pass
+            self._mini_log_handler = None
+
+        log_panel = getattr(self, "_log_panel", None)
+        if log_panel is not None:
+            try:
+                log_panel.cleanup()
+            except Exception as exc:
+                logger.debug(f"로그 패널 정리 오류: {exc}")
+
+        for view_id, view in list(getattr(self, "_views", {}).items()):
+            cleanup = getattr(view, "cleanup", None)
+            if not callable(cleanup):
+                continue
+            try:
+                cleanup()
+            except Exception as exc:
+                logger.debug(f"뷰 정리 오류 ({view_id}): {exc}")
+
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.close()
+
     def _on_close(self):
         """윈도우 닫기"""
         try:
@@ -4390,29 +4557,7 @@ class MainWindow(ctk.CTk):
 
         threading.Thread(target=_last_resort_exit, daemon=True).start()
 
-        self._stop_template_video_capture_for_shutdown()
-
-        # 전역 키보드 리스너 정리
-        if self._keyboard_listener:
-            try:
-                self._keyboard_listener.stop()
-                self._keyboard_listener = None
-            except (OSError, RuntimeError):
-                pass
-
-        # 미니 로그 핸들러 정리
-        if hasattr(self, '_mini_log_handler') and self._mini_log_handler:
-            logging.getLogger().removeHandler(self._mini_log_handler)
-            self._mini_log_handler = None
-
-        # 로그 패널 정리
-        if hasattr(self, '_log_panel'):
-            self._log_panel.cleanup()
-
-        # 뷰 정리
-        for view in self._views.values():
-            if hasattr(view, 'cleanup'):
-                view.cleanup()
+        self.cleanup_resources()
 
         save_config()
         logger.info("애플리케이션 종료")

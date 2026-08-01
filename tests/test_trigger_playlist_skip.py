@@ -320,6 +320,7 @@ def test_playlist_skip_runs_multiple_exit_keys_in_saved_order(tmp_path):
     assert result.success is True
     assert result.skip_current_playlist is True
     assert input_ctrl.method_calls == [
+        call.release_all(),
         call.press("esc"),
         call.press("enter"),
         call.hotkey("ctrl", "a"),
@@ -638,6 +639,52 @@ def test_trigger_missing_runs_configured_hotkey_before_previous_action_rewind(tm
     input_ctrl.hotkey.assert_called_with("shift", "up")
 
 
+def test_trigger_missing_restores_target_window_and_clears_pressed_keys_before_rewind_input(
+    tmp_path,
+):
+    trigger = tmp_path / "trigger.png"
+    trigger.write_bytes(b"not a real png but path exists")
+    executor = _make_executor()
+    rule = AutomationRule(
+        action_type="click",
+        trigger_image=str(trigger),
+        rewind_previous_on_trigger_missing=True,
+        trigger_missing_rewind_count=1,
+        trigger_missing_rewind_delay=0,
+        trigger_missing_rewind_key_sequences=[["esc"]],
+    )
+    input_ctrl = Mock()
+    input_ctrl.press.return_value = True
+
+    with patch.object(
+        RULE_EXECUTOR_MODULE,
+        "get_input_controller",
+        return_value=input_ctrl,
+    ), patch.object(
+        executor,
+        "_capture_trigger_input_window",
+        return_value=4455,
+    ), patch.object(
+        executor,
+        "_restore_trigger_input_window",
+        return_value=True,
+    ) as restore_window, patch.object(
+        executor,
+        "_wait_for_trigger",
+        return_value=None,
+    ):
+        result = executor._execute_rule_with_retry(
+            rule,
+            step_num="2",
+            can_rewind_previous=True,
+        )
+
+    assert result.success is True
+    assert result.rewind_previous_action is True
+    restore_window.assert_called_once_with(4455)
+    assert input_ctrl.method_calls == [call.release_all(), call.press("esc")]
+
+
 def test_trigger_missing_runs_multiple_key_inputs_in_saved_order(tmp_path):
     trigger = tmp_path / "trigger.png"
     trigger.write_bytes(b"not a real png but path exists")
@@ -664,6 +711,7 @@ def test_trigger_missing_runs_multiple_key_inputs_in_saved_order(tmp_path):
     assert result.success is True
     assert result.rewind_previous_action is True
     assert input_ctrl.method_calls == [
+        call.release_all(),
         call.press("esc"),
         call.hotkey("shift", "up"),
         call.press("enter"),
@@ -711,6 +759,7 @@ def test_trigger_missing_key_repeat_delay_runs_between_each_key_and_list_cycle(t
 
     assert result.success is True
     assert input_ctrl.method_calls == [
+        call.release_all(),
         call.press("esc"),
         call.press("enter"),
         call.press("esc"),
@@ -773,6 +822,7 @@ def test_trigger_missing_rewind_uses_each_keys_own_repeat_and_delay(tmp_path):
     assert result.success is True
     assert result.rewind_previous_action is True
     assert input_ctrl.method_calls == [
+        call.release_all(),
         call.press("esc"),
         call.press("esc"),
         call.press("enter"),
