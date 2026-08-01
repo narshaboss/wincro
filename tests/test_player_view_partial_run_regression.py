@@ -6,13 +6,16 @@ from src.analyzer.automation_models import AutomationPlan, AutomationRule
 from src.database.models import Action
 import src.ui.player_view as player_view_module
 from src.ui.player_view import (
+    GameModeDialog,
     PlanDetailDialog,
     _build_manual_partial_rules,
+    _build_trigger_rewind_continuation,
     _detach_child_after_parent,
     _find_runnable_game_mode_index,
     _find_item_path_by_id,
     _flatten_children_after_parent,
     _manual_partial_start_index,
+    _trigger_rewind_options,
 )
 
 
@@ -114,6 +117,164 @@ def test_manual_partial_run_still_flattens_normal_parent_children():
 
     assert [rule.rule_id for rule in rules_to_run] == ["parent", "child"]
     assert rules_to_run[0].children == []
+
+
+def test_trigger_rewind_options_only_lists_enabled_actions_before_source():
+    nested = AutomationRule(rule_id="nested", action_type="hotkey", description="nested")
+    first = AutomationRule(rule_id="first", action_type="click", description="first", children=[nested])
+    disabled = AutomationRule(rule_id="disabled", action_type="wait", description="disabled", enabled=False)
+    source = AutomationRule(rule_id="source", action_type="click", description="source")
+    after = AutomationRule(rule_id="after", action_type="wait", description="after")
+
+    options = _trigger_rewind_options(
+        [first, disabled, source, after],
+        "rule_id",
+        "source",
+    )
+
+    assert options == [
+        ("◆ 상위 [1] first", "first"),
+        ("↳ 하위 [1-1] nested", "nested"),
+    ]
+
+
+def test_trigger_rewind_continuation_uses_original_nested_rule_id():
+    target = AutomationRule(rule_id="target", action_type="hotkey", description="target")
+    parent = AutomationRule(rule_id="parent", action_type="click", children=[target])
+    middle = AutomationRule(rule_id="middle", action_type="wait")
+    source = AutomationRule(rule_id="source", action_type="game_mode")
+    after = AutomationRule(rule_id="after", action_type="wait")
+
+    continuation, resolved, error = _build_trigger_rewind_continuation(
+        [parent, middle, source, after],
+        source,
+        "target",
+    )
+
+    assert error == ""
+    assert resolved is target
+    assert [rule.rule_id for rule in continuation] == ["target", "middle", "source", "after"]
+
+
+def test_trigger_rewind_continuation_rejects_deleted_disabled_and_forward_targets():
+    disabled = AutomationRule(rule_id="disabled", action_type="wait", enabled=False)
+    source = AutomationRule(rule_id="source", action_type="game_mode")
+    forward = AutomationRule(rule_id="forward", action_type="wait")
+    roots = [disabled, source, forward]
+
+    for target_id, expected in (
+        ("missing", "찾을 수 없습니다"),
+        ("disabled", "비활성화"),
+        ("forward", "앞에 있어야"),
+    ):
+        continuation, resolved, error = _build_trigger_rewind_continuation(
+            roots,
+            source,
+            target_id,
+        )
+        assert continuation == []
+        assert resolved is None
+        assert expected in error
+
+
+def test_trigger_rewind_continuation_keeps_legacy_previous_behavior():
+    previous = AutomationRule(rule_id="previous", action_type="wait")
+    source = AutomationRule(rule_id="source", action_type="game_mode")
+    after = AutomationRule(rule_id="after", action_type="wait")
+
+    continuation, resolved, error = _build_trigger_rewind_continuation(
+        [previous, source, after],
+        source,
+        None,
+        legacy_previous_rule=previous,
+        legacy_remaining_rules=[after],
+    )
+
+    assert error == ""
+    assert resolved is previous
+    assert [rule.rule_id for rule in continuation] == ["previous", "source", "after"]
+
+
+def test_game_mode_trigger_gate_propagates_configured_rewind_target(monkeypatch):
+    source = AutomationRule(
+        rule_id="source",
+        action_type="game_mode",
+        trigger_image="trigger.png",
+    )
+
+    class FakeExecutor:
+        def __init__(self):
+            self._stop_event = None
+            self._trigger_missing_rewind_attempts = None
+
+        def set_callbacks(self, **_callbacks):
+            return None
+
+        def _handle_trigger_gate(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                message="rewind",
+                rewind_previous_action=True,
+                rewind_target_rule_id="target",
+                rewind_delay=0.25,
+                skip_current_playlist=False,
+            )
+
+    dialog = GameModeDialog.__new__(GameModeDialog)
+    dialog._source_rule = source
+    dialog._source_previous_rule = None
+    dialog._stop_event = threading.Event()
+    dialog._trigger_rewind_attempts = {}
+    dialog._rewind_previous_action = False
+    dialog._rewind_target_rule_id = ""
+    dialog._rewind_delay = 0.0
+    dialog._completed_normally = False
+    dialog._is_running = True
+    dialog._schedule_ui_log = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(player_view_module, "RuleExecutor", FakeExecutor)
+
+    assert dialog._handle_source_trigger_gate() is False
+    assert dialog._rewind_previous_action is True
+    assert dialog._rewind_target_rule_id == "target"
+    assert dialog._rewind_delay == 0.25
+    assert dialog._completed_normally is True
+    assert dialog._stop_event.is_set()
+
+
+def test_partial_game_mode_completion_restarts_from_configured_target():
+    target = AutomationRule(rule_id="target", action_type="hotkey", description="target")
+    middle = AutomationRule(rule_id="middle", action_type="wait")
+    game_mode = AutomationRule(rule_id="game", action_type="game_mode")
+    after = AutomationRule(rule_id="after", action_type="wait")
+    dialog = object.__new__(PlanDetailDialog)
+    dialog._plan = AutomationPlan(
+        name="rewind partial",
+        initial_rules=[target, middle, game_mode, after],
+        monitoring_rules=[],
+    )
+    dialog._gm_remaining_rules = [after]
+    dialog._gm_current_rule = game_mode
+    dialog._gm_previous_rule = middle
+    dialog._is_running = True
+    dialog.winfo_exists = lambda: True
+    dialog.title = lambda *_args: None
+    dialog.configure = lambda **_kwargs: None
+    dialog._set_partial_status_text = lambda *_args, **_kwargs: None
+    dialog._run_remaining_rules = lambda rules: setattr(dialog, "captured_rules", rules)
+
+    dialog._on_game_mode_complete(
+        False,
+        "rewind",
+        rewind_previous_action=True,
+        rewind_target_rule_id="target",
+        rewind_delay=0,
+    )
+
+    assert [rule.rule_id for rule in dialog.captured_rules] == [
+        "target",
+        "middle",
+        "game",
+        "after",
+    ]
 
 
 def test_partial_game_mode_boundary_uses_shared_runtime_option_filter():

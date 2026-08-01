@@ -27,6 +27,83 @@ from ..utils.auto_list import (
 from ..utils.action_call import ACTION_CALL_ACTION_TYPE
 
 
+def normalize_trigger_key_sequences(raw_sequences, legacy_keys=None) -> List[List[str]]:
+    """Normalize ordered trigger key combos while preserving legacy flat keys."""
+    normalized: List[List[str]] = []
+    raw_sequences = raw_sequences or []
+    if isinstance(raw_sequences, (list, tuple)) and raw_sequences:
+        if all(not isinstance(item, (list, tuple)) for item in raw_sequences):
+            raw_sequences = [raw_sequences]
+        for raw_combo in raw_sequences:
+            if isinstance(raw_combo, str):
+                raw_combo = [raw_combo]
+            if not isinstance(raw_combo, (list, tuple)):
+                continue
+            combo = [
+                str(key).strip().lower()
+                for key in raw_combo
+                if str(key).strip()
+            ]
+            if combo:
+                normalized.append(combo)
+
+    if not normalized:
+        legacy_combo = [
+            str(key).strip().lower()
+            for key in (legacy_keys or [])
+            if str(key).strip()
+        ]
+        if legacy_combo:
+            normalized.append(legacy_combo)
+    return normalized
+
+
+def normalize_trigger_key_sequence_setting(raw_setting=None, defaults=None) -> Dict[str, Any]:
+    """Normalize one trigger key step's repeat timing settings."""
+    raw = raw_setting if isinstance(raw_setting, dict) else {}
+    fallback = defaults if isinstance(defaults, dict) else {}
+
+    try:
+        repeat_count = max(1, min(999, int(raw.get("repeat_count", fallback.get("repeat_count", 1)) or 1)))
+    except (TypeError, ValueError):
+        repeat_count = 1
+    try:
+        repeat_delay = max(0.0, float(raw.get("repeat_delay", fallback.get("repeat_delay", 0.5)) or 0.0))
+    except (TypeError, ValueError):
+        repeat_delay = 0.5
+    try:
+        random_range = max(
+            0.0,
+            float(raw.get("repeat_delay_random_range", fallback.get("repeat_delay_random_range", 0.3)) or 0.0),
+        )
+    except (TypeError, ValueError):
+        random_range = 0.3
+
+    return {
+        "repeat_count": repeat_count,
+        "repeat_delay": repeat_delay,
+        "repeat_delay_random": bool(
+            raw.get("repeat_delay_random", fallback.get("repeat_delay_random", False))
+        ),
+        "repeat_delay_random_range": random_range,
+    }
+
+
+def normalize_trigger_key_sequence_settings(raw_settings, sequence_count: int) -> List[Dict[str, Any]]:
+    """Return settings only when every ordered key sequence has one valid record."""
+    try:
+        expected_count = max(0, int(sequence_count))
+    except (TypeError, ValueError):
+        expected_count = 0
+    if expected_count == 0:
+        return []
+    if not isinstance(raw_settings, (list, tuple)) or len(raw_settings) != expected_count:
+        return []
+    if any(not isinstance(item, dict) for item in raw_settings):
+        return []
+    return [normalize_trigger_key_sequence_setting(item) for item in raw_settings]
+
+
 def _to_relative_path(abs_path: Optional[str]) -> Optional[str]:
     """??? ??????????? ??? (????)"""
     if not abs_path:
@@ -94,6 +171,7 @@ class AutomationRule:
     trigger_image: Optional[str] = None  # ????????? (????????
     trigger_x: Optional[int] = None  # ??????????? ??? X ???
     trigger_y: Optional[int] = None  # ??????????? ??? Y ???
+    trigger_search_region: Optional[List[int]] = None  # trigger-only [x1, y1, x2, y2]
     confidence: float = 0.65  # ??? ?????(?????? ???????? ???)
     verify_image_color: bool = False  # 이미지 매칭 후 색상 차이 추가 확인
     verify_image_brightness: bool = False  # 이미지 매칭 후 밝기 차이 추가 확인
@@ -124,6 +202,7 @@ class AutomationRule:
     skip_on_not_found: bool = False  # ???? ?????? wait_after ????? ?????? ???
     stop_playlist_on_trigger_missing: bool = False  # 트리거 미감지 시 현재 재생목록 종료
     trigger_missing_keys: List[str] = field(default_factory=list)  # 트리거 미감지 종료 전 입력할 키/조합
+    trigger_missing_key_sequences: List[List[str]] = field(default_factory=list)  # 종료 전 순차 키입력 목록
     trigger_missing_key_repeat_count: int = 1  # 트리거 미감지 종료 전 키입력 반복횟수
     trigger_missing_key_repeat_delay: float = 0.5  # 트리거 미감지 종료 전 키입력 반복 대기시간
     trigger_missing_key_repeat_delay_random: bool = False  # 트리거 미감지 종료 전 키입력 랜덤 대기
@@ -134,10 +213,14 @@ class AutomationRule:
     trigger_missing_rewind_delay_random: bool = False  # 전 액션 되돌아가기 랜덤 대기
     trigger_missing_rewind_delay_random_range: float = 0.3  # 전 액션 되돌아가기 랜덤 대기 범위
     trigger_missing_rewind_keys: List[str] = field(default_factory=list)  # 전 액션 복귀 전 입력할 키/조합
+    trigger_missing_rewind_key_sequences: List[List[str]] = field(default_factory=list)  # 복귀 전 순차 키입력 목록
     trigger_missing_rewind_key_repeat_count: int = 1  # 전 액션 복귀 전 키입력 반복횟수
     trigger_missing_rewind_key_repeat_delay: float = 0.5  # 전 액션 복귀 전 키입력 반복 대기시간
     trigger_missing_rewind_key_repeat_delay_random: bool = False  # 전 액션 복귀 전 키입력 랜덤 대기
     trigger_missing_rewind_key_repeat_delay_random_range: float = 0.3  # 전 액션 복귀 전 키입력 랜덤 대기 범위
+    trigger_missing_rewind_rule_id: Optional[str] = None  # 트리거 미감지 시 돌아갈 액션 ID (없으면 구형 전 액션 동작)
+    trigger_missing_key_sequence_settings: List[Dict[str, Any]] = field(default_factory=list)
+    trigger_missing_rewind_key_sequence_settings: List[Dict[str, Any]] = field(default_factory=list)
     repeat_count: int = 1  # ??? ??? (1 = 1?????)
     repeat_delay: float = 0.5  # ??? ??? ??????(??
     repeat_delay_random: bool = False  # ??? ????????? ???
@@ -186,6 +269,48 @@ class AutomationRule:
             self.trigger_missing_keys = []
         if self.trigger_missing_rewind_keys is None:
             self.trigger_missing_rewind_keys = []
+        self.trigger_missing_key_sequences = normalize_trigger_key_sequences(
+            self.trigger_missing_key_sequences,
+            self.trigger_missing_keys,
+        )
+        self.trigger_missing_rewind_key_sequences = normalize_trigger_key_sequences(
+            self.trigger_missing_rewind_key_sequences,
+            self.trigger_missing_rewind_keys,
+        )
+        self.trigger_missing_key_sequence_settings = normalize_trigger_key_sequence_settings(
+            self.trigger_missing_key_sequence_settings,
+            len(self.trigger_missing_key_sequences),
+        )
+        self.trigger_missing_rewind_key_sequence_settings = normalize_trigger_key_sequence_settings(
+            self.trigger_missing_rewind_key_sequence_settings,
+            len(self.trigger_missing_rewind_key_sequences),
+        )
+        # Keep the first combo for older WinCro versions that only understand flat keys.
+        self.trigger_missing_keys = (
+            list(self.trigger_missing_key_sequences[0])
+            if self.trigger_missing_key_sequences else []
+        )
+        self.trigger_missing_rewind_keys = (
+            list(self.trigger_missing_rewind_key_sequences[0])
+            if self.trigger_missing_rewind_key_sequences else []
+        )
+        self.trigger_missing_rewind_rule_id = (
+            str(self.trigger_missing_rewind_rule_id or "").strip() or None
+        )
+        if isinstance(self.trigger_search_region, (list, tuple)) and len(self.trigger_search_region) == 4:
+            try:
+                x1, y1, x2, y2 = [int(round(float(value))) for value in self.trigger_search_region]
+                left, right = sorted((x1, x2))
+                top, bottom = sorted((y1, y2))
+                self.trigger_search_region = (
+                    [left, top, right, bottom]
+                    if right > left and bottom > top
+                    else None
+                )
+            except (TypeError, ValueError):
+                self.trigger_search_region = None
+        else:
+            self.trigger_search_region = None
         try:
             self.trigger_missing_key_repeat_count = max(1, int(self.trigger_missing_key_repeat_count or 1))
         except (TypeError, ValueError):
@@ -315,6 +440,7 @@ class AutomationRule:
             "trigger_image": _to_relative_path(self.trigger_image),
             "trigger_x": self.trigger_x,
             "trigger_y": self.trigger_y,
+            "trigger_search_region": self.trigger_search_region,
             "confidence": self.confidence,
             "verify_image_color": self.verify_image_color,
             "verify_image_brightness": self.verify_image_brightness,
@@ -344,6 +470,8 @@ class AutomationRule:
             "skip_on_not_found": self.skip_on_not_found,
             "stop_playlist_on_trigger_missing": self.stop_playlist_on_trigger_missing,
             "trigger_missing_keys": self.trigger_missing_keys,
+            "trigger_missing_key_sequences": self.trigger_missing_key_sequences,
+            "trigger_missing_key_sequence_settings": self.trigger_missing_key_sequence_settings,
             "trigger_missing_key_repeat_count": self.trigger_missing_key_repeat_count,
             "trigger_missing_key_repeat_delay": self.trigger_missing_key_repeat_delay,
             "trigger_missing_key_repeat_delay_random": self.trigger_missing_key_repeat_delay_random,
@@ -354,10 +482,13 @@ class AutomationRule:
             "trigger_missing_rewind_delay_random": self.trigger_missing_rewind_delay_random,
             "trigger_missing_rewind_delay_random_range": self.trigger_missing_rewind_delay_random_range,
             "trigger_missing_rewind_keys": self.trigger_missing_rewind_keys,
+            "trigger_missing_rewind_key_sequences": self.trigger_missing_rewind_key_sequences,
+            "trigger_missing_rewind_key_sequence_settings": self.trigger_missing_rewind_key_sequence_settings,
             "trigger_missing_rewind_key_repeat_count": self.trigger_missing_rewind_key_repeat_count,
             "trigger_missing_rewind_key_repeat_delay": self.trigger_missing_rewind_key_repeat_delay,
             "trigger_missing_rewind_key_repeat_delay_random": self.trigger_missing_rewind_key_repeat_delay_random,
             "trigger_missing_rewind_key_repeat_delay_random_range": self.trigger_missing_rewind_key_repeat_delay_random_range,
+            "trigger_missing_rewind_rule_id": self.trigger_missing_rewind_rule_id,
             "repeat_count": self.repeat_count,
             "repeat_delay": self.repeat_delay,
             "repeat_delay_random": self.repeat_delay_random,
@@ -445,6 +576,7 @@ class AutomationRule:
             trigger_image=_to_absolute_path(data.get("trigger_image"), templates_dir),
             trigger_x=data.get("trigger_x"),
             trigger_y=data.get("trigger_y"),
+            trigger_search_region=data.get("trigger_search_region"),
             confidence=data.get("confidence", 0.65),
             verify_image_color=data.get("verify_image_color", False),
             verify_image_brightness=data.get("verify_image_brightness", False),
@@ -482,6 +614,8 @@ class AutomationRule:
             skip_on_not_found=data.get("skip_on_not_found", False),
             stop_playlist_on_trigger_missing=data.get("stop_playlist_on_trigger_missing", False),
             trigger_missing_keys=data.get("trigger_missing_keys", []),
+            trigger_missing_key_sequences=data.get("trigger_missing_key_sequences", []),
+            trigger_missing_key_sequence_settings=data.get("trigger_missing_key_sequence_settings", []),
             trigger_missing_key_repeat_count=data.get("trigger_missing_key_repeat_count", 1),
             trigger_missing_key_repeat_delay=data.get("trigger_missing_key_repeat_delay", 0.5),
             trigger_missing_key_repeat_delay_random=data.get("trigger_missing_key_repeat_delay_random", False),
@@ -492,10 +626,13 @@ class AutomationRule:
             trigger_missing_rewind_delay_random=data.get("trigger_missing_rewind_delay_random", False),
             trigger_missing_rewind_delay_random_range=data.get("trigger_missing_rewind_delay_random_range", 0.3),
             trigger_missing_rewind_keys=data.get("trigger_missing_rewind_keys", []),
+            trigger_missing_rewind_key_sequences=data.get("trigger_missing_rewind_key_sequences", []),
+            trigger_missing_rewind_key_sequence_settings=data.get("trigger_missing_rewind_key_sequence_settings", []),
             trigger_missing_rewind_key_repeat_count=data.get("trigger_missing_rewind_key_repeat_count", 1),
             trigger_missing_rewind_key_repeat_delay=data.get("trigger_missing_rewind_key_repeat_delay", 0.5),
             trigger_missing_rewind_key_repeat_delay_random=data.get("trigger_missing_rewind_key_repeat_delay_random", False),
             trigger_missing_rewind_key_repeat_delay_random_range=data.get("trigger_missing_rewind_key_repeat_delay_random_range", 0.3),
+            trigger_missing_rewind_rule_id=data.get("trigger_missing_rewind_rule_id"),
             repeat_count=data.get("repeat_count", 1),
             repeat_delay=data.get("repeat_delay", 0.5),
             repeat_delay_random=data.get("repeat_delay_random", False),

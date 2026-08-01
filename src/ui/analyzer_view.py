@@ -2037,7 +2037,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._set_crop_selection(coords)
 
     def _save_crop(self):
-        """크롭 저장 - 원본 유지하고 새 파일 + 자유형 마스크를 함께 저장"""
+        """크롭 저장 - 배경제거가 켜진 경우에만 보조 마스크를 저장한다."""
         from tkinter import messagebox
         import os
         import uuid
@@ -2064,17 +2064,19 @@ class ImageCropDialog(ctk.CTkToplevel):
         logger.info(f"[크롭] 크롭 좌표: ({orig_x1}, {orig_y1}) ~ ({orig_x2}, {orig_y2})")
         logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}")
 
-        # 크롭 + 현재 자유형 마스크 추출
+        # 일반 크롭은 원본 픽셀만 저장한다. 배경제거를 명시적으로 켠
+        # 경우에만 인식용 sidecar 마스크를 생성한다.
         x1, y1, x2, y2 = self._crop_coords
         cropped = self._original_image[y1:y2, x1:x2].copy()
         cutout_enabled = self._background_cutout_enabled()
+        crop_mask = None
         if cutout_enabled:
             self._crop_mask = auto_extract_foreground_mask(cropped)
             self._crop_mask_needs_refresh = False
-        self._ensure_current_crop_mask()
-        crop_mask = normalize_binary_mask(self._crop_mask, cropped.shape[:2])
+            self._ensure_current_crop_mask()
+            crop_mask = normalize_binary_mask(self._crop_mask, cropped.shape[:2])
 
-        if cropped.size == 0 or crop_mask.size == 0:
+        if cropped.size == 0 or (cutout_enabled and crop_mask.size == 0):
             messagebox.showwarning("알림", "크롭된 영역이 비어있습니다.\n다시 선택하세요.")
             return
 
@@ -2099,23 +2101,25 @@ class ImageCropDialog(ctk.CTkToplevel):
                 new_filename = f"{stem}_crop_{uuid.uuid4().hex[:6]}{suffix}"
                 new_path = unique_template_path(parent, new_filename)
 
-            mask_path = get_sidecar_mask_path(new_path)
+            mask_path = get_sidecar_mask_path(new_path) if cutout_enabled else None
 
-            # 새 파일과 자유형 마스크를 함께 저장
             if cutout_enabled:
                 cropped_bgra = cv2.cvtColor(cropped, cv2.COLOR_RGB2BGRA)
                 cropped_bgra[:, :, 3] = crop_mask
                 success = write_image_file(new_path, cropped_bgra)
+                mask_success = write_image_file(mask_path, crop_mask)
             else:
                 success = write_image_file(new_path, cropped_bgr)
-            mask_success = write_image_file(mask_path, crop_mask)
+                mask_success = True
 
             if success and mask_success:
                 new_size = os.path.getsize(str(new_path)) if new_path.exists() else 0
                 logger.info(f"[크롭] 새 파일 저장: {new_path}")
-                logger.info(f"[크롭] 마스크 저장: {mask_path}")
                 if cutout_enabled:
+                    logger.info(f"[크롭] 마스크 저장: {mask_path}")
                     logger.info("[크롭] 배경제거 이미지따기 저장 적용")
+                else:
+                    logger.info("[크롭] 배경제거 OFF: 마스크 생성 생략")
                 logger.info(f"[크롭] 원본 후처리 대기: {self._image_path}")
                 logger.info(f"[크롭] 크롭 크기: {crop_w}x{crop_h}, 파일크기: {new_size} bytes")
 
@@ -2133,7 +2137,7 @@ class ImageCropDialog(ctk.CTkToplevel):
                 self.destroy()
             else:
                 logger.error(f"[크롭] 저장 실패: image={new_path}, mask={mask_path}, image_ok={success}, mask_ok={mask_success}")
-                messagebox.showerror("오류", f"이미지 또는 마스크 저장에 실패했습니다.\n경로: {new_path}")
+                messagebox.showerror("오류", f"이미지 저장에 실패했습니다.\n경로: {new_path}")
 
         except Exception as e:
             logger.error(f"크롭 저장 오류: {e}")
@@ -3041,6 +3045,7 @@ class ImageCropDialog(ctk.CTkToplevel):
         self._image_path = new_image_path
         self._rule = new_rule
         self._crop_filename_var.set("")
+        self._background_cutout_var.set(False)
 
         # 크롭 상태 초기화
         self._crop_coords = None

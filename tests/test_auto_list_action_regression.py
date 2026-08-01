@@ -1471,7 +1471,7 @@ def test_auto_list_quantity_repeat_uses_current_item_and_ignores_other_row_check
     assert "1/1" in result.message
 
 
-def test_auto_list_quantity_repeat_requires_check_on_clicked_row(monkeypatch, tmp_path):
+def test_auto_list_quantity_repeat_waits_for_delayed_check_on_clicked_row(monkeypatch, tmp_path):
     target = tmp_path / "target.png"
     check = tmp_path / "check.png"
     target.write_bytes(b"target")
@@ -1490,10 +1490,17 @@ def test_auto_list_quantity_repeat_requires_check_on_clicked_row(monkeypatch, tm
     executor = RuleExecutor()
     executor._auto_list_current_value = 1
     clicked = []
+    check_calls_after_click = 0
 
     def find_all(image_path, *_args, **_kwargs):
+        nonlocal check_calls_after_click
         if str(image_path) == str(check):
-            return [] if not clicked else [(180, 80, 0.99)]
+            if not clicked:
+                return []
+            check_calls_after_click += 1
+            if check_calls_after_click < 3:
+                return [(180, 80, 0.99)]
+            return [(180, 10, 0.99)]
         return [(20, 10, 0.99)]
 
     def click_at(active_rule, _kind, x, y, started, **_kwargs):
@@ -1505,9 +1512,140 @@ def test_auto_list_quantity_repeat_requires_check_on_clicked_row(monkeypatch, tm
 
     result = executor._execute_rule_with_retry(rule)
 
-    assert result.success is False
+    assert result.success is True
     assert clicked == [(20, 10)]
-    assert "선택 체크가 증가하지 않았습니다" in result.message
+    assert "1/1" in result.message
+
+
+def test_auto_list_quantity_repeat_continues_after_fourth_check_is_delayed(monkeypatch, tmp_path):
+    target = tmp_path / "target.png"
+    check = tmp_path / "check.png"
+    target.write_bytes(b"target")
+    check.write_bytes(b"check")
+    rule = AutomationRule(
+        rule_id="delayed_fourth_check",
+        action_type="click",
+        target_image=str(target),
+        repeat_from_auto_list_quantity=True,
+        auto_list_repeat_confirm_image=str(check),
+        auto_list_repeat_confirm_region=[150, 0, 220, 300],
+        repeat_delay=0,
+        wait_after=0,
+    )
+    executor = RuleExecutor()
+    executor._auto_list_current_value = 10
+    executor._auto_list_registered_items = [
+        {"image": str(target), "name": "registered", "confidence": 0.8}
+    ]
+    rows = [(20, 10 + index * 18, 0.99) for index in range(10)]
+    clicked = []
+    delayed_fourth_checks = 0
+
+    def find_all(image_path, *_args, **_kwargs):
+        nonlocal delayed_fourth_checks
+        if str(image_path) != str(check):
+            return rows
+        visible_clicks = clicked
+        if len(clicked) == 4 and delayed_fourth_checks < 3:
+            delayed_fourth_checks += 1
+            visible_clicks = clicked[:3]
+        return [(180, y, 0.99) for _x, y in visible_clicks]
+
+    def click_at(active_rule, _kind, x, y, started, **_kwargs):
+        clicked.append((x, y))
+        return executor._make_result(active_rule, True, "click complete", started)
+
+    monkeypatch.setattr(executor, "_find_all_images_on_screen", find_all)
+    monkeypatch.setattr(executor, "_execute_click_at", click_at)
+
+    result = executor._execute_rule_with_retry(rule)
+
+    assert result.success is True
+    assert clicked == [(x, y) for x, y, _score in rows]
+    assert delayed_fourth_checks == 3
+    assert "10/10" in result.message
+
+
+def test_auto_list_quantity_repeat_waits_when_rows_appear_late(monkeypatch, tmp_path):
+    target = tmp_path / "target.png"
+    check = tmp_path / "check.png"
+    target.write_bytes(b"target")
+    check.write_bytes(b"check")
+    rule = AutomationRule(
+        rule_id="late_rows",
+        action_type="click",
+        target_image=str(target),
+        search_region=[0, 0, 200, 100],
+        repeat_from_auto_list_quantity=True,
+        auto_list_repeat_confirm_image=str(check),
+        auto_list_repeat_confirm_region=[150, 0, 220, 100],
+        repeat_delay=0,
+        wait_after=0,
+    )
+    executor = RuleExecutor()
+    executor._auto_list_current_value = 1
+    executor._auto_list_current_item = {"image": str(target), "name": "target"}
+    clicked = []
+    target_searches = 0
+
+    def find_all(image_path, *_args, **_kwargs):
+        nonlocal target_searches
+        if str(image_path) == str(check):
+            return [(180, y, 0.99) for _x, y in clicked]
+        target_searches += 1
+        if target_searches < 3:
+            return []
+        return [(20, 10, 0.99)]
+
+    def click_at(active_rule, _kind, x, y, started, **_kwargs):
+        clicked.append((x, y))
+        return executor._make_result(active_rule, True, "click complete", started)
+
+    monkeypatch.setattr(executor, "_find_all_images_on_screen", find_all)
+    monkeypatch.setattr(executor, "_execute_click_at", click_at)
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda _seconds: True)
+
+    result = executor._execute_auto_list_quantity_image_clicks(rule, datetime.now(), 1)
+
+    assert result.success is True
+    assert target_searches >= 3
+    assert clicked == [(20, 10)]
+
+
+def test_auto_list_quantity_repeat_only_stops_waiting_on_stop_request(monkeypatch, tmp_path):
+    target = tmp_path / "target.png"
+    check = tmp_path / "check.png"
+    target.write_bytes(b"target")
+    check.write_bytes(b"check")
+    rule = AutomationRule(
+        rule_id="stop_waiting",
+        action_type="click",
+        target_image=str(target),
+        repeat_from_auto_list_quantity=True,
+        auto_list_repeat_confirm_image=str(check),
+        auto_list_repeat_confirm_region=[0, 0, 200, 100],
+        repeat_delay=0,
+        wait_after=0,
+    )
+    executor = RuleExecutor()
+    executor._auto_list_current_value = 1
+    searches = 0
+
+    def find_all(_image_path, *_args, **_kwargs):
+        nonlocal searches
+        searches += 1
+        if searches >= 3:
+            executor._stop_event.set()
+        return []
+
+    monkeypatch.setattr(executor, "_find_all_images_on_screen", find_all)
+    monkeypatch.setattr(executor, "_auto_list_wait", lambda _seconds: not executor._stop_event.is_set())
+
+    result = executor._execute_auto_list_quantity_image_clicks(rule, datetime.now(), 1)
+
+    assert result.success is False
+    assert result.message == "실행 중지됨"
+    assert searches >= 3
 
 
 def test_auto_list_quantity_repeat_rejects_execution_without_auto_list_context(tmp_path):

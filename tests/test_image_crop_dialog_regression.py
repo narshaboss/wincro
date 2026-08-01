@@ -52,14 +52,22 @@ def test_image_crop_dialog_has_search_region_preset_picker():
 
 def test_image_crop_dialog_uses_sidecar_mask_pipeline():
     text = _text(ANALYZER_VIEW)
+    crop_method = text[
+        text.index("def _save_crop(self):"):
+        text.index("def _delete_image(self):", text.index("def _save_crop(self):"))
+    ]
 
+    assert "self._background_cutout_var = ctk.BooleanVar(value=False)" in text
     assert "self._full_image_mask = load_sidecar_mask(self._image_path, (h, w))" in text
     assert "self._crop_mask = auto_extract_foreground_mask(cropped)" in text
     assert "self._crop_mask_needs_refresh = True" in text
     assert "def _ensure_current_crop_mask(self, *, refresh_view: bool = False):" in text
     assert "self._ensure_current_crop_mask()" in text
-    assert "mask_path = get_sidecar_mask_path(new_path)" in text
-    assert "mask_success = write_image_file(mask_path, crop_mask)" in text
+    assert "mask_path = get_sidecar_mask_path(new_path) if cutout_enabled else None" in crop_method
+    assert "mask_success = write_image_file(mask_path, crop_mask)" in crop_method
+    assert "mask_success = True" in crop_method
+    assert crop_method.index("if cutout_enabled:") < crop_method.index("self._ensure_current_crop_mask()")
+    assert 'logger.info("[크롭] 배경제거 OFF: 마스크 생성 생략")' in crop_method
     assert "preview_source = self._compose_cutout_preview_rgb(cropped, crop_mask) if self._background_cutout_enabled() else cropped" in text
     assert "preview_resized, _ = fit_image_to_box(preview_source, 180, 180)" in text
     assert "normalize_binary_mask(self._crop_mask, cropped.shape[:2])" in text
@@ -111,6 +119,7 @@ def test_image_crop_dialog_enables_filename_after_crop_and_resets_between_images
     assert "self._update_crop_filename_state()" in selection_method
     assert 'state="normal" if ready else "disabled"' in text
     assert "self._crop_filename_var.set(\"\")" in navigate_method
+    assert "self._background_cutout_var.set(False)" in navigate_method
     assert "self._update_crop_filename_state()" in navigate_method
     assert "self._reset_crop_filename()" in change_method
 

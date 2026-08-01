@@ -678,6 +678,31 @@ def test_plan_delete_duplicate_rule_id_removes_exact_child(monkeypatch):
     assert dialog._modified is True
 
 
+def test_plan_delete_clears_trigger_rewind_references(monkeypatch):
+    import tkinter.messagebox as messagebox
+
+    target = AutomationRule(action_type="click", rule_id="target")
+    source = AutomationRule(
+        action_type="click",
+        rule_id="source",
+        rewind_previous_on_trigger_missing=True,
+        trigger_missing_rewind_rule_id="target",
+    )
+    dialog = _make_plan_dialog_stub([target, source], set())
+    dialog._selected_rule = None
+    dialog._modified = False
+    dialog._invalidate_rule_tree_cache = lambda: None
+    dialog._refresh_after_rule_deleted = lambda *_args: None
+    monkeypatch.setattr(messagebox, "askyesno", lambda *_args, **_kwargs: True)
+
+    dialog._delete_rule(target)
+
+    assert dialog._plan.initial_rules == [source]
+    assert source.trigger_missing_rewind_rule_id is None
+    assert source.rewind_previous_on_trigger_missing is False
+    assert dialog._modified is True
+
+
 def test_sequence_delete_duplicate_action_id_removes_exact_child(monkeypatch):
     import tkinter.messagebox as messagebox
 

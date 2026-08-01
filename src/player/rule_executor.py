@@ -80,7 +80,13 @@ INPUT_MOUSE = 0
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config
-from ..analyzer.automation_models import AutomationPlan, AutomationRule, RuleType
+from ..analyzer.automation_models import (
+    AutomationPlan,
+    AutomationRule,
+    RuleType,
+    normalize_trigger_key_sequences,
+    normalize_trigger_key_sequence_settings,
+)
 from ..analyzer.enhanced_matcher import get_enhanced_matcher
 from .random_key_sequence import execute_random_key_sequence
 from ..utils.auto_list import (
@@ -649,6 +655,7 @@ class RuleExecutionResult:
     skip_current_playlist: bool = False
     rewind_previous_action: bool = False
     rewind_delay: float = 0.0
+    rewind_target_rule_id: str = ""
     monitoring_jump_index: int = -1
     monitoring_jump_rule_id: str = ""
 
@@ -1391,7 +1398,11 @@ class RuleExecutor:
             # 하위 항목(children) 포함해서 평탄화 + 단계 번호 추적
             all_rules_with_step = self._flatten_rules_with_step(plan.initial_rules) + self._flatten_rules_with_step(plan.monitoring_rules)
             all_rules = [rule for rule, _ in all_rules_with_step]
-            original_initial_rules_for_steps = list(getattr(plan, "_original_initial_rules", None) or [])
+            original_initial_rules_for_steps = list(
+                getattr(plan, "_original_initial_rules", None)
+                or getattr(plan, "initial_rules", None)
+                or []
+            )
             original_step_by_rule_id = self._rule_id_step_map(original_initial_rules_for_steps)
             logger.info(f"{_CYAN}  총 {len(all_rules_with_step)}개 액션{_RESET}")
             logger.info(f"{_CYAN}{'═'*50}{_RESET}")
@@ -1533,15 +1544,91 @@ class RuleExecutor:
 
                     if getattr(result, "rewind_previous_action", False):
                         rewind_delay = max(0.0, float(getattr(result, "rewind_delay", 0.0) or 0.0))
+                        rewind_target_rule_id = str(
+                            getattr(result, "rewind_target_rule_id", "") or ""
+                        ).strip()
                         target_index = max(0, i - 1)
+                        target_mode_label = "이전 액션"
+
+                        if rewind_target_rule_id:
+                            target_mode_label = "지정 액션"
+                            original_rules_with_step = (
+                                self._flatten_rules_with_step(original_initial_rules_for_steps)
+                                + self._flatten_rules_with_step(getattr(plan, "monitoring_rules", []) or [])
+                            )
+                            source_original_indices = [
+                                index
+                                for index, (candidate, _step) in enumerate(original_rules_with_step)
+                                if str(getattr(candidate, "rule_id", "") or "") == rule_id_for_step
+                            ]
+                            target_original_indices = [
+                                index
+                                for index, (candidate, _step) in enumerate(original_rules_with_step)
+                                if str(getattr(candidate, "rule_id", "") or "") == rewind_target_rule_id
+                            ]
+                            source_original_index = (
+                                source_original_indices[0] if len(source_original_indices) == 1 else -1
+                            )
+                            target_original_index = (
+                                target_original_indices[0] if len(target_original_indices) == 1 else -1
+                            )
+                            target_original_rule = (
+                                original_rules_with_step[target_original_index][0]
+                                if target_original_index >= 0
+                                else None
+                            )
+                            if (
+                                source_original_index < 0
+                                or target_original_index < 0
+                                or target_original_index >= source_original_index
+                                or not bool(getattr(target_original_rule, "enabled", True))
+                            ):
+                                message = (
+                                    "트리거 미감지 복귀 대상이 없거나 중복/비활성 상태이거나 "
+                                    "현재 액션보다 앞에 있지 않습니다: "
+                                    f"rule_id={rewind_target_rule_id} source_matches={len(source_original_indices)} "
+                                    f"target_matches={len(target_original_indices)}"
+                                )
+                                logger.error(f"{_RED}✗ [{step_num}] {message}{_RESET}")
+                                self._state = ExecutionState.FAILED
+                                self._update_progress(message)
+                                if self._on_error:
+                                    self._on_error(message, rule)
+                                if self._on_complete:
+                                    self._on_complete(False, f"동작 실패: {message}")
+                                return
+
+                            target_index = next(
+                                (
+                                    index
+                                    for index, (candidate, _step) in enumerate(all_rules_with_step)
+                                    if str(getattr(candidate, "rule_id", "") or "") == rewind_target_rule_id
+                                ),
+                                -1,
+                            )
+                            if target_index < 0:
+                                all_rules_with_step = original_rules_with_step
+                                all_rules = [candidate for candidate, _step in all_rules_with_step]
+                                target_index = target_original_index
+
                         target_step = all_rules_with_step[target_index][1] if all_rules_with_step else "1"
+                        target_rule = all_rules_with_step[target_index][0] if all_rules_with_step else None
+                        target_name = (
+                            str(getattr(target_rule, "description", "") or getattr(target_rule, "action_type", ""))
+                            if target_rule is not None
+                            else ""
+                        )
                         logger.warning(
-                            f"{_YELLOW}↩ [{step_num}] 트리거 미감지 → 이전 액션 [{target_step}]으로 이동: "
+                            f"{_YELLOW}↩ [{step_num}] 트리거 미감지 → {target_mode_label} "
+                            f"[{target_step}] {target_name}으로 이동: "
                             f"{result.message}{_RESET}"
                         )
-                        self._update_progress(f"[{step_num}] 트리거 미감지 → 이전 액션으로 이동")
+                        self._update_progress(
+                            f"[{step_num}] 트리거 미감지 → 액션 [{target_step}]으로 이동"
+                        )
                         if rewind_delay > 0 and self._stop_event.wait(rewind_delay):
                             break
+                        self._child_rules_executed_with_parent.clear()
                         i = target_index
                         continue
 
@@ -1678,7 +1765,15 @@ class RuleExecutor:
                 self._on_complete(False, str(e))
 
     def _trigger_search_region_for_rule(self, rule: AutomationRule) -> Optional[list]:
-        """트리거 좌표가 있으면 해당 좌표 주변만 검색한다."""
+        """트리거 전용 영역을 우선하고 구형 좌표 설정은 호환용으로 사용한다."""
+        trigger_search_region = getattr(rule, "trigger_search_region", None)
+        if trigger_search_region is not None:
+            return (
+                list(trigger_search_region)
+                if isinstance(trigger_search_region, (list, tuple))
+                else trigger_search_region
+            )
+
         trigger_x = getattr(rule, "trigger_x", None)
         trigger_y = getattr(rule, "trigger_y", None)
         if trigger_x is None or trigger_y is None:
@@ -1750,15 +1845,21 @@ class RuleExecutor:
         repeat_delay_attr: str = "trigger_missing_key_repeat_delay",
         repeat_delay_random_attr: str = "trigger_missing_key_repeat_delay_random",
         repeat_delay_range_attr: str = "trigger_missing_key_repeat_delay_random_range",
+        key_sequences_attr: Optional[str] = None,
+        key_sequence_settings_attr: Optional[str] = None,
         log_label: str = "트리거 미감지 종료 전 키입력",
     ) -> bool:
-        """트리거 미감지 처리 직전에 지정 키를 반복 입력한다."""
+        """트리거 미감지 처리 직전에 지정 키 목록을 순서대로 반복 입력한다."""
         keys = [
             str(key).strip().lower()
             for key in (getattr(rule, keys_attr, None) or [])
             if str(key).strip()
         ]
-        if not keys:
+        key_sequences = normalize_trigger_key_sequences(
+            getattr(rule, key_sequences_attr, None) if key_sequences_attr else None,
+            keys,
+        )
+        if not key_sequences:
             return True
         if self._stop_event.is_set():
             return False
@@ -1780,42 +1881,99 @@ class RuleExecutor:
             repeat_delay_range = 0.3
         repeat_delay_random = bool(getattr(rule, repeat_delay_random_attr, False))
 
-        input_ctrl = get_input_controller()
-        key_label = " + ".join(key.upper() for key in keys)
-        logger.info(
-            f"{_YELLOW}{step_prefix}{log_label}: "
-            f"{key_label} x{repeat_count} delay={repeat_delay:.2f}s random={repeat_delay_random}{_RESET}"
+        sequence_settings = normalize_trigger_key_sequence_settings(
+            getattr(rule, key_sequence_settings_attr, None)
+            if key_sequence_settings_attr else None,
+            len(key_sequences),
         )
-        for index in range(repeat_count):
+
+        input_ctrl = get_input_controller()
+        key_labels = [" + ".join(key.upper() for key in combo) for combo in key_sequences]
+        key_label = " → ".join(key_labels)
+        scheduled_inputs = []
+        if sequence_settings:
+            setting_labels = []
+            for sequence_index, (combo, setting) in enumerate(zip(key_sequences, sequence_settings)):
+                step_repeat_count = int(setting["repeat_count"])
+                setting_labels.append(
+                    f"{key_labels[sequence_index]} x{step_repeat_count} "
+                    f"delay={float(setting['repeat_delay']):.2f}s "
+                    f"random={bool(setting['repeat_delay_random'])}"
+                )
+                for repeat_index in range(step_repeat_count):
+                    scheduled_inputs.append(
+                        (sequence_index, combo, repeat_index, step_repeat_count, setting)
+                    )
+            logger.info(
+                f"{_YELLOW}{step_prefix}{log_label}: 키별 설정 "
+                f"[{'; '.join(setting_labels)}]{_RESET}"
+            )
+        else:
+            legacy_setting = {
+                "repeat_delay": repeat_delay,
+                "repeat_delay_random": repeat_delay_random,
+                "repeat_delay_random_range": repeat_delay_range,
+            }
+            logger.info(
+                f"{_YELLOW}{step_prefix}{log_label}: 구형 목록 반복 "
+                f"{len(key_sequences)}개 입력 [{key_label}] x{repeat_count} "
+                f"delay={repeat_delay:.2f}s random={repeat_delay_random}{_RESET}"
+            )
+            for repeat_index in range(repeat_count):
+                for sequence_index, combo in enumerate(key_sequences):
+                    scheduled_inputs.append(
+                        (sequence_index, combo, repeat_index, repeat_count, legacy_setting)
+                    )
+
+        total_inputs = len(scheduled_inputs)
+        for completed_inputs, (
+            sequence_index,
+            combo,
+            repeat_index,
+            step_repeat_count,
+            setting,
+        ) in enumerate(scheduled_inputs, start=1):
             if self._stop_event.is_set():
                 return False
+            combo_label = key_labels[sequence_index]
             try:
-                if len(keys) == 1:
-                    ok = input_ctrl.press(keys[0])
+                if len(combo) == 1:
+                    ok = input_ctrl.press(combo[0])
                 else:
-                    ok = input_ctrl.hotkey(*keys)
+                    ok = input_ctrl.hotkey(*combo)
                 if ok is False:
                     logger.warning(
-                        f"{_YELLOW}{step_prefix}{log_label} 실패: "
-                        f"{key_label} ({index + 1}/{repeat_count}){_RESET}"
+                        f"{_YELLOW}{step_prefix}{log_label} 실패: {combo_label} "
+                        f"(키 {sequence_index + 1}/{len(key_sequences)}, "
+                        f"반복 {repeat_index + 1}/{step_repeat_count}){_RESET}"
                     )
                     return False
                 logger.info(
-                    f"{_YELLOW}{step_prefix}{log_label} 완료: "
-                    f"{key_label} ({index + 1}/{repeat_count}){_RESET}"
+                    f"{_YELLOW}{step_prefix}{log_label} 완료: {combo_label} "
+                    f"(키 {sequence_index + 1}/{len(key_sequences)}, "
+                    f"반복 {repeat_index + 1}/{step_repeat_count}){_RESET}"
                 )
             except Exception as e:
                 logger.warning(
-                    f"{_YELLOW}{step_prefix}{log_label} 예외: "
-                    f"{key_label} ({index + 1}/{repeat_count}, {e}){_RESET}"
+                    f"{_YELLOW}{step_prefix}{log_label} 예외: {combo_label} "
+                    f"(키 {sequence_index + 1}/{len(key_sequences)}, "
+                    f"반복 {repeat_index + 1}/{step_repeat_count}, {e}){_RESET}"
                 )
                 return False
-            if index < repeat_count - 1:
-                actual_delay = repeat_delay
-                if repeat_delay_random:
-                    actual_delay = max(0.0, repeat_delay + random.uniform(-repeat_delay_range, repeat_delay_range))
-                if actual_delay > 0 and self._stop_event.wait(actual_delay):
-                    return False
+            if completed_inputs >= total_inputs:
+                continue
+            actual_delay = max(0.0, float(setting.get("repeat_delay", 0.0) or 0.0))
+            if bool(setting.get("repeat_delay_random", False)):
+                random_range = max(
+                    0.0,
+                    float(setting.get("repeat_delay_random_range", 0.0) or 0.0),
+                )
+                actual_delay = max(
+                    0.0,
+                    actual_delay + random.uniform(-random_range, random_range),
+                )
+            if actual_delay > 0 and self._stop_event.wait(actual_delay):
+                return False
         return True
 
     def _handle_trigger_gate(
@@ -1838,11 +1996,15 @@ class RuleExecutor:
         step_prefix = f"[{step_num}] " if step_num else ""
         stop_playlist = bool(getattr(rule, "stop_playlist_on_trigger_missing", False))
         rewind_previous = bool(getattr(rule, "rewind_previous_on_trigger_missing", False))
+        rewind_target_rule_id = str(
+            getattr(rule, "trigger_missing_rewind_rule_id", "") or ""
+        ).strip()
+        rewind_target_label = "지정 액션" if rewind_target_rule_id else "이전 액션"
         trigger_timeout = PLAYLIST_SKIP_TRIGGER_TIMEOUT_SECONDS if (stop_playlist or rewind_previous) else 0.0
         if rewind_previous and stop_playlist:
-            mode_desc = f"{trigger_timeout:.1f}초 후 이전 액션 재시도, 횟수 초과 시 재생목록 종료"
+            mode_desc = f"{trigger_timeout:.1f}초 후 {rewind_target_label} 재시도, 횟수 초과 시 재생목록 종료"
         elif rewind_previous:
-            mode_desc = f"{trigger_timeout:.1f}초 후 이전 액션 재시도"
+            mode_desc = f"{trigger_timeout:.1f}초 후 {rewind_target_label} 재시도"
         elif stop_playlist:
             mode_desc = f"{trigger_timeout:.1f}초 후 재생목록 종료"
         else:
@@ -1871,7 +2033,8 @@ class RuleExecutor:
                 except (TypeError, ValueError):
                     max_rewinds = 1
                 used_rewinds = self._trigger_missing_rewind_attempts.get(rule.rule_id, 0)
-                if can_rewind_previous and used_rewinds < max_rewinds:
+                can_rewind = bool(rewind_target_rule_id) or can_rewind_previous
+                if can_rewind and used_rewinds < max_rewinds:
                     self._trigger_missing_rewind_attempts[rule.rule_id] = used_rewinds + 1
                     keys_ok = self._execute_trigger_missing_keys(
                         rule,
@@ -1881,7 +2044,9 @@ class RuleExecutor:
                         repeat_delay_attr="trigger_missing_rewind_key_repeat_delay",
                         repeat_delay_random_attr="trigger_missing_rewind_key_repeat_delay_random",
                         repeat_delay_range_attr="trigger_missing_rewind_key_repeat_delay_random_range",
-                        log_label="트리거 미감지 종료 전 키입력(전 액션 복귀)",
+                        key_sequences_attr="trigger_missing_rewind_key_sequences",
+                        key_sequence_settings_attr="trigger_missing_rewind_key_sequence_settings",
+                        log_label=f"트리거 미감지 복귀 전 키입력({rewind_target_label})",
                     )
                     if not keys_ok:
                         if self._stop_event.is_set():
@@ -1901,7 +2066,7 @@ class RuleExecutor:
                             rewind_range = 0.3
                         rewind_delay = max(0.0, rewind_delay + random.uniform(-rewind_range, rewind_range))
                     message = (
-                        f"트리거 이미지 없음 → 이전 액션으로 이동 "
+                        f"트리거 이미지 없음 → {rewind_target_label}으로 이동 "
                         f"({used_rewinds + 1}/{max_rewinds}, {trigger_path.name})"
                     )
                     return self._make_result(
@@ -1911,20 +2076,26 @@ class RuleExecutor:
                         start_time,
                         rewind_previous_action=True,
                         rewind_delay=rewind_delay,
+                        rewind_target_rule_id=rewind_target_rule_id,
                     )
                 logger.warning(
-                    f"{_YELLOW}{step_prefix}트리거 미감지 이전 액션 이동 불가/횟수초과: "
-                    f"{used_rewinds}/{max_rewinds}, can_rewind={can_rewind_previous}{_RESET}"
+                    f"{_YELLOW}{step_prefix}트리거 미감지 {rewind_target_label} 이동 불가/횟수초과: "
+                    f"{used_rewinds}/{max_rewinds}, can_rewind={can_rewind}{_RESET}"
                 )
                 if not stop_playlist:
                     message = (
-                        f"트리거 미감지 이전 액션 이동 불가/횟수초과 "
-                        f"({used_rewinds}/{max_rewinds}, can_rewind={can_rewind_previous})"
+                        f"트리거 미감지 {rewind_target_label} 이동 불가/횟수초과 "
+                        f"({used_rewinds}/{max_rewinds}, can_rewind={can_rewind})"
                     )
                     return self._make_result(rule, False, message, start_time)
 
             if stop_playlist:
-                keys_ok = self._execute_trigger_missing_keys(rule, step_prefix)
+                keys_ok = self._execute_trigger_missing_keys(
+                    rule,
+                    step_prefix,
+                    key_sequences_attr="trigger_missing_key_sequences",
+                    key_sequence_settings_attr="trigger_missing_key_sequence_settings",
+                )
                 if not keys_ok:
                     if self._stop_event.is_set():
                         return self._make_result(rule, False, "트리거 미감지 종료 전 키입력 중 중지됨", start_time)
@@ -3966,6 +4137,7 @@ class RuleExecutor:
                 skip_current_playlist=bool(getattr(called_result, "skip_current_playlist", False)),
                 rewind_previous_action=bool(getattr(called_result, "rewind_previous_action", False)),
                 rewind_delay=float(getattr(called_result, "rewind_delay", 0.0) or 0.0),
+                rewind_target_rule_id=str(getattr(called_result, "rewind_target_rule_id", "") or ""),
                 monitoring_jump_index=int(getattr(called_result, "monitoring_jump_index", -1) or -1),
                 monitoring_jump_rule_id=str(getattr(called_result, "monitoring_jump_rule_id", "") or ""),
             )
@@ -4516,16 +4688,6 @@ class RuleExecutor:
                 f"제작목록범위={fallback_label}{_RESET}"
             )
 
-        targets = find_targets()
-        if not targets:
-            scope = f"등록 이미지 {len(source_entries)}개" if select_all_registered else "현재 항목"
-            return self._make_result(
-                rule,
-                False,
-                f"추출 목록에서 {scope}에 해당하는 행을 찾지 못했습니다",
-                start_time,
-            )
-
         def relevant_confirmations() -> List[tuple]:
             relevant = []
             for checked in sorted(find_confirmations(), key=lambda item: (item[1], item[0])):
@@ -4536,48 +4698,92 @@ class RuleExecutor:
                 relevant.append(checked)
             return relevant
 
-        confirmations = relevant_confirmations()
-        goal_count = (
-            min(AUTO_LIST_EXTRACTION_BATCH_LIMIT, len(targets))
-            if select_all_registered
-            else min(AUTO_LIST_EXTRACTION_BATCH_LIMIT, expected_count, len(targets))
-        )
-        if len(confirmations) > goal_count:
-            return self._make_result(
-                rule,
-                False,
-                f"등록 항목 선택 체크가 발견 행보다 많습니다: {len(confirmations)}/{goal_count}",
-                start_time,
-            )
-
-        matched_names = list(dict.fromkeys(target["name"] for target in targets))
         selection_label = (
             f"등록 {len(source_entries)}종 검색, 회당 최대 {AUTO_LIST_EXTRACTION_BATCH_LIMIT}개"
             if select_all_registered
             else f"현재 제작수량 {expected_count}개, 회당 최대 {AUTO_LIST_EXTRACTION_BATCH_LIMIT}개"
         )
-        logger.info(
-            f"{_CYAN}{self._step_prefix}▶ 자동 목록 추출 선택 시작: "
-            f"기준={selection_label}, 발견 종류={matched_names}, "
-            f"발견 행 {len(targets)}개, 기존 체크 {len(confirmations)}개{_RESET}"
-        )
-        while len(confirmations) < goal_count:
+        targets: List[Dict[str, Any]] = []
+        confirmations: List[tuple] = []
+        goal_count: Optional[int] = None
+        started_logged = False
+        last_wait_log = 0.0
+        retry_after_by_row: Dict[tuple, float] = {}
+        needs_target_refresh = True
+
+        # Rows and their check marks are transient screen state. A delayed render,
+        # scrolling list, or missed click must not abort the whole playlist.
+        while True:
             if self._wait_for_resume() or self._stop_event.is_set():
                 return self._make_result(rule, False, "실행 중지됨", start_time)
 
+            if needs_target_refresh:
+                refreshed_targets = find_targets()
+                if refreshed_targets:
+                    targets = refreshed_targets
+                    visible_goal = (
+                        min(AUTO_LIST_EXTRACTION_BATCH_LIMIT, len(targets))
+                        if select_all_registered
+                        else min(AUTO_LIST_EXTRACTION_BATCH_LIMIT, expected_count, len(targets))
+                    )
+                    goal_count = max(goal_count or 0, visible_goal)
+                    needs_target_refresh = False
+
+            if not targets or goal_count is None:
+                now = time.monotonic()
+                if now - last_wait_log >= 10.0 or last_wait_log == 0.0:
+                    scope = (
+                        f"등록 이미지 {len(source_entries)}종"
+                        if select_all_registered
+                        else "현재 항목"
+                    )
+                    logger.info(
+                        f"{_YELLOW}{self._step_prefix}⏳ 자동 목록 추출 행 대기 중: "
+                        f"{scope} 재검색{_RESET}"
+                    )
+                    last_wait_log = now
+                if not self._auto_list_wait(0.25):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+                needs_target_refresh = True
+                continue
+
+            confirmations = relevant_confirmations()
+            if not started_logged:
+                matched_names = list(dict.fromkeys(target["name"] for target in targets))
+                logger.info(
+                    f"{_CYAN}{self._step_prefix}▶ 자동 목록 추출 선택 시작: "
+                    f"기준={selection_label}, 발견 종류={matched_names}, "
+                    f"발견 행 {len(targets)}개, 기존 체크 {len(confirmations)}개{_RESET}"
+                )
+                started_logged = True
+
+            if len(confirmations) >= goal_count:
+                return self._make_result(
+                    rule,
+                    True,
+                    f"자동 목록 등록 항목 선택 완료 ({goal_count}/{goal_count})",
+                    start_time,
+                )
+
             before_count = len(confirmations)
+            now = time.monotonic()
             candidates = [
                 target
                 for target in targets
                 if not any(abs(target["y"] - checked[1]) <= row_tolerance for checked in confirmations)
+                and retry_after_by_row.get((target["x"], target["y"]), 0.0) <= now
             ]
             if not candidates:
-                return self._make_result(
-                    rule,
-                    False,
-                    f"미선택 등록 항목을 찾지 못했습니다: 체크 {before_count}/{goal_count}",
-                    start_time,
-                )
+                if now - last_wait_log >= 10.0 or last_wait_log == 0.0:
+                    logger.info(
+                        f"{_YELLOW}{self._step_prefix}⏳ 자동 목록 추출 선택 대기 중: "
+                        f"체크 {before_count}/{goal_count}, 미선택 행 재검색{_RESET}"
+                    )
+                    last_wait_log = now
+                if not self._auto_list_wait(0.25):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+                needs_target_refresh = True
+                continue
 
             target = candidates[0]
             click_result = self._execute_click_at(
@@ -4589,7 +4795,17 @@ class RuleExecutor:
                 image_click=True,
             )
             if not click_result.success:
-                return click_result
+                if click_result.message == "실행 중지됨" or self._stop_event.is_set():
+                    return click_result
+                logger.warning(
+                    f"{_YELLOW}{self._step_prefix}⚠ 추출 행 클릭 실패 → 재검색 계속: "
+                    f"{target['name']} ({click_result.message}){_RESET}"
+                )
+                retry_after_by_row[(target["x"], target["y"])] = time.monotonic() + 0.75
+                if not self._auto_list_wait(0.25):
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+                needs_target_refresh = True
+                continue
 
             confirm_deadline = time.monotonic() + min(10.0, max(1.0, float(getattr(rule, "timeout", 5.0) or 5.0)))
             while time.monotonic() < confirm_deadline:
@@ -4609,33 +4825,18 @@ class RuleExecutor:
                 if self._stop_event.wait(0.15):
                     return self._make_result(rule, False, "실행 중지됨", start_time)
             else:
-                return self._make_result(
-                    rule,
-                    False,
-                    f"클릭 후 선택 체크가 증가하지 않았습니다: "
-                    f"{target['name']} {before_count}/{goal_count}",
-                    start_time,
+                logger.warning(
+                    f"{_YELLOW}{self._step_prefix}⚠ 클릭 후 선택 체크 확인 지연 → "
+                    f"재검색 계속: {target['name']} {before_count}/{goal_count}{_RESET}"
                 )
-
-            if len(confirmations) > goal_count:
-                return self._make_result(
-                    rule,
-                    False,
-                    f"선택 체크 수가 등록 항목 행을 초과했습니다: {len(confirmations)}/{goal_count}",
-                    start_time,
-                )
+                retry_after_by_row[(target["x"], target["y"])] = time.monotonic() + 0.75
+                needs_target_refresh = True
+                continue
 
             if len(confirmations) < goal_count:
                 delay = self._repeat_delay_for_rule(rule)
-                if self._stop_event.wait(timeout=delay):
+                if delay > 0 and not self._auto_list_wait(delay):
                     return self._make_result(rule, False, "실행 중지됨", start_time)
-
-        return self._make_result(
-            rule,
-            True,
-            f"자동 목록 등록 항목 선택 완료 ({len(confirmations)}/{goal_count})",
-            start_time,
-        )
 
     def _execute_click_until_image_disappears(
         self,
@@ -6088,6 +6289,7 @@ class RuleExecutor:
         skip_current_playlist: bool = False,
         rewind_previous_action: bool = False,
         rewind_delay: float = 0.0,
+        rewind_target_rule_id: str = "",
         monitoring_jump_index: int = -1,
         monitoring_jump_rule_id: str = "",
     ) -> RuleExecutionResult:
@@ -6102,6 +6304,7 @@ class RuleExecutor:
             skip_current_playlist=skip_current_playlist,
             rewind_previous_action=rewind_previous_action,
             rewind_delay=rewind_delay,
+            rewind_target_rule_id=str(rewind_target_rule_id or ""),
             monitoring_jump_index=monitoring_jump_index,
             monitoring_jump_rule_id=monitoring_jump_rule_id,
         )

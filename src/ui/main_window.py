@@ -2839,6 +2839,9 @@ class MainWindow(ctk.CTk):
                     completion_msg = getattr(gm, '_completion_message', None)
                     skip_current_playlist = bool(getattr(gm, '_skip_current_playlist', False))
                     rewind_previous_action = bool(getattr(gm, '_rewind_previous_action', False))
+                    rewind_target_rule_id = str(
+                        getattr(gm, "_rewind_target_rule_id", "") or ""
+                    ).strip()
                     rewind_delay = float(getattr(gm, "_rewind_delay", 0.0) or 0.0)
                     gm.destroy()
                     self._mini_gm_dialog = None
@@ -2847,6 +2850,7 @@ class MainWindow(ctk.CTk):
                         completion_msg,
                         skip_current_playlist=skip_current_playlist,
                         rewind_previous_action=rewind_previous_action,
+                        rewind_target_rule_id=rewind_target_rule_id,
                         rewind_delay=rewind_delay,
                     )
                     return
@@ -2865,6 +2869,7 @@ class MainWindow(ctk.CTk):
         *,
         skip_current_playlist: bool = False,
         rewind_previous_action: bool = False,
+        rewind_target_rule_id: str = "",
         rewind_delay: float = 0.0,
     ):
         if getattr(self, '_mini_stop_requested', False):
@@ -2880,11 +2885,26 @@ class MainWindow(ctk.CTk):
         previous_rule = getattr(self, "_mini_gm_previous_rule", None)
         self._mini_gm_current_rule = None
         if rewind_previous_action:
-            if previous_rule is not None and gm_rule is not None:
-                retry_rules = [previous_rule, gm_rule] + remaining
+            from .player_view import _build_trigger_rewind_continuation
+
+            retry_rules, rewind_target_rule, rewind_error = _build_trigger_rewind_continuation(
+                [
+                    *(getattr(self._mini_active_plan, "initial_rules", []) or []),
+                    *(getattr(self._mini_active_plan, "monitoring_rules", []) or []),
+                ],
+                gm_rule,
+                rewind_target_rule_id,
+                legacy_previous_rule=previous_rule,
+                legacy_remaining_rules=remaining,
+            )
+            if retry_rules and rewind_target_rule is not None:
+                rewind_target_name = (
+                    getattr(rewind_target_rule, "description", "")
+                    or getattr(rewind_target_rule, "action_type", "")
+                )
                 logger.warning(
-                    f"[mini-player] game_mode trigger missing -> rewind previous action: "
-                    f"{getattr(previous_rule, 'description', '') or previous_rule.action_type}"
+                    "[mini-player] game_mode trigger missing -> rewind configured action: "
+                    f"{rewind_target_name} rule_id={rewind_target_rule.rule_id}"
                 )
                 self._is_running = True
                 self._mini_stop_requested = False
@@ -2892,7 +2912,7 @@ class MainWindow(ctk.CTk):
                     self._mini_play_btn.configure(state="disabled")
                     self._mini_pause_btn.configure(state="normal")
                     self._mini_stop_btn.configure(state="normal")
-                    self._mini_status.configure(text="↩ 트리거 미감지 → 전 액션 재시도 중...")
+                    self._mini_status.configure(text="↩ 트리거 미감지 → 지정 액션 재시도 중...")
                     self._mini_update_active_bar(
                         "실행 중",
                         plan_name=getattr(getattr(self, "_mini_active_plan", None), "name", ""),
@@ -2900,11 +2920,11 @@ class MainWindow(ctk.CTk):
                         index=self._sequence_index + 1 if self._sequence_mode else 0,
                         total=len(self._sequence_plans) if self._sequence_mode else 0,
                         repeat_count=self._mini_total_repeat if not self._sequence_mode else 0,
-                        message="트리거 미감지 → 전 액션 재시도",
+                        message="트리거 미감지 → 지정 액션 재시도",
                     )
                 except (tk.TclError, RuntimeError, AttributeError):
                     pass
-                self._mini_next_gm_previous_rule = previous_rule
+                self._mini_next_gm_previous_rule = rewind_target_rule
                 try:
                     retry_delay = max(0.0, float(rewind_delay or 0.0))
                 except (TypeError, ValueError):
@@ -2926,7 +2946,7 @@ class MainWindow(ctk.CTk):
                             index=self._sequence_index + 1 if self._sequence_mode else 0,
                             total=len(self._sequence_plans) if self._sequence_mode else 0,
                             repeat_count=self._mini_total_repeat if not self._sequence_mode else 0,
-                            message=f"전 액션 재시도 대기 {retry_delay:.1f}초",
+                            message=f"지정 액션 재시도 대기 {retry_delay:.1f}초",
                         )
                     except (tk.TclError, RuntimeError, AttributeError):
                         pass
@@ -2934,7 +2954,8 @@ class MainWindow(ctk.CTk):
                 else:
                     _retry_previous_action()
                 return
-            logger.warning("[mini-player] game_mode rewind requested but previous rule is missing")
+            error_msg = f"game_mode rewind failed: {rewind_error}"
+            logger.error(f"[mini-player] {error_msg}")
         if skip_current_playlist:
             message = error_msg or PLAYLIST_SKIP_TRIGGER_MISSING
             logger.warning(f"[mini-player] game_mode trigger missing -> playlist skip: {message}")
