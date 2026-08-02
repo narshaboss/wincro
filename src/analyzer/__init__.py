@@ -1,6 +1,8 @@
 """Analysis package with compatibility-preserving lazy exports."""
 
+import sys
 from importlib import import_module
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 
@@ -24,6 +26,23 @@ _LAZY_EXPORTS = {
 
 __all__ = list(_LAZY_EXPORTS)
 
+_COLLIDING_EXPORTS = {"template_matcher", "action_extractor", "video_analyzer"}
+
+
+class _LazyExportPackage(ModuleType):
+    """Keep singleton exports stable after their same-named module is imported."""
+
+    def __getattribute__(self, name: str):
+        if name in _COLLIDING_EXPORTS:
+            namespace = ModuleType.__getattribute__(self, "__dict__")
+            current = namespace.get(name)
+            if isinstance(current, ModuleType):
+                _module_name, attribute_name = namespace["_LAZY_EXPORTS"][name]
+                value = getattr(current, attribute_name)
+                namespace[name] = value
+                return value
+        return ModuleType.__getattribute__(self, name)
+
 
 def __getattr__(name: str):
     target = _LAZY_EXPORTS.get(name)
@@ -37,6 +56,9 @@ def __getattr__(name: str):
 
 def __dir__():
     return sorted(set(globals()) | set(__all__))
+
+
+sys.modules[__name__].__class__ = _LazyExportPackage
 
 
 if TYPE_CHECKING:

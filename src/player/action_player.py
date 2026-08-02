@@ -306,6 +306,10 @@ class ActionPlayer:
         # 규칙 실행 엔진
         self._rule_executor: Optional[RuleExecutor] = None
         self._current_automation_plan: Optional[AutomationPlan] = None
+        self._execution_generation = 0
+        self._execution_finalized = True
+        self._execution_finalizing = False
+        self._finalize_lock = threading.Lock()
 
     def _get_enabled_actions(self, sequence: Sequence) -> List[Action]:
         """실행 대상 액션만 반환"""
@@ -329,7 +333,85 @@ class ActionPlayer:
     @property
     def is_running(self) -> bool:
         """실행 중 여부"""
-        return self._state in [PlayerState.RUNNING, PlayerState.PAUSED]
+        with self._finalize_lock:
+            lifecycle_active = not self._execution_finalized
+        return self._state in [PlayerState.RUNNING, PlayerState.PAUSED] or lifecycle_active
+
+    def _reset_input_state(self, context: str) -> bool:
+        """Release all generated input at a legacy playback boundary."""
+        try:
+            reset_ok = bool(get_input_controller().release_all())
+        except Exception as exc:
+            logger.error(f"[InputSafety] {context} input reset failed: {exc}")
+            return False
+        if not reset_ok:
+            logger.error(f"[InputSafety] {context} input reset was incomplete")
+        return reset_ok
+
+    def _begin_execution_generation(self) -> int:
+        with self._finalize_lock:
+            self._execution_generation += 1
+            self._execution_finalized = False
+            self._execution_finalizing = False
+            return self._execution_generation
+
+    def _is_execution_generation_active(self, generation: int) -> bool:
+        with self._finalize_lock:
+            return (
+                generation == self._execution_generation
+                and not self._execution_finalized
+            )
+
+    def _try_begin_execution_generation(self) -> Optional[int]:
+        """Atomically reserve one playback worker."""
+        with self._finalize_lock:
+            worker_alive = bool(self._thread and self._thread.is_alive())
+            if (
+                not self._execution_finalized
+                or getattr(self, "_execution_finalizing", False)
+                or worker_alive
+                or self._state in [PlayerState.RUNNING, PlayerState.PAUSED]
+            ):
+                return None
+            self._execution_generation += 1
+            self._execution_finalized = False
+            self._execution_finalizing = False
+            return self._execution_generation
+
+    def _rollback_execution_start(self, generation: int, message: str) -> None:
+        """Restore a non-running state when setup fails before the worker starts."""
+        with self._finalize_lock:
+            if generation != self._execution_generation:
+                return
+            self._execution_finalizing = True
+        block_automation_input("ActionPlayer.start_failed")
+        self._reset_input_state("legacy-execution-start-failed")
+        try:
+            self._emergency_stop.stop()
+        except Exception:
+            pass
+        try:
+            self._close_execution_logger()
+        except Exception as exc:
+            logger.error(f"execution logger rollback cleanup failed: {exc}")
+        try:
+            if self._execution_log and getattr(self._execution_log, "id", None):
+                self._execution_log.ended_at = datetime.now()
+                self._execution_log.status = ExecutionStatus.FAILED.value
+                self._execution_log.error_message = message
+                self._db.update_execution_log(self._execution_log)
+        except Exception as exc:
+            logger.error(f"failed to persist playback start rollback: {exc}")
+        if not (self._thread and self._thread.is_alive()):
+            self._thread = None
+        self._state = PlayerState.FAILED
+        self._progress.state = PlayerState.FAILED
+        self._progress.message = message
+        with self._finalize_lock:
+            if generation == self._execution_generation:
+                self._execution_finalized = True
+                self._execution_finalizing = False
+        logger.error(f"legacy playback start failed: {message}")
 
     def _close_execution_logger(self) -> None:
         """Close and unregister per-run loggers so repeated playback stays bounded."""
@@ -390,7 +472,7 @@ class ActionPlayer:
         Returns:
             bool: 시작 성공 여부
         """
-        if self._state == PlayerState.RUNNING:
+        if self.is_running:
             logger.warning("이미 실행 중입니다")
             return False
 
@@ -403,9 +485,18 @@ class ActionPlayer:
             logger.warning("활성화된 액션이 없습니다")
             return False
 
+        run_generation = self._try_begin_execution_generation()
+        if run_generation is None:
+            logger.warning("another playback worker is still starting or stopping")
+            return False
+        try:
+            if not self._reset_input_state("legacy-execution-start"):
+                raise RuntimeError("input reset failed before playback start")
+        except Exception as exc:
+            self._rollback_execution_start(run_generation, str(exc))
+            return False
         self._current_sequence = sequence
         self._state = PlayerState.RUNNING
-        unblock_automation_input()
 
         # 진행 상태 초기화
         self._progress = PlaybackProgress(
@@ -421,23 +512,41 @@ class ActionPlayer:
             status=ExecutionStatus.RUNNING.value,
             total_steps=len(enabled_actions),
         )
-        log_id = self._db.create_execution_log(self._execution_log)
-        self._execution_log.id = log_id
+        try:
+            log_id = self._db.create_execution_log(self._execution_log)
+            self._execution_log.id = log_id
+        except Exception as exc:
+            self._rollback_execution_start(run_generation, str(exc))
+            return False
 
         # 실행 로거 생성
         self._close_execution_logger()
-        self._execution_logger = create_execution_logger(sequence.name)
+        try:
+            self._execution_logger = create_execution_logger(sequence.name)
+        except Exception as exc:
+            self._rollback_execution_start(run_generation, str(exc))
+            return False
 
         # 긴급 중지 핸들러 시작
-        self._emergency_stop.start(on_stop=self._on_emergency_stop)
+        try:
+            self._emergency_stop.start(on_stop=self._on_emergency_stop)
+        except Exception as exc:
+            self._rollback_execution_start(run_generation, str(exc))
+            return False
 
         # 실행 스레드 시작
         self._thread = threading.Thread(
             target=self._play_loop,
-            args=(sequence, repeat_count, speed_multiplier),
+            args=(sequence, repeat_count, speed_multiplier, run_generation),
+            name="wincro-action-player",
             daemon=True,
         )
-        self._thread.start()
+        try:
+            unblock_automation_input()
+            self._thread.start()
+        except Exception as exc:
+            self._rollback_execution_start(run_generation, str(exc))
+            return False
 
         logger.info(f"시퀀스 실행 시작: {sequence.name}")
         return True
@@ -466,15 +575,15 @@ class ActionPlayer:
 
     def stop(self) -> bool:
         """실행 중지 (비차단 — UI 스레드에서 안전하게 호출 가능)"""
-        if not self.is_running:
+        if self._state not in [PlayerState.RUNNING, PlayerState.PAUSED]:
             return False
 
+        with self._finalize_lock:
+            run_generation = self._execution_generation
+        worker = self._thread
         self._state = PlayerState.STOPPED
         block_automation_input("ActionPlayer.stop")
-        try:
-            get_input_controller().release_all()
-        except Exception:
-            pass
+        self._reset_input_state("legacy-execution-stop")
         self._progress.state = PlayerState.STOPPED
         self._emergency_stop.stop()
         self._update_progress("사용자에 의해 중지됨")
@@ -482,11 +591,23 @@ class ActionPlayer:
 
         # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
         def _join_and_finalize():
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=2.0)
-                if self._thread.is_alive():
+            if worker and worker.is_alive():
+                wait_started = time.monotonic()
+                warned = False
+                while worker.is_alive():
+                    worker.join(timeout=0.5)
+                    if not warned and time.monotonic() - wait_started >= 2.0:
+                        warned = True
+                        logger.warning(
+                            "playback worker is still stopping; a new run remains blocked"
+                        )
+                if worker.is_alive():
                     logger.warning("실행 스레드가 2초 후에도 응답 없음")
-            self._finalize_execution(False, "사용자에 의해 중지됨")
+            self._finalize_execution(
+                False,
+                "사용자에 의해 중지됨",
+                generation=run_generation,
+            )
 
         threading.Thread(target=_join_and_finalize, daemon=True).start()
         return True
@@ -494,6 +615,8 @@ class ActionPlayer:
     def _on_emergency_stop(self) -> None:
         """긴급 중지 콜백"""
         self._state = PlayerState.STOPPED
+        block_automation_input("ActionPlayer.emergency_stop")
+        self._reset_input_state("legacy-emergency-stop")
         self._progress.state = PlayerState.STOPPED
         self._update_progress("긴급 중지!")
         logger.warning("긴급 중지!")
@@ -503,8 +626,17 @@ class ActionPlayer:
         sequence: Sequence,
         repeat_count: int,
         speed_multiplier: Optional[float],
+        generation: Optional[int] = None,
     ) -> None:
         """실행 메인 루프"""
+        if generation is None:
+            with self._finalize_lock:
+                needs_generation = self._execution_finalized
+            generation = (
+                self._begin_execution_generation()
+                if needs_generation
+                else self._execution_generation
+            )
         if speed_multiplier is None:
             speed_multiplier = self._config.player.speed_multiplier
 
@@ -517,21 +649,28 @@ class ActionPlayer:
 
         try:
             while True:
+                if not self._is_execution_generation_active(generation):
+                    return
                 # 무한 반복이 아닌 경우 횟수 확인
                 if repeat_count > 0 and iteration >= repeat_count:
                     break
 
                 iteration += 1
+                if iteration > 1:
+                    if not self._reset_input_state(f"legacy-repeat-{iteration}-start"):
+                        raise RuntimeError("input reset failed at playback repeat boundary")
                 self._execution_logger.info(f"=== 반복 {iteration} 시작 ===")
 
                 for i, action in enumerate(enabled_actions):
+                    if not self._is_execution_generation_active(generation):
+                        return
                     # 상태 확인
                     if self._state == PlayerState.STOPPED:
-                        self._finalize_execution(False, "중지됨")
+                        self._finalize_execution(False, "중지됨", generation=generation)
                         return
 
                     if self._emergency_stop.is_triggered:
-                        self._finalize_execution(False, "긴급 중지")
+                        self._finalize_execution(False, "긴급 중지", generation=generation)
                         return
 
                     # 일시 정지 대기
@@ -560,6 +699,8 @@ class ActionPlayer:
                     success = True
                     error = ""
                     for rep in range(action_repeat):
+                        if not self._is_execution_generation_active(generation):
+                            return
                         if self._state == PlayerState.STOPPED:
                             break
                         if self._emergency_stop.is_triggered:
@@ -576,6 +717,13 @@ class ActionPlayer:
 
                         # 액션 실행
                         success, error = self._execute_action(action, speed_multiplier)
+
+                        if not self._is_execution_generation_active(generation):
+                            return
+
+                        if self._state == PlayerState.STOPPED or self._emergency_stop.is_triggered:
+                            self._finalize_execution(False, "stopped", generation=generation)
+                            return
 
                         if not success:
                             break  # 실패하면 반복 중단
@@ -608,6 +756,10 @@ class ActionPlayer:
                 self._execution_logger.info(f"=== 반복 {iteration} 완료 ===")
 
             # 성공적으로 완료
+            if self._state == PlayerState.STOPPED or self._emergency_stop.is_triggered:
+                self._finalize_execution(False, "stopped", generation=generation)
+                return
+
             self._state = PlayerState.COMPLETED
             self._progress.state = PlayerState.COMPLETED
             self._update_progress("완료")
@@ -617,13 +769,13 @@ class ActionPlayer:
                 self._execution_log.completed_steps = total_completed
                 self._execution_log.failed_steps = total_failed
 
-            self._finalize_execution(True, "성공적으로 완료")
+            self._finalize_execution(True, "성공적으로 완료", generation=generation)
 
         except Exception as e:
             logger.error(f"실행 중 오류: {e}")
             self._state = PlayerState.FAILED
             self._progress.state = PlayerState.FAILED
-            self._finalize_execution(False, str(e))
+            self._finalize_execution(False, str(e), generation=generation)
 
     def _find_all_images_on_screen(
         self,
@@ -1082,36 +1234,85 @@ class ActionPlayer:
         if self._on_progress:
             self._on_progress(self._progress)
 
-    def _finalize_execution(self, success: bool, message: str) -> None:
+    def _finalize_execution(
+        self,
+        success: bool,
+        message: str,
+        generation: Optional[int] = None,
+    ) -> None:
         """실행 완료 처리"""
-        self._emergency_stop.stop()
+        if generation is None:
+            generation = self._execution_generation
+        with self._finalize_lock:
+            if (
+                generation != self._execution_generation
+                or self._execution_finalized
+                or getattr(self, "_execution_finalizing", False)
+            ):
+                logger.debug(
+                    "[InputSafety] stale legacy completion ignored: generation=%s current=%s",
+                    generation,
+                    self._execution_generation,
+                )
+                return
+            self._execution_finalizing = True
+
+        if not self._reset_input_state("legacy-execution-complete"):
+            block_automation_input("ActionPlayer.completion_reset_failed")
+            success = False
+            message = f"입력 장치 안전 해제 실패: {message}"
+        try:
+            self._emergency_stop.stop()
+        except Exception as exc:
+            logger.error(f"emergency listener cleanup failed: {exc}")
 
         # 실행 로그 업데이트
-        if self._execution_log:
-            self._execution_log.ended_at = datetime.now()
-            self._execution_log.status = (
-                ExecutionStatus.COMPLETED.value if success
-                else ExecutionStatus.FAILED.value
-            )
-            self._execution_log.error_message = None if success else message
-
-            if self._execution_log.started_at:
-                self._execution_log.execution_time_ms = int(
-                    (self._execution_log.ended_at - self._execution_log.started_at).total_seconds() * 1000
+        try:
+            if self._execution_log:
+                self._execution_log.ended_at = datetime.now()
+                self._execution_log.status = (
+                    ExecutionStatus.COMPLETED.value if success
+                    else ExecutionStatus.FAILED.value
                 )
+                self._execution_log.error_message = None if success else message
 
-            self._db.update_execution_log(self._execution_log)
+                if self._execution_log.started_at:
+                    self._execution_log.execution_time_ms = int(
+                        (self._execution_log.ended_at - self._execution_log.started_at).total_seconds() * 1000
+                    )
 
-            # 시퀀스 통계 업데이트
-            if self._current_sequence and self._current_sequence.id:
-                self._db.update_sequence_run_stats(self._current_sequence.id, success)
+                self._db.update_execution_log(self._execution_log)
 
-        # 콜백 호출
-        if self._on_complete:
-            self._on_complete(success, message)
+                # 시퀀스 통계 업데이트
+                if self._current_sequence and self._current_sequence.id:
+                    self._db.update_sequence_run_stats(self._current_sequence.id, success)
+        except Exception as exc:
+            logger.error(f"실행 로그 최종 저장 실패: {exc}")
+
+        # Cleanup must finish before the callback can start another run.
+        try:
+            self._close_execution_logger()
+        except Exception as exc:
+            logger.error(f"execution logger cleanup failed: {exc}")
+        if threading.current_thread() is self._thread or not (
+            self._thread and self._thread.is_alive()
+        ):
+            self._thread = None
+
+        with self._finalize_lock:
+            if generation == self._execution_generation:
+                self._execution_finalized = True
+                self._execution_finalizing = False
 
         logger.info(f"실행 완료: {'성공' if success else '실패'} - {message}")
-        self._close_execution_logger()
+
+        # 콜백 호출
+        callback = self._on_complete
+        if callback:
+            try:
+                callback(success, message)
+            except Exception as exc:
+                logger.error(f"실행 완료 콜백 실패: {exc}")
 
 
     def play_automation_plan(

@@ -21,6 +21,7 @@ _arduino_hid = None
 _arduino_load_failed = False
 _strict_move_warned = False
 _input_controller: Optional['InputController'] = None
+_input_controller_lock = threading.Lock()
 _MOVE_VERIFY_TOLERANCE = 3
 _MOVE_MAX_CORRECTIONS = 80
 _MOVE_STEP_LIMIT = 64
@@ -207,6 +208,27 @@ class InputController:
 
     def __init__(self):
         self._config = get_config()
+        self._pressed_input_lock = threading.Lock()
+        self._pressed_keys: set[str] = set()
+        self._pressed_buttons: set[str] = set()
+
+    def _track_key(self, key: str, pressed: bool) -> None:
+        normalized = str(key or "").strip().lower()
+        if not normalized:
+            return
+        with self._pressed_input_lock:
+            if pressed:
+                self._pressed_keys.add(normalized)
+            else:
+                self._pressed_keys.discard(normalized)
+
+    def _track_button(self, button: str, pressed: bool) -> None:
+        normalized = str(button or "left").strip().lower()
+        with self._pressed_input_lock:
+            if pressed:
+                self._pressed_buttons.add(normalized)
+            else:
+                self._pressed_buttons.discard(normalized)
 
     def _use_arduino(self) -> bool:
         return is_arduino_enabled()
@@ -416,18 +438,24 @@ class InputController:
         )
 
     def mouse_down(self, button: str = 'left') -> bool:
-        return self._with_arduino_fallback(
+        success = self._with_arduino_fallback(
             f"mouse_down:{button}",
             lambda a: a.mouse_press(button),
             lambda: pyautogui.mouseDown(button=button),
         )
+        if success:
+            self._track_button(button, True)
+        return success
 
     def mouse_up(self, button: str = 'left') -> bool:
-        return self._with_arduino_fallback(
+        success = self._with_arduino_fallback(
             f"mouse_up:{button}",
             lambda a: a.mouse_release(button),
             lambda: pyautogui.mouseUp(button=button),
         )
+        if success:
+            self._track_button(button, False)
+        return success
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.5, button: str = 'left') -> bool:
         if is_automation_input_blocked():
@@ -435,23 +463,53 @@ class InputController:
             return False
         arduino = _get_arduino()
         if arduino is not None and self._use_arduino() and arduino.supports_mouse_move():
+            pressed = False
+            release_ok = False
+            try:
+                if not self._arduino_move_to(start_x, start_y):
+                    return False
+                time.sleep(0.05)
+                if not arduino.mouse_press(button):
+                    logger.error(f"[ArduinoInput] drag press failed: {button}")
+                    return False
+                pressed = True
+                self._track_button(button, True)
+                time.sleep(0.05)
+                if not self._arduino_move_to(end_x, end_y, duration=duration):
+                    return False
+                time.sleep(0.05)
+                release_ok = bool(arduino.mouse_release(button))
+                if not release_ok:
+                    logger.error(f"[ArduinoInput] drag release failed: {button}")
+                    return False
+                pressed = False
+                self._track_button(button, False)
+                return True
+            except Exception as e:
+                logger.error(f"[ArduinoInput] drag failed: {e}")
+                if self._strict_mode():
+                    logger.warning("[ArduinoStrict] blocked software drag fallback")
+                    return False
+            finally:
+                if pressed or not release_ok:
+                    try:
+                        if arduino.mouse_release(button):
+                            pressed = False
+                            self._track_button(button, False)
+                    except Exception:
+                        pass
+                if pressed:
+                    try:
+                        arduino.release_all()
+                    except Exception:
+                        pass
+                # Also emit a software button-up. Windows aggregates HID input,
+                # so this is a final guard even when the serial release failed.
                 try:
-                    if not self._arduino_move_to(start_x, start_y):
-                        return False
-                    time.sleep(0.05)
-                    arduino.mouse_press(button)
-                    time.sleep(0.05)
-                    if not self._arduino_move_to(end_x, end_y, duration=duration):
-                        arduino.mouse_release(button)
-                        return False
-                    time.sleep(0.05)
-                    arduino.mouse_release(button)
-                    return True
-                except Exception as e:
-                    logger.error(f"[ArduinoInput] drag failed: {e}")
-                    if self._strict_mode():
-                        logger.warning("[ArduinoStrict] blocked software drag fallback")
-                        return False
+                    pyautogui.mouseUp(button=button, _pause=False)
+                    self._track_button(button, False)
+                except Exception:
+                    pass
 
         if self._strict_mode():
             logger.warning("[ArduinoStrict] blocked software drag fallback")
@@ -473,6 +531,12 @@ class InputController:
         except Exception as e:
             logger.error(f"[SoftwareInput] drag failed: {e}")
             return False
+        finally:
+            try:
+                pyautogui.mouseUp(button=button, _pause=False)
+            except Exception:
+                pass
+            self._track_button(button, False)
 
     def scroll(self, amount: int, x: Optional[int] = None, y: Optional[int] = None) -> bool:
         if not self._move_before_action(x, y):
@@ -590,18 +654,24 @@ class InputController:
         return _software_tap_combo()
 
     def key_down(self, key: str) -> bool:
-        return self._with_arduino_fallback(
+        success = self._with_arduino_fallback(
             f"key_down:{key}",
             lambda a: a.key_press(key),
             lambda: pyautogui.keyDown(key),
         )
+        if success:
+            self._track_key(key, True)
+        return success
 
     def key_up(self, key: str) -> bool:
-        return self._with_arduino_fallback(
+        success = self._with_arduino_fallback(
             f"key_up:{key}",
             lambda a: a.key_release(key),
             lambda: pyautogui.keyUp(key),
         )
+        if success:
+            self._track_key(key, False)
+        return success
 
     def hotkey(self, *keys) -> bool:
         normalized_keys = [str(key).strip().lower() for key in keys if str(key).strip()]
@@ -612,6 +682,7 @@ class InputController:
 
         combo = "+".join(normalized_keys)
         pressed_keys = []
+        unreleased_keys = set()
         ok = True
         primary_key = normalized_keys[-1]
         has_modifier = any(key in _MODIFIER_KEYS for key in normalized_keys[:-1])
@@ -630,6 +701,7 @@ class InputController:
                     logger.warning(f"[InputController] hotkey key_down failed: {combo} key={key}")
                     break
                 pressed_keys.append(key)
+                unreleased_keys.add(key)
                 time.sleep(_HOTKEY_SETTLE_DELAY)
 
             if ok:
@@ -640,9 +712,13 @@ class InputController:
                 if not self.key_up(key):
                     release_ok = False
                     logger.warning(f"[InputController] hotkey key_up failed: {combo} key={key}")
+                else:
+                    unreleased_keys.discard(key)
                 time.sleep(_HOTKEY_RELEASE_DELAY)
         finally:
             pyautogui.PAUSE = previous_pause
+            if unreleased_keys or not ok:
+                self.release_all()
 
         return ok and release_ok
 
@@ -853,36 +929,62 @@ class InputController:
             return self.type_text("".join(str(part) for part in text), interval=interval)
         return self.type_text(str(text), interval=interval)
 
-    def release_all(self) -> None:
+    def release_all(self) -> bool:
+        arduino_required = False
         released_by_arduino = False
-        if self._use_arduino():
-            arduino = _get_arduino()
-            if arduino is not None:
+        arduino = _get_arduino()
+        arduino_session_active = bool(self._use_arduino())
+        if arduino is not None and not arduino_session_active:
+            try:
+                has_open_session = getattr(arduino, "has_open_session", None)
+                arduino_session_active = bool(
+                    callable(has_open_session) and has_open_session()
+                )
+            except Exception:
+                arduino_session_active = False
+        if arduino is not None and arduino_session_active:
+            arduino_required = True
+            for attempt in range(2):
                 try:
-                    arduino.release_all()
-                    released_by_arduino = True
+                    released_by_arduino = bool(arduino.release_all())
                 except Exception as e:
                     logger.error(f"[ArduinoInput] release_all failed: {e}")
-        if released_by_arduino:
-            return
+                    released_by_arduino = False
+                if released_by_arduino:
+                    break
+                if attempt == 0:
+                    time.sleep(0.03)
+            if not released_by_arduino:
+                logger.error("[InputSafety] Arduino release_all failed after retry")
 
-        for key in (
+        with self._pressed_input_lock:
+            tracked_keys = set(self._pressed_keys)
+            tracked_buttons = set(self._pressed_buttons)
+
+        software_released = True
+        baseline_keys = {
             "shift", "ctrl", "alt", "win", "cmd", "command", "option",
             "up", "down", "left", "right", "enter", "space", "esc",
-        ):
+        }
+        for key in sorted(baseline_keys | tracked_keys):
             try:
-                pyautogui.keyUp(key)
+                pyautogui.keyUp(key, _pause=False)
+                self._track_key(key, False)
             except Exception:
-                pass
-        for button in ("left", "right", "middle"):
+                software_released = False
+        for button in sorted({"left", "right", "middle"} | tracked_buttons):
             try:
-                pyautogui.mouseUp(button=button)
+                pyautogui.mouseUp(button=button, _pause=False)
+                self._track_button(button, False)
             except Exception:
-                pass
+                software_released = False
+        return software_released and (released_by_arduino or not arduino_required)
 
 
 def get_input_controller() -> InputController:
     global _input_controller
     if _input_controller is None:
-        _input_controller = InputController()
+        with _input_controller_lock:
+            if _input_controller is None:
+                _input_controller = InputController()
     return _input_controller

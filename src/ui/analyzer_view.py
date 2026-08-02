@@ -4632,26 +4632,33 @@ class AnalyzerView(BaseView):
         self._load_recordings_async()  # ???? _build_plan_modified_cache() ??
         self._load_plans_async()
 
-    def _build_plan_modified_cache(self):
-        """플랜 파일의 modified 상태를 미리 캐시 (recording item에서 파일 I/O 방지)"""
-        prev_cache = getattr(self, '_plan_modified_cache', {})
-        prev_mtime = getattr(self, '_plan_mtime_cache', {})
-        self._plan_modified_cache = {}
-        self._plan_mtime_cache = {}
+    def _collect_plan_modified_cache(self) -> tuple[dict, dict]:
+        """Build immutable cache snapshots without exposing partial worker state."""
+        prev_cache = dict(getattr(self, '_plan_modified_cache', {}))
+        prev_mtime = dict(getattr(self, '_plan_mtime_cache', {}))
+        modified_cache = {}
+        mtime_cache = {}
         if PLANS_DIR.exists():
             for plan_file in PLANS_DIR.glob("*.json"):
                 try:
                     plan_id = plan_file.stem
                     mtime = os.path.getmtime(plan_file)
-                    self._plan_mtime_cache[plan_id] = mtime
+                    mtime_cache[plan_id] = mtime
                     # mtime 변경 없으면 이전 캐시 값 재사용 (전체 JSON 파싱 방지)
                     if plan_id in prev_mtime and prev_mtime[plan_id] == mtime:
-                        self._plan_modified_cache[plan_id] = prev_cache.get(plan_id, False)
+                        modified_cache[plan_id] = prev_cache.get(plan_id, False)
                     else:
                         data = load_json_file(plan_file)
-                        self._plan_modified_cache[plan_id] = data.get("modified", False)
+                        modified_cache[plan_id] = data.get("modified", False)
                 except Exception:
                     pass
+        return modified_cache, mtime_cache
+
+    def _build_plan_modified_cache(self):
+        """Refresh plan modified caches atomically."""
+        modified_cache, mtime_cache = self._collect_plan_modified_cache()
+        self._plan_modified_cache = modified_cache
+        self._plan_mtime_cache = mtime_cache
 
     def _load_plans_async(self):
         """플랜 목록을 백그라운드 스레드에서 로드"""
@@ -4677,29 +4684,34 @@ class AnalyzerView(BaseView):
                         logger.error(f"계획 데이터 형식 오류: {plan_file} - {e}")
                     except Exception as e:
                         logger.error(f"계획 로드 실패: {plan_file} - {e}")
-            self._analyzer_ui_post(lambda: self._apply_plans(plans, current_gen))
+            recordings = self._db.get_all_recordings()
+            rec_by_plan = {
+                recording.automation_plan_id: recording
+                for recording in recordings
+                if recording.automation_plan_id
+            }
+            lock_cache = {
+                plan.plan_id: bool(getattr(rec_by_plan.get(plan.plan_id), "locked", False))
+                for plan in plans
+            }
+            self._analyzer_ui_post(
+                lambda: self._apply_plans(plans, current_gen, lock_cache)
+            )
 
         self._plans_loader.submit(_load)
 
-    def _apply_plans(self, plans, generation=None):
+    def _apply_plans(self, plans, generation=None, lock_cache=None):
         """백그라운드에서 로드된 플랜을 UI에 적용"""
         # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
         if generation is not None and generation < self._plans_load_generation:
             return
 
+        self._plan_lock_cache = dict(lock_cache or {})
         if not plans:
             self._plan_items = []
             self._plans_scroll.pack_forget()
             self._plans_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
             return
-
-        # plan_id → locked 캐시 구축 (단일 쿼리로 전체 조회)
-        self._plan_lock_cache = {}
-        all_recordings = self._db.get_all_recordings()
-        rec_by_plan = {r.automation_plan_id: r for r in all_recordings if r.automation_plan_id}
-        for plan in plans:
-            recording = rec_by_plan.get(plan.plan_id)
-            self._plan_lock_cache[plan.plan_id] = recording.locked if recording else False
 
         self._plan_items = list(plans)
         self._plans_empty_label.pack_forget()
@@ -5080,16 +5092,33 @@ class AnalyzerView(BaseView):
         current_gen = self._recordings_load_generation
 
         def _load():
-            self._build_plan_modified_cache()
+            modified_cache, mtime_cache = self._collect_plan_modified_cache()
             recordings = self._db.get_all_recordings()
-            self._analyzer_ui_post(lambda: self._apply_recordings(recordings, current_gen))
+            self._analyzer_ui_post(
+                lambda: self._apply_recordings(
+                    recordings,
+                    current_gen,
+                    modified_cache,
+                    mtime_cache,
+                )
+            )
 
         self._recordings_loader.submit(_load)
 
-    def _apply_recordings(self, recordings, generation=None):
+    def _apply_recordings(
+        self,
+        recordings,
+        generation=None,
+        modified_cache=None,
+        mtime_cache=None,
+    ):
         if generation is not None and generation < self._recordings_load_generation:
             return
 
+        if modified_cache is not None:
+            self._plan_modified_cache = dict(modified_cache)
+        if mtime_cache is not None:
+            self._plan_mtime_cache = dict(mtime_cache)
         self._recording_items = list(recordings)
         self._recording_index_by_id = {
             recording.id: idx for idx, recording in enumerate(self._recording_items) if recording.id is not None

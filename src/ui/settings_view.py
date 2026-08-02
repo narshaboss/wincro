@@ -2525,18 +2525,45 @@ del "%~f0"
 
         # 배치 파일 실행 (새 창에서 보이도록)
         try:
+            from .main_window import _release_runtime_input_for_shutdown
+            if not _release_runtime_input_for_shutdown():
+                raise RuntimeError("input state cleanup failed before update handoff")
+        except Exception as e:
+            try:
+                from ..utils.input_controller import unblock_automation_input
+                unblock_automation_input()
+            except Exception:
+                pass
+            logger.error(f"manual update input cleanup failed; update cancelled: {e}")
+            messagebox.showerror(
+                "업데이트 오류",
+                "키보드/마우스 안전 해제에 실패하여 업데이트를 중단했습니다.\n"
+                "프로그램을 다시 시작한 뒤 재시도하세요.",
+            )
+            return
+
+        try:
             subprocess.Popen(
                 ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except Exception as e:
+            try:
+                from ..utils.input_controller import unblock_automation_input
+                unblock_automation_input()
+            except Exception:
+                pass
             logger.error(f"배치 파일 실행 실패: {e}")
             messagebox.showerror("업데이트 오류", f"업데이트 스크립트 실행 실패:\n{e}")
             return
 
         # 프로그램 종료
         try:
-            self.winfo_toplevel().destroy()
+            toplevel = self.winfo_toplevel()
+            cleanup = getattr(toplevel, "cleanup_resources", None)
+            if callable(cleanup):
+                cleanup()
+            toplevel.destroy()
         except Exception:
             pass
         sys.exit(0)
@@ -3744,21 +3771,35 @@ del "%~f0"
 
     def _disconnect_arduino(self) -> None:
         """아두이노 연결 해제"""
+        serial_ref = self._arduino_serial
         try:
-            # ArduinoHID 인스턴스도 해제
+            from ..utils.input_controller import get_input_controller
             from ..utils.arduino_hid import get_arduino_hid
-            arduino_hid = get_arduino_hid()
-            arduino_hid._serial = None
-            arduino_hid._connected = False
 
-            if self._arduino_serial:
-                self._arduino_serial.close()
-                self._arduino_serial = None
+            if not get_input_controller().release_all():
+                logger.error("[InputSafety] settings Arduino disconnect reset was incomplete")
+
+            arduino_hid = get_arduino_hid()
+            hid_serial = getattr(arduino_hid, "_serial", None)
+            if hid_serial is not None or arduino_hid.is_connected:
+                arduino_hid.disconnect()
+
+            # A reconnect race can leave the view and singleton holding
+            # different serial objects. Release and close the view-owned one too.
+            if serial_ref is not None and serial_ref is not hid_serial:
+                try:
+                    if getattr(serial_ref, "is_open", False):
+                        serial_ref.write(b"KA\n")
+                        serial_ref.flush()
+                finally:
+                    serial_ref.close()
             self._update_arduino_status(False, "연결 해제됨")
             logger.info("아두이노 연결 해제")
         except Exception as e:
             logger.error(f"아두이노 연결 해제 오류: {e}")
             self._update_arduino_status(False, "해제 오류")
+        finally:
+            self._arduino_serial = None
 
     def _update_arduino_status(self, connected: bool, message: str) -> None:
         """아두이노 연결 상태 UI 업데이트"""

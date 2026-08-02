@@ -61,6 +61,32 @@ APP_USER_MODEL_ID = "WinCro.BusinessSupportTool"
 logger = get_logger(__name__)
 
 
+def _release_runtime_input_for_shutdown() -> bool:
+    """Block new automation input, release HID state, and close its serial link."""
+    released = True
+    try:
+        from ..utils.input_controller import block_automation_input, get_input_controller
+
+        block_automation_input("MainWindow.cleanup_resources")
+        released = bool(get_input_controller().release_all())
+        if not released:
+            logger.error("[InputSafety] application shutdown input reset was incomplete")
+    except Exception as exc:
+        released = False
+        logger.error(f"[InputSafety] application shutdown input reset failed: {exc}")
+
+    try:
+        from ..utils.arduino_hid import get_arduino_hid
+
+        arduino = get_arduino_hid()
+        if getattr(arduino, "_serial", None) is not None or arduino.is_connected:
+            arduino.disconnect()
+    except Exception as exc:
+        released = False
+        logger.error(f"[InputSafety] application shutdown Arduino disconnect failed: {exc}")
+    return released
+
+
 @dataclass
 class MiniPlanSummary:
     """Lightweight playlist metadata used by the compact player picker."""
@@ -1825,18 +1851,25 @@ class MainWindow(ctk.CTk):
 
     def _refresh_mini_plans_sync(self):
         """플랜 목록 새로고침 - 디스크에서 최신 버전 로드 (백그라운드 스레드에서 호출)"""
-        old_count = len(self._mini_plans)
-        self._mini_plans = _load_mini_plan_summaries(PLANS_DIR)
-        logger.info(f"[미니플레이어] 플랜 새로고침 완료: {old_count} → {len(self._mini_plans)}개")
+        return _load_mini_plan_summaries(PLANS_DIR)
 
     def _refresh_mini_plans(self):
         """플랜 목록 새로고침 + UI 업데이트 (비차단)"""
         import threading
 
         def _load_and_update():
-            self._refresh_mini_plans_sync()
+            plans = self._refresh_mini_plans_sync()
+
+            def _apply_plans():
+                old_count = len(self._mini_plans)
+                self._mini_plans = plans
+                logger.info(
+                    f"[미니플레이어] 플랜 새로고침 완료: {old_count} → {len(plans)}개"
+                )
+                self._update_mini_plan_dropdown()
+
             try:
-                self.after(0, self._update_mini_plan_dropdown)
+                self.after(0, _apply_plans)
             except (tk.TclError, RuntimeError):
                 pass
 
@@ -2079,6 +2112,8 @@ class MainWindow(ctk.CTk):
 
         # 새 프로세스 시작 (부모 프로세스와 분리)
         try:
+            if not _release_runtime_input_for_shutdown():
+                raise RuntimeError("input state cleanup failed before mode switch")
             child_env = os.environ.copy()
             child_env["WINCRO_MODE_SWITCH_RESTART"] = "1"
             if getattr(sys, 'frozen', False):
@@ -2102,6 +2137,11 @@ class MainWindow(ctk.CTk):
             logger.info("[모드변경] 새 프로세스 시작됨")
         except Exception as e:
             logger.error(f"[모드변경] 프로세스 시작 실패: {e}")
+            try:
+                from ..utils.input_controller import unblock_automation_input
+                unblock_automation_input()
+            except Exception:
+                pass
             self._config.ui.window_mode = previous_mode
             save_config()
             self._mode_change_in_progress = False
@@ -3270,6 +3310,16 @@ class MainWindow(ctk.CTk):
 
         if self._rule_executor:
             self._rule_executor.stop()
+        else:
+            # A repeat transition briefly has no active executor. A stop in
+            # that window must still release any HID state left by the prior run.
+            try:
+                from ..utils.input_controller import get_input_controller
+
+                if not get_input_controller().release_all():
+                    logger.error("[InputSafety] mini-player transition stop reset was incomplete")
+            except Exception as exc:
+                logger.error(f"[InputSafety] mini-player transition stop reset failed: {exc}")
 
         gm = getattr(self, '_mini_gm_dialog', None)
         if gm is not None:
@@ -4460,6 +4510,10 @@ class MainWindow(ctk.CTk):
         if getattr(self, "_resources_cleaned", False):
             return
         self._resources_cleaned = True
+
+        # Do this first. A worker that is slow to stop must not keep injecting
+        # input while the UI and its callbacks are being torn down.
+        _release_runtime_input_for_shutdown()
 
         pending_view_switch = getattr(self, "_view_switch_after_id", None)
         if pending_view_switch is not None:

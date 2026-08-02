@@ -1,4 +1,5 @@
 import re
+import threading
 from pathlib import Path
 
 from src.ui.virtual_scroll import VirtualScrollFrame
@@ -210,6 +211,77 @@ def test_buffered_record_pump_drops_old_items_when_queue_is_saturated():
     dispatcher.close()
 
 
+def test_buffered_record_pump_close_is_atomic_with_worker_pushes():
+    from src.ui.ui_batcher import BufferedRecordPump, UiCallbackDispatcher
+
+    class FakeWidget:
+        def after(self, _ms, _func=None, *_args):
+            return "after-id"
+
+        def after_cancel(self, _after_id):
+            return None
+
+        def winfo_exists(self):
+            return True
+
+    dispatcher = UiCallbackDispatcher(FakeWidget())
+    pump = BufferedRecordPump(FakeWidget(), dispatcher, lambda _records: None)
+    start = threading.Event()
+
+    def push_many():
+        start.wait(1.0)
+        for value in range(10_000):
+            pump.push(value)
+
+    worker = threading.Thread(target=push_many)
+    worker.start()
+    start.set()
+    pump.close()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert pump.pending_count() == 0
+    dispatcher.close()
+
+
+def test_buffered_record_pump_recovers_when_dispatcher_rejects_schedule():
+    from src.ui.ui_batcher import BufferedRecordPump
+
+    class RejectingDispatcher:
+        def post(self, _callback, **_kwargs):
+            return False
+
+    class FakeWidget:
+        def winfo_exists(self):
+            return True
+
+    pump = BufferedRecordPump(FakeWidget(), RejectingDispatcher(), lambda _records: None)
+    pump.push("record")
+
+    assert pump.pending_count() == 1
+    assert pump._scheduled is False
+
+
+def test_latest_only_worker_rolls_back_when_thread_start_fails(monkeypatch):
+    import src.ui.ui_batcher as ui_batcher
+
+    errors = []
+
+    class BrokenThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(ui_batcher.threading, "Thread", BrokenThread)
+    worker = ui_batcher.LatestOnlyWorker("broken", errors.append)
+
+    assert worker.submit(lambda: None) is False
+    assert worker.is_active() is False
+    assert len(errors) == 1
+
+
 def test_analyzer_view_uses_virtual_lists_and_async_apply():
     text = _read_text(ANALYZER_VIEW)
     plan_item_method = text[
@@ -223,7 +295,10 @@ def test_analyzer_view_uses_virtual_lists_and_async_apply():
     assert 'self._recordings_scroll = VirtualScrollFrame(' in text
     assert 'def _render_image_row(self, parent, item_data, _index: int):' in text
     assert 'def _load_recordings_async(self):' in text
-    assert 'def _apply_recordings(self, recordings, generation=None):' in text
+    assert 'def _collect_plan_modified_cache(self) -> tuple[dict, dict]:' in text
+    assert 'modified_cache, mtime_cache = self._collect_plan_modified_cache()' in text
+    assert 'def _apply_recordings(' in text
+    assert 'self._plan_modified_cache = dict(modified_cache)' in text
     assert 'self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)' in text
     assert 'self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)' in text
     assert 'item_wrapper = ctk.CTkFrame(' in plan_item_method

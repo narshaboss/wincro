@@ -73,18 +73,30 @@ class ArduinoHID:
         self._baud_rate = 115200
         self._supports_mouse_move = False
         self._supports_key_combo_tap = False
+        # Serial request/response pairs must never overlap.  Concurrent player
+        # transitions otherwise consume each other's OK response and can leave
+        # a HID mouse button pressed after a failed drag release.
+        self._io_lock = threading.RLock()
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._serial and self._serial.is_open
+        with self._io_lock:
+            return bool(self._connected and self._serial and self._serial.is_open)
+
+    def has_open_session(self) -> bool:
+        """Return True while a serial session can still carry a release command."""
+        with self._io_lock:
+            return bool(self._serial and self._serial.is_open)
 
     def supports_mouse_move(self) -> bool:
         """True when the connected firmware supports MM relative move commands."""
-        return self._supports_mouse_move
+        with self._io_lock:
+            return bool(self._supports_mouse_move)
 
     def supports_key_combo_tap(self) -> bool:
         """True when the connected firmware supports KQ atomic combo tap commands."""
-        return self._supports_key_combo_tap
+        with self._io_lock:
+            return bool(self._supports_key_combo_tap)
 
     def connect(self, port: str = None, baud_rate: int = None) -> bool:
         """아두이노에 연결"""
@@ -99,11 +111,13 @@ class ArduinoHID:
             logger.error("COM 포트가 설정되지 않음")
             return False
 
+        self._io_lock.acquire()
         try:
             # 이전 연결 정리
             self.disconnect()
 
             if not self._open_serial_session(port, baud_rate):
+                self._close_serial_only()
                 return False
 
             if self._initialize_connected_session(port, baud_rate):
@@ -114,17 +128,36 @@ class ArduinoHID:
                 if self._auto_refresh_firmware(port, baud_rate, "KQ unsupported"):
                     return True
 
-                logger.warning("Arduino HID key combo tap remains unsupported after firmware refresh attempt")
-                return True
+                if self.is_connected:
+                    logger.warning(
+                        "Arduino HID key combo tap remains unsupported; "
+                        "continuing with guarded raw fallback"
+                    )
+                    return True
+                return self._reconnect_without_refresh(
+                    port,
+                    baud_rate,
+                    "firmware refresh failed",
+                )
 
             logger.warning("Arduino HID 응답 없음 (펌웨어 확인 필요)")
             self._close_serial_only()
-            return self._auto_refresh_firmware(port, baud_rate, "PING failed")
+            if self._auto_refresh_firmware(port, baud_rate, "PING failed"):
+                return True
+            if self.is_connected:
+                return True
+            return self._reconnect_without_refresh(
+                port,
+                baud_rate,
+                "firmware recovery failed",
+            )
 
         except Exception as e:
             logger.error(f"Arduino HID 연결 실패: {e}")
-            self._connected = False
+            self._close_serial_only()
             return False
+        finally:
+            self._io_lock.release()
 
     def _open_serial_session(self, port: str, baud_rate: int) -> bool:
         """Open serial and wait for Leonardo reset."""
@@ -160,16 +193,50 @@ class ArduinoHID:
         self._supports_key_combo_tap = self._probe_key_combo_tap_support()
         return True
 
-    def _close_serial_only(self) -> None:
+    def _reconnect_without_refresh(
+        self,
+        port: str,
+        baud_rate: int,
+        reason: str,
+    ) -> bool:
+        """Recover the existing firmware after an attempted refresh failed."""
+        logger.warning(f"Arduino HID reconnecting with existing firmware: {reason}")
+        self._close_serial_only()
         try:
-            if self._serial:
-                self._serial.close()
-        except (OSError, serial.SerialException) as e:
-            logger.debug(f"Arduino HID serial close ignored: {e}")
-        self._serial = None
-        self._connected = False
-        self._supports_mouse_move = False
-        self._supports_key_combo_tap = False
+            if not self._open_serial_session(port, baud_rate):
+                self._close_serial_only()
+                return False
+            if not self._initialize_connected_session(port, baud_rate):
+                self._close_serial_only()
+                return False
+            if not self._supports_key_combo_tap:
+                logger.warning(
+                    "Arduino HID reconnected without KQ support; "
+                    "guarded raw combo fallback remains active"
+                )
+            return self.is_connected
+        except Exception as exc:
+            logger.error(f"Arduino HID fallback reconnect failed: {exc}")
+            self._close_serial_only()
+            return False
+
+    def _close_serial_only(self) -> None:
+        with self._io_lock:
+            try:
+                if self._serial and self._serial.is_open:
+                    self._send_command("KA")
+            except Exception as e:
+                logger.debug(f"Arduino HID pre-close release ignored: {e}")
+            try:
+                if self._serial:
+                    self._serial.close()
+            except Exception as e:
+                logger.debug(f"Arduino HID serial close ignored: {e}")
+            finally:
+                self._serial = None
+                self._connected = False
+                self._supports_mouse_move = False
+                self._supports_key_combo_tap = False
 
     def _auto_refresh_firmware(self, port: str, baud_rate: int, reason: str) -> bool:
         """Upload bundled firmware once, then reconnect and re-probe capabilities."""
@@ -210,22 +277,15 @@ class ArduinoHID:
 
     def disconnect(self):
         """연결 해제"""
-        try:
-            if self._serial:
-                self._serial.close()
-        except (OSError, serial.SerialException) as e:
-            logger.debug(f"연결 해제 중 오류 (무시): {e}")
-        self._serial = None
-        self._connected = False
-        self._supports_mouse_move = False
-        self._supports_key_combo_tap = False
+        self._close_serial_only()
         logger.info("Arduino HID 연결 해제")
 
     def _ping(self) -> bool:
         """연결 확인"""
         try:
-            self._send_command("PING", wait_response=False)
-            response = self._read_response()
+            with self._io_lock:
+                self._send_command("PING", wait_response=False)
+                response = self._read_response()
             return response == "PONG"
         except (OSError, serial.SerialException, UnicodeDecodeError) as e:
             logger.debug(f"PING 실패: {e}")
@@ -233,32 +293,33 @@ class ArduinoHID:
 
     def _send_command(self, cmd: str, wait_response: bool = True) -> bool:
         """명령 전송 및 응답 대기"""
-        if not self._serial or not self._serial.is_open:
-            return False
+        with self._io_lock:
+            if not self._serial or not self._serial.is_open:
+                return False
 
-        try:
-            self._serial.reset_input_buffer()
-            self._serial.write(f"{cmd}\n".encode())
-            self._serial.flush()
+            try:
+                self._serial.reset_input_buffer()
+                self._serial.write(f"{cmd}\n".encode())
+                self._serial.flush()
 
-            if wait_response:
-                response = self._read_response(timeout=1.0)
-                if response == "OK":
-                    return True
-                elif response == "ERR:UNKNOWN_CMD":
-                    logger.warning(f"알 수 없는 명령: {cmd}")
-                    return False
-                elif response == "":
-                    logger.warning(f"명령 응답 없음: {cmd}")
-                    return False
-                else:
-                    logger.warning(f"예상치 못한 응답: {response} (명령: {cmd})")
-                    return False
+                if wait_response:
+                    response = self._read_response(timeout=1.0)
+                    if response == "OK":
+                        return True
+                    elif response == "ERR:UNKNOWN_CMD":
+                        logger.warning(f"알 수 없는 명령: {cmd}")
+                        return False
+                    elif response == "":
+                        logger.warning(f"명령 응답 없음: {cmd}")
+                        return False
+                    else:
+                        logger.warning(f"예상치 못한 응답: {response} (명령: {cmd})")
+                        return False
 
-            return True
-        except Exception as e:
-            logger.error(f"명령 전송 실패: {e}")
-            return False
+                return True
+            except Exception as e:
+                logger.error(f"명령 전송 실패: {e}")
+                return False
 
     def _probe_mouse_move_support(self) -> bool:
         """Probe MM support without moving the pointer."""
@@ -366,13 +427,20 @@ class ArduinoHID:
 
     def key_tap(self, key: str) -> bool:
         """키 한번 누르고 떼기"""
-        pressed = self.key_press(key)
-        if not pressed:
-            return False
-        time.sleep(_KEY_TAP_HOLD_DELAY)
-        released = self.key_release(key)
-        time.sleep(_KEY_TAP_POST_DELAY)
-        return bool(released)
+        release_needed = False
+        try:
+            release_needed = True
+            if not self.key_press(key):
+                return False
+            time.sleep(_KEY_TAP_HOLD_DELAY)
+            released = bool(self.key_release(key))
+            if released:
+                release_needed = False
+            time.sleep(_KEY_TAP_POST_DELAY)
+            return released
+        finally:
+            if release_needed:
+                self.release_all()
 
     def key_combo_tap(self, *keys: str) -> bool:
         """Press modifiers, tap final key, and release modifiers with minimum host-side delay."""
@@ -387,22 +455,29 @@ class ArduinoHID:
             return False
 
         if self._supports_key_combo_tap:
-            return self._send_command("KQ," + ",".join(str(code) for code in keycodes))
+            sent = self._send_command("KQ," + ",".join(str(code) for code in keycodes))
+            if not sent:
+                self.release_all()
+            return sent
 
         logger.warning("Arduino HID KQ unsupported; using guarded KP/KR combo tap fallback")
-        ok = True
+        ok = False
         try:
-            ok = self.release_all() and ok
+            if not self.release_all():
+                return False
             time.sleep(0.005)
             for key in normalized[:-1]:
-                ok = self.key_press(key) and ok
+                if not self.key_press(key):
+                    return False
             time.sleep(0.016)
-            ok = self.key_press(normalized[-1]) and ok
+            if not self.key_press(normalized[-1]):
+                return False
             time.sleep(0.006)
-            ok = self.key_release(normalized[-1]) and ok
+            ok = bool(self.key_release(normalized[-1]))
             time.sleep(0.002)
         finally:
-            ok = self.release_all() and ok
+            released = self.release_all()
+            ok = bool(ok and released)
             time.sleep(0.005)
         return ok
 
@@ -435,17 +510,31 @@ class ArduinoHID:
 
     def hotkey(self, *keys) -> bool:
         """핫키 조합 (예: hotkey('ctrl', 'c'))"""
-        for key in keys:
-            self.key_press(key)
-            time.sleep(0.02)
+        pressed_keys = []
+        unreleased_keys = set()
+        ok = True
+        try:
+            for key in keys:
+                if not self.key_press(key):
+                    ok = False
+                    break
+                pressed_keys.append(key)
+                unreleased_keys.add(key)
+                time.sleep(0.02)
 
-        time.sleep(0.05)
+            if ok:
+                time.sleep(0.05)
 
-        for key in reversed(keys):
-            self.key_release(key)
-            time.sleep(0.02)
-
-        return True
+            for key in reversed(tuple(pressed_keys)):
+                if not self.key_release(key):
+                    ok = False
+                else:
+                    unreleased_keys.discard(key)
+                time.sleep(0.02)
+            return ok
+        finally:
+            if unreleased_keys or not ok:
+                self.release_all()
 
     def release_all(self) -> bool:
         """모든 키/버튼 떼기"""

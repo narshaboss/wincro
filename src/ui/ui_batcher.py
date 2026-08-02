@@ -58,7 +58,18 @@ class LatestOnlyWorker:
             if self._active:
                 return False
             self._active = True
-        threading.Thread(target=self._run, name=self._name, daemon=True).start()
+        try:
+            threading.Thread(target=self._run, name=self._name, daemon=True).start()
+        except Exception as exc:
+            with self._lock:
+                self._active = False
+            callback = self._error_callback
+            if callback is not None:
+                try:
+                    callback(exc)
+                except Exception:
+                    pass
+            return False
         return True
 
     def close(self) -> None:
@@ -137,7 +148,7 @@ class UiCallbackDispatcher:
         self._max_callbacks_per_tick = max(1, int(max_callbacks_per_tick))
         self._max_millis_per_tick = max(1.0, float(max_millis_per_tick))
         self._max_queue_items = max(128, int(max_queue_items))
-        self._queue: Deque[Callable[[], None]] = deque()
+        self._queue: Deque[tuple[Callable[[], None], bool]] = deque()
         self._lock = threading.Lock()
         self._after_id: Optional[str] = None
         self._closed = False
@@ -159,28 +170,49 @@ class UiCallbackDispatcher:
             current = getattr(current, "master", None)
         return None
 
-    def post(self, callback: Callable[[], None]) -> None:
+    def post(self, callback: Callable[[], None], *, critical: bool = False) -> bool:
         if self._closed:
-            return
+            return False
         if threading.current_thread() is threading.main_thread():
             try:
                 callback()
             except (tk.TclError, RuntimeError):
                 pass
-            return
+            return True
         delegate = None
         with self._lock:
             if self._closed:
-                return
+                return False
             while len(self._queue) >= self._max_queue_items:
-                self._queue.popleft()
+                drop_index = next(
+                    (
+                        index
+                        for index, (_queued_callback, queued_critical) in enumerate(self._queue)
+                        if not queued_critical
+                    ),
+                    None,
+                )
+                if drop_index is None:
+                    if critical:
+                        # At most one protected drain is queued per child
+                        # dispatcher, so this can only exceed the cap by the
+                        # small number of live child dispatchers.
+                        break
+                    self._dropped_count += 1
+                    return False
+                del self._queue[drop_index]
                 self._dropped_count += 1
-            self._queue.append(callback)
+            self._queue.append((callback, bool(critical)))
             if self._parent_dispatcher is not None and not self._delegated_drain_enqueued:
                 self._delegated_drain_enqueued = True
                 delegate = self._parent_dispatcher
         if delegate is not None:
-            delegate.post(self._drain)
+            accepted = delegate.post(self._drain, critical=True)
+            if not accepted:
+                with self._lock:
+                    self._delegated_drain_enqueued = False
+                return False
+        return True
 
     def clear(self) -> None:
         with self._lock:
@@ -224,7 +256,7 @@ class UiCallbackDispatcher:
                 with self._lock:
                     if not self._queue:
                         break
-                    callback = self._queue.popleft()
+                    callback, _critical = self._queue.popleft()
                 try:
                     callback()
                 except (tk.TclError, RuntimeError):
@@ -279,10 +311,10 @@ class BufferedRecordPump(Generic[T]):
         self._dropped_count = 0
 
     def push(self, item: T) -> None:
-        if self._closed:
-            return
         should_schedule = False
         with self._lock:
+            if self._closed:
+                return
             while len(self._queue) >= self._max_queue_items:
                 self._queue.popleft()
                 self._dropped_count += 1
@@ -291,22 +323,37 @@ class BufferedRecordPump(Generic[T]):
                 self._scheduled = True
                 should_schedule = True
         if should_schedule:
-            self._dispatcher.post(self._schedule_flush)
+            accepted = self._dispatcher.post(self._schedule_flush, critical=True)
+            if not accepted:
+                with self._lock:
+                    self._scheduled = False
 
     def clear(self) -> None:
         with self._lock:
             self._queue.clear()
             self._scheduled = False
+            after_id = self._after_id
+            self._after_id = None
         try:
-            if self._after_id is not None and self._widget.winfo_exists():
-                self._widget.after_cancel(self._after_id)
+            if after_id is not None and self._widget.winfo_exists():
+                self._widget.after_cancel(after_id)
         except (tk.TclError, RuntimeError):
             pass
-        self._after_id = None
 
     def close(self) -> None:
-        self._closed = True
-        self.clear()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._queue.clear()
+            self._scheduled = False
+            after_id = self._after_id
+            self._after_id = None
+        try:
+            if after_id is not None and self._widget.winfo_exists():
+                self._widget.after_cancel(after_id)
+        except (tk.TclError, RuntimeError):
+            pass
 
     def pending_count(self) -> int:
         with self._lock:
@@ -346,4 +393,7 @@ class BufferedRecordPump(Generic[T]):
                     has_more = bool(self._queue)
                     self._scheduled = has_more
             if has_more:
-                self._dispatcher.post(self._schedule_flush)
+                accepted = self._dispatcher.post(self._schedule_flush, critical=True)
+                if not accepted:
+                    with self._lock:
+                        self._scheduled = False

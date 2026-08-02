@@ -783,11 +783,29 @@ if /i "%choice%"=="Y" (
             pass
 
         try:
+            from .ui.main_window import _release_runtime_input_for_shutdown
+            if not _release_runtime_input_for_shutdown():
+                raise RuntimeError("input state cleanup failed before update handoff")
+        except Exception as e:
+            try:
+                from .utils.input_controller import unblock_automation_input
+                unblock_automation_input()
+            except Exception:
+                pass
+            logger.error(f"update handoff input cleanup failed; update cancelled: {e}")
+            return
+
+        try:
             subprocess.Popen(
                 ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except Exception as e:
+            try:
+                from .utils.input_controller import unblock_automation_input
+                unblock_automation_input()
+            except Exception:
+                pass
             logger.error(f"배치 파일 실행 실패: {e}")
             return
 
@@ -796,6 +814,11 @@ if /i "%choice%"=="Y" (
             save_config()
         except Exception:
             pass
+
+        try:
+            self._main_window.cleanup_resources()
+        except Exception as e:
+            logger.error(f"update shutdown resource cleanup failed: {e}")
 
         try:
             self._main_window.destroy()

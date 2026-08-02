@@ -124,6 +124,45 @@ def test_rule_executor_import_does_not_construct_unrelated_runtime_singletons():
     }
 
 
+def test_player_singleton_export_survives_same_named_submodule_import():
+    lines = _run_fresh_python(
+        "import importlib, json, types; import src.player; "
+        "module = importlib.import_module('src.player.action_player'); "
+        "from src.player import action_player; "
+        "print(json.dumps({"
+        "'is_singleton': action_player is module.action_player, "
+        "'is_module': isinstance(action_player, types.ModuleType)}))"
+    )
+
+    assert _last_json_output(lines) == {
+        "is_singleton": True,
+        "is_module": False,
+    }
+
+
+def test_analyzer_singleton_exports_survive_same_named_submodule_imports():
+    lines = _run_fresh_python(
+        "import importlib, json, types; import src.analyzer; "
+        "tm = importlib.import_module('src.analyzer.template_matcher'); "
+        "ae = importlib.import_module('src.analyzer.action_extractor'); "
+        "va = importlib.import_module('src.analyzer.video_analyzer'); "
+        "from src.analyzer import template_matcher, action_extractor, video_analyzer; "
+        "print(json.dumps({"
+        "'template': template_matcher is tm.template_matcher, "
+        "'extractor': action_extractor is ae.action_extractor, "
+        "'video': video_analyzer is va.video_analyzer, "
+        "'module_leak': any(isinstance(value, types.ModuleType) for value in "
+        "(template_matcher, action_extractor, video_analyzer))}))"
+    )
+
+    assert _last_json_output(lines) == {
+        "template": True,
+        "extractor": True,
+        "video": True,
+        "module_leak": False,
+    }
+
+
 def test_utility_package_import_does_not_eagerly_load_security_or_config():
     lines = _run_fresh_python(
         "import json, sys; import src.utils; "
@@ -245,6 +284,37 @@ def test_delegated_dispatcher_continues_large_batches_without_recursive_drain():
     root_dispatcher.close()
 
 
+def test_parent_queue_pressure_cannot_drop_child_drain_callback():
+    root_widget = _FakeWidget()
+    root_dispatcher = UiCallbackDispatcher(
+        root_widget,
+        max_callbacks_per_tick=256,
+        max_millis_per_tick=1000,
+        max_queue_items=128,
+    )
+    root_widget._ui_dispatcher = root_dispatcher
+    child_widget = _FakeWidget(master=root_widget)
+    child_dispatcher = UiCallbackDispatcher(child_widget)
+    completed = []
+
+    def fill_from_worker():
+        for _ in range(128):
+            root_dispatcher.post(lambda: None)
+        child_dispatcher.post(lambda: completed.append("child-drained"))
+
+    worker = threading.Thread(target=fill_from_worker)
+    worker.start()
+    worker.join(timeout=2.0)
+
+    assert root_dispatcher.pending_count() == 128
+    assert root_dispatcher.dropped_count() == 1
+    root_dispatcher._drain()
+    assert completed == ["child-drained"]
+    assert child_dispatcher.pending_count() == 0
+    child_dispatcher.close()
+    root_dispatcher.close()
+
+
 def test_mini_player_plan_index_is_lightweight_and_repeat_save_is_verified(tmp_path):
     plan_file = tmp_path / "plan_large.json"
     payload = {
@@ -271,7 +341,7 @@ def test_mini_player_plan_index_is_lightweight_and_repeat_save_is_verified(tmp_p
     assert len(reloaded["initial_rules"]) == 50
 
 
-def test_main_window_resource_cleanup_is_idempotent():
+def test_main_window_resource_cleanup_is_idempotent(monkeypatch):
     window = object.__new__(MainWindow)
     video = _CountedResource()
     listener = _CountedResource()
@@ -281,6 +351,13 @@ def test_main_window_resource_cleanup_is_idempotent():
     view = _CountedResource()
     dispatcher = _CountedResource()
     cancelled = []
+    input_cleanup = []
+
+    monkeypatch.setattr(
+        main_window,
+        "_release_runtime_input_for_shutdown",
+        lambda: input_cleanup.append(True) or True,
+    )
 
     window._resources_cleaned = False
     window._view_switch_after_id = None
@@ -306,6 +383,122 @@ def test_main_window_resource_cleanup_is_idempotent():
     assert view.calls == 1
     assert dispatcher.calls == 1
     assert cancelled == ["watchdog", "game-mode"]
+    assert input_cleanup == [True]
+
+
+def test_shutdown_cleanup_releases_and_disconnects_hardware(monkeypatch):
+    from src.utils import arduino_hid, input_controller
+
+    events = []
+    fake_input = SimpleNamespace(
+        release_all=lambda: events.append("release") or True,
+    )
+    fake_arduino = SimpleNamespace(
+        _serial=object(),
+        is_connected=True,
+        disconnect=lambda: events.append("disconnect"),
+    )
+    monkeypatch.setattr(
+        input_controller,
+        "block_automation_input",
+        lambda reason: events.append(f"block:{reason}"),
+    )
+    monkeypatch.setattr(input_controller, "get_input_controller", lambda: fake_input)
+    monkeypatch.setattr(arduino_hid, "get_arduino_hid", lambda: fake_arduino)
+
+    assert main_window._release_runtime_input_for_shutdown() is True
+    assert events == [
+        "block:MainWindow.cleanup_resources",
+        "release",
+        "disconnect",
+    ]
+
+
+def test_process_handoffs_release_input_before_spawning_replacement():
+    main_text = (ROOT / "src" / "ui" / "main_window.py").read_text(
+        encoding="utf-8-sig", errors="ignore"
+    )
+    mode_start = main_text.index("def _change_window_mode(")
+    mode_end = main_text.index("def _on_mini_plan_changed(", mode_start)
+    mode_method = main_text[mode_start:mode_end]
+    assert mode_method.index("_release_runtime_input_for_shutdown()") < mode_method.index(
+        "subprocess.Popen("
+    )
+    assert "if not _release_runtime_input_for_shutdown():" in mode_method
+
+    app_text = (ROOT / "src" / "app.py").read_text(
+        encoding="utf-8-sig", errors="ignore"
+    )
+    update_start = app_text.index("def _start_auto_update(")
+    update_end = app_text.index("def _discard_legacy_plan_backup(", update_start)
+    update_method = app_text[update_start:update_end]
+    assert update_method.index("_release_runtime_input_for_shutdown()") < update_method.index(
+        "subprocess.Popen("
+    )
+    assert "if not _release_runtime_input_for_shutdown():" in update_method
+    assert "update cancelled" in update_method
+    assert update_method.index("self._main_window.cleanup_resources()") > update_method.index(
+        "subprocess.Popen("
+    )
+
+    settings_text = (ROOT / "src" / "ui" / "settings_view.py").read_text(
+        encoding="utf-8-sig", errors="ignore"
+    )
+    manual_start = settings_text.index("def _start_update_and_exit(")
+    manual_end = settings_text.index("def _update_success_dev(", manual_start)
+    manual_method = settings_text[manual_start:manual_end]
+    assert manual_method.index("_release_runtime_input_for_shutdown()") < manual_method.index(
+        "subprocess.Popen("
+    )
+    assert "if not _release_runtime_input_for_shutdown():" in manual_method
+    assert "update cancelled" in manual_method
+    assert 'getattr(toplevel, "cleanup_resources", None)' in manual_method
+
+
+def test_settings_disconnect_uses_hid_safe_shutdown(monkeypatch):
+    from src.ui.settings_view import SettingsView
+    from src.utils import arduino_hid, input_controller
+
+    events = []
+
+    class FakeSerial:
+        is_open = True
+
+        def close(self):
+            events.append("serial-close")
+
+    serial_ref = FakeSerial()
+
+    class FakeArduino:
+        _serial = serial_ref
+        is_connected = True
+
+        def disconnect(self):
+            events.append("hid-disconnect")
+            self._serial.close()
+            self._serial = None
+
+    view = object.__new__(SettingsView)
+    view._arduino_serial = serial_ref
+    view._update_arduino_status = (
+        lambda connected, message: events.append((connected, message))
+    )
+    monkeypatch.setattr(
+        input_controller,
+        "get_input_controller",
+        lambda: SimpleNamespace(release_all=lambda: events.append("release") or True),
+    )
+    monkeypatch.setattr(arduino_hid, "get_arduino_hid", lambda: FakeArduino())
+
+    SettingsView._disconnect_arduino(view)
+
+    assert view._arduino_serial is None
+    assert events == [
+        "release",
+        "hid-disconnect",
+        "serial-close",
+        (False, "연결 해제됨"),
+    ]
 
 
 def test_editor_tab_switch_burst_keeps_only_latest_idle_callback():
@@ -380,3 +573,19 @@ def test_player_mode_hydrates_only_selected_plan_and_editor_uses_bulk_lock_query
     assert "get_recording_by_plan_id" not in load_body
     assert 'os.environ.pop("WINCRO_MODE_SWITCH_RESTART", "")' in app_text
     assert "cleanup_window = getattr(self._main_window, \"cleanup_resources\", None)" in app_text
+
+
+def test_mini_plan_refresh_applies_worker_result_only_on_ui_thread():
+    main_text = (ROOT / "src" / "ui" / "main_window.py").read_text(encoding="utf-8-sig")
+    sync_start = main_text.index("    def _refresh_mini_plans_sync(self):")
+    refresh_start = main_text.index("    def _refresh_mini_plans(self):", sync_start)
+    dropdown_start = main_text.index("    def _update_mini_plan_dropdown(self):", refresh_start)
+    sync_body = main_text[sync_start:refresh_start]
+    refresh_body = main_text[refresh_start:dropdown_start]
+
+    assert "return _load_mini_plan_summaries(PLANS_DIR)" in sync_body
+    assert "self._mini_plans = _load_mini_plan_summaries" not in sync_body
+    assert "plans = self._refresh_mini_plans_sync()" in refresh_body
+    assert "def _apply_plans():" in refresh_body
+    assert "self._mini_plans = plans" in refresh_body
+    assert "self.after(0, _apply_plans)" in refresh_body
