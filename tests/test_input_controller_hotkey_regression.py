@@ -130,6 +130,7 @@ def test_release_all_retries_arduino_and_always_releases_software_input(monkeypa
     key_ups = []
     mouse_ups = []
     fake_arduino = SimpleNamespace(
+        is_connected=True,
         release_all=lambda: arduino_calls.append(True) or len(arduino_calls) >= 2,
     )
 
@@ -168,6 +169,24 @@ def test_release_all_uses_open_arduino_session_even_when_setting_is_disabled(mon
 
     assert controller.release_all() is True
     assert arduino_calls == [True]
+
+
+def test_release_all_does_not_require_disconnected_arduino(monkeypatch):
+    controller = InputController()
+    arduino_calls = []
+    fake_arduino = SimpleNamespace(
+        is_connected=False,
+        has_open_session=lambda: False,
+        release_all=lambda: arduino_calls.append(True) or False,
+    )
+
+    monkeypatch.setattr(controller, "_use_arduino", lambda: True)
+    monkeypatch.setattr(input_controller, "_get_arduino", lambda: fake_arduino)
+    monkeypatch.setattr(input_controller.pyautogui, "keyUp", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(input_controller.pyautogui, "mouseUp", lambda **_kwargs: None)
+
+    assert controller.release_all() is True
+    assert arduino_calls == []
 
 
 def test_release_all_includes_arbitrary_tracked_keys_and_buttons(monkeypatch):

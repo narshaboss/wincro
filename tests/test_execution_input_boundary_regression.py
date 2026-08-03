@@ -162,3 +162,57 @@ def test_execute_plan_thread_start_failure_rolls_back_input_and_state(monkeypatc
         "block:RuleExecutor.start_failed",
         "execution-start-failed",
     ]
+
+
+def test_async_start_failure_reaches_configured_completion_callback():
+    completed = threading.Event()
+    events = []
+    executor = RuleExecutor()
+    executor._reset_input_state = lambda _context: True
+    executor.execute_plan = lambda *_args, **_kwargs: False
+    executor.set_callbacks(
+        on_complete=lambda success, message: (
+            events.append((success, message)),
+            completed.set(),
+        ),
+    )
+    plan = AutomationPlan(name="async-start-failure", initial_rules=[], monitoring_rules=[])
+
+    assert executor.execute_plan_async(plan) is True
+    assert completed.wait(timeout=2.0)
+    assert events == [(False, "실행 시작 실패")]
+
+
+def test_async_starter_creation_failure_is_reported_once(monkeypatch):
+    events = []
+
+    class BrokenStarterThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("starter unavailable")
+
+    monkeypatch.setattr(rule_executor.threading, "Thread", BrokenStarterThread)
+    executor = RuleExecutor()
+    executor._reset_input_state = lambda _context: True
+    executor.set_callbacks(
+        on_complete=lambda success, message: events.append((success, message)),
+    )
+    plan = AutomationPlan(name="broken-async-starter", initial_rules=[], monitoring_rules=[])
+
+    assert executor.execute_plan_async(plan) is False
+    assert executor.state == ExecutionState.FAILED
+    assert events == [(False, "실행 시작 실패")]
+
+
+def test_wait_for_worker_exit_observes_real_thread_finalization():
+    release_worker = threading.Event()
+    executor = RuleExecutor()
+    worker = threading.Thread(target=lambda: release_worker.wait(timeout=2.0))
+    executor._execution_thread = worker
+    worker.start()
+
+    assert executor.wait_for_worker_exit(timeout=0.01) is False
+    release_worker.set()
+    assert executor.wait_for_worker_exit(timeout=2.0) is True

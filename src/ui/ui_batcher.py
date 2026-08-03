@@ -149,6 +149,7 @@ class UiCallbackDispatcher:
         self._max_millis_per_tick = max(1.0, float(max_millis_per_tick))
         self._max_queue_items = max(128, int(max_queue_items))
         self._queue: Deque[tuple[Callable[[], None], bool]] = deque()
+        self._urgent_queue: Deque[tuple[Callable[[], None], bool]] = deque()
         self._lock = threading.Lock()
         self._after_id: Optional[str] = None
         self._closed = False
@@ -170,7 +171,13 @@ class UiCallbackDispatcher:
             current = getattr(current, "master", None)
         return None
 
-    def post(self, callback: Callable[[], None], *, critical: bool = False) -> bool:
+    def post(
+        self,
+        callback: Callable[[], None],
+        *,
+        critical: bool = False,
+        urgent: bool = False,
+    ) -> bool:
         if self._closed:
             return False
         if threading.current_thread() is threading.main_thread():
@@ -183,7 +190,8 @@ class UiCallbackDispatcher:
         with self._lock:
             if self._closed:
                 return False
-            while len(self._queue) >= self._max_queue_items:
+            protected = bool(critical or urgent)
+            while len(self._queue) + len(self._urgent_queue) >= self._max_queue_items:
                 drop_index = next(
                     (
                         index
@@ -193,7 +201,7 @@ class UiCallbackDispatcher:
                     None,
                 )
                 if drop_index is None:
-                    if critical:
+                    if protected:
                         # At most one protected drain is queued per child
                         # dispatcher, so this can only exceed the cap by the
                         # small number of live child dispatchers.
@@ -202,12 +210,13 @@ class UiCallbackDispatcher:
                     return False
                 del self._queue[drop_index]
                 self._dropped_count += 1
-            self._queue.append((callback, bool(critical)))
+            target_queue = self._urgent_queue if urgent else self._queue
+            target_queue.append((callback, protected))
             if self._parent_dispatcher is not None and not self._delegated_drain_enqueued:
                 self._delegated_drain_enqueued = True
                 delegate = self._parent_dispatcher
         if delegate is not None:
-            accepted = delegate.post(self._drain, critical=True)
+            accepted = delegate.post(self._drain, critical=True, urgent=urgent)
             if not accepted:
                 with self._lock:
                     self._delegated_drain_enqueued = False
@@ -217,6 +226,7 @@ class UiCallbackDispatcher:
     def clear(self) -> None:
         with self._lock:
             self._queue.clear()
+            self._urgent_queue.clear()
 
     def close(self) -> None:
         with self._lock:
@@ -224,6 +234,7 @@ class UiCallbackDispatcher:
                 return
             self._closed = True
             self._queue.clear()
+            self._urgent_queue.clear()
         try:
             if self._after_id is not None and self._widget.winfo_exists():
                 self._widget.after_cancel(self._after_id)
@@ -233,7 +244,7 @@ class UiCallbackDispatcher:
 
     def pending_count(self) -> int:
         with self._lock:
-            return len(self._queue)
+            return len(self._queue) + len(self._urgent_queue)
 
     def dropped_count(self) -> int:
         with self._lock:
@@ -254,9 +265,12 @@ class UiCallbackDispatcher:
         try:
             while processed < self._max_callbacks_per_tick and not self._closed:
                 with self._lock:
-                    if not self._queue:
+                    if self._urgent_queue:
+                        callback, _critical = self._urgent_queue.popleft()
+                    elif self._queue:
+                        callback, _critical = self._queue.popleft()
+                    else:
                         break
-                    callback, _critical = self._queue.popleft()
                 try:
                     callback()
                 except (tk.TclError, RuntimeError):
@@ -273,7 +287,7 @@ class UiCallbackDispatcher:
                 has_more = False
                 with self._lock:
                     self._delegated_drain_enqueued = False
-                    if self._queue and not self._closed:
+                    if (self._urgent_queue or self._queue) and not self._closed:
                         self._delegated_drain_enqueued = True
                         has_more = True
                 if has_more:

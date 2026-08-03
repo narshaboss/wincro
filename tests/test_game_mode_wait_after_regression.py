@@ -66,7 +66,9 @@ def test_rule_executor_special_mode_handoff_is_consumed_by_all_ui_playback_chain
 
     assert "handoff = executor.take_special_mode_route_handoff()" in main_text
     assert "self._mini_next_gm_previous_rule = handoff.previous_rule" in main_text
-    assert "lambda rules=handoff.rules, g=callback_generation: self._mini_play_plan_rules(rules)" in main_text
+    assert "self._mini_play_plan_rules(handoff.rules)" in main_text
+    assert "executor.wait_for_worker_exit(timeout=5.0)" in main_text
+    assert "self._mini_post_lifecycle(" in main_text
     assert "allow_special_mode_handoff=True" in main_text
     assert "playback_rules = list(plan.initial_rules) + list(plan.monitoring_rules)" in main_text
     assert "self._mini_play_plan_rules(playback_rules)" in main_text

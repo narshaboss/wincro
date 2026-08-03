@@ -933,12 +933,16 @@ class InputController:
         arduino_required = False
         released_by_arduino = False
         arduino = _get_arduino()
-        arduino_session_active = bool(self._use_arduino())
-        if arduino is not None and not arduino_session_active:
+        arduino_session_active = False
+        if arduino is not None:
             try:
+                is_connected = getattr(arduino, "is_connected", False)
+                if callable(is_connected):
+                    is_connected = is_connected()
                 has_open_session = getattr(arduino, "has_open_session", None)
                 arduino_session_active = bool(
-                    callable(has_open_session) and has_open_session()
+                    is_connected
+                    or (callable(has_open_session) and has_open_session())
                 )
             except Exception:
                 arduino_session_active = False

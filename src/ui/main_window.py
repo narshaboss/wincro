@@ -670,6 +670,25 @@ class MainWindow(ctk.CTk):
             *args,
         )
 
+    def _mini_post_lifecycle(self, callback: Callable[[], None], label: str) -> bool:
+        """Deliver playback lifecycle work ahead of disposable UI refreshes."""
+        dispatcher = getattr(self, "_ui_dispatcher", None)
+        post = getattr(dispatcher, "post", None)
+        if not callable(post):
+            logger.error(f"[sequence-handoff] lifecycle dispatcher unavailable: {label}")
+            return False
+
+        def deliver() -> None:
+            logger.debug(f"[sequence-handoff] lifecycle delivered: {label}")
+            callback()
+
+        accepted = bool(post(deliver, critical=True, urgent=True))
+        if not accepted:
+            logger.error(f"[sequence-handoff] lifecycle enqueue rejected: {label}")
+        else:
+            logger.debug(f"[sequence-handoff] lifecycle queued: {label}")
+        return accepted
+
     def _apply_window_icon(self) -> None:
         """데스크톱 바로가기와 같은 아이콘을 윈도우/상단 UI 기준 심볼로 사용한다."""
         try:
@@ -2555,7 +2574,14 @@ class MainWindow(ctk.CTk):
 
         if index >= len(self._sequence_plans):
             # 모든 시퀀스 완료
-            self.after(0, lambda g=playback_generation: self._mini_on_complete(True, "", playback_generation=g))
+            self._mini_post_lifecycle(
+                lambda g=playback_generation: self._mini_on_complete(
+                    True,
+                    "",
+                    playback_generation=g,
+                ),
+                "sequence-complete",
+            )
             self._sequence_mode = False
             return
 
@@ -2570,17 +2596,14 @@ class MainWindow(ctk.CTk):
                 plan_file = Path(plan_path)
                 if not plan_file.exists():
                     logger.error(f"[시퀀스] 플랜 파일 없음: {plan_path}")
-                    try:
-                        self.after(
-                            0,
-                            lambda p=plan_path, g=playback_generation: self._mini_on_complete(
-                                False,
-                                f"플랜 파일 없음: {p}",
-                                playback_generation=g,
-                            ),
-                        )
-                    except (tk.TclError, RuntimeError):
-                        pass
+                    self._mini_post_lifecycle(
+                        lambda p=plan_path, g=playback_generation: self._mini_on_complete(
+                            False,
+                            f"플랜 파일 없음: {p}",
+                            playback_generation=g,
+                        ),
+                        f"sequence-plan-missing:{index + 1}/{total}",
+                    )
                     self._sequence_mode = False
                     return
 
@@ -2631,24 +2654,21 @@ class MainWindow(ctk.CTk):
                     )
                     self._mini_start_execution(plan, repeat_count, playback_generation=playback_generation)
 
-                try:
-                    self.after(0, start_on_main)
-                except (tk.TclError, RuntimeError):
-                    pass
+                self._mini_post_lifecycle(
+                    start_on_main,
+                    f"sequence-plan-start:{index + 1}/{total}:{plan.name}",
+                )
 
             except Exception as e:
                 logger.error(f"[시퀀스] 플랜 로드 오류: {e}")
-                try:
-                    self.after(
-                        0,
-                        lambda err=e, g=playback_generation: self._mini_on_complete(
-                            False,
-                            f"시퀀스 로드 오류: {err}",
-                            playback_generation=g,
-                        ),
-                    )
-                except (tk.TclError, RuntimeError):
-                    pass
+                self._mini_post_lifecycle(
+                    lambda err=e, g=playback_generation: self._mini_on_complete(
+                        False,
+                        f"시퀀스 로드 오류: {err}",
+                        playback_generation=g,
+                    ),
+                    f"sequence-plan-load-error:{index + 1}/{total}",
+                )
                 self._sequence_mode = False
 
         threading.Thread(target=load_and_start, daemon=True).start()
@@ -3115,76 +3135,92 @@ class MainWindow(ctk.CTk):
             self._mini_on_progress(progress)
 
         def on_complete(success: bool, message: str):
-            try:
-                executor.clear_callbacks()
-                if self._rule_executor is executor:
-                    self._rule_executor = None
-                if not self.winfo_exists():
-                    return
-                if not self._mini_is_current_playback_generation(callback_generation):
-                    logger.info("[mini-player] stale executor completion ignored")
-                    return
-                if getattr(self, '_mini_stop_requested', False):
-                    self._rule_executor = None
-                    self.after(
-                        0,
-                        lambda g=callback_generation: self._mini_on_complete(
+            executor.clear_callbacks()
+
+            def deliver_after_worker_exit() -> None:
+                worker_exited = executor.wait_for_worker_exit(timeout=5.0)
+                final_success = bool(success and worker_exited)
+                final_message = message
+                if not worker_exited:
+                    final_message = "이전 재생목록 실행 스레드가 종료되지 않아 다음 재생목록 시작을 중단했습니다"
+                    logger.error(f"[sequence-handoff] {final_message}")
+
+                def deliver_on_main() -> None:
+                    if not self.winfo_exists():
+                        return
+                    if not self._mini_is_current_playback_generation(callback_generation):
+                        logger.info("[mini-player] stale executor completion ignored")
+                        if self._rule_executor is executor:
+                            self._rule_executor = None
+                        return
+                    if self._rule_executor is executor:
+                        self._rule_executor = None
+                    if getattr(self, '_mini_stop_requested', False):
+                        self._mini_on_complete(
                             False,
                             "stopped",
-                            playback_generation=g,
-                        ),
+                            playback_generation=callback_generation,
+                        )
+                        return
+                    if not worker_exited:
+                        self._mini_on_repeat_complete(False, final_message)
+                        return
+
+                    handoff = executor.take_special_mode_route_handoff()
+                    if final_success and handoff is not None:
+                        self._mini_next_gm_previous_rule = handoff.previous_rule
+                        logger.info(
+                            "[mini-player] special-mode handoff -> GameModeDialog: "
+                            f"step={handoff.target_step} rule_id={handoff.target_rule_id}"
+                        )
+                        self._mini_play_plan_rules(handoff.rules)
+                        return
+                    if isinstance(final_message, str) and final_message.startswith(PLAYLIST_SKIP_TRIGGER_MISSING):
+                        self._mini_on_playlist_skip(final_message)
+                        return
+                    if final_success and chain_remaining:
+                        self._mini_play_plan_rules(chain_remaining)
+                        return
+                    self._mini_on_repeat_complete(final_success, final_message)
+
+                self._mini_post_lifecycle(
+                    deliver_on_main,
+                    f"executor-complete:gen={callback_generation}:success={'Y' if final_success else 'N'}",
+                )
+
+            try:
+                threading.Thread(
+                    target=deliver_after_worker_exit,
+                    name="wincro-sequence-handoff",
+                    daemon=True,
+                ).start()
+            except Exception as exc:
+                logger.error(f"[sequence-handoff] handoff worker start failed: {exc}")
+                # The executor has already completed its input reset. Delivering
+                # the failure is safer than leaving the player permanently busy.
+                def deliver_handoff_failure(err: str = str(exc)) -> None:
+                    if self._rule_executor is executor:
+                        self._rule_executor = None
+                    self._mini_on_repeat_complete(
+                        False,
+                        f"재생목록 전환 작업 시작 실패: {err}",
                     )
-                    return
-                handoff = executor.take_special_mode_route_handoff()
-                if success and handoff is not None:
-                    self._rule_executor = None
-                    self._mini_next_gm_previous_rule = handoff.previous_rule
-                    logger.info(
-                        "[mini-player] special-mode handoff -> GameModeDialog: "
-                        f"step={handoff.target_step} rule_id={handoff.target_rule_id}"
-                    )
-                    self.after(
-                        0,
-                        lambda rules=handoff.rules, g=callback_generation: self._mini_play_plan_rules(rules)
-                        if self._mini_is_current_playback_generation(g)
-                        else None,
-                    )
-                    return
-                if isinstance(message, str) and message.startswith(PLAYLIST_SKIP_TRIGGER_MISSING):
-                    self._rule_executor = None
-                    self.after(
-                        0,
-                        lambda m=message, g=callback_generation: self._mini_on_playlist_skip(m)
-                        if self._mini_is_current_playback_generation(g)
-                        else None,
-                    )
-                    return
-                if success and chain_remaining:
-                    self._rule_executor = None
-                    self.after(
-                        0,
-                        lambda g=callback_generation: self._mini_play_plan_rules(chain_remaining)
-                        if self._mini_is_current_playback_generation(g)
-                        else None,
-                    )
-                else:
-                    self.after(
-                        0,
-                        lambda s=success, m=message, g=callback_generation: self._mini_on_repeat_complete(s, m)
-                        if self._mini_is_current_playback_generation(g)
-                        else None,
-                    )
-            except (tk.TclError, RuntimeError):
-                pass
+
+                self._mini_post_lifecycle(
+                    deliver_handoff_failure,
+                    "executor-complete-fallback",
+                )
 
         executor.set_callbacks(
             on_progress=on_progress,
             on_complete=on_complete,
         )
-        executor.execute_plan_async(
+        start_scheduled = executor.execute_plan_async(
             plan_to_run,
             allow_special_mode_handoff=True,
         )
+        if not start_scheduled:
+            logger.error("[mini-player] executor async start could not be scheduled")
 
     def _mini_on_playlist_skip(self, message: str):
         """트리거 미감지 옵션으로 현재 재생목록만 종료하고 다음 시퀀스로 진행."""
@@ -3433,12 +3469,12 @@ class MainWindow(ctk.CTk):
                     next_index = self._sequence_index + 1
                     if next_index < len(self._sequence_plans):
                         logger.info(f"[sequence] plan {self._sequence_index + 1}/{len(self._sequence_plans)} complete -> next")
-                        self.after(
-                            0,
+                        self._mini_post_lifecycle(
                             lambda idx=next_index, g=getattr(self, "_mini_playback_generation", 0): self._run_sequence_plan(
                                 idx,
                                 playback_generation=g,
                             ),
+                            f"sequence-next-plan:{next_index + 1}/{len(self._sequence_plans)}",
                         )
                         return
                     logger.info(f"[sequence] complete ({len(self._sequence_plans)} plans)")

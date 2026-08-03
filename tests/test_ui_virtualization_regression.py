@@ -131,7 +131,7 @@ def test_ui_callback_dispatcher_limits_work_by_time_budget():
     text = _read_text(UI_BATCHER)
     init_method = text[
         text.index("def __init__(\n        self,\n        widget,"):
-        text.index("def post(self, callback", text.index("class UiCallbackDispatcher"))
+        text.index("    def post(\n", text.index("class UiCallbackDispatcher"))
     ]
     drain_method = text[
         text.index("def _drain(self) -> None:"):
@@ -143,7 +143,7 @@ def test_ui_callback_dispatcher_limits_work_by_time_budget():
     assert "self._max_millis_per_tick = max(1.0, float(max_millis_per_tick))" in init_method
     assert "max_queue_items: int = 2000" in init_method
     assert "self._max_queue_items = max(128, int(max_queue_items))" in init_method
-    assert "while len(self._queue) >= self._max_queue_items:" in text
+    assert "while len(self._queue) + len(self._urgent_queue) >= self._max_queue_items:" in text
     assert "started_at = time.perf_counter()" in drain_method
     assert "processed < self._max_callbacks_per_tick" in drain_method
     assert "elapsed_ms = (time.perf_counter() - started_at) * 1000" in drain_method
@@ -177,6 +177,41 @@ def test_ui_batcher_drops_old_items_when_worker_queue_is_saturated():
 
     assert dispatcher.pending_count() == 128
     assert dispatcher.dropped_count() == 12
+    dispatcher.close()
+
+
+def test_ui_batcher_delivers_urgent_lifecycle_before_normal_backlog():
+    from src.ui.ui_batcher import UiCallbackDispatcher
+
+    events = []
+
+    class FakeWidget:
+        def after(self, _ms, _func=None, *_args):
+            return "after-id"
+
+        def after_cancel(self, _after_id):
+            return None
+
+        def winfo_exists(self):
+            return True
+
+    dispatcher = UiCallbackDispatcher(FakeWidget(), max_callbacks_per_tick=4)
+
+    def post_from_worker():
+        dispatcher.post(lambda: events.append("normal-1"))
+        dispatcher.post(lambda: events.append("normal-2"))
+        dispatcher.post(
+            lambda: events.append("lifecycle"),
+            critical=True,
+            urgent=True,
+        )
+
+    worker = threading.Thread(target=post_from_worker)
+    worker.start()
+    worker.join(timeout=2.0)
+    dispatcher._drain()
+
+    assert events == ["lifecycle", "normal-1", "normal-2"]
     dispatcher.close()
 
 

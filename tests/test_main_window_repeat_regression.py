@@ -278,6 +278,31 @@ def test_group_sequence_keeps_group_selection_when_inner_plan_runs():
     assert "self._sequence_group_repeat_count = 1" in complete_slice
 
 
+def test_group_sequence_handoff_is_critical_and_waits_for_executor_exit():
+    text = _read_text()
+    lifecycle_body = text[
+        text.index("def _mini_post_lifecycle("):
+        text.index("def _apply_window_icon", text.index("def _mini_post_lifecycle("))
+    ]
+    executor_body = text[
+        text.index("def _mini_run_plan_via_executor("):
+        text.index("def _mini_on_playlist_skip", text.index("def _mini_run_plan_via_executor("))
+    ]
+    repeat_body = text[
+        text.index("def _mini_on_repeat_complete("):
+        text.index(
+            "if self._sequence_mode and self._sequence_index < len(self._sequence_plans):",
+            text.index("def _mini_on_repeat_complete("),
+        )
+    ]
+
+    assert "critical=True, urgent=True" in lifecycle_body
+    assert "executor.wait_for_worker_exit(timeout=5.0)" in executor_body
+    assert "name=\"wincro-sequence-handoff\"" in executor_body
+    assert "self.winfo_exists()" not in executor_body.split("def deliver_on_main()", 1)[0]
+    assert "sequence-next-plan:" in repeat_body
+
+
 def test_settings_group_repeat_apply_keeps_list_selection_when_entry_has_focus():
     text = _read_settings_text()
     settings_slice = text[

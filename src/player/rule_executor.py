@@ -1157,17 +1157,57 @@ class RuleExecutor:
         on_complete: Optional[Callable[[bool], None]] = None,
         *,
         allow_special_mode_handoff: bool = False,
-    ) -> None:
+    ) -> bool:
         """비동기 자동화 계획 실행"""
-        def run():
-            success = self.execute_plan(
-                plan,
-                allow_special_mode_handoff=allow_special_mode_handoff,
-            )
+        def report_start_result(success: bool) -> None:
+            if not success:
+                with self._lifecycle_lock:
+                    worker = self._execution_thread
+                    active_worker = bool(worker is not None and worker.is_alive())
+                if active_worker:
+                    logger.warning("실행 중인 작업이 있어 중복 비동기 시작 요청만 거부했습니다")
+                else:
+                    self._notify_complete(False, "실행 시작 실패")
             if on_complete:
-                on_complete(success)
+                try:
+                    on_complete(success)
+                except Exception as exc:
+                    logger.error(f"execution start callback failed: {exc}")
 
-        threading.Thread(target=run, daemon=True).start()
+        def run():
+            try:
+                success = self.execute_plan(
+                    plan,
+                    allow_special_mode_handoff=allow_special_mode_handoff,
+                )
+            except Exception as exc:
+                logger.error(f"비동기 실행 시작 오류: {exc}")
+                success = False
+            report_start_result(success)
+
+        try:
+            threading.Thread(
+                target=run,
+                name="wincro-rule-executor-start",
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            logger.error(f"비동기 실행 시작 스레드 생성 실패: {exc}")
+            self._state = ExecutionState.FAILED
+            report_start_result(False)
+            return False
+        return True
+
+    def wait_for_worker_exit(self, timeout: float = 5.0) -> bool:
+        """Wait until the execution worker has fully left its finalizer."""
+        with self._lifecycle_lock:
+            worker = self._execution_thread
+        if worker is None:
+            return True
+        if worker is threading.current_thread():
+            return False
+        worker.join(timeout=max(0.0, float(timeout)))
+        return not worker.is_alive()
 
     def pause(self) -> None:
         """실행 일시정지"""
