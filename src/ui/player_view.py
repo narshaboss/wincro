@@ -17,12 +17,29 @@ import weakref
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR
-from ..utils.json_utils import load_json_file
+from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.plan_sequence_groups import sync_plan_repeat_in_groups
 from ..utils.auto_list import AUTO_LIST_EXTRACTION_BATCH_LIMIT
 from ..utils.action_call import ACTION_CALL_ACTION_TYPE
 from ..utils.action_timing import apply_bulk_random_waits
-from ..utils.input_controller import block_automation_input, get_input_controller, unblock_automation_input
+from ..utils.transition_recovery_policy import (
+    TRANSITION_POLICY_AUTO,
+    TRANSITION_POLICY_FORCE_OFF,
+    TRANSITION_POLICY_FORCE_ON,
+    build_transition_recovery_context_exclusions,
+    evaluate_auto_transition_recovery,
+    evaluate_transition_verification_target,
+    flatten_enabled_transition_items,
+    transition_recovery_policy_for,
+    transition_recovery_structural_exclusion,
+    transition_target_images,
+)
+from ..utils.input_controller import (
+    block_automation_input,
+    get_input_controller,
+    temporary_pyautogui_pause,
+    unblock_automation_input,
+)
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
 from ..player import get_action_player, PlayerState, PlaybackProgress
@@ -140,6 +157,9 @@ _thumbnail_cache = OrderedDict()  # {cache_key: CTkImage}
 _thumbnail_cache_lock = threading.Lock()
 MAX_THUMBNAIL_CACHE = 100  # 최대 캐시 개수
 MAX_DIALOG_THUMBNAIL_REFS = 192
+MAX_BOSS_TEMPLATE_CACHE = 32
+MAX_BOSS_OCR_CACHE = 64
+MAX_BOSS_TEXT_HISTORY = 64
 _active_game_mode_dialogs = weakref.WeakSet()
 _active_game_mode_dialogs_lock = threading.Lock()
 
@@ -1154,6 +1174,1210 @@ def _trigger_rewind_target_label(
     return "바로 이전 액션 (기존 설정)"
 
 
+TRANSITION_RECOVERY_FIELDS = (
+    "transition_recovery_policy",
+    "transition_recovery_enabled",
+    "transition_verify_mode",
+    "transition_verify_image",
+    "transition_verify_region",
+    "transition_verify_confidence",
+    "transition_verify_color",
+    "transition_verify_brightness",
+    "transition_verify_timeout",
+    "transition_recovery_mode",
+    "transition_recovery_count",
+    "transition_recovery_delay",
+    "transition_recovery_delay_random",
+    "transition_recovery_delay_random_range",
+    "transition_recovery_rule_ids",
+    "transition_failure_mode",
+    "transition_failure_rule_id",
+    "transition_stop_repeats_on_success",
+)
+
+TRANSITION_RECOVERY_ACTION_TYPES = {
+    "click",
+    "double_click",
+    "right_click",
+    "hotkey",
+    "key_press",
+    "type",
+    "wait",
+    "scroll",
+    "drag",
+    "random_key_sequence",
+}
+
+
+def _find_tree_item_by_id(root_items: list, target_id: Optional[str], id_attr: str):
+    path = _find_item_path_by_id(root_items, str(target_id or ""), id_attr)
+    return path[-1] if path else None
+
+
+def _transition_next_confirmation_item(
+    root_items: list,
+    current_id: Optional[str],
+    id_attr: str,
+):
+    """Return the next enabled image action exactly as the runtime tree is flattened."""
+    flattened = []
+
+    def visit(items: list) -> None:
+        for candidate in items or []:
+            if not bool(getattr(candidate, "enabled", True)):
+                continue
+            flattened.append(candidate)
+            visit(getattr(candidate, "children", None) or [])
+
+    visit(root_items)
+    current_id = str(current_id or "")
+    current_index = next(
+        (
+            index
+            for index, candidate in enumerate(flattened)
+            if str(getattr(candidate, id_attr, "") or "") == current_id
+        ),
+        -1,
+    )
+    if current_index < 0 or current_index + 1 >= len(flattened):
+        return None
+    candidate = flattened[current_index + 1]
+    if not evaluate_transition_verification_target(candidate).eligible:
+        return None
+    return candidate
+
+
+def _transition_recovery_settings(item) -> dict:
+    """Return a normalized settings snapshot for save round-trip checks."""
+    settings = {
+        field_name: getattr(item, field_name, None)
+        for field_name in TRANSITION_RECOVERY_FIELDS
+    }
+    image_path = str(settings.get("transition_verify_image") or "").strip()
+    settings["transition_verify_image"] = (
+        str(Path(image_path).resolve()) if image_path else None
+    )
+    region = settings.get("transition_verify_region")
+    settings["transition_verify_region"] = list(region) if region else None
+    settings["transition_recovery_rule_ids"] = list(
+        settings.get("transition_recovery_rule_ids") or []
+    )
+    return settings
+
+
+def _transition_recovery_menu_label(item) -> str:
+    policy = transition_recovery_policy_for(item)
+    prefix = {
+        TRANSITION_POLICY_FORCE_ON: "✓ ON  ",
+        TRANSITION_POLICY_FORCE_OFF: "✕ OFF  ",
+        TRANSITION_POLICY_AUTO: "A 자동  ",
+    }[policy]
+    return prefix + "실행 확인·복구 설정"
+
+
+def _transition_recovery_detail_label(item) -> str:
+    policy = transition_recovery_policy_for(item)
+    return {
+        TRANSITION_POLICY_FORCE_ON: "화면복구 ON",
+        TRANSITION_POLICY_FORCE_OFF: "화면복구 OFF",
+        TRANSITION_POLICY_AUTO: "화면복구 자동",
+    }[policy]
+
+
+def _apply_transition_recovery_settings(item, settings: dict) -> None:
+    for field_name in TRANSITION_RECOVERY_FIELDS:
+        if field_name not in settings:
+            continue
+        value = settings[field_name]
+        if field_name in {"transition_verify_region", "transition_recovery_rule_ids"}:
+            value = list(value) if value else ([] if field_name.endswith("rule_ids") else None)
+        setattr(item, field_name, value)
+
+
+def _transition_recovery_action_options(
+    root_items: list,
+    id_attr: str,
+    caller_id: Optional[str],
+) -> list:
+    options = []
+    for label, item_id in _action_call_options(root_items, id_attr, caller_id):
+        target = _find_tree_item_by_id(root_items, item_id, id_attr)
+        if target is None:
+            continue
+        if str(getattr(target, "action_type", "") or "") in TRANSITION_RECOVERY_ACTION_TYPES:
+            options.append((label, item_id))
+    return options
+
+
+def _show_transition_recovery_dialog(
+    parent,
+    item,
+    root_items: list,
+    id_attr: str,
+):
+    """Edit bounded screen-transition verification without widening action rows."""
+    from tkinter import filedialog
+
+    item_id = str(getattr(item, id_attr, "") or "")
+    context_exclusion = transition_recovery_structural_exclusion(
+        item,
+        build_transition_recovery_context_exclusions(root_items).get(id(item)),
+    )
+    result = {"value": None}
+    dialog = ctk.CTkToplevel(parent)
+    dialog.title("실행 확인·복구 설정")
+    dialog.geometry("760x780")
+    dialog.minsize(680, 620)
+    dialog.resizable(True, True)
+    dialog.configure(fg_color=COLORS["bg_content"])
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    header = ctk.CTkFrame(dialog, fg_color="transparent")
+    header.pack(fill="x", padx=18, pady=(16, 8))
+    ctk.CTkLabel(
+        header,
+        text="실행 확인·복구",
+        font=ctk.CTkFont(size=20, weight="bold"),
+        text_color=COLORS["text_primary"],
+        anchor="w",
+    ).pack(fill="x")
+    ctk.CTkLabel(
+        header,
+        text="입력 성공이 아니라 실제 다음 화면을 확인합니다. 실패하면 제한된 횟수만 복구합니다.",
+        font=ctk.CTkFont(size=12),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+        justify="left",
+        wraplength=700,
+    ).pack(fill="x", pady=(3, 0))
+
+    body = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+    body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+    def make_card(title: str, description: str):
+        card = ctk.CTkFrame(
+            body,
+            fg_color=COLORS["bg_card"],
+            border_width=IOS_METRICS["card_border_width"],
+            border_color=COLORS["border"],
+            corner_radius=IOS_METRICS["card_radius"],
+        )
+        card.pack(fill="x", padx=4, pady=6)
+        ctk.CTkLabel(
+            card,
+            text=title,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=COLORS["text_primary"],
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(12, 2))
+        ctk.CTkLabel(
+            card,
+            text=description,
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+            justify="left",
+            wraplength=660,
+        ).pack(fill="x", padx=14, pady=(0, 9))
+        return card
+
+    def labeled_entry(parent_widget, label: str, value, *, width: int = 94):
+        row = ctk.CTkFrame(parent_widget, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=4)
+        ctk.CTkLabel(
+            row,
+            text=label,
+            width=185,
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+        entry = ctk.CTkEntry(
+            row,
+            width=width,
+            height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        entry.insert(0, str(value))
+        entry.pack(side="left")
+        return entry
+
+    enabled_card = make_card(
+        "적용 방식",
+        "자동은 플랜 전체 설정과 안전 판정을 따릅니다. 강제 설정은 이 액션에서 항상 우선합니다.",
+    )
+    policy_labels = {
+        "자동 (플랜 설정 따름)": TRANSITION_POLICY_AUTO,
+        "강제 ON": TRANSITION_POLICY_FORCE_ON,
+        "강제 OFF": TRANSITION_POLICY_FORCE_OFF,
+    }
+    current_policy = transition_recovery_policy_for(item)
+    policy_var = ctk.StringVar(
+        value=next(
+            (
+                label
+                for label, value in policy_labels.items()
+                if value == current_policy
+            ),
+            "자동 (플랜 설정 따름)",
+        )
+    )
+    ctk.CTkOptionMenu(
+        enabled_card,
+        variable=policy_var,
+        values=list(policy_labels),
+        dynamic_resizing=False,
+        height=34,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    ).pack(fill="x", padx=14, pady=(2, 7))
+    ctk.CTkLabel(
+        enabled_card,
+        text="자동 대상이 아니어도 강제 ON은 사용할 수 있지만, 확인 이미지가 반드시 필요합니다.",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    ).pack(fill="x", padx=14, pady=(0, 12))
+
+    verify_card = make_card(
+        "1. 성공 화면 확인",
+        "권장값은 다음 액션 이미지 자동입니다. 다음 액션의 범위·인식률·색상·밝기 설정을 그대로 사용합니다.",
+    )
+    verify_labels = {
+        "다음 액션 이미지 자동": "next_action",
+        "직접 지정 이미지": "custom_image",
+    }
+    current_verify_mode = str(
+        getattr(item, "transition_verify_mode", "next_action") or "next_action"
+    )
+    verify_var = ctk.StringVar(
+        value=next(
+            (label for label, value in verify_labels.items() if value == current_verify_mode),
+            "다음 액션 이미지 자동",
+        )
+    )
+    verify_menu = ctk.CTkOptionMenu(
+        verify_card,
+        variable=verify_var,
+        values=list(verify_labels),
+        dynamic_resizing=False,
+        height=34,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    )
+    verify_menu.pack(fill="x", padx=14, pady=(0, 7))
+
+    custom_image_state = {
+        "value": str(getattr(item, "transition_verify_image", "") or "").strip() or None
+    }
+    custom_region_state = {
+        "value": list(getattr(item, "transition_verify_region", None) or []) or None
+    }
+    custom_frame = ctk.CTkFrame(verify_card, fg_color=COLORS["bg_elevated"], corner_radius=10)
+    custom_frame.pack(fill="x", padx=14, pady=5)
+    image_row = ctk.CTkFrame(custom_frame, fg_color="transparent")
+    image_row.pack(fill="x", padx=10, pady=(9, 4))
+    image_text = ctk.StringVar(
+        value=(
+            Path(custom_image_state["value"]).name
+            if custom_image_state["value"]
+            else "확인 이미지 미설정"
+        )
+    )
+    ctk.CTkLabel(
+        image_row,
+        textvariable=image_text,
+        anchor="w",
+        font=ctk.CTkFont(size=11, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(side="left", fill="x", expand=True)
+
+    def choose_custom_image():
+        import shutil
+        import uuid
+
+        selected = filedialog.askopenfilename(
+            parent=dialog,
+            title="화면 전환 확인 이미지 선택",
+            initialdir=str(DATA_DIR / "templates"),
+            filetypes=[("이미지 파일", IMAGE_ACTION_EXTENSIONS), ("모든 파일", "*.*")],
+        )
+        if selected:
+            source = Path(selected).resolve()
+            templates_dir = (DATA_DIR / "templates").resolve()
+            templates_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if source.parent != templates_dir:
+                    destination = templates_dir / (
+                        f"transition_verify_{uuid.uuid4().hex[:8]}{source.suffix.lower()}"
+                    )
+                    shutil.copy2(source, destination)
+                    source = destination
+            except OSError as exc:
+                messagebox.showerror("이미지 저장 실패", str(exc), parent=dialog)
+                return
+            custom_image_state["value"] = str(source)
+            image_text.set(source.name)
+
+    custom_image_button = ctk.CTkButton(
+        image_row,
+        text="이미지 선택",
+        width=104,
+        height=30,
+        command=choose_custom_image,
+        fg_color=COLORS["accent_blue"],
+        hover_color=COLORS["hover_blue"],
+        text_color=COLORS["text_on_accent"],
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    custom_image_button.pack(side="right", padx=(8, 0))
+
+    region_row = ctk.CTkFrame(custom_frame, fg_color="transparent")
+    region_row.pack(fill="x", padx=10, pady=(4, 9))
+    region_text = ctk.StringVar(
+        value=(
+            f"검색범위: {custom_region_state['value']}"
+            if custom_region_state["value"]
+            else "검색범위: 전체 화면"
+        )
+    )
+    ctk.CTkLabel(
+        region_row,
+        textvariable=region_text,
+        anchor="w",
+        font=ctk.CTkFont(size=11),
+        text_color=COLORS["text_secondary"],
+    ).pack(side="left", fill="x", expand=True)
+
+    def restore_dialog():
+        try:
+            if dialog.winfo_exists():
+                dialog.deiconify()
+                dialog.lift()
+                dialog.grab_set()
+                dialog.focus_force()
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def select_custom_region():
+        from .analyzer_view import ScreenRegionSelector
+
+        def on_select(x1, y1, x2, y2):
+            custom_region_state["value"] = [int(x1), int(y1), int(x2), int(y2)]
+            region_text.set(f"검색범위: {custom_region_state['value']}")
+            restore_dialog()
+
+        try:
+            dialog.grab_release()
+            dialog.withdraw()
+        except (tk.TclError, RuntimeError):
+            pass
+
+        def launch():
+            try:
+                ScreenRegionSelector(
+                    parent,
+                    on_select,
+                    restore_dialog,
+                    existing_region=custom_region_state["value"],
+                )
+            except Exception as exc:
+                restore_dialog()
+                messagebox.showerror("범위 설정 오류", str(exc), parent=dialog)
+
+        dialog.after(100, launch)
+
+    def clear_custom_region():
+        custom_region_state["value"] = None
+        region_text.set("검색범위: 전체 화면")
+
+    custom_region_button = ctk.CTkButton(
+        region_row,
+        text="범위 설정",
+        width=88,
+        height=29,
+        command=select_custom_region,
+        fg_color=COLORS["bg_card"],
+        hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    custom_region_button.pack(side="right", padx=(6, 0))
+    custom_region_clear_button = ctk.CTkButton(
+        region_row,
+        text="전체",
+        width=58,
+        height=29,
+        command=clear_custom_region,
+        fg_color=COLORS["bg_card"],
+        hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    custom_region_clear_button.pack(side="right", padx=(6, 0))
+
+    custom_options_row = ctk.CTkFrame(verify_card, fg_color="transparent")
+    custom_options_row.pack(fill="x", padx=14, pady=(4, 7))
+    confidence_var = ctk.StringVar(
+        value=str(int(round(float(getattr(item, "transition_verify_confidence", 0.8) or 0.8) * 100)))
+    )
+    ctk.CTkLabel(
+        custom_options_row,
+        text="직접 이미지 인식률",
+        width=130,
+        anchor="w",
+        font=ctk.CTkFont(size=11, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(side="left")
+    confidence_entry = ctk.CTkEntry(
+        custom_options_row,
+        textvariable=confidence_var,
+        width=64,
+        height=30,
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    confidence_entry.pack(side="left")
+    ctk.CTkLabel(
+        custom_options_row,
+        text="%",
+        font=ctk.CTkFont(size=11),
+        text_color=COLORS["text_secondary"],
+    ).pack(side="left", padx=(4, 14))
+    color_var = ctk.BooleanVar(value=bool(getattr(item, "transition_verify_color", False)))
+    brightness_var = ctk.BooleanVar(value=bool(getattr(item, "transition_verify_brightness", False)))
+    color_checkbox = ctk.CTkCheckBox(
+        custom_options_row,
+        text="색상 확인",
+        variable=color_var,
+        width=100,
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    color_checkbox.pack(side="left", padx=(0, 8))
+    brightness_checkbox = ctk.CTkCheckBox(
+        custom_options_row,
+        text="밝기 확인",
+        variable=brightness_var,
+        width=100,
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    brightness_checkbox.pack(side="left")
+    verify_timeout_entry = labeled_entry(
+        verify_card,
+        "화면 확인 제한시간 (초)",
+        f"{float(getattr(item, 'transition_verify_timeout', 5.0) or 5.0):.1f}",
+    )
+    ctk.CTkLabel(
+        verify_card,
+        text="제한시간 동안 화면이 안 뜨면 복구 1회를 시작합니다.",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    ).pack(fill="x", padx=14, pady=(0, 12))
+
+    recovery_card = make_card(
+        "2. 복구 실행",
+        "현재 액션을 다시 실행하기 전에 창 활성화나 별도 복구 액션을 선택할 수 있습니다.",
+    )
+    recovery_labels = {
+        "현재 액션 다시 실행": "retry",
+        "창 활성화 후 다시 실행": "refocus_retry",
+        "복구 액션 실행 후 다시 실행": "actions_retry",
+    }
+    current_recovery_mode = str(
+        getattr(item, "transition_recovery_mode", "refocus_retry") or "refocus_retry"
+    )
+    recovery_var = ctk.StringVar(
+        value=next(
+            (label for label, value in recovery_labels.items() if value == current_recovery_mode),
+            "창 활성화 후 다시 실행",
+        )
+    )
+    ctk.CTkOptionMenu(
+        recovery_card,
+        variable=recovery_var,
+        values=list(recovery_labels),
+        dynamic_resizing=False,
+        height=34,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    ).pack(fill="x", padx=14, pady=(0, 6))
+    recovery_count_entry = labeled_entry(
+        recovery_card,
+        "최대 복구 횟수",
+        int(getattr(item, "transition_recovery_count", 3) or 3),
+    )
+    recovery_delay_entry = labeled_entry(
+        recovery_card,
+        "복구 전 대기시간 (초)",
+        f"{float(getattr(item, 'transition_recovery_delay', 1.0) or 0.0):.1f}",
+    )
+    random_row = ctk.CTkFrame(recovery_card, fg_color="transparent")
+    random_row.pack(fill="x", padx=14, pady=4)
+    random_delay_var = ctk.BooleanVar(
+        value=bool(getattr(item, "transition_recovery_delay_random", False))
+    )
+    ctk.CTkCheckBox(
+        random_row,
+        text="복구 대기시간 랜덤",
+        variable=random_delay_var,
+        width=185,
+        font=ctk.CTkFont(size=11, weight="bold"),
+    ).pack(side="left")
+    random_range_entry = ctk.CTkEntry(
+        random_row,
+        width=72,
+        height=30,
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    random_range_entry.insert(
+        0,
+        f"{float(getattr(item, 'transition_recovery_delay_random_range', 0.3) or 0.0):.1f}",
+    )
+    random_range_entry.pack(side="left")
+    ctk.CTkLabel(
+        random_row,
+        text="초 범위",
+        font=ctk.CTkFont(size=11),
+        text_color=COLORS["text_secondary"],
+    ).pack(side="left", padx=(5, 0))
+
+    recovery_options = _transition_recovery_action_options(root_items, id_attr, item_id)
+    recovery_label_to_id = {label: target_id for label, target_id in recovery_options}
+    recovery_id_to_label = {target_id: label for label, target_id in recovery_options}
+    recovery_ids = [
+        target_id
+        for target_id in list(getattr(item, "transition_recovery_rule_ids", None) or [])
+        if target_id in recovery_id_to_label
+    ]
+    recovery_action_frame = ctk.CTkFrame(
+        recovery_card,
+        fg_color=COLORS["bg_elevated"],
+        corner_radius=10,
+    )
+    recovery_action_frame.pack(fill="x", padx=14, pady=(7, 12))
+    chooser_row = ctk.CTkFrame(recovery_action_frame, fg_color="transparent")
+    chooser_row.pack(fill="x", padx=9, pady=(9, 5))
+    chooser_values = [label for label, _ in recovery_options] or ["추가할 수 있는 액션 없음"]
+    recovery_choice_var = ctk.StringVar(value=chooser_values[0])
+    recovery_choice_menu = ctk.CTkOptionMenu(
+        chooser_row,
+        variable=recovery_choice_var,
+        values=chooser_values,
+        dynamic_resizing=False,
+        height=31,
+        font=ctk.CTkFont(size=10, weight="bold"),
+        fg_color=COLORS["bg_card"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    )
+    recovery_choice_menu.pack(side="left", fill="x", expand=True)
+    if not recovery_options:
+        recovery_choice_menu.configure(state="disabled")
+    recovery_list_frame = ctk.CTkFrame(recovery_action_frame, fg_color="transparent")
+    recovery_list_frame.pack(fill="x", padx=9, pady=(2, 8))
+
+    def move_recovery_action(index: int, offset: int):
+        new_index = index + offset
+        if 0 <= index < len(recovery_ids) and 0 <= new_index < len(recovery_ids):
+            recovery_ids[index], recovery_ids[new_index] = (
+                recovery_ids[new_index],
+                recovery_ids[index],
+            )
+            refresh_recovery_actions()
+
+    def remove_recovery_action(index: int):
+        if 0 <= index < len(recovery_ids):
+            recovery_ids.pop(index)
+            refresh_recovery_actions()
+
+    def refresh_recovery_actions():
+        for child in recovery_list_frame.winfo_children():
+            child.destroy()
+        if not recovery_ids:
+            ctk.CTkLabel(
+                recovery_list_frame,
+                text="복구 액션 없음",
+                font=ctk.CTkFont(size=10),
+                text_color=COLORS["text_secondary"],
+                anchor="w",
+            ).pack(fill="x", pady=4)
+            return
+        for row_index, target_id in enumerate(recovery_ids):
+            row = ctk.CTkFrame(
+                recovery_list_frame,
+                fg_color=COLORS["bg_card"],
+                corner_radius=IOS_METRICS["control_radius_small"],
+            )
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(
+                row,
+                text=f"{row_index + 1}. {recovery_id_to_label.get(target_id, target_id)}",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=COLORS["text_primary"],
+                anchor="w",
+            ).pack(side="left", fill="x", expand=True, padx=9, pady=6)
+
+            ctk.CTkButton(
+                row,
+                text="↑",
+                width=30,
+                height=26,
+                command=lambda index=row_index: move_recovery_action(index, -1),
+                fg_color=COLORS["bg_elevated"],
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_primary"],
+            ).pack(side="left", padx=2)
+            ctk.CTkButton(
+                row,
+                text="↓",
+                width=30,
+                height=26,
+                command=lambda index=row_index: move_recovery_action(index, 1),
+                fg_color=COLORS["bg_elevated"],
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_primary"],
+            ).pack(side="left", padx=2)
+            ctk.CTkButton(
+                row,
+                text="삭제",
+                width=48,
+                height=26,
+                command=lambda index=row_index: remove_recovery_action(index),
+                fg_color=COLORS["error"],
+                hover_color=COLORS["danger_hover"],
+                text_color=COLORS["text_on_accent"],
+            ).pack(side="left", padx=(3, 6))
+
+    def add_recovery_action():
+        target_id = recovery_label_to_id.get(recovery_choice_var.get())
+        if target_id and target_id not in recovery_ids:
+            recovery_ids.append(target_id)
+            refresh_recovery_actions()
+
+    recovery_add_button = ctk.CTkButton(
+        chooser_row,
+        text="추가",
+        width=66,
+        height=31,
+        command=add_recovery_action,
+        state="normal" if recovery_options else "disabled",
+        fg_color=COLORS["success"],
+        hover_color=COLORS["green_hover"],
+        text_color=COLORS["text_on_accent"],
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    recovery_add_button.pack(side="right", padx=(7, 0))
+    refresh_recovery_actions()
+
+    failure_card = make_card(
+        "3. 복구 실패 후",
+        "권장값은 알림 후 계속 확인입니다. 재생을 멈추지 않고 수동·원격 복구가 되면 자동으로 이어갑니다.",
+    )
+    failure_labels = {
+        "디스코드 알림 후 계속 확인": "alert_wait",
+        "지정 액션으로 복귀": "goto_rule",
+        "실패 처리하고 재생 중지": "fail",
+    }
+    current_failure_mode = str(
+        getattr(item, "transition_failure_mode", "alert_wait") or "alert_wait"
+    )
+    failure_var = ctk.StringVar(
+        value=next(
+            (label for label, value in failure_labels.items() if value == current_failure_mode),
+            "디스코드 알림 후 계속 확인",
+        )
+    )
+    failure_menu = ctk.CTkOptionMenu(
+        failure_card,
+        variable=failure_var,
+        values=list(failure_labels),
+        dynamic_resizing=False,
+        height=34,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    )
+    failure_menu.pack(fill="x", padx=14, pady=(0, 7))
+    goto_options = _trigger_rewind_options(root_items, id_attr, item_id)
+    goto_label_to_id = {label: target_id for label, target_id in goto_options}
+    current_goto_id = str(getattr(item, "transition_failure_rule_id", "") or "")
+    goto_values = [label for label, _ in goto_options] or ["복귀 가능한 이전 액션 없음"]
+    goto_var = ctk.StringVar(
+        value=next(
+            (label for label, target_id in goto_options if target_id == current_goto_id),
+            goto_values[0],
+        )
+    )
+    goto_menu = ctk.CTkOptionMenu(
+        failure_card,
+        variable=goto_var,
+        values=goto_values,
+        dynamic_resizing=False,
+        height=34,
+        font=ctk.CTkFont(size=11, weight="bold"),
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_orange"],
+        button_hover_color=COLORS["confidence_amber_hover"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+    )
+    goto_menu.pack(fill="x", padx=14, pady=(0, 12))
+
+    stop_repeats_var = ctk.BooleanVar(
+        value=bool(getattr(item, "transition_stop_repeats_on_success", True))
+    )
+    ctk.CTkCheckBox(
+        failure_card,
+        text="화면 전환 확인 즉시 남은 반복횟수 중단",
+        variable=stop_repeats_var,
+        font=ctk.CTkFont(size=11, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=14, pady=(0, 12))
+
+    def update_dependent_controls(*_args):
+        custom_state = "normal" if verify_labels.get(verify_var.get()) == "custom_image" else "disabled"
+        for widget in (
+            custom_image_button,
+            custom_region_button,
+            custom_region_clear_button,
+            confidence_entry,
+            color_checkbox,
+            brightness_checkbox,
+        ):
+            widget.configure(state=custom_state)
+        recovery_action_state = (
+            "normal"
+            if recovery_labels.get(recovery_var.get()) == "actions_retry" and recovery_options
+            else "disabled"
+        )
+        recovery_choice_menu.configure(state=recovery_action_state)
+        recovery_add_button.configure(state=recovery_action_state)
+        goto_state = (
+            "normal"
+            if failure_labels.get(failure_var.get()) == "goto_rule" and goto_options
+            else "disabled"
+        )
+        goto_menu.configure(state=goto_state)
+
+    verify_var.trace_add("write", update_dependent_controls)
+    recovery_var.trace_add("write", update_dependent_controls)
+    failure_var.trace_add("write", update_dependent_controls)
+    update_dependent_controls()
+
+    footer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=0)
+    # Reserve the footer before the expandable body so Save/Cancel cannot be
+    # pushed outside the window when the scroll region grows.
+    footer.pack(fill="x", side="bottom", before=body._parent_frame)
+
+    def parse_float(entry, label: str, minimum: float = 0.0) -> float:
+        try:
+            value = float(entry.get().strip().replace(",", "."))
+        except (TypeError, ValueError):
+            raise ValueError(f"{label}에 숫자를 입력하세요.")
+        if value < minimum:
+            raise ValueError(f"{label}은(는) {minimum:g} 이상이어야 합니다.")
+        return value
+
+    def save():
+        try:
+            recovery_policy = policy_labels[policy_var.get()]
+            verify_mode = verify_labels[verify_var.get()]
+            recovery_mode = recovery_labels[recovery_var.get()]
+            failure_mode = failure_labels[failure_var.get()]
+            verify_timeout = parse_float(verify_timeout_entry, "확인 제한시간", 0.5)
+            recovery_delay = parse_float(recovery_delay_entry, "복구 전 대기시간", 0.0)
+            recovery_random_range = parse_float(random_range_entry, "랜덤 범위", 0.0)
+            confidence = parse_float(confidence_entry, "인식률", 10.0)
+            if confidence > 100:
+                raise ValueError("인식률은 100 이하이어야 합니다.")
+            try:
+                recovery_count = int(recovery_count_entry.get().strip())
+            except (TypeError, ValueError):
+                raise ValueError("최대 복구 횟수에 정수를 입력하세요.")
+            if not 1 <= recovery_count <= 20:
+                raise ValueError("최대 복구 횟수는 1~20회로 설정하세요.")
+            if recovery_policy == TRANSITION_POLICY_FORCE_ON and (
+                bool(getattr(item, "click_until_image_disappears", False))
+                or bool(getattr(item, "repeat_from_auto_list_quantity", False))
+            ):
+                raise ValueError(
+                    "사라질 때까지 반복/자동 목록 수량 반복 액션에는 화면 전환 복구를 함께 사용할 수 없습니다."
+                )
+            if (
+                recovery_policy == TRANSITION_POLICY_FORCE_ON
+                and context_exclusion is not None
+            ):
+                raise ValueError(
+                    f"{context_exclusion.reason}에는 일반 화면 전환 복구를 강제로 적용할 수 없습니다."
+                )
+            if (
+                recovery_policy != TRANSITION_POLICY_FORCE_OFF
+                and verify_mode == "custom_image"
+                and not custom_image_state["value"]
+            ):
+                raise ValueError("직접 확인 이미지를 선택하세요.")
+            if (
+                recovery_policy == TRANSITION_POLICY_FORCE_ON
+                and verify_mode == "next_action"
+                and _transition_next_confirmation_item(root_items, item_id, id_attr) is None
+            ):
+                raise ValueError(
+                    "바로 다음 실행 액션에 확인할 이미지가 없습니다. 직접 지정 이미지를 선택하세요."
+                )
+            if (
+                recovery_policy != TRANSITION_POLICY_FORCE_OFF
+                and recovery_mode == "actions_retry"
+                and not recovery_ids
+            ):
+                raise ValueError("복구 액션 실행 방식을 사용하려면 복구 액션을 1개 이상 추가하세요.")
+            failure_rule_id = goto_label_to_id.get(goto_var.get()) if failure_mode == "goto_rule" else None
+            if (
+                recovery_policy != TRANSITION_POLICY_FORCE_OFF
+                and failure_mode == "goto_rule"
+                and not failure_rule_id
+            ):
+                raise ValueError("복귀할 이전 액션을 선택하세요.")
+
+            result["value"] = {
+                "transition_recovery_policy": recovery_policy,
+                "transition_recovery_enabled": (
+                    recovery_policy == TRANSITION_POLICY_FORCE_ON
+                ),
+                "transition_verify_mode": verify_mode,
+                "transition_verify_image": custom_image_state["value"],
+                "transition_verify_region": custom_region_state["value"],
+                "transition_verify_confidence": confidence / 100.0,
+                "transition_verify_color": bool(color_var.get()),
+                "transition_verify_brightness": bool(brightness_var.get()),
+                "transition_verify_timeout": verify_timeout,
+                "transition_recovery_mode": recovery_mode,
+                "transition_recovery_count": recovery_count,
+                "transition_recovery_delay": recovery_delay,
+                "transition_recovery_delay_random": bool(random_delay_var.get()),
+                "transition_recovery_delay_random_range": recovery_random_range,
+                "transition_recovery_rule_ids": list(recovery_ids),
+                "transition_failure_mode": failure_mode,
+                "transition_failure_rule_id": failure_rule_id,
+                "transition_stop_repeats_on_success": bool(stop_repeats_var.get()),
+            }
+            dialog.destroy()
+        except ValueError as exc:
+            messagebox.showerror("설정 확인", str(exc), parent=dialog)
+
+    buttons = ctk.CTkFrame(footer, fg_color="transparent")
+    buttons.pack(fill="x", padx=18, pady=12)
+    ctk.CTkButton(
+        buttons,
+        text="저장",
+        command=save,
+        height=38,
+        fg_color=COLORS["success"],
+        hover_color=COLORS["green_hover"],
+        text_color=COLORS["text_on_accent"],
+        font=ctk.CTkFont(size=13, weight="bold"),
+    ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ctk.CTkButton(
+        buttons,
+        text="취소",
+        command=dialog.destroy,
+        height=38,
+        fg_color=COLORS["bg_elevated"],
+        hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(size=13, weight="bold"),
+    ).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+    parent.wait_window(dialog)
+    return result["value"]
+
+
+def _show_transition_recovery_policy_dialog(
+    parent,
+    root_items: list,
+    *,
+    current_enabled: bool,
+    owner_label: str,
+):
+    """Preview and edit plan-wide auto recovery without building one widget per action."""
+    flattened = flatten_enabled_transition_items(root_items)
+    context_exclusions = build_transition_recovery_context_exclusions(root_items)
+    preview = []
+    for index, (item, step) in enumerate(flattened):
+        next_item = flattened[index + 1][0] if index + 1 < len(flattened) else None
+        next_images = transition_target_images(next_item) if next_item is not None else []
+        context_exclusion = transition_recovery_structural_exclusion(
+            item,
+            context_exclusions.get(id(item)),
+        )
+        preview.append(
+            (
+                item,
+                step,
+                next_item,
+                evaluate_auto_transition_recovery(
+                    item,
+                    next_item,
+                    next_images,
+                    context_exclusion,
+                ),
+                context_exclusion,
+            )
+        )
+
+    result = {"value": None}
+    dialog = ctk.CTkToplevel(parent)
+    dialog.title("호환 액션 자동 복구")
+    dialog.geometry("800x700")
+    dialog.minsize(700, 580)
+    dialog.resizable(True, True)
+    dialog.configure(fg_color=COLORS["bg_content"])
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    header = ctk.CTkFrame(dialog, fg_color="transparent")
+    header.pack(fill="x", padx=20, pady=(18, 8))
+    ctk.CTkLabel(
+        header,
+        text="호환 액션 자동 복구",
+        font=ctk.CTkFont(size=21, weight="bold"),
+        text_color=COLORS["text_primary"],
+        anchor="w",
+    ).pack(fill="x")
+    ctk.CTkLabel(
+        header,
+        text=(
+            f"{owner_label}에서 안전 판정을 통과한 클릭·키입력만 자동 보호합니다. "
+            "특화모드·모니터링·자동목록·선택 액션은 자동으로 제외됩니다."
+        ),
+        font=ctk.CTkFont(size=11),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+        justify="left",
+        wraplength=750,
+    ).pack(fill="x", pady=(4, 0))
+
+    control_card = ctk.CTkFrame(
+        dialog,
+        fg_color=COLORS["bg_card"],
+        border_width=IOS_METRICS["card_border_width"],
+        border_color=COLORS["border"],
+        corner_radius=IOS_METRICS["card_radius"],
+    )
+    control_card.pack(fill="x", padx=20, pady=(4, 8))
+    enabled_var = ctk.BooleanVar(value=bool(current_enabled))
+    ctk.CTkSwitch(
+        control_card,
+        text="호환 액션 자동 복구",
+        variable=enabled_var,
+        onvalue=True,
+        offvalue=False,
+        progress_color=COLORS["success"],
+        font=ctk.CTkFont(size=14, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=15, pady=(13, 5))
+    ctk.CTkLabel(
+        control_card,
+        text="강제 ON/OFF 액션은 이 스위치보다 우선하며, 자동 설정을 꺼도 강제 ON은 유지됩니다.",
+        font=ctk.CTkFont(size=10),
+        text_color=COLORS["text_secondary"],
+        anchor="w",
+    ).pack(fill="x", padx=15, pady=(0, 12))
+
+    preview_card = ctk.CTkFrame(
+        dialog,
+        fg_color=COLORS["bg_card"],
+        border_width=IOS_METRICS["card_border_width"],
+        border_color=COLORS["border"],
+        corner_radius=IOS_METRICS["card_radius"],
+    )
+    preview_card.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+    preview_header = ctk.CTkFrame(preview_card, fg_color="transparent")
+    preview_header.pack(fill="x", padx=13, pady=(12, 7))
+    stats_var = ctk.StringVar(value="")
+    ctk.CTkLabel(
+        preview_header,
+        textvariable=stats_var,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        text_color=COLORS["accent_text"],
+        anchor="w",
+    ).pack(side="left", fill="x", expand=True)
+    filter_var = ctk.StringVar(value="전체")
+    filter_menu = ctk.CTkOptionMenu(
+        preview_header,
+        variable=filter_var,
+        values=["전체", "적용 대상", "제외"],
+        width=112,
+        height=30,
+        dynamic_resizing=False,
+        fg_color=COLORS["bg_elevated"],
+        button_color=COLORS["accent_blue"],
+        button_hover_color=COLORS["hover_blue"],
+        dropdown_fg_color=COLORS["bg_elevated"],
+        dropdown_hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(size=11, weight="bold"),
+    )
+    filter_menu.pack(side="right")
+    preview_text = ctk.CTkTextbox(
+        preview_card,
+        fg_color=COLORS["bg_elevated"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
+        border_width=IOS_METRICS["card_border_width"],
+        border_color=COLORS["border"],
+        corner_radius=IOS_METRICS["control_radius"],
+        wrap="none",
+    )
+    preview_text.pack(fill="both", expand=True, padx=13, pady=(0, 13))
+
+    def refresh_preview(*_args):
+        auto_count = sum(
+            1
+            for item, _step, _next, eligibility, _context in preview
+            if transition_recovery_policy_for(item) == TRANSITION_POLICY_AUTO
+            and eligibility.eligible
+        )
+        excluded_count = sum(
+            1
+            for item, _step, _next, eligibility, context in preview
+            if (
+                transition_recovery_policy_for(item) == TRANSITION_POLICY_AUTO
+                and not eligibility.eligible
+            )
+            or (
+                transition_recovery_policy_for(item) == TRANSITION_POLICY_FORCE_ON
+                and context is not None
+            )
+        )
+        force_on_count = sum(
+            1
+            for item, _step, _next, _eligibility, context in preview
+            if transition_recovery_policy_for(item) == TRANSITION_POLICY_FORCE_ON
+            and context is None
+        )
+        force_off_count = sum(
+            1
+            for item, _step, _next, _eligibility, _context in preview
+            if transition_recovery_policy_for(item) == TRANSITION_POLICY_FORCE_OFF
+        )
+        stats_var.set(
+            f"자동 대상 {auto_count}  |  강제 ON {force_on_count}  |  "
+            f"강제 OFF {force_off_count}  |  제외 {excluded_count}"
+        )
+
+        selected_filter = filter_var.get()
+        lines = []
+        for item, step, next_item, eligibility, context in preview:
+            policy = transition_recovery_policy_for(item)
+            if context is not None:
+                category = "제외"
+                status = (
+                    f"강제 ON 불가 · {context.reason}"
+                    if policy == TRANSITION_POLICY_FORCE_ON
+                    else f"제외 · {context.reason}"
+                )
+            elif policy == TRANSITION_POLICY_FORCE_ON:
+                category = "적용 대상"
+                status = "강제 ON"
+            elif policy == TRANSITION_POLICY_FORCE_OFF:
+                category = "제외"
+                status = "강제 OFF"
+            elif eligibility.eligible:
+                category = "적용 대상"
+                status = "자동 적용" if enabled_var.get() else "자동 대상 · 현재 OFF"
+            else:
+                category = "제외"
+                status = f"제외 · {eligibility.reason}"
+            if selected_filter != "전체" and category != selected_filter:
+                continue
+            action_name = str(
+                getattr(item, "description", "")
+                or getattr(item, "action_type", "")
+                or "이름 없음"
+            ).replace("\n", " ")
+            action_type = str(getattr(item, "action_type", "") or "")
+            target_name = ""
+            if eligibility.verification_source:
+                target_name = Path(eligibility.verification_source).name
+            elif next_item is not None:
+                target_name = str(
+                    getattr(next_item, "description", "")
+                    or getattr(next_item, "action_type", "")
+                    or ""
+                ).replace("\n", " ")
+            suffix = f" → {target_name}" if target_name else ""
+            lines.append(f"[{step}] {action_name} ({action_type})  |  {status}{suffix}")
+        if not lines:
+            lines = ["표시할 액션이 없습니다."]
+        preview_text.configure(state="normal")
+        preview_text.delete("1.0", "end")
+        preview_text.insert("1.0", "\n".join(lines))
+        preview_text.configure(state="disabled")
+
+    enabled_var.trace_add("write", refresh_preview)
+    filter_var.trace_add("write", refresh_preview)
+    refresh_preview()
+
+    footer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=0)
+    footer.pack(fill="x", side="bottom")
+    buttons = ctk.CTkFrame(footer, fg_color="transparent")
+    buttons.pack(fill="x", padx=20, pady=12)
+
+    def save_policy():
+        result["value"] = bool(enabled_var.get())
+        dialog.destroy()
+
+    ctk.CTkButton(
+        buttons,
+        text="저장",
+        command=save_policy,
+        height=38,
+        fg_color=COLORS["success"],
+        hover_color=COLORS["green_hover"],
+        text_color=COLORS["text_on_accent"],
+        font=ctk.CTkFont(size=13, weight="bold"),
+    ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ctk.CTkButton(
+        buttons,
+        text="취소",
+        command=dialog.destroy,
+        height=38,
+        fg_color=COLORS["bg_elevated"],
+        hover_color=COLORS["bg_card_hover"],
+        text_color=COLORS["text_primary"],
+        font=ctk.CTkFont(size=13, weight="bold"),
+    ).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def _show_action_call_dialog(
     parent,
     root_items: list,
@@ -1494,6 +2718,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             and getattr(rule, "click_until_image_disappears", False)
         ):
             details.append("사라질때까지 반복")
+        if transition_recovery_policy_for(rule) != TRANSITION_POLICY_AUTO:
+            details.append(_transition_recovery_detail_label(rule))
         return self._truncate_ui_text(" | ".join(details), 80)
 
     def _set_partial_status_text(self, text: str, active: bool = False) -> None:
@@ -1975,6 +3201,24 @@ class PlanDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
 
+        # 일곱번째 줄: 플랜 전체의 안전한 화면 전환 복구 정책
+        btn_row7 = ctk.CTkFrame(btn_container, fg_color="transparent")
+        btn_row7.pack(fill="x", pady=(3, 0))
+        self._transition_auto_btn = ctk.CTkButton(
+            btn_row7,
+            text="화면복구 자동 OFF",
+            command=self._open_transition_auto_policy,
+            width=225,
+            height=28,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
+        self._transition_auto_btn.pack(fill="x")
+        self._refresh_transition_auto_button()
+
         all_rules = self._plan.initial_rules + self._plan.monitoring_rules
         ctk.CTkLabel(
             main,
@@ -2424,6 +3668,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                     label=("✓ " if getattr(rule, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
                     command=lambda: self._toggle_rule_alternate_mouse_route(rule),
                 )
+        if str(getattr(rule, "action_type", "") or "") in TRANSITION_RECOVERY_ACTION_TYPES:
+            popup.add_command(
+                label=_transition_recovery_menu_label(rule),
+                command=lambda: self._edit_transition_recovery(rule),
+            )
         popup.add_separator()
         popup.add_command(label="복사", command=lambda: self._copy_rule(rule))
         popup.add_command(
@@ -2456,6 +3705,141 @@ class PlanDetailDialog(ctk.CTkToplevel):
             popup.add_separator()
             popup.add_command(label="종속 해제", command=lambda: self._detach_rule(rule))
         popup.tk_popup(event.x_root, event.y_root)
+
+    def _edit_transition_recovery(self, rule: AutomationRule) -> None:
+        root_rules = self._plan.initial_rules
+        if not _find_item_path_by_id(root_rules, rule.rule_id, "rule_id"):
+            root_rules = self._plan.monitoring_rules
+        settings = _show_transition_recovery_dialog(
+            self,
+            rule,
+            root_rules,
+            "rule_id",
+        )
+        if settings is None:
+            return
+
+        previous_settings = _transition_recovery_settings(rule)
+        _apply_transition_recovery_settings(rule, settings)
+        expected_settings = _transition_recovery_settings(rule)
+        self._modified = True
+        if not self._save_plan(show_message=False):
+            _apply_transition_recovery_settings(rule, previous_settings)
+            messagebox.showerror(
+                "저장 실패",
+                "실행 확인·복구 설정을 플랜 파일에 저장하지 못했습니다.",
+                parent=self,
+            )
+            return
+
+        try:
+            plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
+            with open(plan_file, "r", encoding="utf-8") as handle:
+                reloaded_plan = AutomationPlan.from_dict(
+                    json.load(handle),
+                    templates_dir=DATA_DIR / "templates",
+                )
+            reloaded_rule = _find_tree_item_by_id(
+                reloaded_plan.initial_rules,
+                rule.rule_id,
+                "rule_id",
+            ) or _find_tree_item_by_id(
+                reloaded_plan.monitoring_rules,
+                rule.rule_id,
+                "rule_id",
+            )
+            if reloaded_rule is None or _transition_recovery_settings(reloaded_rule) != expected_settings:
+                raise ValueError("플랜 재로드 값이 저장 값과 일치하지 않습니다")
+        except Exception as exc:
+            logger.exception("실행 확인·복구 플랜 저장 검증 실패")
+            _apply_transition_recovery_settings(rule, previous_settings)
+            self._save_plan(show_message=False)
+            messagebox.showerror(
+                "저장 검증 실패",
+                f"설정 저장을 확인하지 못해 이전 값으로 복구했습니다.\n{exc}",
+                parent=self,
+            )
+            return
+
+        if not self._update_rule_row_in_place(rule):
+            self._refresh_rule_row(rule.rule_id)
+        messagebox.showinfo(
+            "저장 완료",
+            "실행 확인·복구 설정을 저장하고 플랜 재로드까지 확인했습니다.",
+            parent=self,
+        )
+
+    def _refresh_transition_auto_button(self) -> None:
+        button = getattr(self, "_transition_auto_btn", None)
+        if button is None:
+            return
+        enabled = bool(
+            getattr(self._plan, "transition_recovery_auto_enabled", False)
+        )
+        button.configure(
+            text=f"화면복구 자동 {'ON' if enabled else 'OFF'}",
+            fg_color=COLORS["success"] if enabled else COLORS["bg_elevated"],
+            hover_color=COLORS["green_hover"] if enabled else COLORS["bg_card_hover"],
+            text_color=(
+                COLORS["text_on_accent"] if enabled else COLORS["text_primary"]
+            ),
+        )
+
+    def _open_transition_auto_policy(self) -> None:
+        new_value = _show_transition_recovery_policy_dialog(
+            self,
+            self._plan.initial_rules + self._plan.monitoring_rules,
+            current_enabled=bool(
+                getattr(self._plan, "transition_recovery_auto_enabled", False)
+            ),
+            owner_label=f"플랜 '{self._plan.name}'",
+        )
+        if new_value is None:
+            return
+
+        previous_value = bool(
+            getattr(self._plan, "transition_recovery_auto_enabled", False)
+        )
+        self._plan.transition_recovery_auto_enabled = bool(new_value)
+        self._modified = True
+        if not self._save_plan(show_message=False):
+            self._plan.transition_recovery_auto_enabled = previous_value
+            self._refresh_transition_auto_button()
+            messagebox.showerror(
+                "저장 실패",
+                "호환 액션 자동 복구 설정을 플랜 파일에 저장하지 못했습니다.",
+                parent=self,
+            )
+            return
+
+        try:
+            plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
+            with open(plan_file, "r", encoding="utf-8") as handle:
+                reloaded_plan = AutomationPlan.from_dict(
+                    json.load(handle),
+                    templates_dir=DATA_DIR / "templates",
+                )
+            if bool(reloaded_plan.transition_recovery_auto_enabled) != bool(new_value):
+                raise ValueError("플랜 재로드 값이 저장 값과 일치하지 않습니다")
+        except Exception as exc:
+            logger.exception("플랜 자동 화면복구 저장 검증 실패")
+            self._plan.transition_recovery_auto_enabled = previous_value
+            self._modified = True
+            self._save_plan(show_message=False)
+            self._refresh_transition_auto_button()
+            messagebox.showerror(
+                "저장 검증 실패",
+                f"설정 저장을 확인하지 못해 이전 값으로 복구했습니다.\n{exc}",
+                parent=self,
+            )
+            return
+
+        self._refresh_transition_auto_button()
+        messagebox.showinfo(
+            "저장 완료",
+            "호환 액션 자동 복구 설정을 저장하고 플랜 재로드까지 확인했습니다.",
+            parent=self,
+        )
 
     def _create_compact_rule_item(self, parent, rule: AutomationRule, depth: int = 0, index_str: str = "1"):
         """큰 플랜용 경량 카드. 설정 복귀/이동/접기 반응성을 우선한다."""
@@ -2860,6 +4244,11 @@ class PlanDetailDialog(ctk.CTkToplevel):
                         label=("✓ " if getattr(r, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
                         command=lambda: self._toggle_rule_alternate_mouse_route(r),
                     )
+            if str(getattr(r, "action_type", "") or "") in TRANSITION_RECOVERY_ACTION_TYPES:
+                popup.add_command(
+                    label=_transition_recovery_menu_label(r),
+                    command=lambda: self._edit_transition_recovery(r),
+                )
             popup.add_separator()
             popup.add_command(label="복사", command=lambda: self._copy_rule(r))
             popup.add_command(
@@ -3640,19 +5029,24 @@ class PlanDetailDialog(ctk.CTkToplevel):
 
             PLANS_DIR.mkdir(parents=True, exist_ok=True)
             plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(self._plan.to_dict(), f, ensure_ascii=False, indent=2)
+            plan_data = self._plan.to_dict()
+            dump_json_file(plan_file, plan_data, ensure_ascii=False, indent=2)
+            if load_json_file(plan_file) != plan_data:
+                raise OSError("저장된 플랜 재검증 실패")
             logger.info(f"자동화 계획 저장: {plan_file}")
 
             # 연관된 녹화 이름도 업데이트 (계획 이름과 동기화)
             if new_name:
-                db = get_db()
-                recording = db.get_recording_by_plan_id(self._plan.plan_id)
-                if recording and recording.id:
-                    # 계획 이름에서 "_자동화" 접미사 제거 후 녹화 이름으로 사용
-                    recording_name = new_name.replace("_자동화", "") if new_name.endswith("_자동화") else new_name
-                    db.update_recording_name(recording.id, recording_name)
-                    logger.info(f"녹화 이름 동기화: {recording_name}")
+                try:
+                    db = get_db()
+                    recording = db.get_recording_by_plan_id(self._plan.plan_id)
+                    if recording and recording.id:
+                        # 계획 파일이 기준 데이터이며 DB 이름은 보조 메타데이터다.
+                        recording_name = new_name.replace("_자동화", "") if new_name.endswith("_자동화") else new_name
+                        db.update_recording_name(recording.id, recording_name)
+                        logger.info(f"녹화 이름 동기화: {recording_name}")
+                except Exception as db_exc:
+                    logger.warning(f"플랜은 저장됐지만 녹화 이름 동기화 실패: {db_exc}")
 
             self._modified = False
 
@@ -4574,6 +5968,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             description=f"특화모드 이후 {len(rules_to_run)}개 액션",
             initial_rules=rules_to_run,
             monitoring_rules=[],
+            transition_recovery_auto_enabled=bool(
+                getattr(self._plan, "transition_recovery_auto_enabled", False)
+            ),
         )
         partial_plan._original_initial_rules = self._plan.initial_rules
         partial_plan.game_modes = self._plan.game_modes
@@ -4796,8 +6193,10 @@ class PlanDetailDialog(ctk.CTkToplevel):
             try:
                 PLANS_DIR.mkdir(parents=True, exist_ok=True)
                 plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
-                with open(plan_file, 'w', encoding='utf-8') as f:
-                    json.dump(self._plan.to_dict(), f, ensure_ascii=False, indent=2)
+                plan_data = self._plan.to_dict()
+                dump_json_file(plan_file, plan_data, ensure_ascii=False, indent=2)
+                if load_json_file(plan_file) != plan_data:
+                    raise OSError("부분실행 플랜 저장 재검증 실패")
                 self._modified = False
                 logger.info(f"[부분실행] 플랜 자동 저장 완료")
             except Exception as e:
@@ -4840,6 +6239,9 @@ class PlanDetailDialog(ctk.CTkToplevel):
             description=f"{rule.description or rule.action_type}",
             initial_rules=rules_to_run,
             monitoring_rules=[],
+            transition_recovery_auto_enabled=bool(
+                getattr(self._plan, "transition_recovery_auto_enabled", False)
+            ),
         )
         # goto 점프 시 원본 계획의 rules를 참조할 수 있도록 저장 (리로드 성공 시 리로드된 규칙 사용)
         partial_plan._original_initial_rules = original_initial_rules
@@ -8049,7 +9451,7 @@ class GameModeDialog(ctk.CTkToplevel):
         self._bosstest_current_key = None
         self._bosstest_preview_image = None
         self._bosstest_last_live_payload = None
-        self._boss_ocr_text_cache = {}
+        self._boss_ocr_text_cache = OrderedDict()
         self._itemtest_running = False
         self._itemtest_stop_event = threading.Event()
         self._itemtest_thread = None
@@ -8110,8 +9512,7 @@ class GameModeDialog(ctk.CTkToplevel):
             _defaults_file = DATA_DIR / "game_mode_defaults.json"
             if _defaults_file.exists():
                 try:
-                    with open(_defaults_file, 'r', encoding='utf-8') as f:
-                        _defaults = json.load(f)
+                    _defaults = load_json_file(_defaults_file)
                     self._config = GameModeConfig.from_dict(_defaults)
                 except Exception:
                     self._config = GameModeConfig()
@@ -17903,28 +19304,18 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception:
                 pass
 
-    # pyautogui.PAUSE 전역 상태 보호용 락
-    _pyautogui_lock = threading.RLock()
-
     def _smooth_key_input_ui(self, keys, interval):
         """부드러운 키 입력 (UI용)"""
-        import pyautogui
-
-        with self._pyautogui_lock:
-            original_pause = pyautogui.PAUSE
-            pyautogui.PAUSE = 0
-            try:
-                start_time = time.time()
-                while time.time() - start_time < interval and not self._stop_event.is_set():
-                    self._key_press_count += 1
-                    for key in keys:
-                        get_input_controller().key_down(key)
-                    time.sleep(0.015)  # 15ms 누르기
-                    for key in keys:
-                        get_input_controller().key_up(key)
-                    time.sleep(0.005)  # 5ms 간격
-            finally:
-                pyautogui.PAUSE = original_pause
+        with temporary_pyautogui_pause(0):
+            start_time = time.time()
+            while time.time() - start_time < interval and not self._stop_event.is_set():
+                self._key_press_count += 1
+                for key in keys:
+                    get_input_controller().key_down(key)
+                time.sleep(0.015)  # 15ms 누르기
+                for key in keys:
+                    get_input_controller().key_up(key)
+                time.sleep(0.005)  # 5ms 간격
         try:
             self.after(0, lambda: self._key_count_label.configure(text=f"{self._key_press_count}회"))
         except (tk.TclError, RuntimeError):
@@ -20426,50 +21817,31 @@ class GameModeDialog(ctk.CTkToplevel):
     def _press_boss_follow_key(self, direction: str, stop_event=None):
         """보스 추적 전용 입력: 일반 이동보다 촘촘하게 붙기"""
         key = self._config.move_keys.get(direction, direction)
-        import pyautogui
         smooth_move = bool(getattr(self._config, 'smooth_move', False))
         interval = float(getattr(self._config, 'analysis_interval', 0.1) or 0.1)
         follow_interval = max(0.02, interval * 0.8)
 
-        if not self._pyautogui_lock.acquire(timeout=0.3):
-            # 다른 입력 스레드에 막혀 보스 테스트가 멈추는 현상 방지
-            original_pause = pyautogui.PAUSE
-            pyautogui.PAUSE = 0
-            try:
+        with temporary_pyautogui_pause(0):
+            if smooth_move:
+                start_time = time.time()
+                while time.time() - start_time < follow_interval:
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    get_input_controller().key_down(key)
+                    time.sleep(0.015)
+                    get_input_controller().key_up(key)
+                    self._key_press_count += 1
+                    time.sleep(0.005)
+            else:
                 get_input_controller().press(key)
-                self._key_press_count += 1
-            finally:
-                pyautogui.PAUSE = original_pause
-            return key, int(interval * 1000), smooth_move
-
-        try:
-            original_pause = pyautogui.PAUSE
-            pyautogui.PAUSE = 0
-            try:
-                if smooth_move:
-                    start_time = time.time()
-                    while time.time() - start_time < follow_interval:
-                        if stop_event is not None and stop_event.is_set():
-                            break
-                        get_input_controller().key_down(key)
-                        time.sleep(0.015)
-                        get_input_controller().key_up(key)
-                        self._key_press_count += 1
-                        time.sleep(0.005)
-                else:
-                    get_input_controller().press(key)
-                    time.sleep(0.008)
-                    get_input_controller().press(key)
-                    self._key_press_count += 2
-                    sleep_until = time.time() + follow_interval
-                    while time.time() < sleep_until:
-                        if stop_event is not None and stop_event.is_set():
-                            break
-                        time.sleep(0.01)
-            finally:
-                pyautogui.PAUSE = original_pause
-        finally:
-            self._pyautogui_lock.release()
+                time.sleep(0.008)
+                get_input_controller().press(key)
+                self._key_press_count += 2
+                sleep_until = time.time() + follow_interval
+                while time.time() < sleep_until:
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    time.sleep(0.01)
         return key, int(follow_interval * 1000), smooth_move
 
     def _get_segment_map_name(self, segment_idx: int) -> str:
@@ -24940,17 +26312,23 @@ class GameModeDialog(ctk.CTkToplevel):
     def _load_boss_template_bgr(self, template_path: str):
         """보스/캐릭터 템플릿 BGR 로드 (간단 캐시)"""
         try:
-            if not hasattr(self, "_boss_template_bgr_cache"):
-                self._boss_template_bgr_cache = {}
+            cache = getattr(self, "_boss_template_bgr_cache", None)
+            if not isinstance(cache, OrderedDict):
+                cache = OrderedDict(cache or {})
+                self._boss_template_bgr_cache = cache
             p = str(Path(template_path))
             mtime = Path(p).stat().st_mtime
-            cached = self._boss_template_bgr_cache.get(p)
+            cached = cache.get(p)
             if cached and cached.get("mtime") == mtime:
+                cache.move_to_end(p)
                 return cached.get("image")
             img = cv2.imdecode(np.fromfile(p, np.uint8), cv2.IMREAD_COLOR)
             if img is None:
                 return None
-            self._boss_template_bgr_cache[p] = {"mtime": mtime, "image": img}
+            cache[p] = {"mtime": mtime, "image": img}
+            cache.move_to_end(p)
+            while len(cache) > MAX_BOSS_TEMPLATE_CACHE:
+                cache.popitem(last=False)
             return img
         except Exception:
             return None
@@ -24991,29 +26369,36 @@ class GameModeDialog(ctk.CTkToplevel):
         except Exception:
             _mtime = 0.0
         _cache = getattr(self, "_boss_ocr_text_cache", None)
-        if not isinstance(_cache, dict):
-            _cache = {}
+        if not isinstance(_cache, OrderedDict):
+            _cache = OrderedDict(_cache or {})
             self._boss_ocr_text_cache = _cache
         _cached = _cache.get(_path)
         if _cached and float(_cached.get("mtime", 0.0) or 0.0) == float(_mtime):
+            _cache.move_to_end(_path)
             return str(_cached.get("text", "") or "")
+
+        def _cache_text(value: str) -> None:
+            _cache[_path] = {"mtime": _mtime, "text": value}
+            _cache.move_to_end(_path)
+            while len(_cache) > MAX_BOSS_OCR_CACHE:
+                _cache.popitem(last=False)
 
         _preset = get_image_preset("boss", path=_path)
         _preset_raw_text = str((_preset or {}).get("ocr_text", "") or "").strip()
         _preset_text = normalize_ocr_text(_preset_raw_text)
         _preset_text_valid = bool(_preset_text) and "?" not in _preset_raw_text and bool(re.search(r"[가-힣A-Za-z0-9]", _preset_raw_text))
         if _preset_text_valid:
-            _cache[_path] = {"mtime": _mtime, "text": _preset_text}
+            _cache_text(_preset_text)
             return _preset_text
 
         _template = self._load_boss_template_bgr(_path)
         if _template is None:
-            _cache[_path] = {"mtime": _mtime, "text": ""}
+            _cache_text("")
             return ""
 
         _lang = str(getattr(get_config().analyzer, "ocr_language", "kor+eng") or "kor+eng")
         _ocr_text = normalize_ocr_text(extract_template_target_text(_template, lang=_lang))
-        _cache[_path] = {"mtime": _mtime, "text": _ocr_text}
+        _cache_text(_ocr_text)
         if _ocr_text:
             try:
                 set_image_preset_ocr_text("boss", path=_path, ocr_text=_ocr_text)
@@ -25039,8 +26424,8 @@ class GameModeDialog(ctk.CTkToplevel):
             return ocr_match
         _channel = "bosstest" if bool(getattr(self, "_bosstest_running", False)) else "runtime"
         _history = getattr(self, "_boss_text_detect_history", None)
-        if not isinstance(_history, dict):
-            _history = {}
+        if not isinstance(_history, OrderedDict):
+            _history = OrderedDict(_history or {})
             self._boss_text_detect_history = _history
         _target = normalize_ocr_text(target_text)
         _key = f"{_channel}|{str(boss_img_path or '').strip()}|{_target}"
@@ -25072,6 +26457,9 @@ class GameModeDialog(ctk.CTkToplevel):
         _samples.append(_sample)
         _samples = _samples[-6:]
         _history[_key] = _samples
+        _history.move_to_end(_key)
+        while len(_history) > MAX_BOSS_TEXT_HISTORY:
+            _history.popitem(last=False)
 
         if _sample["found"] and _sample["score"] >= _immediate_threshold:
             return ocr_match
@@ -26523,7 +27911,9 @@ class GameModeDialog(ctk.CTkToplevel):
         self._boss_detect_last_char_center = state.get("_boss_detect_last_char_center")
         self._boss_detect_last_boss_seen_at = float(state.get("_boss_detect_last_boss_seen_at", 0.0) or 0.0)
         self._boss_detect_last_char_seen_at = float(state.get("_boss_detect_last_char_seen_at", 0.0) or 0.0)
-        self._boss_text_detect_history = dict(state.get("_boss_text_detect_history", {}) or {})
+        self._boss_text_detect_history = OrderedDict(
+            state.get("_boss_text_detect_history", {}) or {}
+        )
 
     def _get_bosstest_search_region(self):
         _path = str(getattr(self, "_bosstest_boss_image_path", "") or "").strip()
@@ -26766,7 +28156,7 @@ class GameModeDialog(ctk.CTkToplevel):
             "pixel_dist": payload["det"].get("pixel_dist"),
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        _json_path.write_text(json.dumps(_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        dump_json_file(_json_path, _meta, ensure_ascii=False, indent=2)
         return str(_png_path)
 
     def _run_bosstest_live_detect_once(self):
@@ -27608,13 +28998,19 @@ class GameModeDialog(ctk.CTkToplevel):
             self._config_rule_id = game_rule.rule_id
             self._plan.game_modes[game_rule.rule_id] = self._config
 
-        # JSON 파일에 직접 저장 (messagebox 없이)
+        # 기본값과 플랜을 모두 내구 저장한다. 기본값 저장이 실패하면 플랜을
+        # 성공 처리하지 않아 사용자가 재시도할 수 있게 한다.
+        if not self._save_game_mode_defaults():
+            return False
+
         try:
             self._plan.modified = True
             PLANS_DIR.mkdir(parents=True, exist_ok=True)
             plan_file = PLANS_DIR / f"{self._plan.plan_id}.json"
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(self._plan.to_dict(), f, ensure_ascii=False, indent=2)
+            plan_data = self._plan.to_dict()
+            dump_json_file(plan_file, plan_data, ensure_ascii=False, indent=2)
+            if load_json_file(plan_file) != plan_data:
+                raise OSError("특화모드 플랜 저장 재검증 실패")
             logger.info(f"[특화모드] 설정 저장: {plan_file}")
         except Exception as e:
             logger.error(f"[특화모드] 설정 저장 실패: {e}")
@@ -27632,15 +29028,12 @@ class GameModeDialog(ctk.CTkToplevel):
             self._engine_profile_help_label.configure(
                 text=f"{profile.description}  기존 특화모드는 알고리즘 변경이 잠겨 있습니다."
             )
-        # 경유지 제외한 설정을 기본값으로 저장 (새 플랜에서 자동 적용)
-        self._save_game_mode_defaults()
-
         _save_elapsed = _time.time() - _save_start
         if _save_elapsed > 0.5:
             logger.warning(f"[특화모드] 설정 저장 느림: {_save_elapsed:.1f}초")
         return True
 
-    def _save_game_mode_defaults(self):
+    def _save_game_mode_defaults(self) -> bool:
         """경유지 제외한 특화모드 설정을 기본값 파일로 저장"""
         try:
             defaults = self._config.to_dict()
@@ -27649,10 +29042,13 @@ class GameModeDialog(ctk.CTkToplevel):
                         "final_waypoint_idx", "engine_profile"):
                 defaults.pop(key, None)
             defaults_file = DATA_DIR / "game_mode_defaults.json"
-            with open(defaults_file, 'w', encoding='utf-8') as f:
-                json.dump(defaults, f, ensure_ascii=False, indent=2)
+            dump_json_file(defaults_file, defaults, ensure_ascii=False, indent=2)
+            if load_json_file(defaults_file) != defaults:
+                raise OSError("특화모드 기본값 저장 재검증 실패")
+            return True
         except Exception as e:
             logger.error(f"[특화모드] 기본값 저장 실패: {e}")
+            return False
 
     def _save_config_with_msg(self):
         """저장 버튼 클릭 시: 설정 저장 + messagebox 표시"""
@@ -27691,8 +29087,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
         try:
             if config_file.exists():
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    positions = json.load(f)
+                positions = load_json_file(config_file)
                 if 'game_mode_dialog' in positions:
                     geo = positions['game_mode_dialog']
                     x, y, w, h = geo.get('x', 0), geo.get('y', 0), geo.get('w', default_w), geo.get('h', default_h)
@@ -27739,14 +29134,11 @@ class GameModeDialog(ctk.CTkToplevel):
 
             positions = {}
             if config_file.exists():
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    positions = json.load(f)
+                positions = load_json_file(config_file)
 
             positions['game_mode_dialog'] = {'x': x, 'y': y, 'w': w, 'h': h}
 
-            config_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(positions, f, indent=2)
+            dump_json_file(config_file, positions, indent=2)
             logger.info(f"[특화모드] 창 위치 저장: {w}x{h}+{x}+{y}")
         except Exception as e:
             logger.error(f"[특화모드] 창 위치 저장 실패: {e}")
@@ -27789,6 +29181,14 @@ class GameModeDialog(ctk.CTkToplevel):
                 logger.error(f"[특화모드] 닫기 시 리프레시 실패: {e}")
 
         self._close_runtime_ui_queues()
+        for cache_name in (
+            "_boss_template_bgr_cache",
+            "_boss_ocr_text_cache",
+            "_boss_text_detect_history",
+        ):
+            cache = getattr(self, cache_name, None)
+            if hasattr(cache, "clear"):
+                cache.clear()
         self.destroy()
 
 
@@ -28207,6 +29607,24 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left", padx=(5, 0))
 
+        # 일곱번째 줄: 재생목록 전체의 안전한 화면 전환 복구 정책
+        btn_row7 = ctk.CTkFrame(btn_container, fg_color="transparent")
+        btn_row7.pack(fill="x", pady=(3, 0))
+        self._transition_auto_btn = ctk.CTkButton(
+            btn_row7,
+            text="화면복구 자동 OFF",
+            command=self._open_transition_auto_policy,
+            width=225,
+            height=28,
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
+        self._transition_auto_btn.pack(fill="x")
+        self._refresh_transition_auto_button()
+
         created_str = self._sequence.created_at.strftime("%Y-%m-%d") if self._sequence.created_at else "알 수 없음"
         ctk.CTkLabel(
             main,
@@ -28459,6 +29877,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             details.append("경로변경")
         if getattr(action, "click_until_image_disappears", False):
             details.append("사라질때까지")
+        if transition_recovery_policy_for(action) != TRANSITION_POLICY_AUTO:
+            details.append(_transition_recovery_detail_label(action))
         if details:
             label_text += "  |  " + " / ".join(details)
         return truncate_ui_text(label_text, 96)
@@ -28498,6 +29918,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 details.append("경로변경" if compact else "이동경로 변경")
             if getattr(action, "click_until_image_disappears", False):
                 details.append("사라질때까지" if compact else "사라질때까지 반복")
+        if transition_recovery_policy_for(action) != TRANSITION_POLICY_AUTO:
+            details.append(_transition_recovery_detail_label(action))
         separator = " / " if compact else "  |  "
         return truncate_ui_text(separator.join(details), 80)
 
@@ -28635,6 +30057,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                     label=("✓ " if getattr(action, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
                     command=lambda: self._toggle_action_alternate_mouse_route(action),
                 )
+        if str(getattr(action, "action_type", "") or "") in TRANSITION_RECOVERY_ACTION_TYPES:
+            popup.add_command(
+                label=_transition_recovery_menu_label(action),
+                command=lambda: self._edit_transition_recovery_action(action),
+            )
         popup.add_separator()
         popup.add_command(
             label="비활성화" if getattr(action, "enabled", True) else "활성화",
@@ -28651,6 +30078,128 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             popup.add_separator()
             popup.add_command(label="종속 해제", command=lambda: self._detach_action(action))
         popup.tk_popup(event.x_root, event.y_root)
+
+    def _edit_transition_recovery_action(self, action: Action) -> None:
+        settings = _show_transition_recovery_dialog(
+            self,
+            action,
+            self._sequence.actions,
+            "action_id",
+        )
+        if settings is None:
+            return
+
+        previous_settings = _transition_recovery_settings(action)
+        _apply_transition_recovery_settings(action, settings)
+        expected_settings = _transition_recovery_settings(action)
+        self._modified = True
+        if not self._save_sequence_silent():
+            _apply_transition_recovery_settings(action, previous_settings)
+            messagebox.showerror(
+                "저장 실패",
+                "실행 확인·복구 설정을 재생목록에 저장하지 못했습니다.",
+                parent=self,
+            )
+            return
+
+        try:
+            reloaded_sequence = self._db.get_sequence(self._sequence.id)
+            if reloaded_sequence is None:
+                raise ValueError("저장한 재생목록을 다시 읽지 못했습니다")
+            reloaded_action = _find_tree_item_by_id(
+                reloaded_sequence.actions,
+                action.action_id,
+                "action_id",
+            )
+            if reloaded_action is None or _transition_recovery_settings(reloaded_action) != expected_settings:
+                raise ValueError("재생목록 재로드 값이 저장 값과 일치하지 않습니다")
+        except Exception as exc:
+            logger.exception("실행 확인·복구 재생목록 저장 검증 실패")
+            _apply_transition_recovery_settings(action, previous_settings)
+            self._db.update_sequence(self._sequence)
+            messagebox.showerror(
+                "저장 검증 실패",
+                f"설정 저장을 확인하지 못해 이전 값으로 복구했습니다.\n{exc}",
+                parent=self,
+            )
+            return
+
+        if not self._update_compact_action_row(action):
+            self._refresh_action_row(action)
+        messagebox.showinfo(
+            "저장 완료",
+            "실행 확인·복구 설정을 저장하고 DB 재로드까지 확인했습니다.",
+            parent=self,
+        )
+
+    def _refresh_transition_auto_button(self) -> None:
+        button = getattr(self, "_transition_auto_btn", None)
+        if button is None:
+            return
+        enabled = bool(
+            getattr(self._sequence, "transition_recovery_auto_enabled", False)
+        )
+        button.configure(
+            text=f"화면복구 자동 {'ON' if enabled else 'OFF'}",
+            fg_color=COLORS["success"] if enabled else COLORS["bg_elevated"],
+            hover_color=COLORS["green_hover"] if enabled else COLORS["bg_card_hover"],
+            text_color=(
+                COLORS["text_on_accent"] if enabled else COLORS["text_primary"]
+            ),
+        )
+
+    def _open_transition_auto_policy(self) -> None:
+        new_value = _show_transition_recovery_policy_dialog(
+            self,
+            self._sequence.actions,
+            current_enabled=bool(
+                getattr(self._sequence, "transition_recovery_auto_enabled", False)
+            ),
+            owner_label=f"재생목록 '{self._sequence.name}'",
+        )
+        if new_value is None:
+            return
+
+        previous_value = bool(
+            getattr(self._sequence, "transition_recovery_auto_enabled", False)
+        )
+        self._sequence.transition_recovery_auto_enabled = bool(new_value)
+        self._modified = True
+        if not self._save_sequence_silent():
+            self._sequence.transition_recovery_auto_enabled = previous_value
+            self._refresh_transition_auto_button()
+            messagebox.showerror(
+                "저장 실패",
+                "호환 액션 자동 복구 설정을 재생목록 DB에 저장하지 못했습니다.",
+                parent=self,
+            )
+            return
+
+        try:
+            reloaded_sequence = self._db.get_sequence(self._sequence.id)
+            if reloaded_sequence is None:
+                raise ValueError("저장한 재생목록을 다시 읽지 못했습니다")
+            if bool(reloaded_sequence.transition_recovery_auto_enabled) != bool(new_value):
+                raise ValueError("재생목록 재로드 값이 저장 값과 일치하지 않습니다")
+        except Exception as exc:
+            logger.exception("재생목록 자동 화면복구 저장 검증 실패")
+            self._sequence.transition_recovery_auto_enabled = previous_value
+            self._modified = True
+            self._db.update_sequence(self._sequence)
+            self._refresh_transition_auto_button()
+            messagebox.showerror(
+                "저장 검증 실패",
+                f"설정 저장을 확인하지 못해 이전 값으로 복구했습니다.\n{exc}",
+                parent=self,
+            )
+            return
+
+        self._refresh_transition_auto_button()
+        messagebox.showinfo(
+            "저장 완료",
+            "호환 액션 자동 복구 설정을 저장하고 DB 재로드까지 확인했습니다.",
+            parent=self,
+        )
 
     def _create_compact_action_item(self, parent, action: Action, depth: int = 0, index_str: str = "1", before_widget=None, use_pack: bool = True):
         """큰 재생목록용 경량 카드. 보이는 위젯 수를 줄여 수정 반응을 우선한다."""
@@ -28911,6 +30460,11 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                         label=("✓ " if getattr(a, "alternate_mouse_route", False) else "  ") + "마우스 이동경로 변경",
                         command=lambda: self._toggle_action_alternate_mouse_route(a),
                     )
+            if str(getattr(a, "action_type", "") or "") in TRANSITION_RECOVERY_ACTION_TYPES:
+                popup.add_command(
+                    label=_transition_recovery_menu_label(a),
+                    command=lambda: self._edit_transition_recovery_action(a),
+                )
             popup.add_separator()
             popup.add_command(
                 label="비활성화" if getattr(a, "enabled", True) else "활성화",
@@ -32342,8 +33896,10 @@ class PlayerView(BaseView):
             # JSON 파일에 저장
             plan_file = PLANS_DIR / f"{plan.plan_id}.json"
             try:
-                with open(plan_file, 'w', encoding='utf-8') as f:
-                    json.dump(plan.to_dict(), f, ensure_ascii=False, indent=2)
+                plan_data = plan.to_dict()
+                dump_json_file(plan_file, plan_data, ensure_ascii=False, indent=2)
+                if load_json_file(plan_file) != plan_data:
+                    raise OSError("계획 이름 저장 재검증 실패")
                 self._load_sequences()  # 목록 새로고침
             except Exception as e:
                 logger.error(f"계획 이름 수정 실패: {e}")
@@ -32593,8 +34149,10 @@ class PlayerView(BaseView):
             PLANS_DIR = DATA_DIR / "plans"
             PLANS_DIR.mkdir(parents=True, exist_ok=True)
             plan_file = PLANS_DIR / f"{self._selected_plan.plan_id}.json"
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(self._selected_plan.to_dict(), f, ensure_ascii=False, indent=2)
+            plan_data = self._selected_plan.to_dict()
+            dump_json_file(plan_file, plan_data, ensure_ascii=False, indent=2)
+            if load_json_file(plan_file) != plan_data:
+                raise OSError("재생횟수 저장 재검증 실패")
             config = get_config()
             if sync_plan_repeat_in_groups(config.player, str(plan_file), repeat_count):
                 self._save_config()
@@ -32685,6 +34243,8 @@ class PlayerView(BaseView):
             scroll_amount=getattr(action, "scroll_amount", 0),
             target_image=getattr(action, "target_image", None),
             confidence=getattr(action, "confidence", 0.8),
+            verify_image_color=getattr(action, "verify_image_color", False),
+            verify_image_brightness=getattr(action, "verify_image_brightness", False),
             search_radius=getattr(action, "search_radius", 0),
             search_region=getattr(action, "search_region", None),
             alternate_mouse_route=getattr(action, "alternate_mouse_route", False),
@@ -32715,6 +34275,24 @@ class PlayerView(BaseView):
             repeat_delay=getattr(action, "repeat_delay", 0.5),
             repeat_delay_random=getattr(action, "repeat_delay_random", False),
             repeat_delay_random_range=getattr(action, "repeat_delay_random_range", 0.3),
+            transition_recovery_policy=getattr(action, "transition_recovery_policy", ""),
+            transition_recovery_enabled=getattr(action, "transition_recovery_enabled", False),
+            transition_verify_mode=getattr(action, "transition_verify_mode", "next_action"),
+            transition_verify_image=getattr(action, "transition_verify_image", None),
+            transition_verify_region=getattr(action, "transition_verify_region", None),
+            transition_verify_confidence=getattr(action, "transition_verify_confidence", 0.8),
+            transition_verify_color=getattr(action, "transition_verify_color", False),
+            transition_verify_brightness=getattr(action, "transition_verify_brightness", False),
+            transition_verify_timeout=getattr(action, "transition_verify_timeout", 5.0),
+            transition_recovery_mode=getattr(action, "transition_recovery_mode", "refocus_retry"),
+            transition_recovery_count=getattr(action, "transition_recovery_count", 3),
+            transition_recovery_delay=getattr(action, "transition_recovery_delay", 1.0),
+            transition_recovery_delay_random=getattr(action, "transition_recovery_delay_random", False),
+            transition_recovery_delay_random_range=getattr(action, "transition_recovery_delay_random_range", 0.3),
+            transition_recovery_rule_ids=list(getattr(action, "transition_recovery_rule_ids", None) or []),
+            transition_failure_mode=getattr(action, "transition_failure_mode", "alert_wait"),
+            transition_failure_rule_id=getattr(action, "transition_failure_rule_id", None),
+            transition_stop_repeats_on_success=getattr(action, "transition_stop_repeats_on_success", True),
             timestamp=getattr(action, "timestamp", 0.0),
             parent_id=getattr(action, "parent_id", None),
             trigger_image=getattr(action, "wait_for_image", None),
@@ -32770,6 +34348,9 @@ class PlayerView(BaseView):
             description=sequence.description or f"{sequence.name} (일반 재생)",
             initial_rules=rules,
             monitoring_rules=[],
+            transition_recovery_auto_enabled=bool(
+                getattr(sequence, "transition_recovery_auto_enabled", False)
+            ),
         )
         plan.total_repeat_count = 999999999 if repeat_count == 0 else max(1, repeat_count)
         plan.game_modes = game_modes
@@ -33185,6 +34766,9 @@ class PlayerView(BaseView):
             description=f"재생 {len(rules_to_run)}개 액션",
             initial_rules=rules_to_run,
             monitoring_rules=[],
+            transition_recovery_auto_enabled=bool(
+                getattr(active_plan, "transition_recovery_auto_enabled", False)
+            ),
         )
         partial_plan._original_initial_rules = active_plan.initial_rules
         partial_plan.game_modes = active_plan.game_modes

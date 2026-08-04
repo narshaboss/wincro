@@ -100,6 +100,24 @@ class Action:
     repeat_delay: float = 0.5  # 반복 사이 대기시간 (초)
     repeat_delay_random: bool = False  # 반복 대기시간 랜덤 사용
     repeat_delay_random_range: float = 0.3  # 반복 대기시간 ±범위 (초)
+    transition_recovery_policy: str = ""
+    transition_recovery_enabled: bool = False
+    transition_verify_mode: str = "next_action"
+    transition_verify_image: Optional[str] = None
+    transition_verify_region: Optional[List[int]] = None
+    transition_verify_confidence: float = 0.8
+    transition_verify_color: bool = False
+    transition_verify_brightness: bool = False
+    transition_verify_timeout: float = 5.0
+    transition_recovery_mode: str = "refocus_retry"
+    transition_recovery_count: int = 3
+    transition_recovery_delay: float = 1.0
+    transition_recovery_delay_random: bool = False
+    transition_recovery_delay_random_range: float = 0.3
+    transition_recovery_rule_ids: List[str] = field(default_factory=list)
+    transition_failure_mode: str = "alert_wait"
+    transition_failure_rule_id: Optional[str] = None
+    transition_stop_repeats_on_success: bool = True
     # 스킵 모드
     skip_on_not_found: bool = False  # 이미지 못찾으면 wait_after 후 다음 액션으로 스킵
     enabled: bool = True  # False면 실행에서 제외
@@ -150,6 +168,64 @@ class Action:
             )
         except (TypeError, ValueError):
             self.auto_list_repeat_confirm_confidence = 0.9
+        from ..utils.transition_recovery_policy import (
+            TRANSITION_POLICY_FORCE_ON,
+            normalize_transition_recovery_policy,
+        )
+
+        self.transition_recovery_policy = normalize_transition_recovery_policy(
+            self.transition_recovery_policy,
+            self.transition_recovery_enabled,
+        )
+        self.transition_recovery_enabled = (
+            self.transition_recovery_policy == TRANSITION_POLICY_FORCE_ON
+        )
+        verify_mode = str(self.transition_verify_mode or "next_action").strip()
+        self.transition_verify_mode = verify_mode if verify_mode in {"next_action", "custom_image"} else "next_action"
+        recovery_mode = str(self.transition_recovery_mode or "refocus_retry").strip()
+        self.transition_recovery_mode = recovery_mode if recovery_mode in {"retry", "refocus_retry", "actions_retry"} else "refocus_retry"
+        failure_mode = str(self.transition_failure_mode or "alert_wait").strip()
+        self.transition_failure_mode = failure_mode if failure_mode in {"alert_wait", "goto_rule", "fail"} else "alert_wait"
+        self.transition_recovery_rule_ids = list(dict.fromkeys(
+            str(rule_id or "").strip()
+            for rule_id in (self.transition_recovery_rule_ids or [])
+            if str(rule_id or "").strip()
+        ))
+        self.transition_failure_rule_id = str(self.transition_failure_rule_id or "").strip() or None
+        self.transition_stop_repeats_on_success = bool(self.transition_stop_repeats_on_success)
+        try:
+            self.transition_verify_timeout = max(0.5, float(self.transition_verify_timeout or 5.0))
+        except (TypeError, ValueError):
+            self.transition_verify_timeout = 5.0
+        try:
+            self.transition_verify_confidence = min(1.0, max(0.1, float(self.transition_verify_confidence or 0.8)))
+        except (TypeError, ValueError):
+            self.transition_verify_confidence = 0.8
+        try:
+            self.transition_recovery_count = max(1, min(20, int(self.transition_recovery_count or 3)))
+        except (TypeError, ValueError):
+            self.transition_recovery_count = 3
+        try:
+            self.transition_recovery_delay = max(0.0, float(self.transition_recovery_delay or 0.0))
+        except (TypeError, ValueError):
+            self.transition_recovery_delay = 1.0
+        try:
+            self.transition_recovery_delay_random_range = max(0.0, float(self.transition_recovery_delay_random_range or 0.0))
+        except (TypeError, ValueError):
+            self.transition_recovery_delay_random_range = 0.3
+        self.transition_recovery_delay_random = bool(self.transition_recovery_delay_random)
+        self.transition_verify_color = bool(self.transition_verify_color)
+        self.transition_verify_brightness = bool(self.transition_verify_brightness)
+        if isinstance(self.transition_verify_region, (list, tuple)) and len(self.transition_verify_region) == 4:
+            try:
+                x1, y1, x2, y2 = [int(round(float(value))) for value in self.transition_verify_region]
+                left, right = sorted((x1, x2))
+                top, bottom = sorted((y1, y2))
+                self.transition_verify_region = [left, top, right, bottom] if right > left and bottom > top else None
+            except (TypeError, ValueError):
+                self.transition_verify_region = None
+        else:
+            self.transition_verify_region = None
 
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환"""
@@ -186,6 +262,15 @@ class Action:
             'description', 'wait_for_image', 'wait_for_image_timeout',
             'wait_for_image_disappear', 'repeat_count', 'repeat_delay',
             'repeat_delay_random', 'repeat_delay_random_range', 'skip_on_not_found',
+            'transition_recovery_policy', 'transition_recovery_enabled', 'transition_verify_mode',
+            'transition_verify_image', 'transition_verify_region',
+            'transition_verify_confidence', 'transition_verify_color',
+            'transition_verify_brightness', 'transition_verify_timeout',
+            'transition_recovery_mode', 'transition_recovery_count',
+            'transition_recovery_delay', 'transition_recovery_delay_random',
+            'transition_recovery_delay_random_range', 'transition_recovery_rule_ids',
+            'transition_failure_mode', 'transition_failure_rule_id',
+            'transition_stop_repeats_on_success',
             'enabled', 'parent_id', 'action_id'
         }
         # 유효한 필드만 필터링 (새 버전에서 추가된 필드가 없어도 됨)
@@ -262,6 +347,7 @@ class Sequence:
     failure_count: int = 0
     tags: List[str] = field(default_factory=list)
     version: str = "1.0"
+    transition_recovery_auto_enabled: bool = False
 
     @property
     def success_rate(self) -> float:
@@ -300,6 +386,9 @@ class Sequence:
             "failure_count": self.failure_count,
             "tags": json.dumps(self.tags, ensure_ascii=False),
             "version": self.version,
+            "transition_recovery_auto_enabled": int(
+                bool(self.transition_recovery_auto_enabled)
+            ),
         }
 
     @classmethod
@@ -342,6 +431,9 @@ class Sequence:
             failure_count=data.get("failure_count", 0),
             tags=tags_data,
             version=data.get("version", "1.0"),
+            transition_recovery_auto_enabled=bool(
+                data.get("transition_recovery_auto_enabled", False)
+            ),
         )
 
     def to_export_dict(self) -> Dict[str, Any]:
@@ -352,6 +444,9 @@ class Sequence:
             "actions": [a.to_dict() for a in self.actions],
             "tags": self.tags,
             "version": self.version,
+            "transition_recovery_auto_enabled": bool(
+                self.transition_recovery_auto_enabled
+            ),
             "exported_at": datetime.now().isoformat(),
         }
 
@@ -364,6 +459,9 @@ class Sequence:
             actions=[Action.from_dict(a) for a in data.get("actions", [])],
             tags=data.get("tags", []),
             version=data.get("version", "1.0"),
+            transition_recovery_auto_enabled=bool(
+                data.get("transition_recovery_auto_enabled", False)
+            ),
             created_at=datetime.now(),
         )
 

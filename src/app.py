@@ -437,11 +437,15 @@ class WinCroApp:
     def _perform_auto_update(self, new_version: str, release_data: dict) -> None:
         """자동 업데이트 수행 (확인 없이 바로 진행)"""
         from .utils.config import APP_VERSION
-        from .utils.update_service import find_zip_asset
+        from .utils.update_service import find_checksum_asset, find_zip_asset
 
         zip_asset = find_zip_asset(release_data)
         if not zip_asset:
             logger.error("다운로드 가능한 zip 파일이 없습니다")
+            return
+        checksum_asset = find_checksum_asset(release_data, zip_asset)
+        if not zip_asset.get("digest") and not checksum_asset:
+            logger.error("업데이트 무결성 파일(.sha256)이 없어 자동 업데이트를 중단합니다")
             return
 
         download_url = zip_asset.get("browser_download_url")
@@ -452,9 +456,14 @@ class WinCroApp:
         logger.info(f"업데이트 다운로드 시작: v{APP_VERSION} → v{new_version}")
 
         # 스레드풀에서 다운로드 실행 (매번 스레드 생성 대신)
-        get_thread_pool().submit(self._download_update_thread, zip_asset, new_version)
+        get_thread_pool().submit(
+            self._download_update_thread,
+            zip_asset,
+            checksum_asset,
+            new_version,
+        )
 
-    def _download_update_thread(self, asset: dict, version: str) -> None:
+    def _download_update_thread(self, asset: dict, checksum_asset: dict | None, version: str) -> None:
         """업데이트 다운로드 스레드 (자동 업데이트용)"""
         import os
         import sys
@@ -463,6 +472,7 @@ class WinCroApp:
             ssl_fallback_connect, download_file,
             extract_and_find_exe, save_update_config,
             get_update_paths, build_shortcut_icon_refresh_batch,
+            fetch_expected_sha256, verify_file_sha256,
         )
 
         # 짧은 초기화 대기
@@ -483,6 +493,7 @@ class WinCroApp:
 
             paths = get_update_paths()
             temp_path = os.path.join(paths["temp_dir"], file_name)
+            expected_sha256 = fetch_expected_sha256(asset, checksum_asset)
 
             # SSL 다중 폴백 방식으로 연결 시도
             try:
@@ -496,6 +507,16 @@ class WinCroApp:
                     download_file(response, temp_path)
             except Exception as download_err:
                 logger.error(f"다운로드 처리 오류: {download_err}")
+                return
+
+            try:
+                verify_file_sha256(temp_path, expected_sha256)
+            except (OSError, ValueError) as verify_error:
+                logger.error(f"업데이트 무결성 검증 실패: {verify_error}")
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
                 return
 
             # 개발 모드 체크
@@ -578,10 +599,6 @@ if errorlevel 1 (
 
 echo [5/8] 새 파일 무결성 검사 중...
 set "NEW_EXE_NAME={new_exe_name}"
-if not exist "{app_dir}\\{new_exe_name}" (
-    set "NEW_EXE_NAME="
-    for %%F in ("{app_dir}\\*.exe") do set "NEW_EXE_NAME=%%~nxF"
-)
 if not defined NEW_EXE_NAME (
     echo.
     echo [오류] exe 파일이 없습니다! 롤백 중...
@@ -594,6 +611,22 @@ if not defined NEW_EXE_NAME (
         ren "{exe_backup}" "{exe_name}" 2>nul
     )
     echo [복구 완료] 이전 버전으로 복원되었습니다.
+    timeout /t 3 /nobreak >nul
+    cd /d "{app_dir}"
+    start "" "{exe_name}"
+    exit /b 1
+)
+if not exist "{app_dir}\\%NEW_EXE_NAME%" (
+    echo.
+    echo [오류] 허용된 새 exe 파일이 없습니다: %NEW_EXE_NAME%
+    echo 이전 버전으로 롤백합니다...
+    if exist "{internal_backup}" (
+        if exist "{app_dir}\\_internal" rd /s /q "{app_dir}\\_internal" 2>nul
+        ren "{internal_backup}" "_internal" 2>nul
+    )
+    if exist "{exe_backup}" (
+        ren "{exe_backup}" "{exe_name}" 2>nul
+    )
     timeout /t 3 /nobreak >nul
     cd /d "{app_dir}"
     start "" "{exe_name}"
@@ -635,6 +668,12 @@ if exist "{data_backup}\\.keyfile" (
 )
 if exist "{data_backup}\\config.json" (
     copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
+)
+if exist "{data_backup}\\game_mode_defaults.json" (
+    copy /y "{data_backup}\\game_mode_defaults.json" "{app_dir}\\_internal\\data\\game_mode_defaults.json" >nul 2>&1
+)
+if exist "{data_backup}\\waypoint_presets.json" (
+    copy /y "{data_backup}\\waypoint_presets.json" "{app_dir}\\_internal\\data\\waypoint_presets.json" >nul 2>&1
 )
 
 echo [7/8] 사용자 데이터 병합 중...
@@ -795,6 +834,15 @@ if /i "%choice%"=="Y" (
             logger.error(f"update handoff input cleanup failed; update cancelled: {e}")
             return
 
+        if not save_config():
+            try:
+                from .utils.input_controller import unblock_automation_input
+                unblock_automation_input()
+            except Exception as exc:
+                logger.warning(f"update handoff input unblock failed: {exc}")
+            logger.error("설정 내구 저장 실패로 업데이트 적용을 취소합니다")
+            return
+
         try:
             subprocess.Popen(
                 ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
@@ -809,12 +857,6 @@ if /i "%choice%"=="Y" (
             logger.error(f"배치 파일 실행 실패: {e}")
             return
 
-        # 데이터베이스 정리 (DatabaseManager는 컨텍스트 매니저 기반이므로 별도 close 불필요)
-        try:
-            save_config()
-        except Exception:
-            pass
-
         try:
             self._main_window.cleanup_resources()
         except Exception as e:
@@ -827,6 +869,14 @@ if /i "%choice%"=="Y" (
 
         # 스레드풀 정리
         _shutdown_thread_pool()
+
+        try:
+            from .utils.logger import shutdown_logging
+
+            logger.info("업데이트 프로세스로 제어권 이전 완료")
+            shutdown_logging()
+        except Exception:
+            pass
 
         # os._exit으로 즉시 종료 (sys.exit는 스레드 정리 중 블로킹 가능)
         import os

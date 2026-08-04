@@ -15,6 +15,12 @@ def collect_packaged_data():
         "업무지원도구.db",
         "작업도우미.db",
         "update_cache.json",
+        "config.json",
+        "notification_defaults.json",
+        ".keyfile",
+        "window_positions.json",
+        "game_mode_defaults.json",
+        "waypoint_presets.json",
     }
     excluded_suffixes = (
         ".bak",
@@ -30,11 +36,14 @@ def collect_packaged_data():
             continue
         rel = path.relative_to(data_root)
         rel_parts = set(rel.parts)
+        lower_name = path.name.casefold()
         if rel.parts and rel.parts[0] in excluded_top_level_dirs:
             continue
         if "__pycache__" in rel_parts:
             continue
         if path.name in excluded_names:
+            continue
+        if ".bak" in lower_name or "backup" in lower_name or lower_name.endswith(".old"):
             continue
         if path.suffix in excluded_suffixes or any(path.name.endswith(s) for s in excluded_suffixes):
             continue

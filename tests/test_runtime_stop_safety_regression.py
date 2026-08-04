@@ -55,7 +55,9 @@ def test_app_close_force_stops_registered_game_modes():
     body = source[start:end]
 
     assert "force_stop_all_game_modes" in body
-    assert "os._exit(0)" in body
+    assert "save_config()" in body
+    assert "shutdown_done.wait(timeout=12.0)" in body
+    assert "os._exit(1)" in body
 
 
 def test_game_mode_start_unblocks_automation_input():

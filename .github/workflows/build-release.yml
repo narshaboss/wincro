@@ -131,7 +131,12 @@ jobs:
 
           Compress-Archive -Path (Join-Path $appDir.FullName "*") -DestinationPath $zipPath -CompressionLevel Optimal
 
+          $shaPath = "$zipPath.sha256"
+          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($zipPath))" | Set-Content -Path $shaPath -Encoding ascii
+
           "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha_path=$shaPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Create or update release
         shell: pwsh
@@ -141,6 +146,7 @@ jobs:
           $version = "${{ steps.meta.outputs.version }}"
           $tag = "${{ steps.meta.outputs.tag }}"
           $zipPath = "${{ steps.package.outputs.zip_path }}"
+          $shaPath = "${{ steps.package.outputs.sha_path }}"
           $notesPath = Join-Path $env:RUNNER_TEMP "release_notes.txt"
           $title = "v$version 업무지원도구"
 
@@ -152,9 +158,9 @@ jobs:
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag $zipPath --target ${{ github.sha }} --title $title --notes-file $notesPath
+            gh release create $tag $zipPath $shaPath --target ${{ github.sha }} --title $title --notes-file $notesPath
           }
           else {
             gh release edit $tag --target ${{ github.sha }} --title $title --notes-file $notesPath
-            gh release upload $tag $zipPath --clobber
+            gh release upload $tag $zipPath $shaPath --clobber
           }

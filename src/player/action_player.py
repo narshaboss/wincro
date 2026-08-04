@@ -66,10 +66,6 @@ from .runtime_action_options import (
 
 logger = get_logger(__name__)
 
-# PyAutoGUI 안전 설정
-pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.1  # 각 동작 후 대기 시간
-
 # 화면 크기 캐시 (성능 최적화)
 _screen_size_cache = None
 _screen_size_cache_time = 0
@@ -281,7 +277,7 @@ class ActionPlayer:
     def __init__(self):
         """동작 재현기 초기화"""
         self._config = get_config()
-        self._db = get_db()
+        self._db = None
         self._template_matcher = get_template_matcher()
         self._screen_recorder = get_screen_recorder()
 
@@ -310,6 +306,13 @@ class ActionPlayer:
         self._execution_finalized = True
         self._execution_finalizing = False
         self._finalize_lock = threading.Lock()
+        self._legacy_stop_event = threading.Event()
+
+    def _get_database(self):
+        """Create the database manager only when playback needs persistence."""
+        if self._db is None:
+            self._db = get_db()
+        return self._db
 
     def _get_enabled_actions(self, sequence: Sequence) -> List[Action]:
         """실행 대상 액션만 반환"""
@@ -347,6 +350,30 @@ class ActionPlayer:
         if not reset_ok:
             logger.error(f"[InputSafety] {context} input reset was incomplete")
         return reset_ok
+
+    def _set_legacy_stop_signal(self) -> None:
+        event = getattr(self, "_legacy_stop_event", None)
+        if event is None:
+            event = threading.Event()
+            self._legacy_stop_event = event
+        event.set()
+
+    def _clear_legacy_stop_signal(self) -> None:
+        event = getattr(self, "_legacy_stop_event", None)
+        if event is None:
+            event = threading.Event()
+            self._legacy_stop_event = event
+        event.clear()
+
+    def _wait_for_legacy_stop(self, timeout: float) -> bool:
+        """Wait without making stop depend on an uninterruptible sleep."""
+        delay = max(0.0, float(timeout or 0.0))
+        event = getattr(self, "_legacy_stop_event", None)
+        if event is None:
+            if delay:
+                time.sleep(delay)
+            return self._state == PlayerState.STOPPED
+        return event.wait(delay)
 
     def _begin_execution_generation(self) -> int:
         with self._finalize_lock:
@@ -399,7 +426,7 @@ class ActionPlayer:
                 self._execution_log.ended_at = datetime.now()
                 self._execution_log.status = ExecutionStatus.FAILED.value
                 self._execution_log.error_message = message
-                self._db.update_execution_log(self._execution_log)
+                self._get_database().update_execution_log(self._execution_log)
         except Exception as exc:
             logger.error(f"failed to persist playback start rollback: {exc}")
         if not (self._thread and self._thread.is_alive()):
@@ -489,6 +516,7 @@ class ActionPlayer:
         if run_generation is None:
             logger.warning("another playback worker is still starting or stopping")
             return False
+        self._clear_legacy_stop_signal()
         try:
             if not self._reset_input_state("legacy-execution-start"):
                 raise RuntimeError("input reset failed before playback start")
@@ -513,7 +541,7 @@ class ActionPlayer:
             total_steps=len(enabled_actions),
         )
         try:
-            log_id = self._db.create_execution_log(self._execution_log)
+            log_id = self._get_database().create_execution_log(self._execution_log)
             self._execution_log.id = log_id
         except Exception as exc:
             self._rollback_execution_start(run_generation, str(exc))
@@ -582,6 +610,7 @@ class ActionPlayer:
             run_generation = self._execution_generation
         worker = self._thread
         self._state = PlayerState.STOPPED
+        self._set_legacy_stop_signal()
         block_automation_input("ActionPlayer.stop")
         self._reset_input_state("legacy-execution-stop")
         self._progress.state = PlayerState.STOPPED
@@ -601,8 +630,12 @@ class ActionPlayer:
                         logger.warning(
                             "playback worker is still stopping; a new run remains blocked"
                         )
-                if worker.is_alive():
-                    logger.warning("실행 스레드가 2초 후에도 응답 없음")
+                    if time.monotonic() - wait_started >= 10.0:
+                        logger.critical(
+                            "playback worker did not stop within 10 seconds; "
+                            "execution remains reserved to prevent overlapping input"
+                        )
+                        return
             self._finalize_execution(
                 False,
                 "사용자에 의해 중지됨",
@@ -615,6 +648,7 @@ class ActionPlayer:
     def _on_emergency_stop(self) -> None:
         """긴급 중지 콜백"""
         self._state = PlayerState.STOPPED
+        self._set_legacy_stop_signal()
         block_automation_input("ActionPlayer.emergency_stop")
         self._reset_input_state("legacy-emergency-stop")
         self._progress.state = PlayerState.STOPPED
@@ -675,7 +709,8 @@ class ActionPlayer:
 
                     # 일시 정지 대기
                     while self._state == PlayerState.PAUSED:
-                        time.sleep(0.1)
+                        if self._wait_for_legacy_stop(0.1):
+                            return
                         if self._state == PlayerState.STOPPED:
                             return
 
@@ -708,7 +743,8 @@ class ActionPlayer:
 
                         # 일시 정지 대기
                         while self._state == PlayerState.PAUSED:
-                            time.sleep(0.1)
+                            if self._wait_for_legacy_stop(0.1):
+                                break
                             if self._state == PlayerState.STOPPED:
                                 break
 
@@ -738,7 +774,9 @@ class ActionPlayer:
                                     actual_delay = max(0, repeat_delay + random.uniform(-delay_range, delay_range))
                                 else:
                                     actual_delay = repeat_delay
-                                time.sleep(actual_delay / speed_multiplier)
+                                if self._wait_for_legacy_stop(actual_delay / speed_multiplier):
+                                    self._finalize_execution(False, "stopped", generation=generation)
+                                    return
 
                     if success:
                         total_completed += 1
@@ -910,7 +948,8 @@ class ActionPlayer:
         try:
             # 실행 전 대기
             if action.wait_before > 0:
-                time.sleep(action.wait_before / speed_multiplier)
+                if self._wait_for_legacy_stop(action.wait_before / speed_multiplier):
+                    return False, "중지됨"
 
             # 이미지 기반 인식 우선, 좌표는 대체 수단
             x, y = action.x, action.y
@@ -949,7 +988,8 @@ class ActionPlayer:
 
                     # 일시 정지 대기
                     while self._state == PlayerState.PAUSED:
-                        time.sleep(0.1)
+                        if self._wait_for_legacy_stop(0.1):
+                            return False, "중지됨"
                         if self._state == PlayerState.STOPPED:
                             return False, "중지됨"
                     # After pause loop - check if we should exit
@@ -969,7 +1009,8 @@ class ActionPlayer:
                             if not hasattr(self, '_last_wait_log_time') or self._last_wait_log_time != elapsed_int:
                                 logger.debug(f"이미지 대기 중: {elapsed_int}초 - {Path(action.target_image).name}")
                                 self._last_wait_log_time = elapsed_int
-                        time.sleep(0.5)  # 0.5초마다 재검색
+                        if self._wait_for_legacy_stop(0.5):
+                            return False, "중지됨"
 
                 if not locations:
                     return False, "이미지를 찾을 수 없습니다"
@@ -1084,7 +1125,8 @@ class ActionPlayer:
                     return False, message
 
             elif action_type == ActionType.WAIT.value:
-                time.sleep(action.duration / speed_multiplier)
+                if self._wait_for_legacy_stop(action.duration / speed_multiplier):
+                    return False, "중지됨"
 
             elif action_type == ActionType.WAIT_FOR_IMAGE.value:
                 # 이미지가 나타나거나 사라질 때까지 대기
@@ -1103,7 +1145,8 @@ class ActionPlayer:
                 wait_time = wait_time + random.uniform(-wait_range, wait_range)
                 wait_time = max(0, wait_time)  # 음수 방지
             if wait_time > 0:
-                time.sleep(wait_time / speed_multiplier)
+                if self._wait_for_legacy_stop(wait_time / speed_multiplier):
+                    return False, "중지됨"
 
             return True, ""
 
@@ -1145,7 +1188,8 @@ class ActionPlayer:
 
             # 일시 정지 대기
             while self._state == PlayerState.PAUSED:
-                time.sleep(0.1)
+                if self._wait_for_legacy_stop(0.1):
+                    return False, "중지됨"
                 if self._state == PlayerState.STOPPED:
                     return False, "중지됨"
             # After pause loop - check if we should exit
@@ -1191,7 +1235,8 @@ class ActionPlayer:
                 # 메모리 해제 (저사양 PC 지원)
                 del screen
 
-            time.sleep(check_interval)
+            if self._wait_for_legacy_stop(check_interval):
+                return False, "중지됨"
 
     def _type_text_with_clipboard(self, text: str, interval: float = 0.05,
                                     typing_random: bool = False,
@@ -1257,6 +1302,8 @@ class ActionPlayer:
                 return
             self._execution_finalizing = True
 
+        self._set_legacy_stop_signal()
+
         if not self._reset_input_state("legacy-execution-complete"):
             block_automation_input("ActionPlayer.completion_reset_failed")
             success = False
@@ -1281,11 +1328,11 @@ class ActionPlayer:
                         (self._execution_log.ended_at - self._execution_log.started_at).total_seconds() * 1000
                     )
 
-                self._db.update_execution_log(self._execution_log)
+                self._get_database().update_execution_log(self._execution_log)
 
                 # 시퀀스 통계 업데이트
                 if self._current_sequence and self._current_sequence.id:
-                    self._db.update_sequence_run_stats(self._current_sequence.id, success)
+                    self._get_database().update_sequence_run_stats(self._current_sequence.id, success)
         except Exception as exc:
             logger.error(f"실행 로그 최종 저장 실패: {exc}")
 

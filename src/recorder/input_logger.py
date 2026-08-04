@@ -21,6 +21,7 @@ from enum import Enum
 from pynput import mouse, keyboard
 
 from ..utils.logger import get_logger
+from ..utils.json_utils import dump_json_file
 from ..utils.config import DATA_DIR, get_config
 
 logger = get_logger(__name__)
@@ -420,8 +421,7 @@ class InputLogger:
                 "event_count": len(events_snapshot),
                 "events": [e.to_dict() for e in events_snapshot],
             }
-            with open(self._output_path, 'w', encoding='utf-8') as f:
-                json.dump(log_data, f, ensure_ascii=False, indent=2)
+            dump_json_file(self._output_path, log_data, ensure_ascii=False, indent=2)
             return str(self._output_path)
         except Exception as e:
             logger.error(f"로그 저장 실패: {e}")

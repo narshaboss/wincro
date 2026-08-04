@@ -119,7 +119,8 @@ class DatabaseManager:
                 success_count INTEGER DEFAULT 0,
                 failure_count INTEGER DEFAULT 0,
                 tags TEXT DEFAULT '[]',
-                version TEXT DEFAULT '1.0'
+                version TEXT DEFAULT '1.0',
+                transition_recovery_auto_enabled INTEGER DEFAULT 0
             )
         ''')
 
@@ -183,6 +184,7 @@ class DatabaseManager:
             ('recordings', 'ai_analyzed', 'INTEGER DEFAULT 0'),
             ('recordings', 'automation_plan_id', 'TEXT'),
             ('recordings', 'locked', 'INTEGER DEFAULT 0'),
+            ('sequences', 'transition_recovery_auto_enabled', 'INTEGER DEFAULT 0'),
         ]
         # 허용된 테이블명 (화이트리스트)
         allowed_tables = {'sequences', 'action_templates', 'execution_logs', 'recordings'}
@@ -229,8 +231,11 @@ class DatabaseManager:
             now = datetime.now().isoformat()
 
             cursor.execute('''
-                INSERT INTO sequences (name, description, actions, created_at, updated_at, tags, version)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sequences (
+                    name, description, actions, created_at, updated_at, tags, version,
+                    transition_recovery_auto_enabled
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 sequence.name,
                 sequence.description,
@@ -239,6 +244,7 @@ class DatabaseManager:
                 now,
                 json.dumps(sequence.tags, ensure_ascii=False),
                 sequence.version,
+                int(bool(sequence.transition_recovery_auto_enabled)),
             ))
 
             sequence_id = cursor.lastrowid
@@ -334,7 +340,8 @@ class DatabaseManager:
                     actions = ?,
                     updated_at = ?,
                     tags = ?,
-                    version = ?
+                    version = ?,
+                    transition_recovery_auto_enabled = ?
                 WHERE id = ?
             ''', (
                 sequence.name,
@@ -343,6 +350,7 @@ class DatabaseManager:
                 datetime.now().isoformat(),
                 json.dumps(sequence.tags, ensure_ascii=False),
                 sequence.version,
+                int(bool(sequence.transition_recovery_auto_enabled)),
                 sequence.id,
             ))
 
@@ -868,11 +876,41 @@ class DatabaseManager:
             conn.execute('VACUUM')
             logger.info("데이터베이스 최적화 완료")
 
+    def close(self) -> None:
+        """Flush WAL state; connections are otherwise scoped per operation."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.Error as exc:
+            logger.warning(f"데이터베이스 종료 체크포인트 실패: {exc}")
 
-# 전역 데이터베이스 관리자 인스턴스
-db_manager = DatabaseManager()
 
+_db_instance: Optional[DatabaseManager] = None
+_db_instance_lock = threading.RLock()
+
+
+class _LazyDatabaseManagerProxy:
+    """Compatibility proxy that avoids creating SQLite files on import."""
+
+    def __getattr__(self, name: str):
+        return getattr(get_db(), name)
+
+
+db_manager = _LazyDatabaseManagerProxy()
 
 def get_db() -> DatabaseManager:
     """데이터베이스 관리자 헬퍼 함수"""
-    return db_manager
+    global _db_instance
+    if _db_instance is None:
+        with _db_instance_lock:
+            if _db_instance is None:
+                _db_instance = DatabaseManager()
+    return _db_instance
+
+
+def close_db_if_initialized() -> None:
+    """Checkpoint SQLite without creating a database during shutdown."""
+    with _db_instance_lock:
+        instance = _db_instance
+    if instance is not None:
+        instance.close()

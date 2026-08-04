@@ -16,10 +16,13 @@ logs/
 
 # 사용자 데이터 (제외)
 data/config.json
-data/wincro.db
+data/*.db
 data/window_positions.json
 data/recordings/
 data/.keyfile
+data/notification_defaults.json
+data/game_mode_defaults.json
+data/waypoint_presets.json
 
 # 빌드 ZIP 파일
 *.zip

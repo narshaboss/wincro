@@ -19,6 +19,7 @@ except ImportError:
     cv2 = None
 
 from .logger import get_logger
+from .json_utils import dump_json_file, load_json_file
 
 logger = get_logger(__name__)
 
@@ -74,8 +75,7 @@ class DigitTemplateMatcher:
             return
 
         try:
-            with open(TEMPLATE_FILE, 'r') as f:
-                data = json.load(f)
+            data = load_json_file(TEMPLATE_FILE)
 
             for digit, template_list in data.items():
                 self.templates[digit] = np.array(template_list, dtype=np.uint8)
@@ -95,8 +95,7 @@ class DigitTemplateMatcher:
             for digit, template in self.templates.items():
                 data[digit] = template.tolist()
 
-            with open(TEMPLATE_FILE, 'w') as f:
-                json.dump(data, f)
+            dump_json_file(TEMPLATE_FILE, data)
 
             logger.info(f"[템플릿] {len(self.templates)}개 숫자 템플릿 저장 완료")
             return True

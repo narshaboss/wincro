@@ -1912,15 +1912,11 @@ class SettingsView(BaseView):
         thread.start()
 
     def _check_version_thread(self, repo: str) -> None:
-        """버전 확인 스레드 - 여러 방법 시도"""
+        """인증서 검증을 유지한 상태로 최신 버전을 확인한다."""
         from ..utils.config import APP_VERSION
         from ..utils.updater import check_for_update
-        import urllib.request
         import urllib.error
-        import ssl
-        import json
         import socket
-        import time
 
         try:
             # 캐싱된 업데이트 체크 사용 (API 제한 방지)
@@ -1937,79 +1933,10 @@ class SettingsView(BaseView):
                     self._post_ui(lambda v=ver: self._show_up_to_date(v))
                 return
 
-            # updater 실패 시 기존 방법으로 폴백
-            api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-            logger.info(f"버전 확인 시작 (폴백): {api_url}")
-
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/vnd.github.v3+json'
-            }
-
-            data = None
-            last_error = None
-            _fallback_start = time.monotonic()
-            _FALLBACK_OVERALL_TIMEOUT = 20  # 전체 폴백 제한 (초)
-
-            # 방법 1: 기본 SSL 컨텍스트
-            try:
-                logger.debug("방법 1: 기본 SSL 컨텍스트 시도")
-                ssl_context = ssl.create_default_context()
-                req = urllib.request.Request(api_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
-                    data = json.loads(response.read().decode())
-                logger.info("방법 1 성공")
-            except Exception as e1:
-                last_error = e1
-                logger.warning(f"방법 1 실패: {e1}")
-
-                if time.monotonic() - _fallback_start < _FALLBACK_OVERALL_TIMEOUT:
-                    # 방법 2: SSL 검증 완화
-                    try:
-                        logger.debug("방법 2: SSL 검증 완화 시도")
-                        ssl_context = ssl.create_default_context()
-                        ssl_context.check_hostname = False
-                        ssl_context.verify_mode = ssl.CERT_NONE
-                        req = urllib.request.Request(api_url, headers=headers)
-                        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
-                            data = json.loads(response.read().decode())
-                        logger.info("방법 2 성공")
-                    except Exception as e2:
-                        last_error = e2
-                        logger.warning(f"방법 2 실패: {e2}")
-
-                        if time.monotonic() - _fallback_start < _FALLBACK_OVERALL_TIMEOUT:
-                            # 방법 3: SSL 컨텍스트 없이 시도
-                            try:
-                                logger.debug("방법 3: SSL 컨텍스트 없이 시도")
-                                req = urllib.request.Request(api_url, headers=headers)
-                                with urllib.request.urlopen(req, timeout=8) as response:
-                                    data = json.loads(response.read().decode())
-                                logger.info("방법 3 성공")
-                            except Exception as e3:
-                                last_error = e3
-                                logger.warning(f"방법 3 실패: {e3}")
-
-                                if time.monotonic() - _fallback_start < _FALLBACK_OVERALL_TIMEOUT:
-                                    # 방법 4: 프록시 환경변수 확인 후 시도
-                                    try:
-                                        import os
-                                        logger.debug("방법 4: 프록시 설정 확인")
-                                        proxy_handler = urllib.request.ProxyHandler()
-                                        opener = urllib.request.build_opener(proxy_handler)
-                                        req = urllib.request.Request(api_url, headers=headers)
-                                        with opener.open(req, timeout=8) as response:
-                                            data = json.loads(response.read().decode())
-                                        logger.info("방법 4 성공")
-                                    except Exception as e4:
-                                        last_error = e4
-                                        logger.error(f"방법 4 실패: {e4}")
-                                else:
-                                    logger.warning("전체 폴백 시간 초과, 방법 4 건너뜀")
-                        else:
-                            logger.warning("전체 폴백 시간 초과, 방법 3-4 건너뜀")
-                else:
-                    logger.warning("전체 폴백 시간 초과, 방법 2-4 건너뜀")
+            # check_for_update가 결과를 만들지 못하면 동일한 보안 연결로 한 번만
+            # 직접 조회한다. 인증서 검증을 끄는 폴백은 업데이트 변조 위험이 있다.
+            data = self._fetch_latest_release_direct(repo)
+            last_error = None if data else RuntimeError("보안 연결로 릴리즈 정보를 가져오지 못했습니다")
 
             # 결과 처리
             if data:
@@ -2152,11 +2079,9 @@ class SettingsView(BaseView):
             logger.error(f"_update_check_failed 오류: {e}", exc_info=True)
 
     def _fetch_latest_release_direct(self, repo: str) -> dict:
-        """릴리즈 정보 직접 가져오기 (여러 방법 시도)"""
-        import urllib.request
-        import urllib.error
-        import ssl
+        """인증서가 검증된 HTTPS 연결로 릴리즈 정보를 직접 가져온다."""
         import json
+        from ..utils.update_service import ssl_fallback_connect
 
         try:
             api_url = f"https://api.github.com/repos/{repo}/releases/latest"
@@ -2165,39 +2090,11 @@ class SettingsView(BaseView):
                 'Accept': 'application/vnd.github.v3+json'
             }
 
-            methods = [
-                ("기본 SSL", lambda: ssl.create_default_context()),
-                ("SSL 검증 완화", lambda: self._create_unverified_ssl_context()),
-                ("SSL 없음", lambda: None),
-            ]
-
-            for method_name, get_context in methods:
-                try:
-                    logger.debug(f"릴리즈 가져오기 시도: {method_name}")
-                    req = urllib.request.Request(api_url, headers=headers)
-                    ctx = get_context()
-                    if ctx:
-                        with urllib.request.urlopen(req, timeout=30, context=ctx) as response:
-                            return json.loads(response.read().decode())
-                    else:
-                        with urllib.request.urlopen(req, timeout=30) as response:
-                            return json.loads(response.read().decode())
-                except Exception as e:
-                    logger.warning(f"{method_name} 실패: {e}")
-                    continue
-
-            return None
+            with ssl_fallback_connect(api_url, headers=headers, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
         except Exception as e:
             logger.error(f"릴리즈 정보 가져오기 전체 오류: {e}")
             return None
-
-    def _create_unverified_ssl_context(self):
-        """SSL 검증을 완화한 컨텍스트 생성"""
-        import ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
 
     def _perform_update(self) -> None:
         """GitHub에서 업데이트 수행 - 버전 확인 없이도 가능"""
@@ -2261,6 +2158,18 @@ class SettingsView(BaseView):
             messagebox.showerror("오류", "다운로드 가능한 zip 파일이 없습니다.\n\nGitHub Release에 zip 파일을 첨부해주세요.")
             return
 
+        from ..utils.update_service import find_checksum_asset
+
+        checksum_asset = find_checksum_asset(release, zip_asset)
+        if not zip_asset.get("digest") and not checksum_asset:
+            self._do_update_btn.configure(state="normal", text="⬇️ 업데이트")
+            self._check_update_btn.configure(state="normal", text="🔍 버전 확인")
+            messagebox.showerror(
+                "오류",
+                "업데이트 무결성 파일(.sha256)이 없습니다.\n안전하지 않은 업데이트는 설치하지 않습니다.",
+            )
+            return
+
         # 다운로드 URL 검증
         download_url = zip_asset.get("browser_download_url")
         if not download_url:
@@ -2298,19 +2207,20 @@ class SettingsView(BaseView):
         # 다운로드 스레드 시작
         thread = threading.Thread(
             target=self._download_update_thread,
-            args=(asset_to_download, version),
+            args=(asset_to_download, checksum_asset, version),
             daemon=True
         )
         thread.start()
 
-    def _download_update_thread(self, asset: dict, version: str) -> None:
-        """업데이트 다운로드 스레드 (전체 폴더 교체 방식) - SSL 다중 폴백"""
+    def _download_update_thread(self, asset: dict, checksum_asset: dict | None, version: str) -> None:
+        """업데이트 다운로드 스레드 (인증서 및 SHA-256 검증)."""
         import os
         import sys
         from ..utils.update_service import (
             ssl_fallback_connect, download_file,
             extract_and_find_exe, save_update_config,
             get_update_paths, classify_error, build_shortcut_icon_refresh_batch,
+            fetch_expected_sha256, verify_file_sha256,
         )
 
         try:
@@ -2330,6 +2240,7 @@ class SettingsView(BaseView):
             paths = get_update_paths()
             temp_path = os.path.join(paths["temp_dir"], file_name)
             logger.info(f"다운로드 경로: {temp_path}")
+            expected_sha256 = fetch_expected_sha256(asset, checksum_asset)
 
             # SSL 다중 폴백 방식으로 연결 시도
             try:
@@ -2365,6 +2276,9 @@ class SettingsView(BaseView):
                 ))
 
                 download_file(response, temp_path, chunk_size=131072, on_progress=_on_progress)
+
+            self._post_ui(lambda: self._update_status_label.configure(text="무결성 확인 중..."))
+            verify_file_sha256(temp_path, expected_sha256)
 
             self._post_ui(lambda: self._update_status_label.configure(text="압축 해제 중..."))
 
@@ -2425,13 +2339,15 @@ if errorlevel 1 (
 )
 set "NEW_EXE_NAME="
 set "NEW_EXE_NAME={new_exe_name}"
-if not exist "{app_dir}\\{new_exe_name}" (
-    set "NEW_EXE_NAME="
-    for %%F in ("{app_dir}\\*.exe") do set "NEW_EXE_NAME=%%~nxF"
-)
 if not defined NEW_EXE_NAME (
     echo.
     echo [오류] 새 exe 파일이 없습니다: {new_exe_name}
+    pause
+    exit /b 1
+)
+if not exist "{app_dir}\\%NEW_EXE_NAME%" (
+    echo.
+    echo [오류] 허용된 새 exe 파일이 없습니다: %NEW_EXE_NAME%
     pause
     exit /b 1
 )
@@ -2454,6 +2370,12 @@ if exist "{data_backup}\\.keyfile" (
 )
 if exist "{data_backup}\\config.json" (
     copy /y "{data_backup}\\config.json" "{app_dir}\\_internal\\data\\config.json" >nul 2>&1
+)
+if exist "{data_backup}\\game_mode_defaults.json" (
+    copy /y "{data_backup}\\game_mode_defaults.json" "{app_dir}\\_internal\\data\\game_mode_defaults.json" >nul 2>&1
+)
+if exist "{data_backup}\\waypoint_presets.json" (
+    copy /y "{data_backup}\\waypoint_presets.json" "{app_dir}\\_internal\\data\\waypoint_presets.json" >nul 2>&1
 )
 
 echo [6/6] 사용자 데이터 병합 중...
@@ -2503,7 +2425,6 @@ del "%~f0"
     def _start_update_and_exit(self, batch_path: str) -> None:
         """배치 파일 실행 후 종료"""
         import subprocess
-        import sys
         import os
 
         from tkinter import messagebox
@@ -2512,6 +2433,17 @@ del "%~f0"
         if not os.path.exists(batch_path):
             messagebox.showerror("업데이트 오류", "업데이트 스크립트를 찾을 수 없습니다.")
             self._update_failed("배치 파일 생성 실패")
+            return
+
+        # The updater replaces the running tree. Do not hand it off until all
+        # user settings have been durably written and reloaded from disk.
+        if not save_config():
+            logger.error("manual update cancelled because config persistence failed")
+            messagebox.showerror(
+                "업데이트 오류",
+                "설정 저장을 확인하지 못해 업데이트를 중단했습니다.\n"
+                "저장 공간과 파일 권한을 확인한 뒤 다시 시도하세요.",
+            )
             return
 
         messagebox.showinfo(
@@ -2557,16 +2489,37 @@ del "%~f0"
             messagebox.showerror("업데이트 오류", f"업데이트 스크립트 실행 실패:\n{e}")
             return
 
-        # 프로그램 종료
+        # Config was already durably saved above. Avoid routing through
+        # ``_on_close`` because that would save a second time after the updater
+        # has started and could leave the updater waiting if that retry failed.
+        toplevel = None
         try:
             toplevel = self.winfo_toplevel()
             cleanup = getattr(toplevel, "cleanup_resources", None)
             if callable(cleanup):
                 cleanup()
-            toplevel.destroy()
-        except Exception:
-            pass
-        sys.exit(0)
+        except Exception as exc:
+            logger.error(f"업데이트 인계 후 리소스 정리 실패: {exc}", exc_info=True)
+        try:
+            from ..app import _shutdown_thread_pool
+
+            _shutdown_thread_pool()
+        except Exception as exc:
+            logger.error(f"업데이트 인계 후 스레드풀 정리 실패: {exc}", exc_info=True)
+        try:
+            if toplevel is not None:
+                toplevel.destroy()
+        except Exception as exc:
+            logger.error(f"업데이트 인계 후 창 종료 실패: {exc}")
+        try:
+            from ..utils.logger import shutdown_logging
+
+            logger.info("수동 업데이트 프로세스로 제어권 이전 완료")
+            shutdown_logging()
+        finally:
+            # All owned resources and queued logs have been drained. The
+            # detached updater must see this process disappear immediately.
+            os._exit(0)
 
     def _update_success_dev(self, version: str, file_path: str) -> None:
         """개발 모드 업데이트 성공 (테스트용)"""

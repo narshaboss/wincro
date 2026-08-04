@@ -22,7 +22,7 @@ from PIL import Image, ImageTk
 
 from ..utils.logger import get_logger
 from ..utils.config import DATA_DIR, get_config, save_config
-from ..utils.json_utils import load_json_file
+from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.window_position import setup_window_position
 
 PLANS_DIR = DATA_DIR / "plans"
@@ -553,7 +553,7 @@ class TemplateMediaSettings:
                 "action_x": self.action_x,
                 "action_y": self.action_y,
             }
-            self._settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            dump_json_file(self._settings_path, data, ensure_ascii=False, indent=2)
         except Exception as exc:
             logger.warning(f"템플릿 미디어 설정 저장 실패: {self._settings_path} ({exc})")
 
@@ -5549,8 +5549,10 @@ class AnalyzerView(BaseView):
             PLANS_DIR.mkdir(parents=True, exist_ok=True)
             file_path = PLANS_DIR / f"{plan.plan_id}.json"
 
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(plan.to_dict(), f, ensure_ascii=False, indent=2)
+            plan_data = plan.to_dict()
+            dump_json_file(file_path, plan_data, ensure_ascii=False, indent=2)
+            if load_json_file(file_path) != plan_data:
+                raise OSError("자동화 계획 저장 재검증 실패")
             logger.info(f"자동화 계획 저장: {file_path}")
             return True
         except Exception as e:

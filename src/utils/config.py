@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from .app_identity import PRIMARY_APP_NAME
+from .json_utils import dump_json_file, load_json_file
 from .plan_sequence_groups import (
     make_plan_sequence_group,
     mirror_active_group_to_legacy,
@@ -36,7 +37,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 TEMPLATES_DIR = DATA_DIR / "templates"
 PACKAGED_NOTIFICATION_DEFAULTS_FILE = DATA_DIR / "notification_defaults.json"
 
-APP_VERSION = "1.0.299"
+APP_VERSION = "1.0.300"
 NOTIFICATION_PROFILE_VERSION = "discord_alerts_stuck180_v2"
 AUTO_RUN_PROFILE_VERSION = "auto_hunt_raid_factory_raid5_v9"
 # Force only this release to refresh the packaged auto-run playback group.
@@ -234,15 +235,14 @@ class ConfigManager:
         with self._lock:
             if CONFIG_FILE.exists():
                 try:
-                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                        data = json.load(f)
+                    data = load_json_file(CONFIG_FILE)
                     self._config = self._dict_to_config(data)
                     local_defaults_changed = self._normalize_loaded_local_config(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
                     if local_defaults_changed:
                         self._persist_loaded_config_sections(self._config, ("player", "notification"))
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+                except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
                     self._seed_packaged_defaults(self._config)
                     self._load_status = "error"
@@ -260,12 +260,15 @@ class ConfigManager:
                 return False
             try:
                 data = self._config_to_dict(self._config)
-                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                dump_json_file(CONFIG_FILE, data, ensure_ascii=False, indent=2)
+                if load_json_file(CONFIG_FILE) != data:
+                    raise OSError("설정 저장 재검증 실패")
                 self._load_status = "loaded"
                 self._load_error = ""
                 return True
-            except IOError:
+            except (OSError, TypeError, ValueError) as exc:
+                self._load_status = "error"
+                self._load_error = f"{type(exc).__name__}: {exc}"
                 return False
 
     def get(self) -> AppConfig:
@@ -480,16 +483,18 @@ class ConfigManager:
         try:
             raw_data: dict[str, Any] = {}
             if CONFIG_FILE.exists():
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
+                loaded = load_json_file(CONFIG_FILE)
                 if isinstance(loaded, dict):
                     raw_data = loaded
             if "player" in sections:
                 raw_data["player"] = asdict(config.player)
             if "notification" in sections:
                 raw_data["notification"] = asdict(config.notification)
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(raw_data, f, ensure_ascii=False, indent=2)
+            dump_json_file(CONFIG_FILE, raw_data, ensure_ascii=False, indent=2)
+            saved = load_json_file(CONFIG_FILE)
+            for section in sections:
+                if saved.get(section) != raw_data.get(section):
+                    raise OSError(f"설정 섹션 저장 재검증 실패: {section}")
             return True
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return False

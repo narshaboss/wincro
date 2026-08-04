@@ -8,9 +8,12 @@ Mouse click / button / keyboard / scroll can use Arduino HID when enabled.
 import math
 import threading
 import time
+from contextlib import contextmanager
 from typing import Optional, Tuple
 
 import pyautogui
+
+pyautogui.FAILSAFE = False
 
 from .config import get_config
 from .logger import get_logger
@@ -22,6 +25,7 @@ _arduino_load_failed = False
 _strict_move_warned = False
 _input_controller: Optional['InputController'] = None
 _input_controller_lock = threading.Lock()
+_pyautogui_settings_lock = threading.RLock()
 _MOVE_VERIFY_TOLERANCE = 3
 _MOVE_MAX_CORRECTIONS = 80
 _MOVE_STEP_LIMIT = 64
@@ -47,6 +51,18 @@ _RECORDED_DIRECTION_HOLD_DELAY_CAP = 0.012
 _RECORDED_DIRECTION_POST_DELAY_CAP = 0.006
 _input_block_event = threading.Event()
 _input_block_reason = ""
+
+
+@contextmanager
+def temporary_pyautogui_pause(value: float):
+    """Serialize temporary changes to pyautogui's process-wide PAUSE value."""
+    with _pyautogui_settings_lock:
+        previous_pause = getattr(pyautogui, "PAUSE", 0.1)
+        pyautogui.PAUSE = max(0.0, float(value))
+        try:
+            yield
+        finally:
+            pyautogui.PAUSE = previous_pause
 
 
 def block_automation_input(reason: str = "") -> None:
@@ -558,23 +574,21 @@ class InputController:
 
         def _software_key_tap() -> bool:
             pressed = False
-            previous_pause = getattr(pyautogui, "PAUSE", 0)
-            try:
-                pyautogui.PAUSE = 0
-                pyautogui.keyDown(key_text)
-                pressed = True
-                time.sleep(_KEY_TAP_HOLD_DELAY)
-                pyautogui.keyUp(key_text)
-                pressed = False
-                time.sleep(_KEY_TAP_POST_DELAY)
-                return True
-            finally:
-                if pressed:
-                    try:
-                        pyautogui.keyUp(key_text)
-                    except Exception:
-                        pass
-                pyautogui.PAUSE = previous_pause
+            with temporary_pyautogui_pause(0):
+                try:
+                    pyautogui.keyDown(key_text)
+                    pressed = True
+                    time.sleep(_KEY_TAP_HOLD_DELAY)
+                    pyautogui.keyUp(key_text)
+                    pressed = False
+                    time.sleep(_KEY_TAP_POST_DELAY)
+                    return True
+                finally:
+                    if pressed:
+                        try:
+                            pyautogui.keyUp(key_text)
+                        except Exception:
+                            pass
 
         return self._with_arduino_fallback(
             f"press:{key_text}",
@@ -597,39 +611,37 @@ class InputController:
             primary_key = normalized_keys[-1]
             primary_pressed = False
             ok = True
-            previous_pause = getattr(pyautogui, "PAUSE", 0)
-            try:
-                pyautogui.PAUSE = 0
-                for key in reversed(normalized_keys):
-                    pyautogui.keyUp(key)
-                time.sleep(_COMBO_PRE_RELEASE_DELAY)
-
-                for key in normalized_keys[:-1]:
-                    pyautogui.keyDown(key)
-                    pressed_modifiers.append(key)
-                time.sleep(_COMBO_MODIFIER_SETTLE_DELAY)
-
-                primary_pressed = True
-                pyautogui.keyDown(primary_key)
-                time.sleep(_COMBO_PRIMARY_TAP_DELAY)
-                pyautogui.keyUp(primary_key)
-                primary_pressed = False
-            except Exception as e:
-                ok = False
-                logger.error(f"[SoftwareInput] tap_combo_once failed: {combo} ({e})")
-            finally:
-                if primary_pressed:
-                    try:
-                        pyautogui.keyUp(primary_key)
-                    except Exception:
-                        pass
-                for key in reversed(pressed_modifiers):
-                    try:
+            with temporary_pyautogui_pause(0):
+                try:
+                    for key in reversed(normalized_keys):
                         pyautogui.keyUp(key)
-                    except Exception:
-                        pass
-                time.sleep(_COMBO_POST_RELEASE_DELAY)
-                pyautogui.PAUSE = previous_pause
+                    time.sleep(_COMBO_PRE_RELEASE_DELAY)
+
+                    for key in normalized_keys[:-1]:
+                        pyautogui.keyDown(key)
+                        pressed_modifiers.append(key)
+                    time.sleep(_COMBO_MODIFIER_SETTLE_DELAY)
+
+                    primary_pressed = True
+                    pyautogui.keyDown(primary_key)
+                    time.sleep(_COMBO_PRIMARY_TAP_DELAY)
+                    pyautogui.keyUp(primary_key)
+                    primary_pressed = False
+                except Exception as e:
+                    ok = False
+                    logger.error(f"[SoftwareInput] tap_combo_once failed: {combo} ({e})")
+                finally:
+                    if primary_pressed:
+                        try:
+                            pyautogui.keyUp(primary_key)
+                        except Exception:
+                            pass
+                    for key in reversed(pressed_modifiers):
+                        try:
+                            pyautogui.keyUp(key)
+                        except Exception:
+                            pass
+                    time.sleep(_COMBO_POST_RELEASE_DELAY)
             return ok
 
         if is_automation_input_blocked():
@@ -684,6 +696,7 @@ class InputController:
         pressed_keys = []
         unreleased_keys = set()
         ok = True
+        release_ok = True
         primary_key = normalized_keys[-1]
         has_modifier = any(key in _MODIFIER_KEYS for key in normalized_keys[:-1])
         is_direction_tap = has_modifier and primary_key in _DIRECTION_KEYS
@@ -692,33 +705,30 @@ class InputController:
 
         # pyautogui.hotkey()/Arduino hotkey()의 짧은 탭 타이밍을 쓰지 않고,
         # modifier가 확실히 눌린 상태에서 본 키가 들어가도록 down/up을 직접 제어한다.
-        previous_pause = getattr(pyautogui, "PAUSE", 0)
-        try:
-            pyautogui.PAUSE = 0
-            for key in normalized_keys:
-                if not self.key_down(key):
-                    ok = False
-                    logger.warning(f"[InputController] hotkey key_down failed: {combo} key={key}")
-                    break
-                pressed_keys.append(key)
-                unreleased_keys.add(key)
-                time.sleep(_HOTKEY_SETTLE_DELAY)
+        with temporary_pyautogui_pause(0):
+            try:
+                for key in normalized_keys:
+                    if not self.key_down(key):
+                        ok = False
+                        logger.warning(f"[InputController] hotkey key_down failed: {combo} key={key}")
+                        break
+                    pressed_keys.append(key)
+                    unreleased_keys.add(key)
+                    time.sleep(_HOTKEY_SETTLE_DELAY)
 
-            if ok:
-                time.sleep(_HOTKEY_HOLD_DELAY)
+                if ok:
+                    time.sleep(_HOTKEY_HOLD_DELAY)
 
-            release_ok = True
-            for key in reversed(pressed_keys):
-                if not self.key_up(key):
-                    release_ok = False
-                    logger.warning(f"[InputController] hotkey key_up failed: {combo} key={key}")
-                else:
-                    unreleased_keys.discard(key)
-                time.sleep(_HOTKEY_RELEASE_DELAY)
-        finally:
-            pyautogui.PAUSE = previous_pause
-            if unreleased_keys or not ok:
-                self.release_all()
+                for key in reversed(pressed_keys):
+                    if not self.key_up(key):
+                        release_ok = False
+                        logger.warning(f"[InputController] hotkey key_up failed: {combo} key={key}")
+                    else:
+                        unreleased_keys.discard(key)
+                    time.sleep(_HOTKEY_RELEASE_DELAY)
+            finally:
+                if unreleased_keys or not ok:
+                    self.release_all()
 
         return ok and release_ok
 

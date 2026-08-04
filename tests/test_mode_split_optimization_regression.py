@@ -450,9 +450,13 @@ def test_process_handoffs_release_input_before_spawning_replacement():
     assert manual_method.index("_release_runtime_input_for_shutdown()") < manual_method.index(
         "subprocess.Popen("
     )
+    assert manual_method.index("if not save_config():") < manual_method.index(
+        "subprocess.Popen("
+    )
     assert "if not _release_runtime_input_for_shutdown():" in manual_method
     assert "update cancelled" in manual_method
     assert 'getattr(toplevel, "cleanup_resources", None)' in manual_method
+    assert manual_method.index("shutdown_logging()") < manual_method.index("os._exit(0)")
 
 
 def test_settings_disconnect_uses_hid_safe_shutdown(monkeypatch):

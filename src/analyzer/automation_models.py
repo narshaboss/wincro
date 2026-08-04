@@ -226,6 +226,26 @@ class AutomationRule:
     repeat_delay_random: bool = False  # ??? ????????? ???
     repeat_delay_random_range: float = 0.3  # ??? ?????????? (??
 
+    # Disabled by default so existing plans retain delivery-based behavior.
+    transition_recovery_policy: str = ""  # auto | force_on | force_off
+    transition_recovery_enabled: bool = False
+    transition_verify_mode: str = "next_action"  # next_action | custom_image
+    transition_verify_image: Optional[str] = None
+    transition_verify_region: Optional[List[int]] = None
+    transition_verify_confidence: float = 0.8
+    transition_verify_color: bool = False
+    transition_verify_brightness: bool = False
+    transition_verify_timeout: float = 5.0
+    transition_recovery_mode: str = "refocus_retry"  # retry | refocus_retry | actions_retry
+    transition_recovery_count: int = 3
+    transition_recovery_delay: float = 1.0
+    transition_recovery_delay_random: bool = False
+    transition_recovery_delay_random_range: float = 0.3
+    transition_recovery_rule_ids: List[str] = field(default_factory=list)
+    transition_failure_mode: str = "alert_wait"  # alert_wait | goto_rule | fail
+    transition_failure_rule_id: Optional[str] = None
+    transition_stop_repeats_on_success: bool = True
+
     # ???
     timestamp: float = 0.0  # ??? ??? ???????
 
@@ -380,6 +400,100 @@ class AutomationRule:
             )
         except (TypeError, ValueError):
             self.auto_list_repeat_confirm_confidence = 0.9
+        from ..utils.transition_recovery_policy import (
+            TRANSITION_POLICY_FORCE_ON,
+            normalize_transition_recovery_policy,
+        )
+
+        self.transition_recovery_policy = normalize_transition_recovery_policy(
+            self.transition_recovery_policy,
+            self.transition_recovery_enabled,
+        )
+        # Keep the legacy flag synchronized for older WinCro versions.
+        self.transition_recovery_enabled = (
+            self.transition_recovery_policy == TRANSITION_POLICY_FORCE_ON
+        )
+        verify_mode = str(self.transition_verify_mode or "next_action").strip()
+        self.transition_verify_mode = (
+            verify_mode if verify_mode in {"next_action", "custom_image"} else "next_action"
+        )
+        recovery_mode = str(self.transition_recovery_mode or "refocus_retry").strip()
+        self.transition_recovery_mode = (
+            recovery_mode
+            if recovery_mode in {"retry", "refocus_retry", "actions_retry"}
+            else "refocus_retry"
+        )
+        failure_mode = str(self.transition_failure_mode or "alert_wait").strip()
+        self.transition_failure_mode = (
+            failure_mode if failure_mode in {"alert_wait", "goto_rule", "fail"} else "alert_wait"
+        )
+        self.transition_recovery_rule_ids = list(dict.fromkeys(
+            str(rule_id or "").strip()
+            for rule_id in (self.transition_recovery_rule_ids or [])
+            if str(rule_id or "").strip()
+        ))
+        self.transition_failure_rule_id = (
+            str(self.transition_failure_rule_id or "").strip() or None
+        )
+        self.transition_stop_repeats_on_success = bool(
+            self.transition_stop_repeats_on_success
+        )
+        try:
+            self.transition_verify_timeout = max(
+                0.5,
+                float(self.transition_verify_timeout or 5.0),
+            )
+        except (TypeError, ValueError):
+            self.transition_verify_timeout = 5.0
+        try:
+            self.transition_verify_confidence = min(
+                1.0,
+                max(0.1, float(self.transition_verify_confidence or 0.8)),
+            )
+        except (TypeError, ValueError):
+            self.transition_verify_confidence = 0.8
+        try:
+            self.transition_recovery_count = max(
+                1,
+                min(20, int(self.transition_recovery_count or 3)),
+            )
+        except (TypeError, ValueError):
+            self.transition_recovery_count = 3
+        try:
+            self.transition_recovery_delay = max(
+                0.0,
+                float(self.transition_recovery_delay or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.transition_recovery_delay = 1.0
+        try:
+            self.transition_recovery_delay_random_range = max(
+                0.0,
+                float(self.transition_recovery_delay_random_range or 0.0),
+            )
+        except (TypeError, ValueError):
+            self.transition_recovery_delay_random_range = 0.3
+        self.transition_recovery_delay_random = bool(
+            self.transition_recovery_delay_random
+        )
+        self.transition_verify_color = bool(self.transition_verify_color)
+        self.transition_verify_brightness = bool(self.transition_verify_brightness)
+        if isinstance(self.transition_verify_region, (list, tuple)) and len(self.transition_verify_region) == 4:
+            try:
+                x1, y1, x2, y2 = [
+                    int(round(float(value))) for value in self.transition_verify_region
+                ]
+                left, right = sorted((x1, x2))
+                top, bottom = sorted((y1, y2))
+                self.transition_verify_region = (
+                    [left, top, right, bottom]
+                    if right > left and bottom > top
+                    else None
+                )
+            except (TypeError, ValueError):
+                self.transition_verify_region = None
+        else:
+            self.transition_verify_region = None
         if self.children is None:
             self.children = []
         if self.monitoring_watches is None:
@@ -493,6 +607,24 @@ class AutomationRule:
             "repeat_delay": self.repeat_delay,
             "repeat_delay_random": self.repeat_delay_random,
             "repeat_delay_random_range": self.repeat_delay_random_range,
+            "transition_recovery_policy": self.transition_recovery_policy,
+            "transition_recovery_enabled": self.transition_recovery_enabled,
+            "transition_verify_mode": self.transition_verify_mode,
+            "transition_verify_image": _to_relative_path(self.transition_verify_image),
+            "transition_verify_region": self.transition_verify_region,
+            "transition_verify_confidence": self.transition_verify_confidence,
+            "transition_verify_color": self.transition_verify_color,
+            "transition_verify_brightness": self.transition_verify_brightness,
+            "transition_verify_timeout": self.transition_verify_timeout,
+            "transition_recovery_mode": self.transition_recovery_mode,
+            "transition_recovery_count": self.transition_recovery_count,
+            "transition_recovery_delay": self.transition_recovery_delay,
+            "transition_recovery_delay_random": self.transition_recovery_delay_random,
+            "transition_recovery_delay_random_range": self.transition_recovery_delay_random_range,
+            "transition_recovery_rule_ids": self.transition_recovery_rule_ids,
+            "transition_failure_mode": self.transition_failure_mode,
+            "transition_failure_rule_id": self.transition_failure_rule_id,
+            "transition_stop_repeats_on_success": self.transition_stop_repeats_on_success,
             "timestamp": self.timestamp,
             "parent_id": self.parent_id,
             "children": [child.to_dict() for child in self.children],
@@ -637,6 +769,27 @@ class AutomationRule:
             repeat_delay=data.get("repeat_delay", 0.5),
             repeat_delay_random=data.get("repeat_delay_random", False),
             repeat_delay_random_range=data.get("repeat_delay_random_range", 0.3),
+            transition_recovery_policy=data.get("transition_recovery_policy", ""),
+            transition_recovery_enabled=data.get("transition_recovery_enabled", False),
+            transition_verify_mode=data.get("transition_verify_mode", "next_action"),
+            transition_verify_image=_to_absolute_path(
+                data.get("transition_verify_image"),
+                templates_dir,
+            ),
+            transition_verify_region=data.get("transition_verify_region"),
+            transition_verify_confidence=data.get("transition_verify_confidence", 0.8),
+            transition_verify_color=data.get("transition_verify_color", False),
+            transition_verify_brightness=data.get("transition_verify_brightness", False),
+            transition_verify_timeout=data.get("transition_verify_timeout", 5.0),
+            transition_recovery_mode=data.get("transition_recovery_mode", "refocus_retry"),
+            transition_recovery_count=data.get("transition_recovery_count", 3),
+            transition_recovery_delay=data.get("transition_recovery_delay", 1.0),
+            transition_recovery_delay_random=data.get("transition_recovery_delay_random", False),
+            transition_recovery_delay_random_range=data.get("transition_recovery_delay_random_range", 0.3),
+            transition_recovery_rule_ids=data.get("transition_recovery_rule_ids", []),
+            transition_failure_mode=data.get("transition_failure_mode", "alert_wait"),
+            transition_failure_rule_id=data.get("transition_failure_rule_id"),
+            transition_stop_repeats_on_success=data.get("transition_stop_repeats_on_success", True),
             timestamp=data.get("timestamp", 0.0),
             parent_id=data.get("parent_id"),
             children=children,
@@ -1013,6 +1166,9 @@ class AutomationPlan:
     # ??? ???
     total_repeat_count: int = 1  # ??? ??? ??? ???
 
+    # Apply bounded recovery only to actions accepted by the shared safety policy.
+    transition_recovery_auto_enabled: bool = False
+
     # ??? ??? ??? (??? ??? key = game_mode rule??rule_id)
     game_modes: Dict[str, GameModeConfig] = field(default_factory=dict)
 
@@ -1027,6 +1183,9 @@ class AutomationPlan:
             self.plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         if not self.created_at:
             self.created_at = datetime.now().isoformat()
+        self.transition_recovery_auto_enabled = bool(
+            self.transition_recovery_auto_enabled
+        )
 
     @property
     def all_rules(self) -> List[AutomationRule]:
@@ -1052,6 +1211,7 @@ class AutomationPlan:
             "user_verified": self.user_verified,
             "modified": self.modified,
             "total_repeat_count": self.total_repeat_count,
+            "transition_recovery_auto_enabled": self.transition_recovery_auto_enabled,
         }
         if self.game_modes:
             result["game_modes"] = {
@@ -1117,5 +1277,9 @@ class AutomationPlan:
             user_verified=data.get("user_verified", False),
             modified=data.get("modified", False),
             total_repeat_count=data.get("total_repeat_count", 1),
+            transition_recovery_auto_enabled=data.get(
+                "transition_recovery_auto_enabled",
+                False,
+            ),
             game_modes=game_modes,
         )

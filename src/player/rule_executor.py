@@ -16,7 +16,6 @@ from enum import Enum
 from datetime import datetime
 
 import pyautogui
-pyautogui.FAILSAFE = False
 import pyperclip
 import cv2
 import numpy as np
@@ -35,6 +34,7 @@ from ..utils.input_controller import (
     get_input_controller,
     is_arduino_enabled,
     is_arduino_strict_enabled,
+    temporary_pyautogui_pause,
     unblock_automation_input,
 )
 
@@ -104,6 +104,12 @@ from ..utils.auto_list import (
     translate_screen_region,
 )
 from ..utils.action_call import ACTION_CALL_ACTION_TYPE, ACTION_CALL_MAX_DEPTH
+from ..utils.transition_recovery_policy import (
+    TRANSITION_POLICY_FORCE_OFF,
+    build_transition_recovery_context_exclusions,
+    effective_transition_recovery_enabled,
+    evaluate_transition_verification_target,
+)
 from .runtime_action_options import (
     effective_action_repeat_count,
     is_runtime_action_enabled,
@@ -663,6 +669,16 @@ class RuleExecutionResult:
 
 
 @dataclass(frozen=True)
+class TransitionConfirmationSpec:
+    images: Tuple[str, ...]
+    confidence: float
+    search_region: Optional[List[int]]
+    verify_color: bool
+    verify_brightness: bool
+    source_label: str
+
+
+@dataclass(frozen=True)
 class SpecialModeRouteHandoff:
     """RuleExecutor에서 UI 특화모드 디스패처로 넘길 실행 구간."""
 
@@ -743,14 +759,12 @@ class RuleExecutor:
         self._on_rule_executed: Optional[Callable[[RuleExecutionResult], None]] = None
         self._on_complete: Optional[Callable[[bool, str], None]] = None
         self._on_error: Optional[Callable[[str, AutomationRule], None]] = None
+        self._on_transition_recovery_alert: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._transition_recovery_context_exclusions = {}
         self._lifecycle_lock = threading.RLock()
         self._completion_lock = threading.Lock()
         self._completion_notified = False
         self._input_reset_completed = False
-
-        # PyAutoGUI 설정
-        pyautogui.FAILSAFE = False
-        pyautogui.PAUSE = 0.3  # 기본 대기 시간
 
         # 속도 설정 (자연스러운 속도를 위해 최소값 설정)
         self._default_wait = max(self._config.player.default_wait_ms / 1000, MIN_WAIT_SECONDS)
@@ -1001,12 +1015,14 @@ class RuleExecutor:
         on_rule_executed: Optional[Callable[[RuleExecutionResult], None]] = None,
         on_complete: Optional[Callable[[bool, str], None]] = None,
         on_error: Optional[Callable[[str, AutomationRule], None]] = None,
+        on_transition_recovery_alert: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         """콜백 설정"""
         self._on_progress = on_progress
         self._on_rule_executed = on_rule_executed
         self._on_complete = on_complete
         self._on_error = on_error
+        self._on_transition_recovery_alert = on_transition_recovery_alert
 
     def clear_callbacks(self) -> None:
         """Release UI callback references after a run has finished."""
@@ -1014,6 +1030,7 @@ class RuleExecutor:
         self._on_rule_executed = None
         self._on_complete = None
         self._on_error = None
+        self._on_transition_recovery_alert = None
 
     def _reset_input_state(self, context: str) -> bool:
         """Release every generated input before crossing an execution boundary."""
@@ -1530,6 +1547,13 @@ class RuleExecutor:
             if not plan:
                 return
 
+            self._transition_recovery_context_exclusions = (
+                build_transition_recovery_context_exclusions(
+                    list(getattr(plan, "initial_rules", None) or [])
+                    + list(getattr(plan, "monitoring_rules", None) or [])
+                )
+            )
+
             # 전체 반복 횟수 (기본값 1)
             total_repeat_count = getattr(plan, 'total_repeat_count', 1) or 1
             current_repeat = 0
@@ -1692,6 +1716,11 @@ class RuleExecutor:
                         self._on_rule_executed(result)
 
                     if getattr(result, "rewind_previous_action", False):
+                        rewind_reason = (
+                            "화면 전환 복구 실패"
+                            if str(getattr(result, "message", "") or "").startswith("화면 전환")
+                            else "트리거 미감지"
+                        )
                         rewind_delay = max(0.0, float(getattr(result, "rewind_delay", 0.0) or 0.0))
                         rewind_target_rule_id = str(
                             getattr(result, "rewind_target_rule_id", "") or ""
@@ -1733,7 +1762,7 @@ class RuleExecutor:
                                 or not bool(getattr(target_original_rule, "enabled", True))
                             ):
                                 message = (
-                                    "트리거 미감지 복귀 대상이 없거나 중복/비활성 상태이거나 "
+                                    f"{rewind_reason} 복귀 대상이 없거나 중복/비활성 상태이거나 "
                                     "현재 액션보다 앞에 있지 않습니다: "
                                     f"rule_id={rewind_target_rule_id} source_matches={len(source_original_indices)} "
                                     f"target_matches={len(target_original_indices)}"
@@ -1767,12 +1796,12 @@ class RuleExecutor:
                             else ""
                         )
                         logger.warning(
-                            f"{_YELLOW}↩ [{step_num}] 트리거 미감지 → {target_mode_label} "
+                            f"{_YELLOW}↩ [{step_num}] {rewind_reason} → {target_mode_label} "
                             f"[{target_step}] {target_name}으로 이동: "
                             f"{result.message}{_RESET}"
                         )
                         self._update_progress(
-                            f"[{step_num}] 트리거 미감지 → 액션 [{target_step}]으로 이동"
+                            f"[{step_num}] {rewind_reason} → 액션 [{target_step}]으로 이동"
                         )
                         if rewind_delay > 0 and self._stop_event.wait(rewind_delay):
                             break
@@ -2380,6 +2409,410 @@ class RuleExecutor:
             and getattr(rule, "click_until_image_disappears", False)
         )
 
+    @staticmethod
+    def _transition_recovery_supported(rule: AutomationRule) -> bool:
+        """Only bounded, single-action input operations may own transition recovery."""
+        if bool(getattr(rule, "click_until_image_disappears", False)):
+            return False
+        if bool(getattr(rule, "repeat_from_auto_list_quantity", False)):
+            return False
+        return str(getattr(rule, "action_type", "") or "") in {
+            "click",
+            "double_click",
+            "right_click",
+            "hotkey",
+            "key_press",
+            "type",
+            "wait",
+            "scroll",
+            "drag",
+            "random_key_sequence",
+        }
+
+    def _transition_confirmation_spec(
+        self,
+        rule: AutomationRule,
+        next_rule: Optional[AutomationRule],
+        next_target_images: List[str],
+    ) -> Optional[TransitionConfirmationSpec]:
+        plan_auto_enabled = bool(
+            getattr(self._current_plan, "transition_recovery_auto_enabled", False)
+        )
+        context_exclusion = self._transition_recovery_context_exclusions.get(id(rule))
+        if not effective_transition_recovery_enabled(
+            rule,
+            plan_auto_enabled=plan_auto_enabled,
+            next_item=next_rule,
+            next_target_images=next_target_images,
+            context_exclusion=context_exclusion,
+        ):
+            return None
+        if not self._transition_recovery_supported(rule):
+            logger.warning(
+                f"{_YELLOW}{self._step_prefix}화면 전환 복구 미지원 액션: "
+                f"{getattr(rule, 'action_type', '')}{_RESET}"
+            )
+            return None
+
+        mode = str(getattr(rule, "transition_verify_mode", "next_action") or "next_action")
+        if mode == "custom_image":
+            custom_image = str(getattr(rule, "transition_verify_image", "") or "").strip()
+            if not custom_image:
+                logger.warning(
+                    f"{_YELLOW}{self._step_prefix}화면 전환 복구 비활성 처리: "
+                    "직접 확인 이미지가 설정되지 않았습니다"
+                    f"{_RESET}"
+                )
+                return None
+            confidence = float(getattr(rule, "transition_verify_confidence", 0.8) or 0.8)
+            return TransitionConfirmationSpec(
+                images=(custom_image,),
+                confidence=min(1.0, max(0.1, confidence)),
+                search_region=getattr(rule, "transition_verify_region", None),
+                verify_color=bool(getattr(rule, "transition_verify_color", False)),
+                verify_brightness=bool(getattr(rule, "transition_verify_brightness", False)),
+                source_label="직접 지정 이미지",
+            )
+
+        target_eligibility = evaluate_transition_verification_target(
+            next_rule,
+            next_target_images,
+        )
+        images = tuple(str(path) for path in next_target_images if path)
+        if not target_eligibility.eligible:
+            logger.warning(
+                f"{_YELLOW}{self._step_prefix}화면 전환 복구 비활성 처리: "
+                f"{target_eligibility.reason}"
+                f"{_RESET}"
+            )
+            return None
+        confidence = float(getattr(next_rule, "confidence", 0.8) or 0.8)
+        return TransitionConfirmationSpec(
+            images=images,
+            confidence=min(1.0, max(0.1, confidence)),
+            search_region=self._image_search_region_for_rule(next_rule),
+            verify_color=bool(getattr(next_rule, "verify_image_color", False)),
+            verify_brightness=bool(getattr(next_rule, "verify_image_brightness", False)),
+            source_label=f"다음 액션: {getattr(next_rule, 'description', '') or getattr(next_rule, 'action_type', '')}",
+        )
+
+    def _scan_transition_confirmation(
+        self,
+        spec: TransitionConfirmationSpec,
+    ) -> Optional[Dict[str, Any]]:
+        self._begin_shared_image_scan()
+        try:
+            for image_path in spec.images:
+                location = self._find_image_on_screen(
+                    image_path,
+                    spec.confidence,
+                    search_region=spec.search_region,
+                    verify_color=spec.verify_color,
+                    verify_brightness=spec.verify_brightness,
+                )
+                if location:
+                    score = float(location[2]) if len(location) > 2 else spec.confidence
+                    return {
+                        "image": image_path,
+                        "location": location,
+                        "score": score,
+                    }
+            return None
+        finally:
+            self._end_shared_image_scan()
+
+    def _wait_for_transition_confirmation(
+        self,
+        spec: TransitionConfirmationSpec,
+        timeout: float,
+        *,
+        step_num: str,
+        log_start: bool = True,
+    ) -> Dict[str, Any]:
+        timeout = max(0.0, float(timeout or 0.0))
+        started = time.monotonic()
+        next_log_at = 10.0
+        if log_start:
+            image_names = ", ".join(Path(path).name for path in spec.images)
+            logger.info(
+                f"{_YELLOW}[{step_num}] 화면 전환 확인: {spec.source_label} "
+                f"이미지=[{image_names}] 제한={timeout:.1f}초 "
+                f"인식률={int(spec.confidence * 100)}% 범위={spec.search_region or '전체'}{_RESET}"
+            )
+
+        while True:
+            if self._stop_event.is_set():
+                return {"status": "stopped", "waited": time.monotonic() - started}
+            if self._wait_for_resume():
+                return {"status": "stopped", "waited": time.monotonic() - started}
+
+            found = self._scan_transition_confirmation(spec)
+            waited = time.monotonic() - started
+            if found is not None:
+                return {"status": "found", "waited": waited, **found}
+            if waited >= timeout:
+                return {"status": "timeout", "waited": waited}
+            if waited >= next_log_at:
+                logger.info(
+                    f"{_YELLOW}[{step_num}] 화면 전환 대기 중... "
+                    f"{waited:.0f}/{timeout:.0f}초{_RESET}"
+                )
+                next_log_at += 10.0
+            if self._stop_event.wait(min(0.25, max(0.0, timeout - waited))):
+                return {"status": "stopped", "waited": time.monotonic() - started}
+
+    def _transition_recovery_delay_seconds(self, rule: AutomationRule) -> float:
+        delay = max(0.0, float(getattr(rule, "transition_recovery_delay", 1.0) or 0.0))
+        if bool(getattr(rule, "transition_recovery_delay_random", False)):
+            delay_range = max(
+                0.0,
+                float(getattr(rule, "transition_recovery_delay_random_range", 0.3) or 0.0),
+            )
+            delay = max(0.0, delay + random.uniform(-delay_range, delay_range))
+        return delay
+
+    def _execute_transition_recovery_actions(
+        self,
+        owner_rule: AutomationRule,
+        step_num: str,
+    ) -> bool:
+        recovery_ids = list(getattr(owner_rule, "transition_recovery_rule_ids", None) or [])
+        if not recovery_ids:
+            logger.warning(
+                f"{_YELLOW}[{step_num}] 복구 액션 실행 방식이지만 등록된 복구 액션이 없습니다{_RESET}"
+            )
+            return True
+
+        source_rules = self._action_call_source_rules()
+        owner_id = str(getattr(owner_rule, "rule_id", "") or "")
+        for recovery_index, target_id in enumerate(recovery_ids, 1):
+            target_id = str(target_id or "").strip()
+            target = self._find_action_call_target(source_rules, target_id)
+            if target is None or target_id == owner_id or not self._transition_recovery_supported(target):
+                logger.warning(
+                    f"{_YELLOW}[{step_num}] 복구 액션 {recovery_index} 건너뜀: "
+                    f"rule_id={target_id or '-'} 대상 없음/재귀/미지원{_RESET}"
+                )
+                continue
+
+            recovery_rule = copy.deepcopy(target)
+            recovery_rule.children = []
+            recovery_rule.transition_recovery_policy = TRANSITION_POLICY_FORCE_OFF
+            recovery_rule.transition_recovery_enabled = False
+            recovery_rule.is_monitoring_mode = False
+            recovery_rule.monitoring_watches = []
+            if recovery_rule.action_type in {"click", "double_click", "right_click"}:
+                recovery_rule.skip_on_not_found = True
+                recovery_rule.wait_after = min(
+                    2.0,
+                    max(0.5, float(getattr(owner_rule, "transition_verify_timeout", 5.0) or 5.0)),
+                )
+
+            repeat_count = max(1, self._effective_rule_repeat_count(recovery_rule))
+            label = recovery_rule.description or recovery_rule.action_type
+            logger.info(
+                f"{_CYAN}[{step_num}] 복구 동작 {recovery_index}/{len(recovery_ids)}: "
+                f"{label} x{repeat_count}{_RESET}"
+            )
+            for repeat_index in range(repeat_count):
+                result = self._execute_rule(
+                    recovery_rule,
+                    step_num=f"{step_num}-복구{recovery_index}",
+                )
+                if not result.success or "스킵됨" in str(result.message or ""):
+                    logger.warning(
+                        f"{_YELLOW}[{step_num}] 복구 동작 미완료: {label} "
+                        f"({result.message}){_RESET}"
+                    )
+                    break
+                if repeat_index < repeat_count - 1:
+                    repeat_delay = max(0.0, float(getattr(recovery_rule, "repeat_delay", 0.5) or 0.0))
+                    if self._stop_event.wait(repeat_delay):
+                        return False
+            if self._stop_event.is_set():
+                return False
+        return True
+
+    def _emit_transition_recovery_alert(
+        self,
+        rule: AutomationRule,
+        spec: TransitionConfirmationSpec,
+        step_num: str,
+        attempts: int,
+    ) -> None:
+        details = {
+            "rule_id": str(getattr(rule, "rule_id", "") or ""),
+            "step_num": str(step_num or ""),
+            "action_name": str(getattr(rule, "description", "") or getattr(rule, "action_type", "")),
+            "action_type": str(getattr(rule, "action_type", "") or ""),
+            "attempts": int(attempts),
+            "expected_images": [Path(path).name for path in spec.images],
+            "confidence": float(spec.confidence),
+            "search_region": spec.search_region,
+            "verification_source": spec.source_label,
+        }
+        callback = self._on_transition_recovery_alert
+        if callback is None:
+            return
+        try:
+            callback(details)
+        except Exception as exc:
+            logger.error(f"화면 전환 복구 알림 콜백 실패: {exc}")
+
+    def _recover_transition(
+        self,
+        rule: AutomationRule,
+        spec: TransitionConfirmationSpec,
+        start_time: datetime,
+        step_num: str,
+        last_result: RuleExecutionResult,
+        input_window: int,
+    ) -> RuleExecutionResult:
+        recovery_count = max(
+            1,
+            min(20, int(getattr(rule, "transition_recovery_count", 3) or 3)),
+        )
+        verify_timeout = max(
+            0.5,
+            float(getattr(rule, "transition_verify_timeout", 5.0) or 5.0),
+        )
+        recovery_mode = str(
+            getattr(rule, "transition_recovery_mode", "refocus_retry")
+            or "refocus_retry"
+        )
+
+        for recovery_attempt in range(1, recovery_count + 1):
+            if self._stop_event.is_set():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            logger.warning(
+                f"{_YELLOW}[{step_num}] 화면 전환 미확인 → 복구 "
+                f"{recovery_attempt}/{recovery_count} 시작{_RESET}"
+            )
+            if recovery_mode in {"refocus_retry", "actions_retry"}:
+                restored = self._restore_trigger_input_window(input_window)
+                logger.info(
+                    f"[{step_num}] 복구 창 활성화: "
+                    f"{'성공' if restored else '실패/이미 활성'} hwnd={input_window or 0}"
+                )
+            if recovery_mode == "actions_retry":
+                self._execute_transition_recovery_actions(rule, step_num)
+                if self._stop_event.is_set():
+                    return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            delay = self._transition_recovery_delay_seconds(rule)
+            if delay > 0 and self._stop_event.wait(delay):
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+
+            # Avoid a duplicate input when the delayed screen completed during recovery setup.
+            already_found = self._scan_transition_confirmation(spec)
+            if already_found is not None:
+                logger.info(
+                    f"{_GREEN}[{step_num}] 복구 입력 전 화면 전환 확인: "
+                    f"{Path(already_found['image']).name} "
+                    f"({int(already_found['score'] * 100)}%){_RESET}"
+                )
+                return self._make_result(rule, True, last_result.message, start_time)
+
+            retry_rule = copy.deepcopy(rule)
+            retry_rule.children = []
+            retry_rule.transition_recovery_policy = TRANSITION_POLICY_FORCE_OFF
+            retry_rule.transition_recovery_enabled = False
+            if retry_rule.action_type in {"click", "double_click", "right_click"}:
+                retry_rule.skip_on_not_found = True
+                retry_rule.wait_after = min(2.0, verify_timeout)
+            retry_result = self._execute_rule(
+                retry_rule,
+                step_num=f"{step_num}-복구",
+            )
+            if self._stop_event.is_set():
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+            if not retry_result.success or "스킵됨" in str(retry_result.message or ""):
+                logger.warning(
+                    f"{_YELLOW}[{step_num}] 복구 입력 결과: {retry_result.message}{_RESET}"
+                )
+
+            confirmation = self._wait_for_transition_confirmation(
+                spec,
+                verify_timeout,
+                step_num=step_num,
+            )
+            if confirmation["status"] == "found":
+                logger.info(
+                    f"{_GREEN}[{step_num}] 화면 전환 복구 성공 "
+                    f"({recovery_attempt}/{recovery_count}): "
+                    f"{Path(confirmation['image']).name} "
+                    f"({int(confirmation['score'] * 100)}%){_RESET}"
+                )
+                return self._make_result(rule, True, retry_result.message, start_time)
+            if confirmation["status"] == "stopped":
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+
+        logger.error(
+            f"{_RED}[{step_num}] 화면 전환 복구 실패: "
+            f"{recovery_count}회 복구 후 확인 이미지 미감지{_RESET}"
+        )
+        self._emit_transition_recovery_alert(
+            rule,
+            spec,
+            step_num,
+            recovery_count,
+        )
+
+        failure_mode = str(
+            getattr(rule, "transition_failure_mode", "alert_wait") or "alert_wait"
+        )
+        if failure_mode == "goto_rule":
+            target_rule_id = str(
+                getattr(rule, "transition_failure_rule_id", "") or ""
+            ).strip()
+            if target_rule_id:
+                return self._make_result(
+                    rule,
+                    True,
+                    f"화면 전환 복구 실패 → 지정 액션 복귀 ({recovery_count}회)",
+                    start_time,
+                    rewind_previous_action=True,
+                    rewind_delay=self._transition_recovery_delay_seconds(rule),
+                    rewind_target_rule_id=target_rule_id,
+                )
+            logger.error(f"[{step_num}] 화면 전환 실패 복귀 대상이 설정되지 않았습니다")
+        if failure_mode == "fail":
+            return self._make_result(
+                rule,
+                False,
+                f"화면 전환 복구 실패 ({recovery_count}회)",
+                start_time,
+            )
+
+        logger.warning(
+            f"{_YELLOW}[{step_num}] 디스코드 알림 후 화면 확인 대기 유지 "
+            "(재생은 중지하지 않음)"
+            f"{_RESET}"
+        )
+        self._update_progress(
+            f"[{step_num}] 화면 전환 복구 실패 - 알림 후 확인 대기"
+        )
+        while True:
+            confirmation = self._wait_for_transition_confirmation(
+                spec,
+                10.0,
+                step_num=step_num,
+                log_start=False,
+            )
+            if confirmation["status"] == "found":
+                logger.info(
+                    f"{_GREEN}[{step_num}] 원격/수동 복구 후 화면 전환 확인: "
+                    f"{Path(confirmation['image']).name} "
+                    f"({int(confirmation['score'] * 100)}%){_RESET}"
+                )
+                return self._make_result(rule, True, last_result.message, start_time)
+            if confirmation["status"] == "stopped":
+                return self._make_result(rule, False, "실행 중지됨", start_time)
+            logger.info(
+                f"{_YELLOW}[{step_num}] 복구 실패 후 화면 확인 대기 중...{_RESET}"
+            )
+
     def _execute_rule_with_retry(
         self,
         rule: AutomationRule,
@@ -2486,6 +2919,17 @@ class RuleExecutor:
             auto_list_quantity = max(1, int(auto_list_quantity))
             click_until_disappears = False
 
+        transition_spec = None
+        if not repeat_from_auto_list and not click_until_disappears:
+            transition_spec = self._transition_confirmation_spec(
+                rule,
+                next_rule,
+                next_target_images,
+            )
+        transition_input_window = (
+            self._capture_trigger_input_window() if transition_spec is not None else 0
+        )
+
         repeat_count = self._effective_rule_repeat_count(rule)
         if repeat_from_auto_list:
             repeat_count = 1
@@ -2506,7 +2950,11 @@ class RuleExecutor:
         # policy, so the generic outer retry must run it only once.
         retry_count = (
             1
-            if repeat_from_auto_list or rule.action_type == AUTO_LIST_ACTION_TYPE
+            if (
+                repeat_from_auto_list
+                or rule.action_type == AUTO_LIST_ACTION_TYPE
+                or transition_spec is not None
+            )
             else max_retries
         )
         for attempt in range(retry_count):
@@ -2515,6 +2963,7 @@ class RuleExecutor:
 
             # 반복 실행
             result = None
+            transition_checked_after_last_repeat = False
             for rep in range(repeat_count):
                 if self._stop_event.is_set():
                     return self._make_result(rule, False, "실행 중지됨", start_time)
@@ -2541,6 +2990,28 @@ class RuleExecutor:
                 if not result.success:
                     break  # 실패하면 반복 중단
 
+                result_was_skipped = "스킵됨" in str(result.message or "")
+                if (
+                    transition_spec is not None
+                    and not result_was_skipped
+                    and bool(getattr(rule, "transition_stop_repeats_on_success", True))
+                ):
+                    confirmation = self._wait_for_transition_confirmation(
+                        transition_spec,
+                        float(getattr(rule, "transition_verify_timeout", 5.0) or 5.0),
+                        step_num=step_num,
+                    )
+                    if confirmation["status"] == "found":
+                        logger.info(
+                            f"{_GREEN}[{step_num}] 화면 전환 확인 완료: "
+                            f"{Path(confirmation['image']).name} "
+                            f"({int(confirmation['score'] * 100)}%){_RESET}"
+                        )
+                        return self._make_result(rule, True, result.message, start_time)
+                    if confirmation["status"] == "stopped":
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
+                    transition_checked_after_last_repeat = rep == repeat_count - 1
+
                 # 마지막 반복이 아니면 반복 대기시간 적용
                 if rep < repeat_count - 1:
                     repeat_delay = getattr(rule, 'repeat_delay', 0.5)
@@ -2554,14 +3025,52 @@ class RuleExecutor:
                         time.sleep(actual_delay)
 
             if not result.success:
+                if transition_spec is not None:
+                    logger.warning(
+                        f"{_YELLOW}[{step_num}] 입력 전송 결과 실패 후 화면 상태 복구 시작: "
+                        f"{result.message}{_RESET}"
+                    )
+                    return self._recover_transition(
+                        rule,
+                        transition_spec,
+                        start_time,
+                        step_num,
+                        result,
+                        transition_input_window,
+                    )
                 logger.warning(f"{_YELLOW}  ✗ 동작 실패 (시도 {attempt + 1}/{retry_count}): {result.message}{_RESET}")
                 if attempt < retry_count - 1:
                     time.sleep(0.5)
                     continue
                 return result
 
-            # 클릭 동작이고 다음 타겟 이미지가 있으면 확인 (스킵된 경우 제외)
             is_skipped = "스킵됨" in result.message if result.message else False
+            if transition_spec is not None and not is_skipped:
+                if not transition_checked_after_last_repeat:
+                    confirmation = self._wait_for_transition_confirmation(
+                        transition_spec,
+                        float(getattr(rule, "transition_verify_timeout", 5.0) or 5.0),
+                        step_num=step_num,
+                    )
+                    if confirmation["status"] == "found":
+                        logger.info(
+                            f"{_GREEN}[{step_num}] 화면 전환 확인 완료: "
+                            f"{Path(confirmation['image']).name} "
+                            f"({int(confirmation['score'] * 100)}%){_RESET}"
+                        )
+                        return self._make_result(rule, True, result.message, start_time)
+                    if confirmation["status"] == "stopped":
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
+                return self._recover_transition(
+                    rule,
+                    transition_spec,
+                    start_time,
+                    step_num,
+                    result,
+                    transition_input_window,
+                )
+
+            # 클릭 동작이고 다음 타겟 이미지가 있으면 확인 (스킵된 경우 제외)
             next_target_absence_allowed = self._next_rule_allows_target_absence(next_rule)
             if (
                 is_click_action
@@ -7728,14 +8237,10 @@ class RuleExecutor:
 
                     if _use_skill:
                         try:
-                            _orig_pause = pyautogui.PAUSE
-                            pyautogui.PAUSE = 0
-                            try:
+                            with temporary_pyautogui_pause(0):
                                 get_input_controller().key_down(auto_skill_key)
                                 time.sleep(0.015)
                                 get_input_controller().key_up(auto_skill_key)
-                            finally:
-                                pyautogui.PAUSE = _orig_pause
                             _score_suffix = f" score={_auto_skill_score:.3f}" if _auto_skill_score is not None else ""
                             _log_auto_skill_diag(
                                 ("press", _auto_skill_reason),
@@ -7848,14 +8353,10 @@ class RuleExecutor:
 
             logger.info(f"{_GREEN}[좌표모드] ========== 실행 종료 =========={_RESET}")
 
-    # pyautogui.PAUSE 전역 상태 보호용 락
-    _pyautogui_lock = threading.Lock()
-
+    # pyautogui.PAUSE compatibility boundary for coordinate-policy audits.
     def _smooth_key_input(self, keys, interval):
         """부드러운 키 입력 (분석 간격 동안 연타)"""
-        with self._pyautogui_lock:
-            original_pause = pyautogui.PAUSE
-            pyautogui.PAUSE = 0
+        with temporary_pyautogui_pause(0):
             try:
                 start_time = time.time()
                 while time.time() - start_time < interval and not self._stop_event.is_set():
@@ -7872,7 +8373,6 @@ class RuleExecutor:
                         get_input_controller().key_up(key)
                     except Exception:
                         pass
-                pyautogui.PAUSE = original_pause
 
 
 # 전역 실행 엔진 인스턴스

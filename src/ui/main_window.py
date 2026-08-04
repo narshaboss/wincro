@@ -33,7 +33,7 @@ from ..utils.discord_notifier import (
     send_discord_alert_async,
 )
 from ..utils.app_identity import get_effective_app_name
-from ..utils.json_utils import load_json_file
+from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.plan_sequence_groups import (
     get_active_plan_sequence_group,
     mirror_active_group_to_legacy,
@@ -129,23 +129,10 @@ def _persist_mini_plan_repeat(plan_file: Path, repeat_count: int) -> None:
         raise TypeError("plan root must be an object")
     normalized = normalize_repeat_count(repeat_count)
     data["total_repeat_count"] = normalized
-    temp_file = plan_file.with_name(
-        f".{plan_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    try:
-        with temp_file.open("w", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=False, indent=2)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_file, plan_file)
-        saved = load_json_file(plan_file)
-        if normalize_repeat_count(saved.get("total_repeat_count", 1)) != normalized:
-            raise OSError("saved repeat count verification failed")
-    finally:
-        try:
-            temp_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+    dump_json_file(plan_file, data, ensure_ascii=False, indent=2)
+    saved = load_json_file(plan_file)
+    if normalize_repeat_count(saved.get("total_repeat_count", 1)) != normalized:
+        raise OSError("saved repeat count verification failed")
 
 # 컬러/치수 토큰 (theme.py에서 통합 관리)
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
@@ -2175,10 +2162,11 @@ class MainWindow(ctk.CTk):
         except Exception as e:
             logger.error(f"[모드변경] 기존 창 리소스 정리 실패: {e}")
 
-        # 데이터베이스 정리
         try:
-            from ..database import get_db
-            get_db().close()
+            from ..utils.logger import shutdown_logging
+
+            logger.info("[모드변경] 기존 프로세스 종료")
+            shutdown_logging()
         except Exception:
             pass
 
@@ -2804,6 +2792,9 @@ class MainWindow(ctk.CTk):
                 description=plan.description,
                 initial_rules=plan.initial_rules,
                 monitoring_rules=plan.monitoring_rules,
+                transition_recovery_auto_enabled=bool(
+                    getattr(plan, "transition_recovery_auto_enabled", False)
+                ),
             )
             run_plan.game_modes = plan.game_modes
             run_plan.total_repeat_count = 1
@@ -3112,6 +3103,9 @@ class MainWindow(ctk.CTk):
             description=f"partial {len(rules_to_run)} rules",
             initial_rules=list(rules_to_run),
             monitoring_rules=[],
+            transition_recovery_auto_enabled=bool(
+                getattr(active_plan, "transition_recovery_auto_enabled", False)
+            ),
         )
         partial_plan._original_initial_rules = (
             getattr(active_plan, "_original_initial_rules", None)
@@ -3133,6 +3127,40 @@ class MainWindow(ctk.CTk):
             if not self._mini_is_current_playback_generation(callback_generation):
                 return
             self._mini_on_progress(progress)
+
+        def on_transition_recovery_alert(details):
+            if not self._mini_is_current_playback_generation(callback_generation):
+                return
+
+            def deliver_alert() -> None:
+                if not self._mini_is_current_playback_generation(callback_generation):
+                    return
+                expected = ", ".join(details.get("expected_images") or []) or "미설정"
+                region = details.get("search_region") or "전체 화면"
+                attempts = int(details.get("attempts") or 0)
+                step_num = str(details.get("step_num") or "-")
+                action_name = str(details.get("action_name") or details.get("action_type") or "-")
+                alert_key = str(details.get("rule_id") or step_num or "unknown")
+                self._mini_send_discord_alert(
+                    f"transition_recovery:{alert_key}",
+                    "WinCro 화면 전환 복구 실패",
+                    f"{attempts}회 자동 복구 후에도 다음 화면이 확인되지 않았습니다. "
+                    "재생은 중지하지 않고 화면 확인을 계속합니다.",
+                    fields=(
+                        ("현재 액션", f"[{step_num}] {action_name}"),
+                        ("확인 이미지", expected),
+                        ("복구 시도", f"{attempts}회"),
+                        ("확인 기준", str(details.get("verification_source") or "-")),
+                        ("검색 범위", str(region)),
+                        ("인식률", f"{int(float(details.get('confidence') or 0.0) * 100)}%"),
+                    ),
+                    playback_generation=callback_generation,
+                )
+
+            self._mini_post_lifecycle(
+                deliver_alert,
+                f"transition-recovery-alert:gen={callback_generation}",
+            )
 
         def on_complete(success: bool, message: str):
             executor.clear_callbacks()
@@ -3214,6 +3242,7 @@ class MainWindow(ctk.CTk):
         executor.set_callbacks(
             on_progress=on_progress,
             on_complete=on_complete,
+            on_transition_recovery_alert=on_transition_recovery_alert,
         )
         start_scheduled = executor.execute_plan_async(
             plan_to_run,
@@ -4624,8 +4653,48 @@ class MainWindow(ctk.CTk):
         if dispatcher is not None:
             dispatcher.close()
 
+        try:
+            from ..database import close_db_if_initialized
+
+            close_db_if_initialized()
+        except Exception as exc:
+            logger.debug(f"데이터베이스 종료 정리 오류: {exc}")
+
     def _on_close(self):
         """윈도우 닫기"""
+        if getattr(self, "_close_started", False):
+            return
+        self._close_started = True
+
+        if not save_config():
+            logger.error("[안전종료] 설정 내구 저장 실패로 종료를 취소합니다")
+            self._close_started = False
+            try:
+                from tkinter import messagebox
+
+                messagebox.showerror(
+                    "종료 실패",
+                    "설정 파일 저장에 실패해 종료를 취소했습니다.\n디스크 상태를 확인한 뒤 다시 시도하세요.",
+                    parent=self,
+                )
+            except Exception as exc:
+                logger.error(f"[안전종료] 저장 실패 안내 표시 실패: {exc}")
+            return
+
+        shutdown_done = threading.Event()
+
+        def _last_resort_exit():
+            if shutdown_done.wait(timeout=12.0):
+                return
+            logger.critical("[안전종료] 12초 내 종료되지 않아 비정상 종료합니다")
+            os._exit(1)
+
+        threading.Thread(
+            target=_last_resort_exit,
+            name="wincro-shutdown-watchdog",
+            daemon=True,
+        ).start()
+
         try:
             from .player_view import force_stop_all_game_modes
 
@@ -4638,20 +4707,15 @@ class MainWindow(ctk.CTk):
                 logger.warning(f"[안전종료] 실행 중 특화모드 {stopped}개 강제 중지 요청")
         except Exception as e:
             logger.error(f"[안전종료] 특화모드 강제 중지 실패: {e}")
+        try:
+            self.cleanup_resources()
+            logger.info("애플리케이션 종료")
+            from ..utils.logger import shutdown_logging
 
-        def _last_resort_exit():
-            import time as _time
-            _time.sleep(3.0)
-            logger.error("[안전종료] 종료 후 프로세스가 남아 강제 종료합니다")
-            os._exit(0)
-
-        threading.Thread(target=_last_resort_exit, daemon=True).start()
-
-        self.cleanup_resources()
-
-        save_config()
-        logger.info("애플리케이션 종료")
-        self.destroy()
+            shutdown_logging()
+            self.destroy()
+        finally:
+            shutdown_done.set()
 
     def _show_help(self):
         """도움말 다이얼로그 표시"""

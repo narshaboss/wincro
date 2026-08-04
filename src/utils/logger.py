@@ -7,6 +7,7 @@ WinCro 로깅 모듈
 """
 
 import logging
+import copy
 import sys
 import queue
 import threading
@@ -58,9 +59,12 @@ class ColoredFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """로그 레코드를 색상이 적용된 문자열로 포맷"""
-        color = self.COLORS.get(record.levelname, self.RESET)
-        record.levelname = f"{color}{record.levelname}{self.RESET}"
-        return super().format(record)
+        # QueueListener sends the same LogRecord to the file and console
+        # handlers. Mutating it here leaked ANSI codes into file logs.
+        console_record = copy.copy(record)
+        color = self.COLORS.get(console_record.levelname, self.RESET)
+        console_record.levelname = f"{color}{console_record.levelname}{self.RESET}"
+        return super().format(console_record)
 
 
 class DropOldestLogQueue(queue.Queue):
@@ -69,6 +73,24 @@ class DropOldestLogQueue(queue.Queue):
     def __init__(self, maxsize: int):
         super().__init__(maxsize=max(1, int(maxsize)))
         self.dropped_count = 0
+        self._drop_report_lock = threading.Lock()
+        self._next_drop_report = 1
+
+    def _record_drop(self) -> None:
+        report_count = None
+        with self._drop_report_lock:
+            self.dropped_count += 1
+            if self.dropped_count >= self._next_drop_report:
+                report_count = self.dropped_count
+                self._next_drop_report = max(report_count + 1000, report_count * 2)
+        if report_count is not None:
+            try:
+                sys.stderr.write(
+                    f"[WinCro logging] log queue overflow; dropped={report_count}\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
 
     def put(self, item, block=True, timeout=None):
         while True:
@@ -78,7 +100,7 @@ class DropOldestLogQueue(queue.Queue):
                 try:
                     self.get_nowait()
                     self.task_done()
-                    self.dropped_count += 1
+                    self._record_drop()
                 except queue.Empty:
                     continue
 
@@ -150,9 +172,43 @@ class LoggerManager:
             respect_handler_level=True
         )
         self._queue_listener.start()
+        self._file_handler = file_handler
+        self._queue_handler = queue_handler
+        self._shutdown_lock = threading.Lock()
+        self._logging_shutdown = False
 
         # 프로그램 종료 시 리스너 정리
-        atexit.register(self._queue_listener.stop)
+        atexit.register(self.shutdown)
+
+    def shutdown(self) -> None:
+        """Drain and close logging resources exactly once."""
+        with self._shutdown_lock:
+            if self._logging_shutdown:
+                return
+            self._logging_shutdown = True
+        try:
+            self._queue_listener.stop()
+        except Exception:
+            pass
+        root_logger = logging.getLogger()
+        queue_handler = getattr(self, "_queue_handler", None)
+        if queue_handler is not None:
+            try:
+                root_logger.removeHandler(queue_handler)
+            except (ValueError, RuntimeError):
+                pass
+        for handler_name in ("_file_handler", "_console_handler"):
+            handler = getattr(self, handler_name, None)
+            if handler is None:
+                continue
+            try:
+                handler.flush()
+            except Exception:
+                pass
+            try:
+                handler.close()
+            except Exception:
+                pass
 
     def get_logger(self, name: str) -> logging.Logger:
         """
@@ -207,6 +263,11 @@ class LoggerManager:
         """
         logger = logging.getLogger(logger_name)
         log_file = LOGS_DIR / filename
+
+        resolved_log_file = str(log_file.resolve())
+        for existing in logger.handlers:
+            if str(getattr(existing, "baseFilename", "")) == resolved_log_file:
+                return
 
         handler = RotatingFileHandler(
             filename=log_file,
@@ -294,3 +355,8 @@ def apply_performance_config() -> None:
 def create_execution_logger(sequence_name: str) -> logging.Logger:
     """실행 로거 생성 헬퍼 함수"""
     return logger_manager.create_execution_logger(sequence_name)
+
+
+def shutdown_logging() -> None:
+    """Flush logging before process hand-off paths that use ``os._exit``."""
+    logger_manager.shutdown()

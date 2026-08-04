@@ -12,21 +12,10 @@ import urllib.error
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
-# SSL은 지연 import (DLL 로드 실패 시에도 프로그램 실행 가능하도록)
-def _get_ssl_context(verify: bool = True):
-    """SSL 컨텍스트 생성 (SSL 모듈 로드 실패 시 None 반환)"""
-    try:
-        import ssl
-        ctx = ssl.create_default_context()
-        if not verify:
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        return ctx
-    except Exception:
-        return None
-
 from .logger import get_logger
 from .config import PROJECT_ROOT, DATA_DIR
+from .json_utils import dump_json_file, load_json_file
+from .update_service import ssl_fallback_connect
 
 logger = get_logger(__name__)
 
@@ -36,61 +25,12 @@ UPDATE_CACHE_DURATION = 0  # 캐시 비활성화 (항상 새로 확인)
 
 
 def _urlopen_with_fallback(url: str, headers: dict, timeout: int = 10, overall_timeout: int = 15):
-    """SSL 폴백을 포함한 URL 열기 - 4가지 방법 시도 (전체 제한: overall_timeout초)"""
-    req = urllib.request.Request(url, headers=headers)
-    last_error = None
-    start_time = time.monotonic()
-
-    def _check_elapsed():
-        """overall_timeout 초과 시 마지막 예외를 raise"""
-        if time.monotonic() - start_time > overall_timeout:
-            raise last_error if last_error else TimeoutError("overall timeout exceeded")
-
-    # 방법 1: 기본 SSL
-    try:
-        ctx = _get_ssl_context(verify=True)
-        if ctx:
-            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
-    except Exception as e1:
-        last_error = e1
-        logger.debug(f"SSL 방법 1 실패: {e1}")
-
-    _check_elapsed()
-
-    # 방법 2: SSL 검증 완화
-    try:
-        ctx = _get_ssl_context(verify=False)
-        if ctx:
-            req = urllib.request.Request(url, headers=headers)
-            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
-    except Exception as e2:
-        last_error = e2
-        logger.debug(f"SSL 방법 2 실패: {e2}")
-
-    _check_elapsed()
-
-    # 방법 3: SSL 컨텍스트 없이
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        return urllib.request.urlopen(req, timeout=timeout)
-    except Exception as e3:
-        last_error = e3
-        logger.debug(f"SSL 방법 3 실패: {e3}")
-
-    _check_elapsed()
-
-    # 방법 4: 프록시 핸들러
-    try:
-        proxy_handler = urllib.request.ProxyHandler({})
-        opener = urllib.request.build_opener(proxy_handler)
-        req = urllib.request.Request(url, headers=headers)
-        return opener.open(req, timeout=timeout)
-    except Exception as e4:
-        last_error = e4
-        logger.debug(f"SSL 방법 4 실패: {e4}")
-
-    # 모든 방법 실패
-    raise last_error
+    """Open an update URL without weakening certificate verification."""
+    return ssl_fallback_connect(
+        url,
+        headers=headers,
+        timeout=max(1, min(int(timeout), int(overall_timeout))),
+    )
 
 # 녹화 파일 저장 디렉토리
 RECORDINGS_DIR = DATA_DIR / "recordings"
@@ -100,8 +40,7 @@ def _load_update_cache() -> Optional[Dict[str, Any]]:
     """캐시된 업데이트 정보 로드"""
     try:
         if UPDATE_CACHE_FILE.exists():
-            with open(UPDATE_CACHE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            return load_json_file(UPDATE_CACHE_FILE)
     except Exception:
         pass
     return None
@@ -133,8 +72,7 @@ def _save_update_cache(result: Dict[str, Any], current_version: str):
             "result": result
         }
         UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(UPDATE_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f)
+        dump_json_file(UPDATE_CACHE_FILE, cache_data)
     except Exception as e:
         logger.debug(f"캐시 저장 실패: {e}")
 

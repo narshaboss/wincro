@@ -12,6 +12,7 @@ import threading
 
 from .config import DATA_DIR
 from .logger import get_logger
+from .json_utils import dump_json_file, load_json_file
 
 logger = get_logger(__name__)
 
@@ -32,8 +33,7 @@ def _load_positions() -> dict:
 
         try:
             if POSITIONS_FILE.exists():
-                with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
-                    _positions_cache = json.load(f)
+                _positions_cache = load_json_file(POSITIONS_FILE)
             else:
                 _positions_cache = {}
         except (json.JSONDecodeError, IOError):
@@ -47,8 +47,7 @@ def _save_positions(positions: dict) -> bool:
     global _positions_cache
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(POSITIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(positions, f, ensure_ascii=False, indent=2)
+        dump_json_file(POSITIONS_FILE, positions, ensure_ascii=False, indent=2)
         _positions_cache = positions
         return True
     except IOError as e:

@@ -19,6 +19,7 @@ from .db_manager import (
     DatabaseManager,
     db_manager,
     get_db,
+    close_db_if_initialized,
     DB_PATH,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "DatabaseManager",
     "db_manager",
     "get_db",
+    "close_db_if_initialized",
     "DB_PATH",
 ]

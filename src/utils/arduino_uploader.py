@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 
 from .logger import get_logger
 from .config import PROJECT_ROOT
+from .update_service import safe_extract_zip
 import sys
 
 logger = get_logger(__name__)
@@ -162,7 +163,13 @@ def download_arduino_cli(progress_callback=None) -> bool:
 
         # 압축 해제
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(ARDUINO_CLI_DIR)
+            safe_extract_zip(
+                zip_ref,
+                ARDUINO_CLI_DIR,
+                max_entries=5000,
+                max_total_size=1024 * 1024 * 1024,
+                max_file_size=512 * 1024 * 1024,
+            )
 
         # zip 파일 삭제
         zip_path.unlink()
