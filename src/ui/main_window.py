@@ -2792,9 +2792,6 @@ class MainWindow(ctk.CTk):
                 description=plan.description,
                 initial_rules=plan.initial_rules,
                 monitoring_rules=plan.monitoring_rules,
-                transition_recovery_auto_enabled=bool(
-                    getattr(plan, "transition_recovery_auto_enabled", False)
-                ),
             )
             run_plan.game_modes = plan.game_modes
             run_plan.total_repeat_count = 1
@@ -3103,9 +3100,6 @@ class MainWindow(ctk.CTk):
             description=f"partial {len(rules_to_run)} rules",
             initial_rules=list(rules_to_run),
             monitoring_rules=[],
-            transition_recovery_auto_enabled=bool(
-                getattr(active_plan, "transition_recovery_auto_enabled", False)
-            ),
         )
         partial_plan._original_initial_rules = (
             getattr(active_plan, "_original_initial_rules", None)
@@ -3127,40 +3121,6 @@ class MainWindow(ctk.CTk):
             if not self._mini_is_current_playback_generation(callback_generation):
                 return
             self._mini_on_progress(progress)
-
-        def on_transition_recovery_alert(details):
-            if not self._mini_is_current_playback_generation(callback_generation):
-                return
-
-            def deliver_alert() -> None:
-                if not self._mini_is_current_playback_generation(callback_generation):
-                    return
-                expected = ", ".join(details.get("expected_images") or []) or "미설정"
-                region = details.get("search_region") or "전체 화면"
-                attempts = int(details.get("attempts") or 0)
-                step_num = str(details.get("step_num") or "-")
-                action_name = str(details.get("action_name") or details.get("action_type") or "-")
-                alert_key = str(details.get("rule_id") or step_num or "unknown")
-                self._mini_send_discord_alert(
-                    f"transition_recovery:{alert_key}",
-                    "WinCro 화면 전환 복구 실패",
-                    f"{attempts}회 자동 복구 후에도 다음 화면이 확인되지 않았습니다. "
-                    "재생은 중지하지 않고 화면 확인을 계속합니다.",
-                    fields=(
-                        ("현재 액션", f"[{step_num}] {action_name}"),
-                        ("확인 이미지", expected),
-                        ("복구 시도", f"{attempts}회"),
-                        ("확인 기준", str(details.get("verification_source") or "-")),
-                        ("검색 범위", str(region)),
-                        ("인식률", f"{int(float(details.get('confidence') or 0.0) * 100)}%"),
-                    ),
-                    playback_generation=callback_generation,
-                )
-
-            self._mini_post_lifecycle(
-                deliver_alert,
-                f"transition-recovery-alert:gen={callback_generation}",
-            )
 
         def on_complete(success: bool, message: str):
             executor.clear_callbacks()
@@ -3242,7 +3202,6 @@ class MainWindow(ctk.CTk):
         executor.set_callbacks(
             on_progress=on_progress,
             on_complete=on_complete,
-            on_transition_recovery_alert=on_transition_recovery_alert,
         )
         start_scheduled = executor.execute_plan_async(
             plan_to_run,

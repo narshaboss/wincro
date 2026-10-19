@@ -119,8 +119,7 @@ class DatabaseManager:
                 success_count INTEGER DEFAULT 0,
                 failure_count INTEGER DEFAULT 0,
                 tags TEXT DEFAULT '[]',
-                version TEXT DEFAULT '1.0',
-                transition_recovery_auto_enabled INTEGER DEFAULT 0
+                version TEXT DEFAULT '1.0'
             )
         ''')
 
@@ -184,7 +183,6 @@ class DatabaseManager:
             ('recordings', 'ai_analyzed', 'INTEGER DEFAULT 0'),
             ('recordings', 'automation_plan_id', 'TEXT'),
             ('recordings', 'locked', 'INTEGER DEFAULT 0'),
-            ('sequences', 'transition_recovery_auto_enabled', 'INTEGER DEFAULT 0'),
         ]
         # 허용된 테이블명 (화이트리스트)
         allowed_tables = {'sequences', 'action_templates', 'execution_logs', 'recordings'}
@@ -231,11 +229,8 @@ class DatabaseManager:
             now = datetime.now().isoformat()
 
             cursor.execute('''
-                INSERT INTO sequences (
-                    name, description, actions, created_at, updated_at, tags, version,
-                    transition_recovery_auto_enabled
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sequences (name, description, actions, created_at, updated_at, tags, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
                 sequence.name,
                 sequence.description,
@@ -244,7 +239,6 @@ class DatabaseManager:
                 now,
                 json.dumps(sequence.tags, ensure_ascii=False),
                 sequence.version,
-                int(bool(sequence.transition_recovery_auto_enabled)),
             ))
 
             sequence_id = cursor.lastrowid
@@ -340,8 +334,7 @@ class DatabaseManager:
                     actions = ?,
                     updated_at = ?,
                     tags = ?,
-                    version = ?,
-                    transition_recovery_auto_enabled = ?
+                    version = ?
                 WHERE id = ?
             ''', (
                 sequence.name,
@@ -350,7 +343,6 @@ class DatabaseManager:
                 datetime.now().isoformat(),
                 json.dumps(sequence.tags, ensure_ascii=False),
                 sequence.version,
-                int(bool(sequence.transition_recovery_auto_enabled)),
                 sequence.id,
             ))
 

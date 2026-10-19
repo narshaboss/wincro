@@ -26,6 +26,7 @@ def test_discord_payload_includes_pc_number_and_fields():
     )
 
     content = payload["content"]
+    assert content.splitlines()[:2] == ["PC번호: 03번", "**WinCro 테스트**"]
     assert "WinCro 테스트" in content
     assert "PC번호: 03번" in content
     assert "재생목록" in content

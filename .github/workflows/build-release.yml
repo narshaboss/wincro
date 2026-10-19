@@ -39,6 +39,16 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Run regression tests before building
+        shell: pwsh
+        run: |
+          # Legacy source-inspection tests use this fixed development path.
+          if (-not (Test-Path -LiteralPath 'C:\Projects\wincro')) {
+            New-Item -ItemType Directory -Force -Path 'C:\Projects' | Out-Null
+            New-Item -ItemType Junction -Path 'C:\Projects\wincro' -Target $env:GITHUB_WORKSPACE | Out-Null
+          }
+          python -m pytest -q
+
       - name: Resolve version from repository
         id: meta
         shell: python
@@ -96,8 +106,16 @@ jobs:
         shell: bash
         run: |
           tag="${{ steps.meta.outputs.tag }}"
-          git tag -f "$tag" "${{ github.sha }}"
-          git push origin "refs/tags/$tag" --force
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            existing="$(git rev-parse "$tag^{commit}")"
+            if [ "$existing" != "${{ github.sha }}" ]; then
+              echo "Refusing to replace release tag $tag ($existing)"
+              exit 1
+            fi
+          else
+            git tag "$tag" "${{ github.sha }}"
+            git push origin "refs/tags/$tag"
+          fi
 
       - name: Build application
         shell: pwsh
@@ -158,9 +176,13 @@ jobs:
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag $zipPath $shaPath --target ${{ github.sha }} --title $title --notes-file $notesPath
+            gh release create $tag $zipPath $shaPath --draft --target ${{ github.sha }} --title $title --notes-file $notesPath
           }
           else {
+            $isDraft = gh release view $tag --json isDraft --jq .isDraft
+            if ($isDraft -ne "true") {
+              throw "Refusing to overwrite published release $tag"
+            }
             gh release edit $tag --target ${{ github.sha }} --title $title --notes-file $notesPath
             gh release upload $tag $zipPath $shaPath --clobber
           }

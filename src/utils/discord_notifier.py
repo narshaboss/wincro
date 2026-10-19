@@ -76,9 +76,10 @@ def _format_fields(fields: Iterable[tuple[str, str]]) -> list[str]:
 
 
 def build_discord_payload(alert: DiscordAlert) -> dict:
-    lines = [f"**{_trim(alert.title, 120)}**"]
+    lines = []
     if alert.pc_number:
         lines.append(f"PC번호: {default_pc_name(alert.pc_number)}")
+    lines.append(f"**{_trim(alert.title, 120)}**")
     if alert.description:
         lines.append(_trim(alert.description, 700))
     field_lines = _format_fields(alert.fields)
