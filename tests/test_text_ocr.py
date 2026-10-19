@@ -115,7 +115,10 @@ def test_find_target_text_match_prefers_component_sequence_for_exact_short_hangu
     assert match.variant == "word_mask_regions"
 
 
-def test_find_target_text_match_rejects_duplicate_first_glyph_false_positive():
+def test_find_target_text_match_rejects_duplicate_first_glyph_false_positive(monkeypatch):
+    # Keep this glyph rejection test independent of an external OCR installation.
+    monkeypatch.setattr("src.analyzer.text_ocr.pytesseract.image_to_string", lambda *a, **kw: "")
+    monkeypatch.setattr("src.analyzer.text_ocr.pytesseract.image_to_boxes", lambda *a, **kw: "")
     template_path = Path(__file__).resolve().parents[1] / "data" / "templates" / "wp_img_c917ed11.png"
     template = cv2.imread(str(template_path))
     assert template is not None

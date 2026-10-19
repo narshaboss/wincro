@@ -196,11 +196,16 @@ def test_explicit_trigger_region_takes_priority_over_legacy_coordinates():
     assert executor._trigger_search_region_for_rule(rule) == [10, 20, 310, 420]
 
 
-def test_legacy_trigger_coordinates_still_use_compatible_radius():
+@pytest.mark.parametrize("screen_size,expected", [
+    ((1920, 1080), [280, 380, 720, 820]),
+    ((1024, 768), [280, 380, 720, 768]),
+])
+def test_legacy_trigger_coordinates_still_use_compatible_radius(monkeypatch, screen_size, expected):
+    monkeypatch.setattr(RULE_EXECUTOR_MODULE, "_get_screen_size_cached", lambda: screen_size)
     executor = _make_executor()
     rule = AutomationRule(action_type="click", trigger_x=500, trigger_y=600)
 
-    assert executor._trigger_search_region_for_rule(rule) == [280, 380, 720, 820]
+    assert executor._trigger_search_region_for_rule(rule) == expected
 
 
 def test_trigger_rewind_target_survives_plan_json_disk_round_trip(tmp_path):
