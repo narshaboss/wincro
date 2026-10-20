@@ -1401,9 +1401,13 @@ class RuleExecutor:
     def _rule_id_step_map(self, rules: List[AutomationRule]) -> Dict[str, str]:
         """rule_id별 원본 단계 번호를 만든다."""
         mapping: Dict[str, str] = {}
+        ambiguous_ids: set[str] = set()
         for rule, step in self._flatten_rules_with_step(rules or []):
             rule_id = str(getattr(rule, "rule_id", "") or "")
-            if rule_id and rule_id not in mapping:
+            if rule_id in mapping:
+                mapping.pop(rule_id)
+                ambiguous_ids.add(rule_id)
+            elif rule_id and rule_id not in ambiguous_ids:
                 mapping[rule_id] = str(step)
         return mapping
 
@@ -1412,13 +1416,11 @@ class RuleExecutor:
         if target_rule is None:
             return ""
         target_rule_id = str(getattr(target_rule, "rule_id", "") or "")
-        for candidate, step in self._flatten_rules_with_step(rules or []):
-            candidate_rule_id = str(getattr(candidate, "rule_id", "") or "")
-            if target_rule_id and candidate_rule_id == target_rule_id:
-                return str(step)
+        candidates = self._flatten_rules_with_step(rules or [])
+        for candidate, step in candidates:
             if candidate is target_rule:
                 return str(step)
-        return ""
+        return self._rule_id_step_map(rules).get(target_rule_id, "")
 
     def _format_step_alias(self, runtime_step: str, original_step: str) -> str:
         """부분실행 번호와 원본 플랜 번호가 다를 때 로그에 둘 다 표시한다."""

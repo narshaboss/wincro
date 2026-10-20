@@ -1631,8 +1631,8 @@ class MainWindow(ctk.CTk):
         config = self._mini_notification_config()
         cooldown = max(10, int(getattr(config, "discord_cooldown_seconds", 300) or 300))
         now = time.monotonic()
-        last_sent = float(getattr(self, "_mini_notification_last_sent_at", {}).get(event_key, 0.0))
-        if now - last_sent < cooldown:
+        last_sent = getattr(self, "_mini_notification_last_sent_at", {}).get(event_key)
+        if last_sent is not None and now - float(last_sent) < cooldown:
             return
         self._mini_notification_last_sent_at[event_key] = now
 

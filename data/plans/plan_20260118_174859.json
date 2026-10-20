@@ -568,7 +568,7 @@
           "monitoring_watches": []
         },
         {
-          "rule_id": "rule_0006",
+          "rule_id": "rule_f19028877b795511",
           "rule_type": "fixed_sequence",
           "description": "key_press",
           "action_type": "key_press",
@@ -1447,7 +1447,7 @@
           "monitoring_watches": []
         },
         {
-          "rule_id": "rule_0003",
+          "rule_id": "rule_d75cba0654c1595b",
           "rule_type": "fixed_sequence",
           "description": "",
           "action_type": "click",
@@ -1470,7 +1470,7 @@
           "trigger_x": null,
           "trigger_y": null,
           "trigger_search_region": null,
-          "confidence": 0.9056818181818181,
+          "confidence": 0.8081818181818181,
           "verify_image_color": true,
           "verify_image_brightness": true,
           "search_radius": 958,
@@ -1533,7 +1533,7 @@
           "monitoring_watches": []
         },
         {
-          "rule_id": "rule_0003",
+          "rule_id": "rule_cb201e2ad89b5f5c",
           "rule_type": "fixed_sequence",
           "description": "",
           "action_type": "double_click",
@@ -6983,7 +6983,7 @@
           "monitoring_watches": []
         },
         {
-          "rule_id": "rule_0006",
+          "rule_id": "rule_2c6fa3c89d5e584f",
           "rule_type": "fixed_sequence",
           "description": "",
           "action_type": "double_click",

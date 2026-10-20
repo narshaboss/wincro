@@ -25,6 +25,7 @@ from ..utils.auto_list import (
     normalize_auto_list_config,
 )
 from ..utils.action_call import ACTION_CALL_ACTION_TYPE
+from ..utils.rule_identity import repair_legacy_rule_identities, validate_rule_identities
 
 
 def normalize_trigger_key_sequences(raw_sequences, legacy_keys=None) -> List[List[str]]:
@@ -1057,11 +1058,13 @@ class AutomationPlan:
             result["game_modes"] = {
                 rule_id: cfg.to_dict() for rule_id, cfg in self.game_modes.items()
             }
+        validate_rule_identities(result)
         return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], templates_dir: Optional[Path] = None) -> "AutomationPlan":
         """????????? ??? (???? ???????? ????????)"""
+        data = repair_legacy_rule_identities(data)
         # templates_dir???????config??? ??????
         if templates_dir is None:
             try:
