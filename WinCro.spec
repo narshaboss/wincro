@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 
 def collect_packaged_data():
@@ -61,8 +61,9 @@ datas = [
     ('arduino', 'arduino'),
 ]
 datas += collect_packaged_data()
+datas += collect_data_files('certifi', includes=['cacert.pem'])
 binaries = []
-hiddenimports = []
+hiddenimports = collect_submodules('truststore')
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

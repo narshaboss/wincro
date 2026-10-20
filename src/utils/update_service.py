@@ -37,14 +37,32 @@ _WINDOWS_RESERVED_NAMES = {
 
 def _verified_ssl_contexts() -> list[tuple[str, ssl.SSLContext]]:
     """Return trusted TLS contexts without ever disabling verification."""
-    contexts = [("시스템 인증서", ssl.create_default_context())]
+    contexts = []
+    if sys.platform == "win32":
+        try:
+            import truststore
+
+            # CryptoAPI can build missing intermediate chains; copying Windows
+            # roots into OpenSSL alone does not provide that capability.
+            native_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            native_context.verify_mode = ssl.CERT_REQUIRED
+            native_context.check_hostname = True
+            contexts.append(("Windows 기본 인증서 검증", native_context))
+        except (ImportError, OSError, RuntimeError, ssl.SSLError) as exc:
+            logger.warning(f"Windows 기본 인증서 검증 초기화 실패: {exc}")
+
+    try:
+        contexts.append(("시스템 인증서", ssl.create_default_context()))
+    except (OSError, ssl.SSLError) as exc:
+        logger.warning(f"시스템 인증서 초기화 실패: {exc}")
+
     try:
         import certifi
 
         certifi_context = ssl.create_default_context(cafile=certifi.where())
         contexts.append(("내장 CA 인증서", certifi_context))
     except (ImportError, OSError, ssl.SSLError) as exc:
-        logger.debug(f"내장 CA 인증서 컨텍스트 사용 불가: {exc}")
+        logger.warning(f"내장 CA 인증서 초기화 실패: {exc}")
     return contexts
 
 
@@ -59,6 +77,7 @@ def ssl_fallback_connect(
         headers = _HEADERS
 
     last_error = None
+    failures = []
 
     if not str(url).lower().startswith("https://"):
         raise ValueError("업데이트 연결은 HTTPS URL만 허용됩니다")
@@ -76,11 +95,22 @@ def ssl_fallback_connect(
                 raise ValueError("업데이트 연결이 안전하지 않은 URL로 리디렉션되었습니다")
             logger.info(f"{method_name} 성공")
             return response
+        except urllib.error.HTTPError:
+            # An HTTP response already passed TLS verification. Preserve the
+            # status (including rate limits) instead of retrying it as TLS.
+            raise
         except Exception as e:
             last_error = e
+            failures.append(f"{method_name}: {e}")
             logger.warning(f"{method_name} 실패: {e}")
 
     if last_error:
+        reason = getattr(last_error, "reason", last_error)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            raise ConnectionError(
+                "SSL 인증서 검증 실패: " + " / ".join(failures)
+                + ". PC 날짜·시간, Windows 루트 인증서 및 보안 프로그램의 HTTPS 검사를 확인하세요."
+            ) from last_error
         raise ConnectionError(f"서버 연결 실패: {last_error}") from last_error
     raise ConnectionError("서버 연결 실패: 사용할 수 있는 신뢰 CA가 없습니다")
 

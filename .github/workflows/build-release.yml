@@ -122,6 +122,13 @@ jobs:
         run: |
           pyinstaller WinCro.spec --clean --noconfirm
 
+      - name: Verify packaged TLS dependencies
+        shell: pwsh
+        run: |
+          $appDir = Get-ChildItem dist -Directory | Select-Object -First 1
+          if (-not $appDir) { throw "No packaged application directory" }
+          python tools/verify_release_tls_bundle.py $appDir.FullName
+
       - name: Package release zip
         id: package
         shell: pwsh
