@@ -6,7 +6,9 @@ import json
 import logging
 import ssl
 import subprocess
+import sys
 import threading
+import types
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -160,6 +162,27 @@ def test_callback_exception_does_not_leak_notifier_thread(monkeypatch):
     thread = notifier.send_discord_alert_async(URL, notifier.DiscordAlert("test"), on_complete=fail)
     thread.join(timeout=2)
     assert not thread.is_alive()
+
+
+def test_sender_capacity_prevents_accumulating_hung_network_workers(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(notifier, "_SEND_SLOTS", threading.BoundedSemaphore(1))
+    def block(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=3)
+        return notifier.DiscordSendResult(True, "200")
+    monkeypatch.setattr(notifier, "send_discord_webhook", block)
+    first = notifier.send_discord_alert_async(URL, notifier.DiscordAlert("first"))
+    assert entered.wait(timeout=2)
+    completed = []
+    second = notifier.send_discord_alert_async(URL, notifier.DiscordAlert("second"), on_complete=completed.append)
+    try:
+        second.join(timeout=2)
+        assert not second.is_alive() and completed[0].status == "busy"
+    finally:
+        release.set()
+        first.join(timeout=2)
+    assert not first.is_alive()
 
 
 def test_gate_records_success_only_after_receipt_and_retries_failures():
@@ -326,3 +349,15 @@ def test_large_payload_preserves_pc_first_and_suppresses_unexpected_mentions():
     assert len(payload["content"]) <= 1900
     assert payload["content"].splitlines()[0] == "PC번호: 7번"
     assert payload["allowed_mentions"] == {"parse": []}
+
+
+def test_legacy_v304_accepted_204_without_message_confirmation(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    source = subprocess.check_output(["git", "show", "980a1dcb52953427ed04d79eda0169cde535ccaa:src/utils/discord_notifier.py"], cwd=root, encoding="utf-8")
+    module = types.ModuleType("legacy_discord_receipt_probe")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source, "legacy_discord_notifier", "exec"), module.__dict__)
+    requests = []
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda req, timeout: requests.append(req) or Response(204, b""))
+    result = module.send_discord_webhook(URL, {"content": "test"})
+    assert result.ok and "wait=" not in requests[0].full_url

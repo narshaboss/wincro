@@ -23,6 +23,7 @@ from .update_service import _verified_ssl_contexts
 
 
 logger = logging.getLogger(__name__)
+_SEND_SLOTS = threading.BoundedSemaphore(4)
 
 
 DISCORD_WEBHOOK_PREFIXES = (
@@ -226,23 +227,30 @@ def send_discord_alert_async(
     max_attempts: int = 3,
 ) -> threading.Thread:
     def _worker() -> None:
+        acquired = _SEND_SLOTS.acquire(blocking=False)
         try:
-            payload = build_discord_payload(alert)
-            attempts = max(1, min(3, max_attempts))
-            for attempt in range(attempts):
-                result = send_discord_webhook(webhook_url, payload, timeout=timeout)
-                if result.ok or not is_retryable_discord_result(result) or attempt + 1 == attempts:
-                    break
-                delay = max(float(2 ** attempt), result.retry_after)
-                # Long rate limits belong to the delivery gate, not sleeping
-                # notifier threads that accumulate after playback changes.
-                if delay > 30:
-                    break
-                logger.warning("[디스코드알림] 전송 재시도: status=%s attempt=%s/%s wait=%.1fs",
-                               result.status, attempt + 1, attempts, delay)
-                time.sleep(delay)
+            if not acquired:
+                result = DiscordSendResult(False, "busy", "Discord sender capacity is occupied")
+            else:
+                payload = build_discord_payload(alert)
+                attempts = max(1, min(3, max_attempts))
+                for attempt in range(attempts):
+                    result = send_discord_webhook(webhook_url, payload, timeout=timeout)
+                    if result.ok or not is_retryable_discord_result(result) or attempt + 1 == attempts:
+                        break
+                    delay = max(float(2 ** attempt), result.retry_after)
+                    # Long rate limits belong to the delivery gate, not sleeping
+                    # notifier threads that accumulate after playback changes.
+                    if delay > 30:
+                        break
+                    logger.warning("[디스코드알림] 전송 재시도: status=%s attempt=%s/%s wait=%.1fs",
+                                   result.status, attempt + 1, attempts, delay)
+                    time.sleep(delay)
         except Exception as exc:
             result = DiscordSendResult(False, type(exc).__name__, _safe_error_detail(exc, webhook_url))
+        finally:
+            if acquired:
+                _SEND_SLOTS.release()
         if on_complete is not None:
             try:
                 on_complete(result)
