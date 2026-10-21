@@ -56,7 +56,9 @@ def test_all_alert_titles_put_pc_number_before_title(title, pc, expected):
 def test_async_delivery_sends_pc_first_utf8_json_without_a_real_network_request(monkeypatch):
     requests = []
     class Response:
-        status = 204
+        status = 200
+        def read(self, limit):
+            return b'{"id":"123456789012345678","channel_id":"987654321012345678"}'
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -64,7 +66,7 @@ def test_async_delivery_sends_pc_first_utf8_json_without_a_real_network_request(
     def fake_open(request, timeout):
         requests.append(json.loads(request.data.decode("utf-8")))
         return Response()
-    monkeypatch.setattr(discord_notifier.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(discord_notifier, "_open_discord_request", fake_open)
     completed = []
     thread = discord_notifier.send_discord_alert_async(
         "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDE",
@@ -91,7 +93,10 @@ def test_real_main_window_alert_path_preserves_pc_number_and_cooldown(event_key,
         _mini_active_plan=SimpleNamespace(name="test-plan"),
     )
     delivered = []
-    monkeypatch.setattr(main_window, "send_discord_alert_async", lambda url, alert, **kwargs: delivered.append(alert))
+    def send(url, alert, **kwargs):
+        delivered.append(alert)
+        kwargs["on_complete"](discord_notifier.DiscordSendResult(True, "200", message_id="123", channel_id="456"))
+    monkeypatch.setattr(main_window, "send_discord_alert_async", send)
     for _ in range(2):
         main_window.MainWindow._mini_send_discord_alert(context, event_key, "test-alert", "test")
     assert len(delivered) == 1

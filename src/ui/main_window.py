@@ -29,9 +29,11 @@ from ..utils.logger import get_logger
 from ..utils.config import get_config, save_config, DATA_DIR, TEMPLATES_DIR, APP_VERSION
 from ..utils.discord_notifier import (
     DiscordAlert,
+    DiscordSendResult,
     is_valid_discord_webhook_url,
     send_discord_alert_async,
 )
+from ..utils.notification_delivery import DiscordDeliveryState
 from ..utils.app_identity import get_effective_app_name
 from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.plan_sequence_groups import (
@@ -795,6 +797,7 @@ class MainWindow(ctk.CTk):
         self._mini_notification_last_progress_snapshot = {}
         self._mini_notification_started_at = time.monotonic()
         self._mini_notification_last_sent_at = {}
+        self._mini_notification_delivery_state = DiscordDeliveryState()
         self._mini_plan_loader = LatestOnlyWorker(
             "wincro-mini-plans",
             lambda exc: logger.error(f"mini-player plan list background load failed: {exc}"),
@@ -1624,17 +1627,18 @@ class MainWindow(ctk.CTk):
         else:
             event_type = "failure"
         if not self._mini_notification_enabled(event_type):
+            logger.info("[디스코드알림] 발송 차단: event=%s reason=disabled_or_invalid_config", event_key)
             return
         if playback_generation is not None and not self._mini_is_current_playback_generation(playback_generation):
+            logger.info("[디스코드알림] 발송 차단: event=%s reason=stale_playback", event_key)
             return
 
         config = self._mini_notification_config()
         cooldown = max(10, int(getattr(config, "discord_cooldown_seconds", 300) or 300))
-        now = time.monotonic()
-        last_sent = getattr(self, "_mini_notification_last_sent_at", {}).get(event_key)
-        if last_sent is not None and now - float(last_sent) < cooldown:
-            return
-        self._mini_notification_last_sent_at[event_key] = now
+        delivery = getattr(self, "_mini_notification_delivery_state", None)
+        if delivery is None:
+            delivery = self._mini_notification_delivery_state = DiscordDeliveryState()
+        webhook_url = str(getattr(config, "discord_webhook_url", "") or "").strip()
 
         app_config = get_config()
         plan_name = getattr(getattr(self, "_mini_active_plan", None), "name", "")
@@ -1660,11 +1664,31 @@ class MainWindow(ctk.CTk):
             fields=tuple(alert_fields),
         )
 
-        def _on_complete(result) -> None:
-            if not result.ok:
-                logger.warning(f"[디스코드알림] 전송 실패: {result.status} {result.detail}")
+        ticket, reason, remaining = delivery.begin(event_key, webhook_url, cooldown)
+        if ticket is None:
+            logger.info("[디스코드알림] 발송 보류: event=%s reason=%s remaining=%.1fs",
+                        event_key, reason, remaining)
+            return
 
-        send_discord_alert_async(getattr(config, "discord_webhook_url", ""), alert, on_complete=_on_complete)
+        def _on_complete(result) -> None:
+            accepted, retry_after = delivery.finish(ticket, result)
+            if not accepted:
+                logger.info("[디스코드알림] 오래된 전송 결과 무시: event=%s", event_key)
+                return
+            if result.ok:
+                self._mini_notification_last_sent_at[event_key] = time.monotonic()
+                logger.info("[디스코드알림] 서버 수신 확인: event=%s destination=%s message_id=%s channel_id=%s",
+                            event_key, ticket.key[1], result.message_id, result.channel_id)
+            else:
+                logger.warning("[디스코드알림] 전송 실패: event=%s destination=%s status=%s retry_after=%.1fs detail=%s",
+                               event_key, ticket.key[1], result.status, retry_after, result.detail)
+
+        logger.info("[디스코드알림] 발송 시작: event=%s destination=%s pc=%s",
+                    event_key, ticket.key[1], alert.pc_number)
+        try:
+            send_discord_alert_async(webhook_url, alert, on_complete=_on_complete)
+        except Exception as exc:
+            _on_complete(DiscordSendResult(False, "dispatch_error", type(exc).__name__))
 
     def _toggle_mini_auto_update_from_indicator(self):
         """원형 상태 표시 클릭 시 자동업데이트 ON/OFF를 전환한다."""
