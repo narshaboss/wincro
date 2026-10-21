@@ -242,11 +242,15 @@ def test_gate_is_thread_safe_and_bounds_state_growth():
     assert len(state._entries) <= 128
 
 
-def test_actual_watchdog_log_scenario_failure_then_delivery(monkeypatch, caplog):
-    now = [12406.0]
+@pytest.mark.parametrize("initial_wait,action", [
+    (12406.0, "[6-3-6] 프리미엄 경험치 활성화"),
+    (15394.0, "[10] 호동 자동사냥 결과찾기"),
+])
+def test_actual_watchdog_log_scenario_failure_then_delivery(monkeypatch, caplog, initial_wait, action):
+    now = [initial_wait]
     ctx, config = context(monkeypatch, now)
     ctx._mini_record_game_mode_notification_activity = lambda: None
-    ctx._mini_build_stuck_diagnostic_fields = lambda elapsed, threshold: (("현재 액션", "[6-3-6] 프리미엄 경험치 활성화"),)
+    ctx._mini_build_stuck_diagnostic_fields = lambda elapsed, threshold: (("현재 액션", action),)
     scheduled = []
     ctx._mini_start_notification_watchdog = lambda generation: scheduled.append(generation)
     calls = []
@@ -257,11 +261,11 @@ def test_actual_watchdog_log_scenario_failure_then_delivery(monkeypatch, caplog)
         kwargs["on_complete"](result)
     monkeypatch.setattr(main_window, "send_discord_alert_async", send)
     with caplog.at_level(logging.INFO):
-        for moment in (12406, 12436, 12466):
+        for moment in (initial_wait, initial_wait + 30, initial_wait + 60):
             now[0] = float(moment)
             main_window.MainWindow._mini_check_notification_watchdog(ctx, 1)
     assert len(calls) == 2 and len(scheduled) == 3
-    assert ctx._mini_notification_last_sent_at["stuck"] == 12436
+    assert ctx._mini_notification_last_sent_at["stuck"] == initial_wait + 30
     assert "전송 실패" in caplog.text and "서버 수신 확인" in caplog.text and "reason=cooldown" in caplog.text
     assert calls[-1].pc_number == "7" and ctx._is_running and not ctx._mini_stop_requested
 
@@ -276,11 +280,15 @@ def test_diagnostic_log_is_not_false_proof_of_delivery(monkeypatch, caplog):
     assert "reason=disabled_or_invalid_config" in caplog.text
 
 
-def test_watchdog_to_real_async_http_path_recovers_without_live_discord(monkeypatch):
-    now = [12406.0]
+@pytest.mark.parametrize("initial_wait,action", [
+    (12406.0, "[6-3-6] 프리미엄 경험치 활성화"),
+    (15394.0, "[10] 호동 자동사냥 결과찾기"),
+])
+def test_watchdog_to_real_async_http_path_recovers_without_live_discord(monkeypatch, initial_wait, action):
+    now = [initial_wait]
     ctx, _ = context(monkeypatch, now)
     ctx._mini_record_game_mode_notification_activity = lambda: None
-    ctx._mini_build_stuck_diagnostic_fields = lambda elapsed, threshold: (("현재 액션", "[6-3-6] 프리미엄 경험치 활성화"),)
+    ctx._mini_build_stuck_diagnostic_fields = lambda elapsed, threshold: (("현재 액션", action),)
     ctx._mini_start_notification_watchdog = lambda generation: None
     requests, threads = [], []
     def http(request, timeout):
@@ -295,18 +303,18 @@ def test_watchdog_to_real_async_http_path_recovers_without_live_discord(monkeypa
     monkeypatch.setattr(notifier, "_open_discord_request", http)
     monkeypatch.setattr(notifier.time, "sleep", lambda delay: None)
     monkeypatch.setattr(main_window, "send_discord_alert_async", send)
-    for moment in (12406, 12436, 12466):
+    for moment in (initial_wait, initial_wait + 30, initial_wait + 60):
         now[0] = float(moment)
         main_window.MainWindow._mini_check_notification_watchdog(ctx, 1)
         for thread in threads:
             thread.join(timeout=2)
             assert not thread.is_alive()
     assert len(requests) == 4 and len(threads) == 2
-    assert ctx._mini_notification_last_sent_at["stuck"] == 12436
+    assert ctx._mini_notification_last_sent_at["stuck"] == initial_wait + 30
     assert "wait=true" in requests[-1].full_url
     payload = json.loads(requests[-1].data.decode("utf-8"))
     assert payload["content"].splitlines()[0] == "PC번호: 7번"
-    assert "6-3-6" in payload["content"] and ctx._is_running
+    assert action in payload["content"] and ctx._is_running
 
 
 def test_failed_thread_start_releases_pending_gate_and_does_not_stop_playback(monkeypatch, caplog):
