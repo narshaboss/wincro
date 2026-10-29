@@ -105,7 +105,7 @@ def build_discord_payload(alert: DiscordAlert) -> dict:
         lines.extend(field_lines)
 
     content = "\n".join(lines)
-    return {"content": _trim(content, 1900), "allowed_mentions": {"parse": []}}
+    return {"content": _trim(content, 1900)}
 
 
 def _safe_error_detail(error: object, webhook_url: str = "") -> str:

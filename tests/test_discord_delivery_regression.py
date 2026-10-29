@@ -352,11 +352,12 @@ def test_legacy_v304_consumed_cooldown_even_when_post_failed(monkeypatch):
     assert len(calls) == 1 and ctx._mini_notification_last_sent_at["stuck"] == 12406
 
 
-def test_large_payload_preserves_pc_first_and_suppresses_unexpected_mentions():
+def test_large_payload_preserves_pc_first_and_existing_notification_policy():
     payload = notifier.build_discord_payload(notifier.DiscordAlert("test", "x" * 9000, "7", tuple((str(i), "@everyone" * 100) for i in range(20))))
     assert len(payload["content"]) <= 1900
     assert payload["content"].splitlines()[0] == "PC번호: 7번"
-    assert payload["allowed_mentions"] == {"parse": []}
+    assert set(payload) == {"content"}
+    assert "flags" not in payload and "allowed_mentions" not in payload
 
 
 def test_legacy_v304_accepted_204_without_message_confirmation(monkeypatch):
