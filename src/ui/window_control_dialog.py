@@ -29,6 +29,7 @@ MATCH_MODE_LABELS = {
 PREFERRED_SIZE = (760, 720)
 MINIMUM_SIZE = (420, 360)
 MULTI_MINIMUM_HEIGHT = 420
+MULTI_EDITOR_MINIMUM_HEIGHT = 152
 SCREEN_MARGIN = (48, 100)
 
 
@@ -403,6 +404,7 @@ class WindowControlDialog(ctk.CTkToplevel):
             if self._displaying_multi else self._single_minimum[1],
         )
         self._window_list.configure(height=90 if self._displaying_multi else 150)
+        self._sync_editor_minimum()
         if self._displaying_multi:
             if not self._targets:
                 self._targets = [copy.deepcopy(self._single_selector)]
@@ -487,11 +489,19 @@ class WindowControlDialog(ctk.CTkToplevel):
                 label.configure(wraplength=width)
 
     def _resize_editor_labels(self, event) -> None:
+        self._sync_editor_minimum()
         width = max(40, int(event.width / self._editor._get_widget_scaling()) - 24)
         for label in self._editor_labels:
             if label.cget("wraplength") != width:
                 label.configure(wraplength=width)
         self._target_hint.configure(wraplength=width)
+
+    def _sync_editor_minimum(self) -> None:
+        # Tk grid minimums are physical pixels, unlike CTk widget dimensions.
+        # Reserve a complete candidate toolbar even when a save error is shown.
+        minimum = round(MULTI_EDITOR_MINIMUM_HEIGHT * self._editor._get_widget_scaling()) if self._displaying_multi else 60
+        if int(self.grid_rowconfigure(2)["minsize"]) != minimum:
+            self.grid_rowconfigure(2, minsize=minimum)
 
     def _resize_error_label(self, event) -> None:
         width = max(40, int(event.width / self._save_button._get_widget_scaling()))
