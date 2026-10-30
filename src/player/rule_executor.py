@@ -30,12 +30,15 @@ except ImportError:  # pragma: no cover - packaged builds include mss, this is a
     mss = None
 
 from ..utils.input_controller import (
+    begin_input_cleanup,
     block_automation_input,
+    finish_input_cleanup,
     get_input_controller,
     is_arduino_enabled,
     is_arduino_strict_enabled,
     temporary_pyautogui_pause,
     unblock_automation_input,
+    wait_for_input_cleanup,
 )
 
 # pynput 사용 시도 (멀티모니터 지원)
@@ -729,6 +732,7 @@ class RuleExecutor:
         self._execution_thread: Optional[threading.Thread] = None
 
         # 진행 상태
+        self._progress_lock = threading.RLock()
         self._progress = ExecutionProgress()
 
         # 결과 저장
@@ -763,12 +767,16 @@ class RuleExecutor:
 
         # 현재 실행 중인 액션 번호 (로깅용)
         self._current_step_num = ""
+        self._original_step_by_rule_id: Dict[str, str] = {}
         self._last_monitoring_route_detail: Dict[str, Any] = {}
         self._current_monitoring_wait_detail: Dict[str, Any] = {}
         self._shared_image_scan_active = False
         self._shared_image_scan_frame = _SHARED_SCREEN_FRAME_UNSET
         self._stop_join_lock = threading.Lock()
         self._stop_join_worker_active = False
+        self._stop_cleanup_done = threading.Event()
+        self._stop_cleanup_done.set()
+        self._stop_cleanup_failed = False
         self._allow_special_mode_route_handoff = False
         self._special_mode_route_handoff_lock = threading.Lock()
         self._pending_special_mode_route_handoff: Optional[SpecialModeRouteHandoff] = None
@@ -782,7 +790,8 @@ class RuleExecutor:
     @property
     def progress(self) -> ExecutionProgress:
         """실행 진행 상태"""
-        return self._progress
+        with self._progress_lock:
+            return copy.copy(self._progress)
 
     @property
     def results(self) -> List[RuleExecutionResult]:
@@ -1032,7 +1041,12 @@ class RuleExecutor:
                 return
             self._completion_notified = True
         self._end_shared_image_scan()
-        if not self._reset_input_state("execution-complete"):
+        cleanup_done = self._stop_cleanup_done.wait(timeout=5.0)
+        if (
+            not cleanup_done
+            or self._stop_cleanup_failed
+            or not self._reset_input_state("execution-complete")
+        ):
             block_automation_input("RuleExecutor.completion_reset_failed")
             success = False
             message = f"입력 장치 안전 해제 실패: {message}"
@@ -1073,6 +1087,13 @@ class RuleExecutor:
                 return False
             previous_thread = self._execution_thread
 
+        if previous_thread is threading.current_thread():
+            logger.warning("현재 실행 콜백 안에서는 새 실행을 바로 시작할 수 없습니다")
+            return False
+        if not self._stop_cleanup_done.wait(timeout=5.0) or not wait_for_input_cleanup(timeout=5.0):
+            logger.warning("이전 입력 장치 해제가 끝나지 않아 시작할 수 없습니다")
+            return False
+
         # Never wait for the current worker from its own completion callback.
         if previous_thread and previous_thread.is_alive():
             if previous_thread is threading.current_thread():
@@ -1091,6 +1112,9 @@ class RuleExecutor:
             ] or (self._execution_thread and self._execution_thread.is_alive()):
                 logger.warning("다른 실행이 먼저 시작되어 요청을 취소합니다")
                 return False
+            if not self._stop_cleanup_done.is_set():
+                logger.warning("중지 요청이 먼저 들어와 새 실행을 보류합니다")
+                return False
 
             try:
                 self._current_plan = plan
@@ -1108,6 +1132,7 @@ class RuleExecutor:
                 with self._completion_lock:
                     self._completion_notified = False
                 self._input_reset_completed = False
+                self._stop_cleanup_failed = False
                 if not self._reset_input_state("execution-start"):
                     raise RuntimeError("input reset failed before execution start")
                 self._stop_event.clear()
@@ -1136,7 +1161,8 @@ class RuleExecutor:
                     daemon=True,
                 )
                 self._execution_thread = execution_thread
-                unblock_automation_input()
+                if unblock_automation_input() is False:
+                    raise RuntimeError("이전 입력 장치 정리가 진행 중입니다.")
                 execution_thread.start()
                 return True
             except Exception as exc:
@@ -1198,13 +1224,16 @@ class RuleExecutor:
 
     def wait_for_worker_exit(self, timeout: float = 5.0) -> bool:
         """Wait until the execution worker has fully left its finalizer."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        if not self._stop_cleanup_done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            return False
         with self._lifecycle_lock:
             worker = self._execution_thread
         if worker is None:
             return True
         if worker is threading.current_thread():
             return False
-        worker.join(timeout=max(0.0, float(timeout)))
+        worker.join(timeout=max(0.0, deadline - time.monotonic()))
         return not worker.is_alive()
 
     def pause(self) -> None:
@@ -1245,39 +1274,67 @@ class RuleExecutor:
     def stop(self) -> None:
         """실행 중지 (비차단 — UI 스레드에서 안전하게 호출 가능)"""
         try:
-            self._mark_stop_requested()
-            self._reset_input_state("execution-stop")
+            with self._lifecycle_lock:
+                self._mark_stop_requested()
+                with self._stop_join_lock:
+                    start_join_worker = not self._stop_join_worker_active
+                    if start_join_worker:
+                        cleanup_token = begin_input_cleanup("RuleExecutor.stop_cleanup")
+                        cleanup_done = threading.Event()
+                        self._stop_cleanup_done = cleanup_done
+                        self._stop_cleanup_failed = False
+                        self._stop_join_worker_active = True
+                        execution_thread = self._execution_thread
+                        monitor_thread = self._monitor_thread
             try:
                 self._update_progress("실행 중지됨")
             except Exception as e:
                 logger.debug(f"중지 UI 업데이트 실패: {e}")
             self._log_monitoring_stop_context("stop_called", self._step_prefix)
 
-            # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
+            # Own the release barrier before dispatching device I/O. Completion
+            # callbacks and later runs must not overtake this worker's release.
             def _join_threads():
                 try:
-                    if self._execution_thread and self._execution_thread.is_alive():
-                        self._execution_thread.join(timeout=3.0)
-                        if self._execution_thread.is_alive():
+                    try:
+                        reset_ok = self._reset_input_state("execution-stop")
+                    except Exception:
+                        reset_ok = False
+                    with self._stop_join_lock:
+                        if self._stop_cleanup_done is cleanup_done:
+                            self._stop_cleanup_failed = not reset_ok
+                        cleanup_done.set()
+                    if execution_thread and execution_thread.is_alive():
+                        execution_thread.join(timeout=3.0)
+                        if execution_thread.is_alive():
                             logger.warning("실행 스레드가 3초 후에도 응답 없음")
-                    if self._monitor_thread and self._monitor_thread.is_alive():
-                        self._monitor_thread.join(timeout=2.0)
-                        if self._monitor_thread.is_alive():
+                        while execution_thread.is_alive():
+                            execution_thread.join(timeout=0.3)
+                    if monitor_thread and monitor_thread.is_alive():
+                        monitor_thread.join(timeout=2.0)
+                        if monitor_thread.is_alive():
                             logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
+                        while monitor_thread.is_alive():
+                            monitor_thread.join(timeout=0.3)
                 finally:
                     with self._stop_join_lock:
-                        self._stop_join_worker_active = False
-
-            with self._stop_join_lock:
-                start_join_worker = not self._stop_join_worker_active
-                if start_join_worker:
-                    self._stop_join_worker_active = True
+                        if self._stop_cleanup_done is cleanup_done:
+                            self._stop_join_worker_active = False
+                        finish_input_cleanup(cleanup_token)
+                        cleanup_done.set()
             if start_join_worker:
-                threading.Thread(
-                    target=_join_threads,
-                    name="wincro-rule-stop-join",
-                    daemon=True,
-                ).start()
+                try:
+                    threading.Thread(
+                        target=_join_threads,
+                        name="wincro-rule-stop-join",
+                        daemon=True,
+                    ).start()
+                except Exception:
+                    self._stop_cleanup_failed = True
+                    self._stop_join_worker_active = False
+                    finish_input_cleanup(cleanup_token)
+                    cleanup_done.set()
+                    raise
 
             logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
         except Exception as e:
@@ -1550,6 +1607,7 @@ class RuleExecutor:
                 or []
             )
             original_step_by_rule_id = self._rule_id_step_map(original_initial_rules_for_steps)
+            self._original_step_by_rule_id = dict(original_step_by_rule_id)
             logger.info(f"{_CYAN}  총 {len(all_rules_with_step)}개 액션{_RESET}")
             logger.info(f"{_CYAN}{'═'*50}{_RESET}")
 
@@ -1621,10 +1679,7 @@ class RuleExecutor:
                         and rule.action_type != WINDOW_CONTROL_ACTION_TYPE
                         and (getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches)
                     )
-                    self._progress.current_rule = rule.rule_id
-                    self._progress.current_action_number = str(display_step_num)
-                    self._progress.current_action_name = action_name
-                    self._progress.current_action_is_monitoring = bool(is_monitoring)
+                    self._set_action_context(rule, display_step_num, is_monitoring)
                     self._update_progress(f"[{step_num}] {action_name}")
 
                     if (
@@ -1855,9 +1910,17 @@ class RuleExecutor:
                         return
 
                     if not result.success:
-                        logger.error(f"{_RED}✗ [{step_num}] 실패: {result.message}{_RESET}")
+                        failed_rule = next((candidate for candidate in all_rules
+                                            if candidate.rule_id == result.rule_id), None)
+                        failed_step = original_step_by_rule_id.get(str(result.rule_id), "")
+                        if self._progress.current_rule == result.rule_id:
+                            failed_step = self._progress.current_action_number or failed_step
+                        failed_step = failed_step or step_num
+                        if failed_rule is not None:
+                            self._set_action_context(failed_rule, failed_step)
+                        logger.error(f"{_RED}✗ [{failed_step}] 실패: {result.message}{_RESET}")
                         if self._on_error:
-                            self._on_error(result.message, rule)
+                            self._on_error(result.message, failed_rule or rule)
                         # 실패 시 실행 중지
                         self._state = ExecutionState.FAILED
                         self._update_progress(f"실패: {result.message}")
@@ -2419,7 +2482,8 @@ class RuleExecutor:
             next_target_images = [p for p in (next_target_images or []) if p]
 
         # 화면 안정화 대기 (이전 액션 효과가 반영될 시간)
-        time.sleep(0.2)
+        if not self._auto_list_wait(0.2):
+            return self._make_result(rule, False, "실행 중지됨", start_time)
 
         trigger_result = self._handle_trigger_gate(
             rule,
@@ -2556,12 +2620,14 @@ class RuleExecutor:
                             actual_delay = max(0, repeat_delay + random.uniform(-delay_range, delay_range))
                         else:
                             actual_delay = repeat_delay
-                        time.sleep(actual_delay)
+                        if not self._auto_list_wait(actual_delay):
+                            return self._make_result(rule, False, "실행 중지됨", start_time)
 
             if not result.success:
                 logger.warning(f"{_YELLOW}  ✗ 동작 실패 (시도 {attempt + 1}/{retry_count}): {result.message}{_RESET}")
                 if attempt < retry_count - 1:
-                    time.sleep(0.5)
+                    if not self._auto_list_wait(0.5):
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
                     continue
                 return result
 
@@ -2721,7 +2787,10 @@ class RuleExecutor:
                     typing_random = getattr(rule, 'typing_random', False)
                     typing_delay = getattr(rule, 'typing_delay', 0.1)
                     typing_delay_range = getattr(rule, 'typing_delay_range', 0.05)
-                    self._type_text_with_clipboard(rule.action_text, typing_random, typing_delay, typing_delay_range)
+                    typed = self._type_text_with_clipboard(rule.action_text, typing_random, typing_delay, typing_delay_range)
+                    if typed is False:
+                        message = "실행 중지됨" if self._stop_event.is_set() else "텍스트 입력 실패"
+                        return self._make_result(rule, False, message, start_time)
                     return self._make_result(rule, True, "텍스트 입력 완료", start_time)
                 else:
                     return self._make_result(rule, False, "입력할 텍스트 없음", start_time)
@@ -2800,7 +2869,8 @@ class RuleExecutor:
                 wait_duration = max(0.0, float(wait_duration or 0.0))
                 if wait_duration > 0:
                     logger.info(f"{_CYAN}{self._step_prefix}⏳ 대기 {wait_duration:.2f}초{_RESET}")
-                    time.sleep(wait_duration)
+                    if not self._auto_list_wait(wait_duration):
+                        return self._make_result(rule, False, "실행 중지됨", start_time)
                 return self._make_result(rule, True, "대기 완료", start_time)
 
             if action_type in ["click", "double_click", "right_click"]:
@@ -3169,10 +3239,12 @@ class RuleExecutor:
             time.sleep(check_interval)
 
     def _type_text_with_clipboard(self, text: str, typing_random: bool = False,
-                                    typing_delay: float = 0.1, typing_delay_range: float = 0.05) -> None:
+                                    typing_delay: float = 0.1, typing_delay_range: float = 0.05) -> bool:
         """클립보드를 사용하여 텍스트 입력 (한글 지원)"""
         if not text:
-            return
+            return True
+        if self._wait_for_resume():
+            return False
 
         input_ctrl = get_input_controller()
 
@@ -3181,12 +3253,15 @@ class RuleExecutor:
             if typing_random:
                 # 랜덤 딜레이로 글자 하나씩 입력 (기본값 ± 범위)
                 for char in text:
-                    input_ctrl.type_text(char)
+                    if self._wait_for_resume() or input_ctrl.type_text(char) is False:
+                        return False
                     delay = typing_delay + random.uniform(-typing_delay_range, typing_delay_range)
                     delay = max(0, delay)  # 음수 방지
-                    time.sleep(delay)
+                    if not self._auto_list_wait(delay):
+                        return False
             else:
-                input_ctrl.type_text(text, interval=self._typing_interval)
+                if input_ctrl.type_text(text, interval=self._typing_interval) is False:
+                    return False
         else:
             # 한글 등 비ASCII 문자가 있으면 클립보드 사용
             if typing_random:
@@ -3199,17 +3274,21 @@ class RuleExecutor:
                         pass
 
                     for char in text:
+                        if self._wait_for_resume():
+                            return False
                         pyperclip.copy(char)
-                        time.sleep(0.02)
-                        input_ctrl.hotkey('ctrl', 'v')
+                        if not self._auto_list_wait(0.02):
+                            return False
+                        if input_ctrl.hotkey('ctrl', 'v') is False:
+                            return False
                         delay = typing_delay + random.uniform(-typing_delay_range, typing_delay_range)
                         delay = max(0, delay)  # 음수 방지
-                        time.sleep(delay)
+                        if not self._auto_list_wait(delay):
+                            return False
 
                 finally:
                     if original_clipboard is not None:
                         try:
-                            time.sleep(0.05)
                             pyperclip.copy(original_clipboard)
                         except (OSError, pyperclip.PyperclipException):
                             pass
@@ -3222,17 +3301,18 @@ class RuleExecutor:
                         pass
 
                     pyperclip.copy(text)
-                    time.sleep(0.05)
-                    input_ctrl.hotkey('ctrl', 'v')
-                    time.sleep(0.1)
+                    if not self._auto_list_wait(0.05):
+                        return False
+                    if input_ctrl.hotkey('ctrl', 'v') is False or not self._auto_list_wait(0.1):
+                        return False
 
                 finally:
                     if original_clipboard is not None:
                         try:
-                            time.sleep(0.05)
                             pyperclip.copy(original_clipboard)
                         except (OSError, pyperclip.PyperclipException):
                             pass
+        return not self._stop_event.is_set()
 
     def _begin_shared_image_scan(self) -> None:
         """Share one immutable capture across a single monitoring scan."""
@@ -3978,7 +4058,10 @@ class RuleExecutor:
             return None
 
         previous_step = self._current_step_num
+        previous_context = self._capture_action_context()
         parent_step = previous_step or "반복"
+        result = None
+        completed = False
 
         try:
             logger.info(f"{_CYAN}{self._step_prefix}↳ 클릭 후 하위액션 {len(child_rules)}개 실행{_RESET}")
@@ -3987,8 +4070,10 @@ class RuleExecutor:
                 result = self._execute_rule_tree_once(child, step_num)
                 if result is not None:
                     return result
+            completed = True
         finally:
-            self._current_step_num = previous_step
+            if completed:
+                self._restore_action_context(previous_context)
 
         return None
 
@@ -4009,6 +4094,7 @@ class RuleExecutor:
             return self._make_result(parent_rule, False, "실행할 하위 액션이 없습니다", start_time)
 
         previous_step = self._current_step_num
+        previous_context = self._capture_action_context()
         previous_value = self._auto_list_current_value
         previous_item = self._auto_list_current_item
         previous_registered_items = self._auto_list_registered_items
@@ -4021,6 +4107,8 @@ class RuleExecutor:
             for item in parent_config["items"]
             if item.get("enabled") and item.get("image")
         ]
+        result = None
+        completed = False
         try:
             logger.info(
                 f"{_CYAN}{self._step_prefix}↳ 처리 하위 액션 {len(child_rules)}개 실행 "
@@ -4031,11 +4119,13 @@ class RuleExecutor:
                 result = self._execute_rule_tree_once(child, f"{parent_step}-{visible_index}")
                 if result is not None:
                     return result
+            completed = True
         finally:
             self._auto_list_current_value = previous_value
             self._auto_list_current_item = previous_item
             self._auto_list_registered_items = previous_registered_items
-            self._current_step_num = previous_step
+            if completed:
+                self._restore_action_context(previous_context)
         return None
 
     def _auto_list_wait(self, seconds: float) -> bool:
@@ -4679,6 +4769,8 @@ class RuleExecutor:
         step_num: str,
     ) -> Optional[RuleExecutionResult]:
         previous_step = self._current_step_num
+        previous_context = self._capture_action_context()
+        step_num = getattr(self, "_original_step_by_rule_id", {}).get(str(rule.rule_id), step_num)
         self._current_step_num = step_num
         action_name = rule.description if rule.description else rule.action_type
         logger.info(f"{_CYAN}[{step_num}] 반복묶음 하위: {action_name}{_RESET}")
@@ -4690,10 +4782,7 @@ class RuleExecutor:
             and rule.action_type != WINDOW_CONTROL_ACTION_TYPE
             and (getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches)
         )
-        self._progress.current_rule = rule.rule_id
-        self._progress.current_action_number = str(step_num)
-        self._progress.current_action_name = action_name
-        self._progress.current_action_is_monitoring = bool(is_monitoring)
+        self._set_action_context(rule, step_num, is_monitoring)
         self._update_progress(f"[{step_num}] {action_name}")
 
         if runtime_skip:
@@ -4714,12 +4803,10 @@ class RuleExecutor:
             self._on_rule_executed(result)
 
         if not result.success or getattr(result, "skip_current_playlist", False):
-            self._current_step_num = previous_step
             return result
 
         wait_result = self._wait_after_rule_result(rule, result)
         if wait_result is not None:
-            self._current_step_num = previous_step
             return wait_result
 
         if runtime_skip or not self._rule_repeats_child_actions(rule):
@@ -4731,11 +4818,43 @@ class RuleExecutor:
             for visible_index, child in enumerate(enabled_children, 1):
                 child_result = self._execute_rule_tree_once(child, f"{step_num}-{visible_index}")
                 if child_result is not None:
-                    self._current_step_num = previous_step
                     return child_result
 
-        self._current_step_num = previous_step
+        self._restore_action_context(previous_context)
         return None
+
+    def _capture_action_context(self) -> tuple:
+        with self._progress_lock:
+            progress = self._progress
+            return (
+                self._current_step_num,
+                getattr(progress, "current_rule", None),
+                getattr(progress, "current_action_number", ""),
+                getattr(progress, "current_action_name", ""),
+                getattr(progress, "current_action_is_monitoring", False),
+                getattr(progress, "message", ""),
+            )
+
+    def _set_action_context(self, rule, step_num: str, is_monitoring: bool = False) -> None:
+        with self._progress_lock:
+            self._current_step_num = str(step_num)
+            self._progress.current_rule = rule.rule_id
+            self._progress.current_action_number = str(step_num)
+            self._progress.current_action_name = rule.description or rule.action_type
+            self._progress.current_action_is_monitoring = bool(is_monitoring)
+            self._progress.message = f"[{step_num}] {self._progress.current_action_name}"
+
+    def _restore_action_context(self, context: tuple) -> None:
+        with self._progress_lock:
+            if self._capture_action_context() == context:
+                return
+            (
+                self._current_step_num, self._progress.current_rule,
+                self._progress.current_action_number, self._progress.current_action_name,
+                self._progress.current_action_is_monitoring, self._progress.message,
+            ) = context
+        if context[1]:
+            self._update_progress(context[5])
 
     def _resolve_partial_auto_list_context(
         self,
@@ -6586,10 +6705,12 @@ class RuleExecutor:
     def _update_progress(self, message: str) -> None:
         """진행 상태 업데이트"""
         try:
-            self._progress.state = self._state
-            self._progress.message = message
+            with self._progress_lock:
+                self._progress.state = self._state
+                self._progress.message = message
+                snapshot = copy.copy(self._progress)
             if self._on_progress:
-                self._on_progress(self._progress)
+                self._on_progress(snapshot)
         except Exception as e:
             logger.debug(f"진행 상태 업데이트 실패: {e}")
 

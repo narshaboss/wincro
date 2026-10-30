@@ -5,6 +5,7 @@ WinCro 설정 화면 모듈
 """
 
 import json
+import copy
 import tkinter as tk
 import threading
 import customtkinter as ctk
@@ -2848,7 +2849,7 @@ del "%~f0"
 
     def _save_settings(self) -> bool:
         """설정 저장"""
-        config = get_config()
+        config = copy.deepcopy(get_config())
         validation_errors = []
 
         # 일반 설정
@@ -2897,6 +2898,8 @@ del "%~f0"
         baud_rate = self._parse_int(self._arduino_baud_var.get(), 300, 115200, "Baud Rate")
         if baud_rate is not None:
             config.arduino.baud_rate = baud_rate
+        else:
+            validation_errors.append("Baud Rate는 300-115200 사이 숫자여야 합니다")
 
         # 재생 설정 (검증 포함)
         speed = self._parse_float(self._speed_var.get(), 0.1, 10.0, "재생 속도")
@@ -2961,7 +2964,7 @@ del "%~f0"
             return False
 
         # 저장
-        if save_config():
+        if save_config(config):
             logger.info("설정 저장 완료")
             self._sync_shutdown_schedule_from_settings()
             if new_auto_start != old_auto_start or old_app_name != config.ui.app_name:
@@ -3071,7 +3074,12 @@ del "%~f0"
             "계속하시겠습니까?"
         )
         if self._ask_confirmation("설정 초기화", reset_message):
-            config_manager.reset()
+            try:
+                config_manager.reset()
+            except (OSError, TypeError, ValueError) as exc:
+                logger.error("설정 초기화 실패: %s", exc)
+                self._show_message("초기화 실패", "원본을 보존했으며 초기화를 완료하지 못했습니다.")
+                return
             self._load_settings()
             logger.info("설정 초기화 완료")
             self._show_message("초기화 완료", "모든 설정이 기본값으로 복원되었습니다.")

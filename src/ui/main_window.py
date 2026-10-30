@@ -7,6 +7,7 @@ WinCro 메인 윈도우 모듈
 import customtkinter as ctk
 import tkinter as tk
 import ctypes
+import copy
 import logging
 import os
 import re
@@ -1391,9 +1392,8 @@ class MainWindow(ctk.CTk):
                 getattr(progress, "current_action_is_monitoring", False)
             )
             self._mini_notification_last_progress_snapshot = self._mini_build_notification_snapshot(progress, message)
-        except Exception:
-            self._mini_notification_last_progress_at = time.monotonic()
-            self._mini_notification_last_progress_is_monitoring = False
+        except Exception as exc:
+            logger.debug("알림 진행 상태 기록 실패: %s", exc)
 
     def _mini_build_notification_snapshot(self, progress, message: str) -> dict:
         """Capture enough playback context to explain a later stuck alert."""
@@ -1500,6 +1500,13 @@ class MainWindow(ctk.CTk):
 
     def _mini_build_stuck_diagnostic_fields(self, elapsed: float, threshold: int) -> tuple[tuple[str, str], ...]:
         snapshot = dict(getattr(self, "_mini_notification_last_progress_snapshot", {}) or {})
+        executor = getattr(self, "_rule_executor", None)
+        live_progress = getattr(executor, "progress", None)
+        if live_progress is not None and getattr(live_progress, "current_rule", None):
+            live_progress = copy.copy(live_progress)
+            snapshot = self._mini_build_notification_snapshot(
+                live_progress, self._mini_format_notification_progress(live_progress),
+            )
         reason = self._mini_infer_stuck_reason(snapshot, elapsed)
         sequence_mode = bool(getattr(self, "_sequence_mode", False))
         sequence_total = len(getattr(self, "_sequence_plans", []) or [])
@@ -1519,7 +1526,7 @@ class MainWindow(ctk.CTk):
             action_text = action_name
 
         fields: list[tuple[str, str]] = [
-            ("마지막 진행", getattr(self, "_mini_notification_last_progress_text", "") or "없음"),
+            ("마지막 진행", snapshot.get("message") or getattr(self, "_mini_notification_last_progress_text", "") or "없음"),
             ("원인 후보", reason),
             ("진행 지연", f"{int(elapsed)}초 / 기준 {threshold}초"),
             ("실행 경과", f"{runtime_elapsed}초"),
@@ -3142,7 +3149,8 @@ class MainWindow(ctk.CTk):
         callback_generation = getattr(self, "_mini_playback_generation", 0)
 
         def on_progress(progress):
-            if not self._mini_is_current_playback_generation(callback_generation):
+            if (not self._mini_is_current_playback_generation(callback_generation)
+                    or self._rule_executor is not executor):
                 return
             self._mini_on_progress(progress)
 
@@ -3413,6 +3421,9 @@ class MainWindow(ctk.CTk):
     def _mini_on_progress(self, progress):
         """미니 플레이어 - 진행 콜백 (ExecutionProgress 객체)"""
         try:
+            progress = copy.copy(progress)
+            callback_generation = getattr(self, "_mini_playback_generation", 0)
+            source_executor = getattr(self, "_rule_executor", None)
             self._mini_record_notification_progress(progress)
             current = progress.initial_completed
             total = progress.initial_total
@@ -3425,6 +3436,10 @@ class MainWindow(ctk.CTk):
 
             def update_status():
                 try:
+                    if not self._mini_is_current_playback_generation(callback_generation):
+                        return
+                    if source_executor is not None and self._rule_executor is not source_executor:
+                        return
                     if self.winfo_exists() and hasattr(self, '_mini_status'):
                         self._mini_set_status(f"▶ {seq_info}{current}/{total} {repeat_info} - {message}")
                         plan_name = getattr(getattr(self, "_mini_active_plan", None), "name", "")

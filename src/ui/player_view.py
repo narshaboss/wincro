@@ -9193,7 +9193,9 @@ class GameModeDialog(ctk.CTkToplevel):
     def _start_execution(self):
         if not self._ensure_arduino_ready_for_execution("특화모드 실행"):
             return
-        unblock_automation_input()
+        if unblock_automation_input() is False:
+            self._append_log("이전 입력 장치 정리가 진행 중입니다. 완료 후 다시 실행하세요.")
+            return
         try:
             self._apply_settings()
         except Exception as e:
@@ -29610,7 +29612,17 @@ class SequenceDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         try:
             if not self._sequence.id:
                 raise ValueError("저장할 재생목록 ID가 없습니다.")
-            self._db.update_sequence(self._sequence)
+            if not self._db.update_sequence(self._sequence):
+                raise OSError("재생목록이 존재하지 않거나 갱신되지 않았습니다.")
+            reloaded = self._db.get_sequence(self._sequence.id)
+            if reloaded is None:
+                raise OSError("저장된 재생목록을 다시 읽지 못했습니다.")
+            expected, actual = self._sequence.to_dict(), reloaded.to_dict()
+            for key in ("created_at", "updated_at", "last_run", "run_count", "success_count", "failure_count"):
+                expected.pop(key, None)
+                actual.pop(key, None)
+            if actual != expected:
+                raise OSError("재생목록 저장 재검증 실패: 액션 또는 설정이 일치하지 않습니다.")
             logger.info(f"재생 저장: {self._sequence.name}")
             self._modified = False
             if show_message:

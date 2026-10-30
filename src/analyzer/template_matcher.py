@@ -7,6 +7,7 @@ OpenCV???????????? ???????? ?????????????
 import cv2
 import numpy as np
 import time
+import threading
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
@@ -56,6 +57,36 @@ class TemplateMatcher:
         self._config = get_config()
         self._cache: Dict[str, np.ndarray] = {}
         self._mask_cache: Dict[str, np.ndarray] = {}
+        self._cache_versions: Dict[str, tuple] = {}
+        self._mask_versions: Dict[str, tuple] = {}
+        self._cache_lock = threading.RLock()
+
+    @staticmethod
+    def _file_version(path: Path) -> tuple:
+        stat = path.stat()
+        return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_dev, stat.st_ino)
+
+    def _load_cached_image(self, path: Path, key: str, cache: dict, versions: dict, mode: int):
+        with self._cache_lock:
+            try:
+                version = self._file_version(path)
+                if key in cache and versions.get(key) == version:
+                    return cache[key]
+                cache.pop(key, None)
+                versions.pop(key, None)
+                image = cv2.imdecode(np.fromfile(str(path), np.uint8), mode)
+                if image is None or self._file_version(path) != version:
+                    return None
+                if len(cache) >= self._MAX_CACHE_SIZE:
+                    oldest = next(iter(cache))
+                    cache.pop(oldest, None)
+                    versions.pop(oldest, None)
+                cache[key], versions[key] = image, version
+                return image
+            except (OSError, ValueError, cv2.error):
+                cache.pop(key, None)
+                versions.pop(key, None)
+                return None
 
     def _load_template(self, template_path: str) -> Optional[np.ndarray]:
         """
@@ -67,38 +98,8 @@ class TemplateMatcher:
         Returns:
             Optional[np.ndarray]: ?????????? ??? None
         """
-        # ??? ???
-        if template_path in self._cache:
-            return self._cache[template_path]
-
-        try:
-            path = Path(template_path)
-            if not path.exists():
-                logger.error(f"????????????? ?????: {template_path}")
-                return None
-
-            # ??? ??? ????
-            img_array = np.fromfile(str(path), np.uint8)
-            template = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            if template is None:
-                logger.error(f"?????????? ??? ???: {template_path}")
-                return None
-
-            # ??? ??? ??? - FIFO ?????? ??????? ???????? ???
-            if len(self._cache) >= self._MAX_CACHE_SIZE:
-                try:
-                    oldest_key = next(iter(self._cache))
-                    del self._cache[oldest_key]
-                except (StopIteration, KeyError):
-                    pass
-
-            # ?????????
-            self._cache[template_path] = template
-            return template
-
-        except Exception as e:
-            logger.error(f"???????? ???: {e}")
-            return None
+        return self._load_cached_image(Path(template_path), template_path,
+                                       self._cache, self._cache_versions, cv2.IMREAD_COLOR)
 
     def _load_mask(self, template_path: str) -> Optional[np.ndarray]:
         """
@@ -106,39 +107,10 @@ class TemplateMatcher:
 
         ?????????? ??????_mask.png
         """
-        # ??? ???
-        if template_path in self._mask_cache:
-            return self._mask_cache[template_path]
-
-        try:
-            path = Path(template_path)
-            mask_path = path.parent / f"{path.stem}_mask{path.suffix}"
-
-            if not mask_path.exists():
-                return None
-
-            # ???????? (??????????
-            img_array = np.fromfile(str(mask_path), np.uint8)
-            mask = cv2.imdecode(img_array, cv2.IMREAD_GRAYSCALE)
-
-            if mask is None:
-                return None
-
-            # ??? ??? ???
-            if len(self._mask_cache) >= self._MAX_CACHE_SIZE:
-                try:
-                    oldest_key = next(iter(self._mask_cache))
-                    del self._mask_cache[oldest_key]
-                except (StopIteration, KeyError):
-                    pass
-
-            self._mask_cache[template_path] = mask
-            logger.debug(f"???????? ???: {mask_path}")
-            return mask
-
-        except Exception as e:
-            logger.debug(f"???????? ???: {e}")
-            return None
+        path = Path(template_path)
+        mask_path = path.parent / f"{path.stem}_mask{path.suffix}"
+        return self._load_cached_image(mask_path, template_path,
+                                       self._mask_cache, self._mask_versions, cv2.IMREAD_GRAYSCALE)
 
     @staticmethod
     def _inspect_template_localization_image(
@@ -617,8 +589,11 @@ class TemplateMatcher:
 
     def clear_cache(self) -> None:
         """Initialize template matcher."""
-        self._cache.clear()
-        self._mask_cache.clear()
+        with self._cache_lock:
+            self._cache.clear()
+            self._mask_cache.clear()
+            self._cache_versions.clear()
+            self._mask_versions.clear()
         logger.debug("cache cleared")
 
     def compare_images(

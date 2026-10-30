@@ -1,7 +1,4 @@
-"""Safe reproducers for open audit findings; no user data or HID is touched.
-
-Strict xfails document the desired contract and must be revisited when fixed.
-"""
+"""Permanent regressions for the six resolved audit findings; no real HID is used."""
 
 import inspect
 import re
@@ -17,7 +14,6 @@ from src.player import rule_executor
 from src.analyzer.automation_models import AutomationRule
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN P1: failed config load can overwrite original on save")
 def test_unreadable_config_must_survive_automatic_save(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     original = b'{"player": {"speed_multiplier": 1.5}, "ui": '
@@ -32,7 +28,6 @@ def test_unreadable_config_must_survive_automatic_save(tmp_path, monkeypatch):
     assert path.read_bytes() == original
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN P1: rejected settings mutate live config")
 def test_rejected_settings_must_not_change_shared_config(monkeypatch):
     config = config_module.AppConfig()
     original = config.system.pc_number
@@ -62,7 +57,6 @@ def test_rejected_settings_must_not_change_shared_config(monkeypatch):
     assert config.system.pc_number == original
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN P1: stop synchronously waits for HID release")
 def test_stop_must_not_wait_for_device_io(monkeypatch):
     executor = rule_executor.RuleExecutor()
     monkeypatch.setattr(rule_executor, "block_automation_input", lambda *args: None)
@@ -76,21 +70,21 @@ def test_stop_must_not_wait_for_device_io(monkeypatch):
     started = time.perf_counter()
     executor.stop()
     elapsed = time.perf_counter() - started
-    assert calls == [1]
     assert executor._stop_event.is_set()
     assert elapsed < 0.1, f"UI caller blocked for {elapsed:.3f}s"
+    assert executor._stop_cleanup_done.wait(2)
+    assert calls == [1]
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN P2: wait action ignores stop until sleep finishes")
 def test_wait_action_must_wake_on_stop(monkeypatch):
     executor = rule_executor.RuleExecutor()
     executor._pause_event.set()
     entered = threading.Event()
-    real_sleep = time.sleep
-    def observed_sleep(seconds):
+    real_wait = executor._auto_list_wait
+    def observed_wait(seconds):
         entered.set()
-        real_sleep(seconds)
-    monkeypatch.setattr(rule_executor.time, "sleep", observed_sleep)
+        return real_wait(seconds)
+    monkeypatch.setattr(executor, "_auto_list_wait", observed_wait)
     rule = AutomationRule(action_type="wait", action_text="0.4")
     results = []
     worker = threading.Thread(target=lambda: results.append(executor._execute_rule(rule)))
@@ -103,9 +97,9 @@ def test_wait_action_must_wake_on_stop(monkeypatch):
     finally:
         worker.join(2)
     assert not still_running
+    assert len(results) == 1 and results[0].success is False
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN P2: TemplateMatcher reuses replaced image by path only")
 def test_replaced_template_must_invalidate_cache(tmp_path):
     import cv2
     import numpy as np
@@ -121,7 +115,6 @@ def test_replaced_template_must_invalidate_cache(tmp_path):
     assert np.array_equal(matcher._load_template(str(path)), second)
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN P1: sequence Save reports success when DB updates zero rows")
 def test_sequence_save_must_reject_missing_database_record(tmp_path):
     from src.database.db_manager import DatabaseManager
     from src.database.models import Action, Sequence

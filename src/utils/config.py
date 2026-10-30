@@ -8,8 +8,11 @@ helpers that the rest of the app already imports.
 from __future__ import annotations
 
 import json
+import copy
+import shutil
 import threading
 import sys
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, List, Optional
@@ -240,31 +243,56 @@ class ConfigManager:
                     local_defaults_changed = self._normalize_loaded_local_config(self._config)
                     self._load_status = "loaded"
                     self._load_error = ""
+                    self._source_read_failed = False
                     if local_defaults_changed:
-                        self._persist_loaded_config_sections(self._config, ("player", "notification"))
+                        if not self._persist_loaded_config_sections(self._config, ("player", "notification")):
+                            self._load_status = "error"
+                            self._load_error = "설정 마이그레이션 저장 재검증 실패"
                 except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     self._config = AppConfig()
                     self._seed_packaged_defaults(self._config)
                     self._load_status = "error"
                     self._load_error = f"{type(e).__name__}: {e}"
+                    self._source_read_failed = True
             else:
                 self._config = AppConfig()
                 self._seed_packaged_defaults(self._config)
                 self._load_status = "missing"
                 self._load_error = ""
+                self._source_read_failed = False
             return self._config
 
-    def save(self) -> bool:
+    def save(self, candidate: Optional[AppConfig] = None, *, _allow_recovery: bool = False) -> bool:
         with self._lock:
-            if self._config is None:
+            if self._config is None and candidate is None:
+                return False
+            # Read failures are different from retryable write failures. Never
+            # replace an unreadable source with the fallback defaults on exit.
+            if getattr(self, "_source_read_failed", False) and not _allow_recovery:
                 return False
             try:
-                data = self._config_to_dict(self._config)
+                data = self._config_to_dict(candidate if candidate is not None else self._config)
                 dump_json_file(CONFIG_FILE, data, ensure_ascii=False, indent=2)
                 if load_json_file(CONFIG_FILE) != data:
                     raise OSError("설정 저장 재검증 실패")
+                if candidate is not None:
+                    committed = self._dict_to_config(data)
+                    if self._config is None:
+                        self._config = committed
+                    else:
+                        # Playback components retain references to both the root
+                        # and its sections; publish only after durable readback.
+                        for item in fields(AppConfig):
+                            old = getattr(self._config, item.name)
+                            new = getattr(committed, item.name)
+                            if hasattr(old, "__dataclass_fields__"):
+                                for member in fields(old):
+                                    setattr(old, member.name, copy.deepcopy(getattr(new, member.name)))
+                            else:
+                                setattr(self._config, item.name, copy.deepcopy(new))
                 self._load_status = "loaded"
                 self._load_error = ""
+                self._source_read_failed = False
                 return True
             except (OSError, TypeError, ValueError) as exc:
                 self._load_status = "error"
@@ -279,9 +307,14 @@ class ConfigManager:
 
     def reset(self) -> AppConfig:
         with self._lock:
-            self._config = AppConfig()
-        self.save()
-        return self._config
+            if CONFIG_FILE.exists():
+                backup = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.before-reset-{time.time_ns()}.bak")
+                shutil.copy2(CONFIG_FILE, backup)
+                if backup.read_bytes() != CONFIG_FILE.read_bytes():
+                    raise OSError("설정 초기화 전 원본 백업 검증 실패")
+            if not self.save(AppConfig(), _allow_recovery=True):
+                raise OSError(self._load_error or "설정 초기화 저장 실패")
+            return self._config
 
     def update(self, **kwargs: Any) -> bool:
         with self._lock:
@@ -291,10 +324,11 @@ class ConfigManager:
                 return False
 
             try:
+                candidate = copy.deepcopy(self._config)
                 for key, value in kwargs.items():
-                    if hasattr(self._config, key):
-                        setattr(self._config, key, value)
-                return self.save()
+                    if hasattr(candidate, key):
+                        setattr(candidate, key, value)
+                return self.save(candidate)
             except (AttributeError, TypeError, ValueError):
                 return False
 
@@ -315,9 +349,14 @@ class ConfigManager:
         }
 
     def _dict_to_config(self, data: dict) -> AppConfig:
+        if not isinstance(data, dict):
+            raise TypeError("설정 파일의 최상위 값은 객체여야 합니다.")
+
         def filter_known_keys(cls, values: Optional[dict]) -> dict:
-            if not values:
+            if values is None:
                 return {}
+            if not isinstance(values, dict):
+                raise TypeError(f"{cls.__name__} 설정은 객체여야 합니다.")
             known = {field_info.name for field_info in fields(cls)}
             return {key: value for key, value in values.items() if key in known}
 
@@ -480,12 +519,15 @@ class ConfigManager:
 
     def _persist_loaded_config_sections(self, config: AppConfig, sections: tuple[str, ...]) -> bool:
         """Persist selected migrated sections, preserving other PC-local settings."""
+        if getattr(self, "_source_read_failed", False):
+            return False
         try:
             raw_data: dict[str, Any] = {}
             if CONFIG_FILE.exists():
                 loaded = load_json_file(CONFIG_FILE)
-                if isinstance(loaded, dict):
-                    raw_data = loaded
+                if not isinstance(loaded, dict):
+                    raise TypeError("설정 파일의 최상위 값은 객체여야 합니다.")
+                raw_data = loaded
             if "player" in sections:
                 raw_data["player"] = asdict(config.player)
             if "notification" in sections:
@@ -538,8 +580,8 @@ def get_config() -> AppConfig:
     return config_manager.get()
 
 
-def save_config() -> bool:
-    return config_manager.save()
+def save_config(candidate: Optional[AppConfig] = None) -> bool:
+    return config_manager.save(candidate) if candidate is not None else config_manager.save()
 
 
 def load_config() -> AppConfig:

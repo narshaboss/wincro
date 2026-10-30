@@ -51,6 +51,8 @@ _RECORDED_DIRECTION_HOLD_DELAY_CAP = 0.012
 _RECORDED_DIRECTION_POST_DELAY_CAP = 0.006
 _input_block_event = threading.Event()
 _input_block_reason = ""
+_cleanup_condition = threading.Condition()
+_cleanup_tokens: set[object] = set()
 
 
 @contextmanager
@@ -72,11 +74,41 @@ def block_automation_input(reason: str = "") -> None:
     _input_block_event.set()
 
 
-def unblock_automation_input() -> None:
+def begin_input_cleanup(reason: str = "") -> object:
+    """Reserve a process-wide release barrier without performing device I/O."""
+    token = object()
+    with _cleanup_condition:
+        _cleanup_tokens.add(token)
+        block_automation_input(reason or "input cleanup")
+    return token
+
+
+def finish_input_cleanup(token: object) -> None:
+    with _cleanup_condition:
+        _cleanup_tokens.discard(token)
+        _cleanup_condition.notify_all()
+
+
+def wait_for_input_cleanup(timeout: float = 0.0) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    with _cleanup_condition:
+        while _cleanup_tokens:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _cleanup_condition.wait(remaining)
+        return True
+
+
+def unblock_automation_input() -> bool:
     """Allow automation-generated input again."""
     global _input_block_reason
-    _input_block_reason = ""
-    _input_block_event.clear()
+    with _cleanup_condition:
+        if _cleanup_tokens:
+            return False
+        _input_block_reason = ""
+        _input_block_event.clear()
+        return True
 
 
 def is_automation_input_blocked() -> bool:

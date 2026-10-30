@@ -167,8 +167,12 @@ def test_repeated_stop_uses_one_join_worker(monkeypatch):
         for thread in threading.enumerate()
         if thread.name == "wincro-rule-stop-join" and thread.is_alive()
     ]
-    assert len(matching) == 1
-    release_join.set()
+    try:
+        assert len(matching) == 1
+    finally:
+        release_join.set()
+        assert rule_executor_module.wait_for_input_cleanup(timeout=2.0)
+        rule_executor_module.unblock_automation_input()
 
 
 def test_dialog_thumbnail_references_and_monitoring_callbacks_are_bounded():

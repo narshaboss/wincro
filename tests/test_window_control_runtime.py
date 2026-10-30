@@ -425,6 +425,7 @@ def _executor(clock, runner):
         "ACTION_CALL_ACTION_TYPE": "action_call", "logger": Mock(),
         "get_input_controller": Mock(side_effect=AssertionError("Unexpected input-controller access")),
         "wait_for_window_control": runner,
+        "copy": copy,
     }, owner="RuleExecutor")
     host = type("ExecutorHarness", (), {name: namespace[name] for name in names})()
     host._stop_event = SimpleNamespace(is_set=lambda: clock.stopped, wait=clock.wait)
@@ -432,6 +433,7 @@ def _executor(clock, runner):
     host._step_prefix = "[1] "
     host._on_progress = Mock()
     host._progress = SimpleNamespace(message="window control", current_action_name="window control")
+    host._progress_lock = threading.RLock()
     host._state = "running"
     return host, namespace
 
@@ -817,7 +819,8 @@ def _review_rule(rule_id="window", action_type="window_control", **overrides):
 
 def _review_executor(clock, runner):
     host, namespace = _executor(clock, runner)
-    names = {"_execute_rule", "_handle_trigger_gate", "_execute_rule_tree_once", "_execution_loop", "_safe_int"}
+    names = {"_execute_rule", "_handle_trigger_gate", "_execute_rule_tree_once", "_execution_loop", "_safe_int",
+             "_capture_action_context", "_restore_action_context", "_set_action_context"}
     namespace.update({
         "_CYAN": "", "_GREEN": "", "_YELLOW": "", "_RED": "", "_RESET": "",
         "ExecutionState": SimpleNamespace(
@@ -939,7 +942,7 @@ def test_window_monitor_flags_do_not_hide_controller_or_mark_progress_as_monitor
         parent = _review_rule("parent", "click", children=[window])
         result = host._execute_rule_tree_once(parent, "4")
         assert (result is None) is ready
-        assert host._current_step_num == "previous-step"
+        assert host._current_step_num == ("previous-step" if ready else "4-1")
         expected = ["parent", "window"] + (["following-child"] if ready else [])
     else:
         def flatten(rules, prefix=""):
