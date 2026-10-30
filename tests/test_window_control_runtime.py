@@ -644,3 +644,290 @@ def test_window_watchdog_does_not_treat_empty_http_response_as_delivery(monkeypa
     assert len(watchdog.requests) == 3
     assert not watchdog.ctx._mini_notification_last_sent_at
     assert watchdog.ctx._is_running
+
+
+def _review_rule(rule_id="window", action_type="window_control", **overrides):
+    fields = dict(
+        rule_id=rule_id, action_type=action_type, rule_type="monitor", description=rule_id,
+        target_image=None, target_images=[], action_keys=[], action_text=None,
+        trigger_image="stale-trigger.png" if action_type == "window_control" else None,
+        stop_playlist_on_trigger_missing=True, rewind_previous_on_trigger_missing=True,
+        trigger_missing_keys=["enter"], trigger_missing_rewind_keys=["escape"],
+        window_control_config=dict(WINDOW_CONFIG), is_monitoring_mode=False,
+        monitoring_watches=[], children=[], enabled=True, wait_after=0,
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _review_executor(clock, runner):
+    host, namespace = _executor(clock, runner)
+    names = {"_execute_rule", "_handle_trigger_gate", "_execute_rule_tree_once", "_execution_loop"}
+    namespace.update({
+        "_CYAN": "", "_GREEN": "", "_YELLOW": "", "_RED": "", "_RESET": "",
+        "ExecutionState": SimpleNamespace(
+            RUNNING_INITIAL="running", MONITORING="monitoring", COMPLETED="completed", FAILED="failed",
+        ),
+        "Path": Mock(side_effect=AssertionError("Window control must not inspect image files")),
+        "block_automation_input": Mock(side_effect=AssertionError("Unexpected input-safety mutation")),
+    })
+    _load(EXECUTOR, names, namespace, owner="RuleExecutor")
+    for name in names:
+        setattr(host, name, namespace[name].__get__(host))
+    host._current_step_num = "previous-step"
+    host._results = []
+    host._on_rule_executed = Mock()
+    host._on_error = Mock()
+    host._should_skip_runtime_action = lambda rule: False
+    host._is_runtime_action_enabled = lambda rule: getattr(rule, "enabled", True)
+    host._rule_repeats_child_actions = lambda rule: False
+    host._wait_after_rule_result = Mock(return_value=None)
+    for name in (
+        "_execute_monitoring_mode", "_wait_for_trigger", "_capture_trigger_input_window",
+        "_execute_trigger_missing_keys", "_prepare_for_click_after_trigger", "_wait_for_image",
+        "_find_image_on_screen", "_click_at",
+    ):
+        setattr(host, name, Mock(side_effect=AssertionError(f"Unexpected route: {name}")))
+
+    dispatched = []
+
+    def execute_once(rule, *args, **kwargs):
+        dispatched.append(rule.rule_id)
+        gate = host._handle_trigger_gate(rule, datetime.now(), kwargs.get("step_num", ""))
+        if gate is not None:
+            return gate
+        if rule.action_type == "window_control":
+            return host._execute_rule(rule, kwargs.get("step_num", ""))
+        return host._make_result(rule, True, "ordinary child completed", datetime.now())
+
+    host._execute_rule_with_retry = Mock(side_effect=execute_once)
+    return host, namespace, dispatched
+
+
+def test_window_trigger_gate_returns_before_file_lookup_or_pretrigger_input():
+    host, namespace, _ = _review_executor(VirtualClock(), Mock())
+    rule = _review_rule(is_monitoring_mode=True, monitoring_watches=[{"image": "stale-watch.png"}])
+    before = copy.deepcopy(rule)
+
+    assert host._handle_trigger_gate(rule, datetime.now(), "2-1", can_rewind_previous=True) is None
+
+    assert rule == before
+    namespace["Path"].assert_not_called()
+    namespace["get_input_controller"].assert_not_called()
+    namespace["wait_for_window_control"].assert_not_called()
+    host._on_progress.assert_not_called()
+    for name in ("_wait_for_trigger", "_capture_trigger_input_window", "_execute_trigger_missing_keys",
+                 "_prepare_for_click_after_trigger"):
+        getattr(host, name).assert_not_called()
+
+
+@pytest.mark.parametrize("rule_type", ["monitor", "wait_for_image", "wait_for_disappear", "hotkey", "unknown"])
+def test_window_action_dispatch_precedes_rule_type_and_stale_monitor_flags(rule_type):
+    runner = Mock(return_value=(True, "verified window"))
+    host, namespace, _ = _review_executor(VirtualClock(), runner)
+    rule = _review_rule(rule_type=rule_type, is_monitoring_mode=True,
+                        monitoring_watches=[{"image": "stale-watch.png"}])
+    result = host._execute_rule(rule, "3-2")
+    assert result.success is True and result.message == "verified window"
+    assert result.rule_id == rule.rule_id
+    runner.assert_called_once()
+    assert runner.call_args.args == (WINDOW_CONFIG,)
+    namespace["get_input_controller"].assert_not_called()
+    namespace["Path"].assert_not_called()
+    for name in ("_execute_monitoring_mode", "_wait_for_image", "_find_image_on_screen", "_click_at"):
+        getattr(host, name).assert_not_called()
+
+
+@pytest.mark.parametrize("entrypoint", ["tree", "loop"])
+@pytest.mark.parametrize("monitor_flag,watches", [
+    (True, []), (False, [{"image": "stale-watch.png"}]), (True, [{"image": "stale-watch.png"}]),
+])
+@pytest.mark.parametrize("ready", [True, False])
+def test_window_monitor_flags_do_not_hide_controller_or_mark_progress_as_monitoring(
+    entrypoint, monitor_flag, watches, ready,
+):
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("ready" if ready else "unsupported", "controller result"))
+    runner = _runner(clock)
+
+    def run(config, **kwargs):
+        return runner["wait_for_window_control"](config, controller=controller, **kwargs)
+
+    host, namespace, dispatched = _review_executor(clock, run)
+    child = _review_rule("following-child", "key_press", rule_type="fixed_sequence")
+    window = _review_rule(is_monitoring_mode=monitor_flag, monitoring_watches=copy.deepcopy(watches), children=[child])
+    progress = []
+    host._on_progress = Mock(side_effect=lambda p: progress.append(
+        (p.current_rule, p.current_action_is_monitoring)))
+
+    if entrypoint == "tree":
+        parent = _review_rule("parent", "click", children=[window])
+        result = host._execute_rule_tree_once(parent, "4")
+        assert (result is None) is ready
+        assert host._current_step_num == "previous-step"
+        expected = ["parent", "window"] + (["following-child"] if ready else [])
+    else:
+        def flatten(rules, prefix=""):
+            result = []
+            for index, rule in enumerate(rules, 1):
+                step = f"{prefix}-{index}" if prefix else str(index)
+                result.append((rule, step))
+                result.extend(flatten(rule.children, step))
+            return result
+
+        host._current_plan = SimpleNamespace(name="window route", initial_rules=[window], monitoring_rules=[])
+        host._flatten_rules_with_step = flatten
+        host._rule_id_step_map = lambda rules: {rule.rule_id: step for rule, step in flatten(rules)}
+        host._format_step_alias = lambda runtime, original: original or runtime
+        host._wait_for_resume = Mock(return_value=False)
+        host._trigger_missing_rewind_attempts = {}
+        host._next_runtime_rule = lambda rules, index: rules[index] if index < len(rules) else None
+        host._target_images_for_rule = lambda rule: []
+        host._progress.initial_completed = 0
+        host._default_wait = 0
+        host._input_reset_completed = True
+        host._end_shared_image_scan = Mock()
+        host._reset_input_state = Mock(side_effect=AssertionError("Unexpected native input reset"))
+        host._notify_complete = Mock()
+        host._execution_loop()
+        host._notify_complete.assert_called_once()
+        assert host._notify_complete.call_args.args[0] is ready
+        host._end_shared_image_scan.assert_called_once_with()
+        host._reset_input_state.assert_not_called()
+        expected = ["window"] + (["following-child"] if ready else [])
+
+    assert dispatched == expected
+    assert [result.rule_id for result in host._results] == expected
+    assert len(controller.steps) == 1 and controller.steps[0][1] == WINDOW_CONFIG
+    assert ("window", False) in progress
+    assert all(not is_monitoring for _, is_monitoring in progress)
+    host._execute_monitoring_mode.assert_not_called()
+    host._execute_trigger_missing_keys.assert_not_called()
+    host._capture_trigger_input_window.assert_not_called()
+    namespace["get_input_controller"].assert_not_called()
+    assert not clock.waits
+
+
+def _legacy_selector():
+    namespace = _load("src/player/action_player.py", {"_get_enabled_actions"}, {
+        "is_runtime_action_enabled": Mock(side_effect=lambda action, config: getattr(action, "enabled", True)),
+        "should_skip_pumpkin_action": Mock(side_effect=lambda action, config: getattr(action, "runtime_skip", False)),
+    }, owner="ActionPlayer")
+    host = SimpleNamespace(_config=SimpleNamespace(player=object()))
+    host._get_enabled_actions = namespace["_get_enabled_actions"].__get__(host)
+    return host, namespace
+
+
+def test_legacy_without_window_control_preserves_top_level_only_selection():
+    host, namespace = _legacy_selector()
+    child = _action("key_press", "nested-key")
+    parent = _action("click", "parent", children=[child])
+    disabled = _action("click", "disabled", enabled=False)
+    skipped = _action("click", "skipped", runtime_skip=True)
+    sequence = SimpleNamespace(actions=[parent, disabled, skipped])
+    before = copy.deepcopy(sequence)
+    assert host._get_enabled_actions(sequence) == [parent]
+    assert sequence == before
+    assert all(c.args[1] is host._config.player for c in namespace["is_runtime_action_enabled"].call_args_list)
+
+
+def test_legacy_selection_keeps_existing_lightweight_actions_without_action_type():
+    host, _ = _legacy_selector()
+    enabled = SimpleNamespace(description="ordinary", enabled=True)
+    disabled = SimpleNamespace(description="disabled", enabled=False)
+    skipped = SimpleNamespace(description="skipped", enabled=True, runtime_skip=True)
+    assert host._get_enabled_actions(SimpleNamespace(actions=[enabled, disabled, skipped])) == [enabled]
+
+
+def test_legacy_window_presence_recursively_collects_all_children_in_depth_first_order():
+    host, _ = _legacy_selector()
+    window_child = _action("key_press", "window-child")
+    window = _action(children=[window_child])
+    branch = _action("click", "branch", children=[window])
+    root = _action("click", "root", children=[branch])
+    other_child = _action("hotkey", "other-child")
+    other = _action("click", "other", children=[other_child])
+    sequence = SimpleNamespace(actions=[root, other])
+    before = copy.deepcopy(sequence)
+    selected = host._get_enabled_actions(sequence)
+    assert selected == [root, branch, window, window_child, other, other_child]
+    assert all(actual is expected for actual, expected in zip(
+        selected, [root, branch, window, window_child, other, other_child]))
+    assert sequence == before
+
+
+def test_legacy_recursive_selection_filters_disabled_branches_and_deduplicates_shared_nodes():
+    host, _ = _legacy_selector()
+    window = _action()
+    hidden = _action("key_press", "hidden")
+    disabled_parent = _action("click", "disabled", enabled=False, children=[hidden])
+    kept_child = _action("key_press", "kept-child")
+    skip_child = _action("key_press", "skip-child")
+    skipped_parent = _action("click", "skipped", runtime_skip=True, children=[skip_child])
+    root = _action("click", "root", children=[window, kept_child])
+    sequence = SimpleNamespace(actions=[root, disabled_parent, skipped_parent, kept_child, window])
+    selected = host._get_enabled_actions(sequence)
+    assert selected == [root, window, kept_child, skip_child]
+    assert len({id(action) for action in selected}) == 4
+
+
+def test_disabled_window_presence_enables_recursion_without_executing_its_disabled_branch():
+    host, _ = _legacy_selector()
+    child = _action("key_press", "ordinary-child")
+    parent = _action("click", "ordinary-parent", children=[child])
+    hidden = _action("key_press", "hidden-child")
+    disabled_window = _action(enabled=False, children=[hidden])
+    assert host._get_enabled_actions(SimpleNamespace(actions=[parent, disabled_window])) == [parent, child]
+
+
+@pytest.mark.parametrize("failed_type", ["window_control", "click"])
+def test_legacy_window_failure_finalizes_false_before_any_child_or_following_input(failed_type):
+    host, _ = _legacy_selector()
+    state = SimpleNamespace(STOPPED="stopped", PAUSED="paused", COMPLETED="completed", FAILED="failed")
+    namespace = _load("src/player/action_player.py", {"_play_loop"}, {
+        "time": SimpleNamespace(time=lambda: 10.0), "PlayerState": state, "logger": Mock(),
+        "effective_action_repeat_count": lambda action, config: 3 if action.action_type == "window_control" else 1,
+    }, owner="ActionPlayer")
+    nested = _action("key_press", "nested-input")
+    first = _action(failed_type, "failed", children=[nested], repeat_delay=0)
+    following = _action("key_press", "following-input")
+    sequence = SimpleNamespace(actions=[first, following])
+    inputs = Mock()
+
+    def execute(action, speed):
+        if action is first:
+            return False, "window unavailable"
+        inputs(action.action_id)
+        return True, ""
+
+    host._state = "running"
+    host._emergency_stop = SimpleNamespace(is_triggered=False)
+    host._progress = SimpleNamespace()
+    host._execution_logger = Mock()
+    host._execution_log = SimpleNamespace()
+    host._is_execution_generation_active = Mock(return_value=True)
+    host._on_action_start = Mock()
+    host._on_action_complete = Mock()
+    host._update_progress = Mock()
+    host._execute_action = Mock(side_effect=execute)
+    host._finalize_execution = Mock()
+    host._reset_input_state = Mock(side_effect=AssertionError("A failed window must not start another repeat"))
+    host._wait_for_legacy_stop = Mock(side_effect=AssertionError("Unexpected wait after failed window"))
+
+    namespace["_play_loop"](host, sequence, repeat_count=2 if failed_type == "window_control" else 1,
+                            speed_multiplier=1.0, generation=47)
+
+    host._finalize_execution.assert_called_once()
+    assert host._finalize_execution.call_args.kwargs == {"generation": 47}
+    host._reset_input_state.assert_not_called()
+    host._wait_for_legacy_stop.assert_not_called()
+    if failed_type == "window_control":
+        host._execute_action.assert_called_once_with(first, 1.0)
+        host._finalize_execution.assert_called_once_with(False, "window unavailable", generation=47)
+        host._on_action_complete.assert_called_once_with(0, first, False)
+        inputs.assert_not_called()
+    else:
+        assert [c.args[0] for c in host._execute_action.call_args_list] == [first, following]
+        inputs.assert_called_once_with("following-input")
+        assert host._finalize_execution.call_args.args[0] is True, "Keep ordinary legacy failure policy unchanged"
+        assert host._execution_log.failed_steps == 1 and host._execution_log.completed_steps == 1

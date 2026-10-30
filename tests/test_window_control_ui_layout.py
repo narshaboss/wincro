@@ -9,9 +9,11 @@ normal CTk process DPI awareness is retained to avoid coordinate virtualization.
 All target enumeration is mocked. No target action, input emulation, process
 launch, external activation, get_result(), or modal wait is used here.
 Save callbacks test the UI contract only, not durable parent persistence.
+One module-scoped CTk root owns every case; only its child widgets are replaced.
 """
 
 import os
+from importlib import import_module
 from pathlib import Path
 import sys
 import time
@@ -111,15 +113,71 @@ def _assert_dialog_layout(dialog):
         assert _rect(dialog._error_label)[3] <= _rect(dialog._save_button)[1] + 2
 
 
-@pytest.fixture(params=(1.0, 1.25, 1.5), ids=("100pct", "125pct", "150pct"))
-def gui(request, monkeypatch):
-    scale = request.param
-    monkeypatch.setattr(ScalingTracker, "deactivate_automatic_dpi_awareness", False)
-    monkeypatch.setattr(ScalingTracker, "get_window_dpi_scaling", classmethod(lambda cls, window: 1.0))
+@pytest.fixture(scope="module")
+def ui_root():
+    """Match production's single Tcl interpreter instead of recreating Tk."""
     old_widget_scale = ScalingTracker.widget_scaling
     old_window_scale = ScalingTracker.window_scaling
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ScalingTracker, "deactivate_automatic_dpi_awareness", False)
+        patch.setattr(ScalingTracker, "get_window_dpi_scaling", classmethod(lambda cls, window: 1.0))
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)
+        root = ctk.CTk(fg_color=COLORS["bg_content"])
+        try:
+            assert root.winfo_screenwidth() >= SCREEN[0] and root.winfo_screenheight() >= SCREEN[1], (
+                "The isolated GUI runner needs a desktop of at least 1024x768."
+            )
+            root.title("Window-control isolated CI QA")
+            root.overrideredirect(True)
+            tk.Wm.geometry(root, "1024x768+0+0")
+            _pump(root)
+            yield root
+        finally:
+            root.destroy()
+            ctk.set_widget_scaling(old_widget_scale)
+            ctk.set_window_scaling(old_window_scale)
+
+
+def _cleanup_gui_case(root, bindings, baseline_commands):
+    # Keep root-owned CTk polling alive, but cancel widget timers before their
+    # registered Tcl commands disappear with the widgets.
+    root_commands = set(root._tclCommands or ())
+    live_root_timers = set()
+    for timer in root.tk.splitlist(root.tk.call("after", "info")):
+        command = str(root.tk.call("after", "info", timer)[0])
+        if command in root_commands:
+            live_root_timers.add(command)
+        else:
+            root.tk.call("after", "cancel", timer)
+    for sequence in root.bind_all():
+        if sequence not in bindings:
+            root.unbind_all(sequence)
+    for sequence, script in bindings.items():
+        root.tk.call("bind", "all", sequence, script)
+    for child in list(root.winfo_children()):
+        child.destroy()
+    current_grab = root.grab_current()
+    if current_grab is not None:
+        current_grab.grab_release()
+    # CTkScrollableFrame.bind_all registers commands on the root, not the frame.
+    for command in set(root._tclCommands or ()) - baseline_commands - live_root_timers:
+        root.deletecommand(command)
+    assert not root.winfo_children()
+    assert root.grab_current() is None
+
+
+@pytest.fixture(params=(1.0, 1.25, 1.5), ids=("100pct", "125pct", "150pct"))
+def gui(request, monkeypatch, ui_root):
+    scale = request.param
+    root = ui_root
+    bindings = {sequence: root.bind_all(sequence) for sequence in root.bind_all()}
+    baseline_commands = set(root._tclCommands or ())
     ctk.set_widget_scaling(scale)
     ctk.set_window_scaling(scale)
+    # Scaling an existing CTk root temporarily pins its min/max dimensions.
+    root._set_scaled_min_max()
+    tk.Wm.geometry(root, "1024x768+0+0")
     # Native target access is forbidden even if future dialog code bypasses its mock.
     forbidden = Mock(side_effect=AssertionError("Native target control is forbidden in UI QA."))
     monkeypatch.setattr(backend_module, "_Win32API", forbidden)
@@ -135,7 +193,6 @@ def gui(request, monkeypatch):
     monkeypatch.setattr(dialog_module, "WindowController", controller_factory)
     monkeypatch.setattr(dialog_module.WindowControlDialog, "winfo_screenwidth", lambda self: SCREEN[0])
     monkeypatch.setattr(dialog_module.WindowControlDialog, "winfo_screenheight", lambda self: SCREEN[1])
-    root = None
     errors = []
     artifact_dir = Path(os.environ.get(
         "WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS", "artifacts/window_control",
@@ -154,15 +211,7 @@ def gui(request, monkeypatch):
         )
 
     try:
-        root = ctk.CTk(fg_color=COLORS["bg_content"])
         root.report_callback_exception = lambda *exception: errors.append(exception)
-        assert root.winfo_screenwidth() >= SCREEN[0] and root.winfo_screenheight() >= SCREEN[1], (
-            "The isolated GUI runner needs a desktop of at least 1024x768."
-        )
-        root.title("Window-control isolated CI QA")
-        root.overrideredirect(True)
-        # Raw Tk geometry is physical; CTk.geometry would scale the test surface twice.
-        tk.Wm.geometry(root, "1024x768+0+0")
         ctk.CTkLabel(
             root, text=f"Isolated UI QA / 1024x768 / {scale * 100:.0f}%",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
@@ -175,13 +224,13 @@ def gui(request, monkeypatch):
         )
     finally:
         try:
-            if root is not None and root.winfo_exists():
+            if root.winfo_exists():
                 screenshot("final")
         finally:
-            if root is not None:
-                root.destroy()
-            ctk.set_widget_scaling(old_widget_scale)
-            ctk.set_window_scaling(old_window_scale)
+            _cleanup_gui_case(root, bindings, baseline_commands)
+            ctk.set_widget_scaling(1.0)
+            ctk.set_window_scaling(1.0)
+            root._set_scaled_min_max()
         assert not errors, errors
         forbidden.assert_not_called()
 
@@ -411,3 +460,159 @@ def test_action_button_mixin_below_existing_six_rows(gui, is_plan):
         assert button._text_label.winfo_reqwidth() <= button.winfo_width() + 2
     for first, second in zip(buttons[::2], buttons[1::2]):
         assert _rect(first)[2] <= _rect(second)[0]
+
+
+def _descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _descendants(child)
+
+
+@pytest.mark.parametrize("gui", (1.0,), indirect=True, ids=("100pct",))
+@pytest.mark.parametrize("kind", ("plan", "playlist"))
+def test_actual_editor_compact_window_control_row(gui, monkeypatch, kind):
+    """Real constructors/renderers at 100%; not a scaled-editor fit claim.
+
+    Existing PlanDetailDialog requires at least 980x700 logical pixels. Its
+    whole-window small-screen/high-DPI layout is intentionally outside this QA.
+    """
+    from src.analyzer.automation_models import AutomationPlan, AutomationRule
+    from src.database.models import Action, Sequence
+    from src.utils import input_controller
+
+    config = {"executable_name": "qa.exe", "title_contains": "QA", "operation": "minimize"}
+    action = Action(
+        action_type="window_control", description="QA", window_control_config=dict(config),
+        wait_after=0.5,
+    )
+    rule = AutomationRule(
+        action_type="window_control", description="QA", window_control_config=dict(config),
+        wait_after=0.5,
+    )
+    sequence = Sequence(id=987654, name="CI-only compact playlist", actions=[action])
+    plan = AutomationPlan(
+        plan_id="ci_only_window_control_row", name="CI-only compact plan", initial_rules=[rule],
+    )
+    forbidden = Mock(side_effect=AssertionError("Compact-row QA must not execute, inject input, or save."))
+    fake_db = SimpleNamespace(
+        get_sequence=Mock(return_value=sequence),
+        get_all_sequences=Mock(return_value=[sequence]),
+        get_all_recordings=Mock(return_value=[]),
+        get_recording=Mock(return_value=None),
+        update_sequence=forbidden,
+        create_sequence=forbidden,
+        delete_sequence=forbidden,
+    )
+    database = import_module("src.database")
+    db_manager = import_module("src.database.db_manager")
+    read_db = Mock(return_value=fake_db)
+    monkeypatch.setattr(db_manager.DatabaseManager, "_get_connection", forbidden)
+    # Install input barriers before importing the heavyweight editor module.
+    for name in (
+        "moveTo", "moveRel", "click", "doubleClick", "rightClick", "mouseDown", "mouseUp",
+        "dragTo", "dragRel", "scroll", "hscroll", "vscroll", "press", "keyDown", "keyUp",
+        "hotkey", "write", "typewrite",
+    ):
+        monkeypatch.setattr(input_controller.pyautogui, name, forbidden)
+
+    player_view = import_module("src.ui.player_view")
+    # Patch imported aliases after import so teardown does not leave test doubles
+    # cached inside another module's namespace for subsequent tests.
+    monkeypatch.setattr(input_controller, "get_input_controller", forbidden)
+    monkeypatch.setattr(database, "get_db", read_db)
+    monkeypatch.setattr(db_manager, "get_db", read_db)
+    for module_name in ("src.player.action_player", "src.player.rule_executor"):
+        runtime = sys.modules.get(module_name)
+        if runtime is not None:
+            monkeypatch.setattr(runtime, "get_input_controller", forbidden)
+    position_setup = Mock()
+    monkeypatch.setattr(player_view, "setup_window_position", position_setup)
+    monkeypatch.setattr(player_view, "get_db", read_db)
+    for name in ("get_input_controller", "get_action_player", "RuleExecutor", "save_config", "dump_json_file"):
+        monkeypatch.setattr(player_view, name, forbidden)
+    monkeypatch.setattr(player_view.PlanDetailDialog, "_save_plan", forbidden)
+    monkeypatch.setattr(player_view.PlanDetailDialog, "_test_run_rule", forbidden)
+    monkeypatch.setattr(player_view.SequenceDetailDialog, "_save_sequence", forbidden)
+    monkeypatch.setattr(player_view.SequenceDetailDialog, "_save_sequence_silent", forbidden)
+
+    if kind == "plan":
+        editor = player_view.PlanDetailDialog(gui.root, plan)
+        item, item_id, model_key = rule, rule.rule_id, "rule"
+        widget_map = editor._rule_widgets
+        assert editor._compact_rule_rows is True
+    else:
+        editor = player_view.SequenceDetailDialog(gui.root, sequence, fake_db)
+        item, item_id, model_key = action, action.action_id, "action"
+        widget_map = editor._action_widgets
+        assert editor._compact_action_rows is True
+
+    try:
+        # Resize only this test instance within the existing minimum. Production
+        # editor geometry/minimums and all row construction paths remain intact.
+        editor.geometry("1000x700+0+0")
+        deadline = time.monotonic() + 3
+        while item_id not in widget_map and time.monotonic() < deadline:
+            _pump(gui.root, seconds=0.05)
+        gui.screenshot(f"actual_compact_{kind}")
+        assert item_id in widget_map, "The real virtual-scroll renderer did not create its compact row."
+        data = widget_map[item_id]
+        assert data[model_key] is item
+        assert "type_label" not in data and "detail_label" not in data
+        assert editor._scrollable._visible_widgets[0] is data["wrapper"]
+        assert gui.scale == 1.0
+        _inside(_rect(editor), (0, 0, *SCREEN))
+        row = data["widget"]
+        _inside(_rect(row), _rect(editor._scrollable._canvas))
+        buttons = [widget for widget in _descendants(row) if isinstance(widget, ctk.CTkButton)]
+        settings_buttons = [button for button in buttons if button.cget("text") == "설정"]
+        assert len(settings_buttons) == 1
+        settings = settings_buttons[0]
+        assert settings.cget("state") == "normal"
+        assert settings.winfo_viewable()
+        assert settings.winfo_width() >= 46 and settings.winfo_height() >= 24
+        assert settings._text_label.winfo_reqwidth() <= settings.winfo_width() + 2
+
+        name_label = data["name_label"]
+        expected_text = (
+            editor._compact_rule_label_text(rule) if kind == "plan"
+            else editor._compact_action_label_text(action)
+        )
+        assert name_label.cget("text") == expected_text
+        assert "창 제어" in expected_text and "QA" in expected_text
+        assert backend_module.format_window_control_summary(config) in expected_text
+        assert name_label.winfo_width() >= 120
+        assert name_label._label.winfo_reqwidth() <= name_label.winfo_width() + 2
+        assert _rect(name_label)[2] <= _rect(settings.master)[0] + 2
+        _inside(_rect(name_label), _rect(row))
+        for index, button in enumerate(buttons):
+            assert button.winfo_viewable()
+            _inside(_rect(button), _rect(row))
+            first = _rect(button)
+            for other in buttons[index + 1:]:
+                second = _rect(other)
+                overlap_width = min(first[2], second[2]) - max(first[0], second[0])
+                overlap_height = min(first[3], second[3]) - max(first[1], second[1])
+                assert overlap_width <= 2 or overlap_height <= 2, (button.cget("text"), other.cget("text"))
+
+        # Verify the new compact button targets this model without opening a
+        # modal editor, persisting anything, or invoking playback/input actions.
+        edit_requested = Mock()
+        monkeypatch.setattr(editor, "_edit_window_control_action", edit_requested)
+        settings.invoke()
+        edit_requested.assert_called_once_with(item)
+        if kind == "plan":
+            monkeypatch.setattr(editor, "_edit_monitoring_mode", forbidden)
+            monkeypatch.setattr(editor, "_edit_trigger_image", forbidden)
+            unsupported = [button for button in buttons if str(button.cget("text")).casefold() in {"m", "c"}]
+            assert {str(button.cget("text")).casefold() for button in unsupported} == {"m", "c"}
+            assert len(unsupported) == 2
+            for button in unsupported:
+                assert button.cget("state") == "disabled"
+                button.invoke()
+        position_setup.assert_called_once_with(editor, type(editor).__name__)
+        gui.factory.assert_not_called()
+        forbidden.assert_not_called()
+        assert item.window_control_config == config and not editor._modified
+    finally:
+        # Do not call _on_close: it is an application lifecycle/save path.
+        editor.destroy()

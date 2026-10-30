@@ -319,7 +319,7 @@ class ActionPlayer:
         """실행 대상 액션만 반환"""
         def contains_window_control(actions):
             return any(
-                action.action_type == "window_control"
+                getattr(action, "action_type", "") == "window_control"
                 or contains_window_control(getattr(action, "children", []) or [])
                 for action in actions
             )

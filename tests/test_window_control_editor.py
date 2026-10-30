@@ -477,7 +477,7 @@ def test_metadata_has_window_control_names_colors_without_changing_existing_acti
         assert constants["ACTION_COLORS"][action_type] == constants["COLORS"][color]
 
 
-def test_both_editors_use_mixin_header_and_all_three_settings_render_paths():
+def test_both_editors_use_mixin_header_and_all_four_settings_render_paths():
     tree = _tree(PLAYER_VIEW)
     counts = {}
     for cls in (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in {"PlanDetailDialog", "SequenceDetailDialog"}):
@@ -487,10 +487,9 @@ def test_both_editors_use_mixin_header_and_all_three_settings_render_paths():
         settings = [n for n in calls if n.func.attr == "_add_window_control_settings_button"]
         assert len(headers) == 1
         counts[cls.name] = len(settings)
-        if cls.name == "PlanDetailDialog":
-            assert any(any(k.arg == "compact" and isinstance(k.value, ast.Constant) and k.value.value is True
-                           for k in n.keywords) for n in settings)
-    assert counts == {"PlanDetailDialog": 2, "SequenceDetailDialog": 1}
+        assert any(any(k.arg == "compact" and isinstance(k.value, ast.Constant) and k.value.value is True
+                       for k in n.keywords) for n in settings)
+    assert counts == {"PlanDetailDialog": 2, "SequenceDetailDialog": 2}
 
 
 @pytest.mark.parametrize("compact", [False, True])
@@ -515,3 +514,44 @@ def test_mixin_buttons_bind_headless_add_and_edit_callbacks(compact):
     host._edit_window_control_action.assert_not_called()
     edit_command()
     host._edit_window_control_action.assert_called_once_with(item)
+
+
+@pytest.mark.parametrize("method", ["_edit_trigger_image", "_edit_monitoring_mode"])
+def test_plan_window_trigger_and_monitor_handlers_return_before_dialog_or_save(method):
+    namespace = _load(PLAYER_VIEW, {method}, {"WINDOW_CONTROL_ACTION_TYPE": "window_control"},
+                      owner="PlanDetailDialog")
+    rule = SimpleNamespace(
+        action_type="window_control", window_control_config=dict(CONFIG), trigger_image="stale-trigger.png",
+        is_monitoring_mode=True, monitoring_watches=[{"image": "stale-watch.png"}],
+    )
+    host = SimpleNamespace(_modified=False, _save_plan=Mock(side_effect=AssertionError("Unexpected save")))
+    before = copy.deepcopy(rule)
+    # The AST loader rejects every unmocked import, so removing the early guard
+    # fails before any real tkinter or monitoring editor can be imported.
+    assert namespace[method](host, rule) is None
+    assert rule == before and not host._modified
+    host._save_plan.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["_create_compact_rule_item", "_create_action_item"])
+@pytest.mark.parametrize("label", ["M", "c"])
+def test_plan_monitor_and_trigger_buttons_disable_only_window_actions(method, label):
+    cls = next(node for node in _tree(PLAYER_VIEW).body
+               if isinstance(node, ast.ClassDef) and node.name == "PlanDetailDialog")
+    function = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == method)
+    buttons = [
+        node for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "CTkButton"
+        and any(keyword.arg == "text" and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value == label for keyword in node.keywords)
+    ]
+    assert len(buttons) == 1, f"Expected one {label} button in {method}"
+    states = [keyword.value for keyword in buttons[0].keywords if keyword.arg == "state"]
+    assert len(states) == 1, f"{method} must explicitly guard its {label} button"
+    # Evaluate only the state expression, never a widget constructor or renderer.
+    expression = compile(ast.Expression(body=copy.deepcopy(states[0])), str(ROOT / PLAYER_VIEW), "eval")
+    for action_type, expected in (("window_control", "disabled"), ("click", "normal"), ("hotkey", "normal")):
+        actual = eval(expression, {"__builtins__": {}, "WINDOW_CONTROL_ACTION_TYPE": "window_control"},
+                      {"rule": SimpleNamespace(action_type=action_type)})
+        assert actual == expected

@@ -32,6 +32,9 @@ jobs:
           }
       - name: Notification delivery simulations (no network)
         run: python -m pytest -q tests/test_discord_notifier.py tests/test_discord_delivery_regression.py
+      - name: Window-control contracts and protected engine isolation
+        if: ${{ hashFiles('tests/test_window_control.py') != '' }}
+        run: python -m pytest -q tests/test_window_control.py tests/test_window_control_persistence.py tests/test_window_control_runtime.py tests/test_window_control_editor.py tests/test_runtime_action_options.py tests/test_special_mode_engine_isolation.py
       - name: Full regression including engine isolation
         run: python -m pytest -q
       - name: Window-control layout checks on isolated Windows desktop

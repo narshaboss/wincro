@@ -3,6 +3,7 @@
 Ordinary collection skips before importing native/project code or launching a
 process. No input emulation, WinCro GUI, foreground-policy bypass, or mutation
 of an existing window is permitted. Only the disposable Tk child is controlled.
+Run serially, separately from other GUI QA on the isolated runner.
 """
 
 import os
@@ -246,6 +247,7 @@ def _exercise(fixture, label, operation, *, maximized=False, preserve=None):
         _require_desktop(fixture.probe, fixture.report)
         fixture.backend.require_owned(fixture.window)
         result = fixture.controller.step(config)
+        _require_desktop(fixture.probe, fixture.report)
         _check(isinstance(result, WindowControlResult), "step() returned the wrong result type.")
         _check(result.status in {"ready", "pending"}, "The established native target became unavailable.")
         _check(type(result.ready) is bool and result.ready == (result.status == "ready"), "Invalid ready/status contract.")
@@ -281,17 +283,31 @@ def _exercise(fixture, label, operation, *, maximized=False, preserve=None):
     )
     _check(geometry_ok, f"{label}: native minimize/restore/maximize state was not applied within three seconds.")
     if operation != "minimize" and not final["foreground_matches"]:
-        record.update(outcome="foreground_limited", geometry_verified=True, controller_ready=False)
         requests = [event for event in fixture.report["requests"] if event["phase"] == label]
+        _check(
+            any(event["kind"] == "foreground" for event in requests),
+            f"{label}: no foreground request was exercised; cannot attribute pending to foreground policy.",
+        )
+        record.update(outcome="foreground_limited", geometry_verified=True, controller_ready=False)
         fixture.report["limitations"].append({
             "kind": "foreground_not_granted", "operation": label,
-            "detail": "Geometry applied, but foreground was not granted/retained; no policy bypass attempted.",
+            "detail": "Required geometry verified, but foreground was not granted/retained; no policy bypass attempted.",
             "foreground_request_returned_false": any(
                 event["kind"] == "foreground" and not event["backend_return"] for event in requests
             ),
         })
         return final
     raise AssertionError(f"{label}: native state was reached but step() never reported ready within three seconds.")
+
+
+def _require_show_request(fixture, label, operation):
+    _check(
+        any(
+            event["phase"] == label and event["kind"] == "show_window" and event["operation"] == operation
+            for event in fixture.report["requests"]
+        ),
+        f"{label}: the native show request was not exercised.",
+    )
 
 
 @pytest.fixture
@@ -301,6 +317,8 @@ def native_fixture():
     report = {
         "status": "running", "target": {"title_contains": title},
         "operations": [], "requests": [], "limitations": [],
+        "limits": {"operation_seconds": OPERATION_SECONDS, "poll_seconds": POLL_SECONDS},
+        "fixture_started": False,
     }
     child = None
     try:
@@ -313,6 +331,7 @@ def native_fixture():
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+        report["fixture_started"] = True
         backend.child = child
         controller = WindowController(backend)
         deadline = time.monotonic() + OPERATION_SECONDS
@@ -375,8 +394,11 @@ def test_native_child_window_state_and_ready_contract(native_fixture):
     fixture = native_fixture
     try:
         _exercise(fixture, "minimize", "minimize")
+        _require_show_request(fixture, "minimize", "minimize")
         _exercise(fixture, "restore_foreground", "foreground", preserve=fixture.initial)
+        _require_show_request(fixture, "restore_foreground", "restore")
         maximized = _exercise(fixture, "maximize", "maximize", maximized=True)
+        _require_show_request(fixture, "maximize", "maximize")
         offset = len(fixture.report["requests"])
         _exercise(fixture, "maximize_repeat", "maximize", maximized=True, preserve=maximized)
         _check(
