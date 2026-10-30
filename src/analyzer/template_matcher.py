@@ -103,7 +103,11 @@ class TemplateMatcher:
         Returns:
             Optional[np.ndarray]: ?????????? ??? None
         """
-        return self._load_cached_image(Path(template_path), template_path,
+        try:
+            path = Path(template_path)
+        except (TypeError, ValueError):
+            return None
+        return self._load_cached_image(path, str(path),
                                        self._cache, self._cache_versions, cv2.IMREAD_COLOR)
 
     def _load_mask(self, template_path: str) -> Optional[np.ndarray]:
@@ -112,9 +116,12 @@ class TemplateMatcher:
 
         ?????????? ??????_mask.png
         """
-        path = Path(template_path)
-        mask_path = path.parent / f"{path.stem}_mask{path.suffix}"
-        return self._load_cached_image(mask_path, template_path,
+        try:
+            path = Path(template_path)
+            mask_path = path.parent / f"{path.stem}_mask{path.suffix}"
+        except (TypeError, ValueError):
+            return None
+        return self._load_cached_image(mask_path, str(path),
                                        self._mask_cache, self._mask_versions, cv2.IMREAD_GRAYSCALE)
 
     @staticmethod

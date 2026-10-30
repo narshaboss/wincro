@@ -347,6 +347,14 @@ def test_template_cache_and_version_metadata_are_bounded_together(tmp_path):
     assert len(matcher._mask_cache) == len(matcher._mask_versions) == matcher._MAX_CACHE_SIZE
 
 
+@pytest.mark.parametrize("invalid_path", [None, 123, ["image.png"], "\x00invalid.png"])
+def test_invalid_template_or_mask_path_fails_closed(invalid_path):
+    matcher = TemplateMatcher()
+    assert matcher._load_template(invalid_path) is None
+    assert matcher._load_mask(invalid_path) is None
+    assert not matcher._cache and not matcher._mask_cache
+
+
 def notification_context(executor, plan):
     context = SimpleNamespace(_rule_executor=executor, _mini_active_plan=plan,
         _mini_notification_last_progress_text="stale [3-5]", _mini_notification_last_progress_snapshot={
@@ -510,5 +518,54 @@ def test_legacy_stop_does_not_wait_for_hid_or_listener_on_ui_thread():
         assert entered.wait(2)
     finally:
         release.set()
+        assert input_controller.wait_for_input_cleanup(3)
+        input_controller.unblock_automation_input()
+
+
+def test_legacy_stop_completion_waits_for_old_actor_and_final_release():
+    from src.player.action_player import ActionPlayer, PlaybackProgress, PlayerState
+
+    release, release_started, finalizing, completed = (threading.Event() for _ in range(4))
+    player = object.__new__(ActionPlayer)
+    player._finalize_lock = threading.Lock()
+    player._execution_generation, player._execution_finalized = 1, False
+    player._execution_finalizing = False
+    player._state, player._progress = PlayerState.RUNNING, PlaybackProgress()
+    player._execution_log = player._current_sequence = player._execution_logger = None
+    player._emergency_stop = SimpleNamespace(stop=lambda: None)
+    player._close_execution_logger = Mock()
+    player._update_progress = Mock()
+    callbacks = []
+
+    def reset(context):
+        if context == "legacy-execution-stop":
+            release_started.set()
+            assert release.wait(3)
+        return True
+
+    def on_complete(success, message):
+        callbacks.append((success, message, worker.is_alive(), input_controller.wait_for_input_cleanup(0)))
+        completed.set()
+
+    def actor():
+        assert finalizing.wait(3)
+        player._finalize_execution(False, "stopped", generation=1)
+
+    player._reset_input_state, player._on_complete = reset, on_complete
+    worker = player._thread = threading.Thread(target=actor)
+    worker.start()
+    try:
+        assert player.stop() and release_started.wait(2)
+        finalizing.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        assert not completed.wait(0.05)
+        release.set()
+        assert completed.wait(3)
+        assert callbacks == [(False, "stopped", False, True)]
+    finally:
+        finalizing.set()
+        release.set()
+        worker.join(3)
         assert input_controller.wait_for_input_cleanup(3)
         input_controller.unblock_automation_input()

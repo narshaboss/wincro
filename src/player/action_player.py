@@ -650,7 +650,10 @@ class ActionPlayer:
 
         # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
         def _join_and_finalize():
-            self._emergency_stop.stop()
+            try:
+                self._emergency_stop.stop()
+            except Exception as exc:
+                logger.error(f"emergency listener cleanup failed: {exc}")
             if worker and worker.is_alive():
                 wait_started = time.monotonic()
                 warned = False
@@ -1400,6 +1403,7 @@ class ActionPlayer:
             self._close_execution_logger()
         except Exception as exc:
             logger.error(f"execution logger cleanup failed: {exc}")
+        finished_worker = self._thread
         if threading.current_thread() is self._thread or not (
             self._thread and self._thread.is_alive()
         ):
@@ -1415,10 +1419,33 @@ class ActionPlayer:
         # 콜백 호출
         callback = self._on_complete
         if callback:
-            try:
-                callback(success, message)
-            except Exception as exc:
-                logger.error(f"실행 완료 콜백 실패: {exc}")
+            def deliver_completion():
+                callback_success, callback_message = success, message
+                if finished_worker and finished_worker.is_alive():
+                    finished_worker.join(timeout=10.0)
+                if ((finished_worker and finished_worker.is_alive())
+                        or not wait_for_input_cleanup(timeout=10.0)):
+                    callback_success = False
+                    callback_message = f"이전 입력 장치 정리 지연: {message}"
+                with self._finalize_lock:
+                    if generation != self._execution_generation:
+                        logger.debug("stale deferred legacy completion ignored: %s", generation)
+                        return
+                try:
+                    callback(callback_success, callback_message)
+                except Exception as exc:
+                    logger.error(f"실행 완료 콜백 실패: {exc}")
+
+            if wait_for_input_cleanup(timeout=0.0):
+                try:
+                    callback(success, message)
+                except Exception as exc:
+                    logger.error(f"실행 완료 콜백 실패: {exc}")
+            else:
+                # The release job joins this actor. Waiting here would deadlock;
+                # defer notification until both the actor and release have ended.
+                threading.Thread(target=deliver_completion,
+                                 name="wincro-legacy-completion", daemon=True).start()
 
 
     def play_automation_plan(

@@ -1,8 +1,23 @@
 import threading
 
+import pytest
+
 from src.analyzer.automation_models import AutomationPlan
 from src.player import rule_executor
 from src.player.rule_executor import ExecutionState, RuleExecutor
+from src.utils import input_controller
+
+
+@pytest.fixture(autouse=True)
+def isolated_input_barrier(monkeypatch):
+    # Failed-start scenarios intentionally leave input blocked. Do not carry
+    # that process-wide state into unrelated mocked keyboard tests.
+    assert input_controller.wait_for_input_cleanup(3.0)
+    monkeypatch.setattr(input_controller, "_input_block_event", threading.Event())
+    monkeypatch.setattr(input_controller, "_input_block_reason", "")
+    monkeypatch.setattr(input_controller, "_cleanup_release_failed", False)
+    yield
+    assert input_controller.wait_for_input_cleanup(3.0)
 
 
 def test_repeat_boundary_releases_input_before_completion_callback(monkeypatch):

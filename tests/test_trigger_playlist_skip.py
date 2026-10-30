@@ -378,7 +378,9 @@ def test_trigger_missing_key_repeat_delay_uses_random_range_before_playlist_skip
 
     with patch.object(RULE_EXECUTOR_MODULE, "get_input_controller", return_value=input_ctrl), patch.object(
         RULE_EXECUTOR_MODULE.random, "uniform", return_value=0.05
-    ), patch.object(executor._stop_event, "wait", return_value=False) as wait, patch.object(
+    ), patch.object(executor, "_auto_list_wait", return_value=True), patch.object(
+        executor._stop_event, "wait", return_value=False
+    ) as wait, patch.object(
         executor, "_wait_for_trigger", return_value=None
     ):
         result = executor._execute_rule_with_retry(rule, step_num="1")
@@ -748,6 +750,8 @@ def test_trigger_missing_key_repeat_delay_runs_between_each_key_and_list_cycle(t
         "get_input_controller",
         return_value=input_ctrl,
     ), patch.object(
+        executor, "_auto_list_wait", return_value=True,
+    ), patch.object(
         executor._stop_event,
         "wait",
         return_value=False,
@@ -809,6 +813,8 @@ def test_trigger_missing_rewind_uses_each_keys_own_repeat_and_delay(tmp_path):
         RULE_EXECUTOR_MODULE,
         "get_input_controller",
         return_value=input_ctrl,
+    ), patch.object(
+        executor, "_auto_list_wait", return_value=True,
     ), patch.object(
         executor._stop_event,
         "wait",
@@ -875,6 +881,8 @@ def test_trigger_missing_per_key_random_delay_is_independent(tmp_path):
         "uniform",
         return_value=0.05,
     ) as random_uniform, patch.object(
+        executor, "_auto_list_wait", return_value=True,
+    ), patch.object(
         executor._stop_event,
         "wait",
         return_value=False,
@@ -914,7 +922,9 @@ def test_trigger_missing_rewind_key_repeat_delay_uses_random_range(tmp_path):
 
     with patch.object(RULE_EXECUTOR_MODULE, "get_input_controller", return_value=input_ctrl), patch.object(
         RULE_EXECUTOR_MODULE.random, "uniform", return_value=0.05
-    ), patch.object(executor._stop_event, "wait", return_value=False) as wait, patch.object(
+    ), patch.object(executor, "_auto_list_wait", return_value=True), patch.object(
+        executor._stop_event, "wait", return_value=False
+    ) as wait, patch.object(
         executor, "_wait_for_trigger", return_value=None
     ):
         result = executor._execute_rule_with_retry(rule, step_num="2", can_rewind_previous=True)

@@ -213,6 +213,9 @@ def test_action_player_stop_waits_for_worker_exit_before_finalize(monkeypatch):
     assert finalized.wait(timeout=0.15) is False
     allow_exit.set()
     assert finalized.wait(timeout=2.0) is True
+    from src.utils import input_controller
+    assert input_controller.wait_for_input_cleanup(3.0)
+    assert input_controller.unblock_automation_input()
 
 
 def test_action_player_keeps_execution_reserved_until_finalize_cleanup_finishes():
