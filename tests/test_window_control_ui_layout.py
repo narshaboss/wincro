@@ -608,7 +608,14 @@ def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
     _inside(_rect(dialog._multi_toggle), _rect(dialog))
     for button in (dialog._target_up, dialog._target_down, dialog._target_add, dialog._target_delete):
         assert button._text_label.winfo_reqwidth() <= button.winfo_width() + 4
-    assert _rect(dialog._target_menu)[2] <= _rect(dialog._target_up)[0]
+    assert dialog._target_heading.cget("text") == "등록한 창 (2개)"
+    visible_targets = dialog._target_list.get(0, "end")
+    assert len(visible_targets) == 2
+    assert "1. mudrun_tauri.exe" in visible_targets[0] and "제목 무관" in visible_targets[0]
+    assert "2. msedge.exe" in visible_targets[1] and "Home" in visible_targets[1]
+    assert dialog._target_list.bbox(0) is not None and dialog._target_list.bbox(1) is not None
+    assert dialog._target_list.curselection() == (0,)
+    assert _rect(dialog._target_heading)[2] <= _rect(dialog._target_up)[0]
     assert _rect(dialog._target_up)[2] <= _rect(dialog._target_down)[0]
     dialog._editor._parent_canvas.yview_moveto(1)
     gui.screenshot(f"multi_{kind}_conditions")
@@ -624,14 +631,17 @@ def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
     gui.screenshot(f"multi_{kind}_minimum_save_failure")
     _assert_dialog_layout(dialog)
     viewport = _rect(dialog._editor._parent_canvas)
-    for widget in (dialog._target_menu, dialog._target_up, dialog._target_down,
+    for widget in (dialog._target_list, dialog._target_up, dialog._target_down,
                    dialog._target_add, dialog._target_delete):
         _inside(_rect(widget), viewport)
     failed[0] = False
     dialog._save_button.invoke()
     assert not dialog.winfo_exists() and writes == [expected]
     reopened = dialog_module.WindowControlDialog(gui.root, config=writes[0])
+    _pump(gui.root)
     assert reopened._collect_config() == expected
+    assert "mudrun_tauri.exe" in reopened._target_list.get(0)
+    assert "msedge.exe" in reopened._target_list.get(1)
     reopened._multi_toggle.toggle()
     restored = reopened._collect_config()
     assert restored == {**single, "multi_enabled": False, "targets": expected["targets"]}
@@ -647,8 +657,9 @@ def test_multi_long_candidates_bounds_add_delete_and_no_full_refresh(gui):
     dialog = dialog_module.WindowControlDialog(gui.root, config=config)
     _pump(gui.root)
     assert dialog._target_add.cget("state") == "disabled"
-    selected = list(dialog._target_choices)[-1]
-    dialog._choose_target(selected)
+    dialog._target_list.selection_clear(0, "end")
+    dialog._target_list.selection_set(19)
+    dialog._target_list.event_generate("<<ListboxSelect>>")
     assert dialog._target_down.cget("state") == "disabled"
     assert dialog._executable_var.get() == targets[-1]["executable_name"]
     before_entry, before_rows = dialog._executable_entry, list(dialog._rows)
@@ -660,10 +671,62 @@ def test_multi_long_candidates_bounds_add_delete_and_no_full_refresh(gui):
     dialog._editor._parent_canvas.yview_moveto(0)
     gui.screenshot("multi_long_candidates")
     _assert_dialog_layout(dialog)
-    assert dialog._target_menu._text_label.winfo_reqwidth() <= dialog._target_menu.winfo_width() + 4
+    assert dialog._target_list.size() == 19
+    for text in dialog._target_list.get(0, "end"):
+        assert dialog._target_font.measure(text) <= dialog._target_list.winfo_width() - 8
     _assert_wrapped_label(dialog._target_hint)
     gui.controller.list_windows.assert_called_once_with()
     dialog._cancel_button.invoke()
+
+
+def test_multi_registered_list_shows_conditions_and_edits_selected_row_without_rebuild(gui):
+    targets = [
+        {"executable_name": "msedge.exe", "title_contains": "Home"},
+        {"executable_name": "msedge.exe", "title_contains": "Event"},
+        {"executable_name": "mudrun_tauri.exe", "title_contains": "", "match_mode": "executable"},
+    ]
+    dialog = dialog_module.WindowControlDialog(gui.root, config={
+        "executable_name": "single.exe", "title_contains": "Single", "operation": "maximize",
+        "multi_enabled": True, "targets": targets,
+    })
+    _pump(gui.root)
+    listing, entry, live_rows = dialog._target_list, dialog._executable_entry, list(dialog._rows)
+    assert listing.size() == 3 and all(listing.bbox(index) is not None for index in range(3))
+    assert "Home" in listing.get(0) and "Event" in listing.get(1)
+    assert "mudrun_tauri.exe" in listing.get(2) and "제목 무관" in listing.get(2)
+    listing.selection_clear(0, "end")
+    listing.selection_set(1)
+    listing.event_generate("<<ListboxSelect>>")
+    assert dialog._target_index == 1 and dialog._title_var.get() == "Event"
+    dialog._title_var.set("New event")
+    assert "New event" in listing.get(1) and "Home" in listing.get(0)
+    dialog._target_down.invoke()
+    assert "3. msedge.exe" in listing.get(2) and "New event" in listing.get(2)
+    assert "2. mudrun_tauri.exe" in listing.get(1)
+    assert dialog._target_index == 2 and listing.curselection() == (2,)
+    assert dialog._target_list is listing and dialog._executable_entry is entry and dialog._rows == live_rows
+    assert dialog._collect_config()["targets"][2]["title_contains"] == "New event"
+    dialog._editor._parent_canvas.yview_moveto(0)
+    gui.screenshot("registered_windows_overview")
+    _assert_dialog_layout(dialog)
+    gui.controller.list_windows.assert_called_once_with()
+    dialog._cancel()
+
+
+def test_multi_registered_list_wheel_does_not_scroll_the_condition_editor(gui):
+    dialog = dialog_module.WindowControlDialog(gui.root, config={
+        "executable_name": "single.exe", "title_contains": "Single", "operation": "maximize",
+        "multi_enabled": True,
+        "targets": [{"executable_name": f"app{index}.exe", "title_contains": "Window"} for index in range(20)],
+    })
+    _pump(gui.root)
+    dialog._editor._parent_canvas.yview_moveto(0)
+    before = dialog._editor._parent_canvas.yview()
+    dialog._target_list.event_generate("<MouseWheel>", delta=-120)
+    _pump(gui.root)
+    assert dialog._target_list.yview()[0] > 0
+    assert dialog._editor._parent_canvas.yview() == before
+    dialog._cancel()
 
 
 @pytest.mark.parametrize("gui", (1.0,), indirect=True, ids=("100pct",))

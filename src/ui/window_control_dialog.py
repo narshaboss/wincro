@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable
 import tkinter as tk
+import tkinter.font as tkfont
 
 import customtkinter as ctk
 
@@ -28,8 +29,8 @@ MATCH_MODE_LABELS = {
 }
 PREFERRED_SIZE = (760, 720)
 MINIMUM_SIZE = (420, 360)
-MULTI_MINIMUM_HEIGHT = 420
-MULTI_EDITOR_MINIMUM_HEIGHT = 152
+MULTI_MINIMUM_HEIGHT = 444
+MULTI_EDITOR_MINIMUM_HEIGHT = 176
 SCREEN_MARGIN = (48, 100)
 
 
@@ -79,8 +80,6 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._loading_selector = False
         self._has_multi_config = "multi_enabled" in config
         self._multi_var = tk.BooleanVar(self, value=config.get("multi_enabled", False))
-        self._target_choice_var = tk.StringVar(self, value="")
-        self._target_choices = {}
         self._executable_var = tk.StringVar(self, value=config["executable_name"])
         self._title_var = tk.StringVar(self, value=config["title_contains"])
         match_mode_label = next(
@@ -306,19 +305,8 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._target_panel = ctk.CTkFrame(self._editor, fg_color="transparent")
         self._target_panel.grid(row=0, column=0, sticky="ew", padx=10, pady=(4, 10))
         self._target_panel.grid_columnconfigure(0, weight=1)
-        self._target_heading = self._label(self._target_panel, "우선순위 후보", heading=True)
-        self._target_heading.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 4))
-        self._target_menu = ctk.CTkOptionMenu(
-            self._target_panel, variable=self._target_choice_var, values=["1번 후보"],
-            command=self._choose_target, dynamic_resizing=False,
-            height=IOS_METRICS["button_height_small"],
-            fg_color=COLORS["bg_card"], button_color=COLORS["bg_elevated"],
-            button_hover_color=COLORS["bg_card_hover"], text_color=COLORS["text_primary"],
-            dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["bg_card_hover"],
-            dropdown_text_color=COLORS["text_primary"], font=self._font(12),
-            dropdown_font=self._font(12), corner_radius=IOS_METRICS["control_radius_small"],
-        )
-        self._target_menu.grid(row=1, column=0, sticky="ew", padx=(0, 6))
+        self._target_heading = self._label(self._target_panel, "등록한 창", heading=True)
+        self._target_heading.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         self._target_up = ctk.CTkButton(
             self._target_panel, text="▲", width=30, height=30, command=lambda: self._move_target(-1),
             fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
@@ -329,18 +317,44 @@ class WindowControlDialog(ctk.CTkToplevel):
             fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["accent_text"], font=self._font(12, "bold"),
         )
-        self._target_up.grid(row=1, column=1, padx=(0, 4))
-        self._target_down.grid(row=1, column=2)
+        self._target_up.grid(row=0, column=1, padx=(0, 4), pady=(0, 4))
+        self._target_down.grid(row=0, column=2, pady=(0, 4))
+        self._target_list_frame = ctk.CTkFrame(
+            self._target_panel, fg_color=COLORS["bg_card"],
+            corner_radius=IOS_METRICS["control_radius_small"],
+        )
+        self._target_list_frame.grid(row=1, column=0, columnspan=3, sticky="ew")
+        self._target_list_frame.grid_columnconfigure(0, weight=1)
+        self._target_font = tkfont.Font(self, family=IOS_FONTS["family"], size=-12)
+        # A native list avoids a nested CTk scroll area's global wheel handler.
+        self._target_list = tk.Listbox(
+            self._target_list_frame, height=3, width=1, borderwidth=0,
+            highlightthickness=0, activestyle="none", exportselection=False,
+            selectmode="browse", font=self._target_font,
+            background=COLORS["bg_card"], foreground=COLORS["text_primary"],
+            selectbackground=COLORS["accent_blue"],
+            selectforeground=COLORS["text_on_accent"],
+            disabledforeground=COLORS["text_secondary"],
+        )
+        self._target_list.grid(row=0, column=0, sticky="ew", padx=(6, 0), pady=6)
+        scrollbar = ctk.CTkScrollbar(
+            self._target_list_frame, command=self._target_list.yview, width=12, height=30,
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=4)
+        self._target_list.configure(yscrollcommand=scrollbar.set)
+        self._target_list.bind("<<ListboxSelect>>", self._choose_target)
+        self._target_list.bind("<Configure>", self._resize_target_list, add="+")
+        self._target_list.bind("<MouseWheel>", self._scroll_target_list)
         buttons = ctk.CTkFrame(self._target_panel, fg_color="transparent")
         buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 4))
         buttons.grid_columnconfigure((0, 1), weight=1, uniform="candidate-buttons")
         self._target_add = ctk.CTkButton(
-            buttons, text="+ 후보 추가", command=self._add_target, width=90, height=28,
+            buttons, text="+ 창 추가", command=self._add_target, width=90, height=28,
             fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
             text_color=COLORS["text_on_accent"], font=self._font(12, "bold"),
         )
         self._target_delete = ctk.CTkButton(
-            buttons, text="후보 삭제", command=self._delete_target, width=90, height=28,
+            buttons, text="선택 삭제", command=self._delete_target, width=90, height=28,
             fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
             text_color=COLORS["text_primary"], font=self._font(12, "bold"),
         )
@@ -348,7 +362,7 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._target_delete.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self._target_hint = self._label(
             self._target_panel,
-            "순서대로 찾아 처음 발견한 창 하나만 제어합니다. 선택한 후보의 조건을 아래에서 편집하세요.",
+            "위에서부터 찾습니다. 수정할 창을 목록에서 누르세요.",
         )
         self._target_hint.configure(wraplength=280)
         self._target_hint.grid(row=3, column=0, columnspan=3, sticky="ew")
@@ -418,20 +432,11 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._editor._parent_canvas.yview_moveto(0)
 
     def _refresh_target_controls(self) -> None:
-        self._target_heading.configure(text=f"우선순위 후보 ({len(self._targets)}개)")
-        choices = {}
-        for index, selector in enumerate(self._targets):
-            name = selector.get("executable_name", "") or "새 창 조건"
-            if len(name) > 26:
-                name = name[:19] + "..." + name[-4:]
-            choices[f"{index + 1}. {name}"] = index
-        self._target_choices = choices
-        self._target_menu.configure(values=list(choices) or ["후보 없음"])
-        if choices:
-            self._target_choice_var.set(list(choices)[self._target_index])
+        self._target_heading.configure(text=f"등록한 창 ({len(self._targets)}개)")
+        self._render_target_list()
         enabled = self._displaying_multi and not self._saving
+        self._target_list.configure(state="normal" if enabled else "disabled")
         for widget, available in (
-            (self._target_menu, bool(choices)),
             (self._target_add, len(self._targets) < MAX_WINDOW_CONTROL_TARGETS),
             (self._target_delete, len(self._targets) > 1),
             (self._target_up, self._target_index > 0),
@@ -439,12 +444,64 @@ class WindowControlDialog(ctk.CTkToplevel):
         ):
             widget.configure(state="normal" if enabled and available else "disabled")
 
-    def _choose_target(self, label) -> None:
+    def _resize_target_list(self, _event=None) -> None:
+        size = -round(12 * self._editor._get_widget_scaling())
+        if self._target_font.cget("size") != size:
+            self._target_font.configure(size=size)
+        self._render_target_list()
+
+    def _scroll_target_list(self, event):
+        if event.delta:
+            steps = max(1, abs(int(event.delta / 120)))
+            self._target_list.yview_scroll(-steps if event.delta > 0 else steps, "units")
+        return "break"
+
+    def _render_target_list(self) -> None:
+        width = max(40, self._target_list.winfo_width() - 12)
+        texts = []
+        for index, selector in enumerate(self._targets):
+            name = selector.get("executable_name", "") or "(창을 선택하거나 파일명을 입력하세요)"
+            title = selector.get("title_contains", "")
+            condition = "제목 무관" if selector.get("match_mode") == "executable" else f"제목: {title or '(미설정)'}"
+            text = " ".join(f"{index + 1}. {name}  |  {condition}".split())
+            if self._target_font.measure(text) > width:
+                # Only the overview is shortened; the full editable fields and
+                # saved selectors are never truncated.
+                low, high = 0, len(text)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if self._target_font.measure(text[:middle] + "...") <= width:
+                        low = middle
+                    else:
+                        high = middle - 1
+                text = text[:low] + "..."
+            texts.append(text)
+        previous = self._target_list.get(0, "end")
+        self._target_list.configure(state="normal")
+        if len(previous) != len(texts):
+            self._target_list.delete(0, "end")
+            if texts:
+                self._target_list.insert("end", *texts)
+        else:
+            for index, text in enumerate(texts):
+                if previous[index] != text:
+                    self._target_list.delete(index)
+                    self._target_list.insert(index, text)
+        self._target_list.selection_clear(0, "end")
+        if texts:
+            self._target_list.selection_set(self._target_index)
+            self._target_list.activate(self._target_index)
+            self._target_list.see(self._target_index)
+        if self._saving or not self._displaying_multi:
+            self._target_list.configure(state="disabled")
+
+    def _choose_target(self, _event=None) -> None:
         if self._saving or not self._displaying_multi:
             return
-        index = self._target_choices.get(label)
-        if index is None:
+        selection = self._target_list.curselection()
+        if not selection or selection[0] == self._target_index:
             return
+        index = selection[0]
         self._stash_selector()
         self._target_index = index
         self._load_selector(self._targets[index])
