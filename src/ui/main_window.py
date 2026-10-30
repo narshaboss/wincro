@@ -3146,6 +3146,10 @@ class MainWindow(ctk.CTk):
             return
         executor = RuleExecutor()
         self._rule_executor = executor
+        startup_progress = getattr(executor, "progress", None)
+        if startup_progress is not None:
+            startup_progress.message = "실행 준비: 입력 장치 및 이전 실행 정리"
+            self._mini_record_notification_progress(startup_progress)
         callback_generation = getattr(self, "_mini_playback_generation", 0)
 
         def on_progress(progress):

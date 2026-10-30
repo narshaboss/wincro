@@ -665,6 +665,7 @@ class RuleExecutionResult:
     rewind_target_rule_id: str = ""
     monitoring_jump_index: int = -1
     monitoring_jump_rule_id: str = ""
+    failure_rule_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -1126,6 +1127,12 @@ class RuleExecutor:
             self._start_preparation_done.clear()
             self._stop_event.clear()
             self._pause_event.set()
+            self._input_reset_completed = False
+            self._stop_cleanup_failed = False
+            self._current_step_num = ""
+            self._original_step_by_rule_id = {}
+            with self._progress_lock:
+                self._progress = ExecutionProgress(message="실행 준비: 입력 장치 정리")
             startup_token = begin_input_cleanup("RuleExecutor.start_cleanup")
         try:
             with self._lifecycle_lock:
@@ -1143,8 +1150,6 @@ class RuleExecutor:
                 self._end_shared_image_scan()
                 with self._completion_lock:
                     self._completion_notified = False
-                self._input_reset_completed = False
-                self._stop_cleanup_failed = False
             if not self._reset_input_state("execution-start"):
                 raise RuntimeError("input reset failed before execution start")
             self._last_mouse_pos = pyautogui.position()
@@ -1934,10 +1939,11 @@ class RuleExecutor:
                         return
 
                     if not result.success:
+                        failure_rule_id = getattr(result, "failure_rule_id", "") or result.rule_id
                         failed_rule = next((candidate for candidate in all_rules
-                                            if candidate.rule_id == result.rule_id), None)
-                        failed_step = original_step_by_rule_id.get(str(result.rule_id), "")
-                        if self._progress.current_rule == result.rule_id:
+                                            if candidate.rule_id == failure_rule_id), None)
+                        failed_step = original_step_by_rule_id.get(str(failure_rule_id), "")
+                        if self._progress.current_rule == failure_rule_id:
                             failed_step = self._progress.current_action_number or failed_step
                         failed_step = failed_step or step_num
                         if failed_rule is not None:
@@ -3111,7 +3117,10 @@ class RuleExecutor:
                     typing_random = getattr(rule, 'typing_random', False)
                     typing_delay = getattr(rule, 'typing_delay', 0.1)
                     typing_delay_range = getattr(rule, 'typing_delay_range', 0.05)
-                    self._type_text_with_clipboard(rule.action_text, typing_random, typing_delay, typing_delay_range)
+                    typed = self._type_text_with_clipboard(rule.action_text, typing_random, typing_delay, typing_delay_range)
+                    if typed is False:
+                        message = "실행 중지됨" if self._stop_event.is_set() else "텍스트 입력 실패"
+                        return self._make_result(rule, False, message, start_time)
                     logger.info(f"{_GREEN}{self._step_prefix}✓ 텍스트 입력 완료{_RESET}")
                     return self._make_result(rule, True, "입력 완료", start_time)
                 return self._make_result(rule, False, "입력할 텍스트 없음", start_time)
@@ -4511,7 +4520,7 @@ class RuleExecutor:
             self._action_call_stack.pop()
 
         if called_result is not None:
-            return self._make_result(
+            failure = self._make_result(
                 rule,
                 False,
                 f"호출 액션 실패: {called_result.message}",
@@ -4523,6 +4532,8 @@ class RuleExecutor:
                 monitoring_jump_index=int(getattr(called_result, "monitoring_jump_index", -1) or -1),
                 monitoring_jump_rule_id=str(getattr(called_result, "monitoring_jump_rule_id", "") or ""),
             )
+            failure.failure_rule_id = getattr(called_result, "failure_rule_id", "") or called_result.rule_id
+            return failure
 
         logger.info(f"{_GREEN}{self._step_prefix}↩ 액션 호출 완료: [{target_step}] {target_name}{_RESET}")
         return self._make_result(
@@ -4860,11 +4871,12 @@ class RuleExecutor:
             )
 
     def _set_action_context(self, rule, step_num: str, is_monitoring: bool = False) -> None:
+        action_name = rule.description or rule.action_type
         with self._progress_lock:
             self._current_step_num = str(step_num)
             self._progress.current_rule = rule.rule_id
             self._progress.current_action_number = str(step_num)
-            self._progress.current_action_name = rule.description or rule.action_type
+            self._progress.current_action_name = action_name
             self._progress.current_action_is_monitoring = bool(is_monitoring)
             self._progress.message = f"[{step_num}] {self._progress.current_action_name}"
 
@@ -6244,20 +6256,8 @@ class RuleExecutor:
             if action_type == '텍스트 입력':
                 text = monitor_action.get('text', '')
                 if text:
-                    if typing_random:
-                        # 글자별 랜덤 딜레이
-                        input_ctrl = get_input_controller()
-                        for char in text:
-                            if char.isascii():
-                                input_ctrl.typewrite([char], interval=0)
-                            else:
-                                pyperclip.copy(char)
-                                time.sleep(0.02)
-                                input_ctrl.hotkey('ctrl', 'v')
-                            delay = typing_delay + random.uniform(-typing_delay_range, typing_delay_range)
-                            time.sleep(max(0.01, delay))
-                    else:
-                        self._type_text_with_clipboard(text)
+                    if self._type_text_with_clipboard(text, typing_random, typing_delay, typing_delay_range) is False:
+                        return None
                     text_preview = text[:20] + "..." if len(text) > 20 else text
                     return f"텍스트 입력: {text_preview}"
 
@@ -6716,6 +6716,7 @@ class RuleExecutor:
             rule_id=rule.rule_id,
             success=success,
             message=message,
+            failure_rule_id=rule.rule_id if not success else "",
             executed_at=datetime.now(),
             execution_time_ms=execution_time,
             skip_current_playlist=skip_current_playlist,

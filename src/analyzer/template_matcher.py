@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import time
 import threading
+import hashlib
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
@@ -69,13 +70,17 @@ class TemplateMatcher:
     def _load_cached_image(self, path: Path, key: str, cache: dict, versions: dict, mode: int):
         with self._cache_lock:
             try:
-                version = self._file_version(path)
+                metadata = self._file_version(path)
+                encoded = path.read_bytes()
+                # Windows can retain the same timestamps/size across a quick
+                # in-place rewrite. Hash encoded bytes, but reuse decoded pixels.
+                version = metadata + (hashlib.blake2b(encoded, digest_size=16).digest(),)
                 if key in cache and versions.get(key) == version:
                     return cache[key]
                 cache.pop(key, None)
                 versions.pop(key, None)
-                image = cv2.imdecode(np.fromfile(str(path), np.uint8), mode)
-                if image is None or self._file_version(path) != version:
+                image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), mode)
+                if image is None or self._file_version(path) != metadata:
                     return None
                 if len(cache) >= self._MAX_CACHE_SIZE:
                     oldest = next(iter(cache))

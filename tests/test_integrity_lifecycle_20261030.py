@@ -225,7 +225,8 @@ def test_stop_is_nonblocking_and_new_executor_waits_for_old_worker_exit(monkeypa
         input_controller.unblock_automation_input()
 
 
-def test_random_text_stop_does_not_emit_later_characters_or_success(monkeypatch):
+@pytest.mark.parametrize("rule_type", ["fixed_sequence", "type_text"])
+def test_random_text_stop_does_not_emit_later_characters_or_success(monkeypatch, rule_type):
     executor = runtime.RuleExecutor()
     emitted = []
 
@@ -235,9 +236,52 @@ def test_random_text_stop_does_not_emit_later_characters_or_success(monkeypatch)
         return True
 
     monkeypatch.setattr(runtime, "get_input_controller", lambda: SimpleNamespace(type_text=type_text))
-    rule = AutomationRule(action_type="type", action_text="abc", typing_random=True, typing_delay=10)
+    rule = AutomationRule(rule_type=rule_type, action_type="type", action_text="abc", typing_random=True, typing_delay=10)
     result = executor._execute_rule(rule)
     assert result.success is False and emitted == ["a"]
+
+
+def test_monitoring_text_uses_the_same_cancellation_contract(monkeypatch):
+    executor = runtime.RuleExecutor()
+    emitted = []
+
+    def type_text(char):
+        emitted.append(char)
+        executor._stop_event.set()
+        return True
+
+    monkeypatch.setattr(runtime, "get_input_controller", lambda: SimpleNamespace(type_text=type_text))
+    result = executor._execute_monitor_action({"type": "텍스트 입력", "text": "abc", "typing_random": True})
+    assert result is None and emitted == ["a"]
+
+
+def test_template_content_changes_are_detected_even_when_file_metadata_is_identical(tmp_path, monkeypatch):
+    path = tmp_path / "same.png"
+    first = write_image(path, 30)
+    matcher = TemplateMatcher()
+    metadata = matcher._file_version(path)
+    monkeypatch.setattr(matcher, "_file_version", lambda _: metadata)
+    decoder = Mock(wraps=cv2.imdecode)
+    monkeypatch.setattr(cv2, "imdecode", decoder)
+    assert np.array_equal(matcher._load_template(str(path)), first)
+    for _ in range(20):
+        assert np.array_equal(matcher._load_template(str(path)), first)
+    assert decoder.call_count == 1
+    second = write_image(path, 200)
+    assert np.array_equal(matcher._load_template(str(path)), second)
+    assert decoder.call_count == 2
+
+
+def test_action_call_failure_keeps_the_actual_failing_rule_id(monkeypatch):
+    target = AutomationRule(rule_id="target", action_type="click")
+    caller = AutomationRule(rule_id="caller", action_type="action_call", action_call_rule_id="target")
+    executor = runtime.RuleExecutor()
+    executor._current_plan = SimpleNamespace(initial_rules=[caller], _original_initial_rules=[target, caller])
+    failure = runtime.RuleExecutionResult(rule_id="actual-child", success=False, message="child failed")
+    monkeypatch.setattr(executor, "_execute_rule_tree_once", lambda *args: failure)
+    result = executor._execute_action_call(caller, datetime.now())
+    assert result.success is False and result.rule_id == "caller"
+    assert result.failure_rule_id == "actual-child"
 
 
 def test_stop_during_startup_device_release_does_not_wait_for_lifecycle_lock(monkeypatch):
