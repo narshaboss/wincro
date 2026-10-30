@@ -44,7 +44,8 @@ from pynput import keyboard
 from ..utils.logger import get_logger, create_execution_logger
 from ..utils.config import get_config
 from ..utils.input_controller import (
-    block_automation_input, get_input_controller, request_input_release,
+    begin_input_cleanup, block_automation_input, finish_input_cleanup,
+    get_input_controller, request_input_release,
     unblock_automation_input, wait_for_input_cleanup,
 )
 from ..database.models import Action, ActionType, Sequence, ExecutionLog, ExecutionStatus
@@ -546,12 +547,17 @@ class ActionPlayer:
             logger.warning("another playback worker is still starting or stopping")
             return False
         self._clear_legacy_stop_signal()
+        startup_token = begin_input_cleanup("ActionPlayer.start_cleanup")
+        startup_reset_ok = False
         try:
-            if not self._reset_input_state("legacy-execution-start"):
+            startup_reset_ok = self._reset_input_state("legacy-execution-start")
+            if not startup_reset_ok:
                 raise RuntimeError("input reset failed before playback start")
         except Exception as exc:
             self._rollback_execution_start(run_generation, str(exc))
             return False
+        finally:
+            finish_input_cleanup(startup_token, success=startup_reset_ok)
         self._current_sequence = sequence
         self._state = PlayerState.RUNNING
 

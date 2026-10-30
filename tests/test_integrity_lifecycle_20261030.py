@@ -569,3 +569,33 @@ def test_legacy_stop_completion_waits_for_old_actor_and_final_release():
         worker.join(3)
         assert input_controller.wait_for_input_cleanup(3)
         input_controller.unblock_automation_input()
+
+
+@pytest.mark.parametrize("reset_succeeds", [True, False])
+def test_legacy_start_recovers_a_release_fault_only_after_verified_device_reset(monkeypatch, reset_succeeds):
+    import importlib
+    legacy = importlib.import_module("src.player.action_player")
+    assert input_controller.wait_for_input_cleanup(3)
+    monkeypatch.setattr(input_controller, "_input_block_event", threading.Event())
+    monkeypatch.setattr(input_controller, "_input_block_reason", "fixture prior failure")
+    monkeypatch.setattr(input_controller, "_cleanup_release_failed", True)
+    input_controller.block_automation_input("fixture prior failure")
+    player = object.__new__(legacy.ActionPlayer)
+    player._finalize_lock = threading.Lock()
+    player._execution_generation, player._execution_finalized = 0, True
+    player._execution_finalizing = False
+    player._state, player._progress = legacy.PlayerState.IDLE, legacy.PlaybackProgress()
+    player._thread = player._execution_log = player._current_sequence = player._execution_logger = None
+    player._get_enabled_actions = lambda _: [object()]
+    player._reset_input_state = lambda _: reset_succeeds
+    player._close_execution_logger = Mock()
+    player._emergency_stop = SimpleNamespace(start=Mock(), stop=Mock())
+    player._db = SimpleNamespace(create_execution_log=lambda _: 1)
+    monkeypatch.setattr(legacy, "create_execution_logger", Mock())
+    worker = SimpleNamespace(start=Mock(), is_alive=lambda: False)
+    monkeypatch.setattr(legacy.threading, "Thread", lambda **kwargs: worker)
+    sequence = Sequence(id=1, name="fixture", actions=[Action(action_type="wait")])
+    assert player.play(sequence) is reset_succeeds
+    assert worker.start.call_count == int(reset_succeeds)
+    assert input_controller.is_automation_input_blocked() is (not reset_succeeds)
+    assert input_controller.wait_for_input_cleanup(0)
