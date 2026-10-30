@@ -1,5 +1,7 @@
 """Shared editor integration; saving a window action saves its owning document."""
 
+import copy
+
 from ..utils.json_utils import load_json_file
 
 
@@ -83,12 +85,12 @@ class WindowControlEditorMixin:
                 model = AutomationRule if self._window_control_is_plan else Action
                 state["item"] = model(
                     action_type="window_control", description="창 제어",
-                    window_control_config=dict(config), wait_after=0.5,
+                    window_control_config=copy.deepcopy(config), wait_after=0.5,
                 )
                 attach = self._add_rule_to_current_parent if self._window_control_is_plan else self._add_action_to_current_parent
                 parent = attach(state["item"])
             item = state["item"]
-            item.window_control_config = dict(config)
+            item.window_control_config = copy.deepcopy(config)
             self._modified = True
             try:
                 verified = self._persist_window_control_document()
@@ -109,7 +111,7 @@ class WindowControlEditorMixin:
         from .window_control_dialog import WindowControlDialog
 
         def save(config):
-            item.window_control_config = dict(config)
+            item.window_control_config = copy.deepcopy(config)
             self._modified = True
             try:
                 verified = self._persist_window_control_document()

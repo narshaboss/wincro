@@ -30,12 +30,13 @@ WINDOW_CONTROL_OPERATIONS = {
     "minimize": "최소화",
     "foreground": "앞으로 가져오기",
 }
+MAX_WINDOW_CONTROL_TARGETS = 20
 
 _INVALID_EXE_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _SHOW_COMMANDS = {"maximize": 3, "minimize": 7, "restore": 9}
 
 
-def normalize_window_control_config(config: Mapping | None = None) -> dict[str, str]:
+def normalize_window_control_config(config: Mapping | None = None) -> dict:
     """Copy only persistent strings; default the operation only when absent.
 
     Incomplete editor values remain incomplete. Use validate before execution.
@@ -61,12 +62,41 @@ def normalize_window_control_config(config: Mapping | None = None) -> dict[str, 
         if not isinstance(mode, str):
             raise ValueError("찾기 방식: 문자열이 필요합니다.")
         result["match_mode"] = mode.strip().casefold()
+    if "multi_enabled" in config or "targets" in config:
+        enabled = config.get("multi_enabled", False)
+        if not isinstance(enabled, bool):
+            raise ValueError("멀티 사용 여부는 ON/OFF 값이어야 합니다.")
+        targets = config.get("targets", [])
+        if not isinstance(targets, list) or len(targets) > MAX_WINDOW_CONTROL_TARGETS:
+            raise ValueError(f"창 후보는 최대 {MAX_WINDOW_CONTROL_TARGETS}개 목록이어야 합니다.")
+        result["multi_enabled"] = enabled
+        result["targets"] = []
+        for index, target in enumerate(targets, 1):
+            if not isinstance(target, Mapping):
+                raise ValueError(f"후보 {index}: 창 조건은 사전 형식이어야 합니다.")
+            selector = normalize_window_control_config({
+                key: target[key] for key in ("executable_name", "title_contains", "match_mode")
+                if key in target
+            })
+            selector.pop("operation")
+            result["targets"].append(selector)
     return result
 
 
-def validate_window_control_config(config: Mapping | None) -> dict[str, str]:
+def validate_window_control_config(config: Mapping | None) -> dict:
     """Return a normalized copy or raise ValueError, without backend access."""
     result = normalize_window_control_config(config)
+    if result["operation"] not in WINDOW_CONTROL_OPERATIONS:
+        raise ValueError("창 동작은 최대화, 최소화, 앞으로 가져오기만 지원합니다.")
+    if result.get("multi_enabled", False):
+        if not result["targets"]:
+            raise ValueError("멀티 사용 시 창 후보를 하나 이상 추가하세요.")
+        for index, target in enumerate(result["targets"], 1):
+            try:
+                validate_window_control_config({**target, "operation": result["operation"]})
+            except ValueError as exc:
+                raise ValueError(f"후보 {index}: {exc}") from exc
+        return result
     name = result["executable_name"]
     if (
         _INVALID_EXE_CHARACTERS.search(name)
@@ -80,8 +110,6 @@ def validate_window_control_config(config: Mapping | None) -> dict[str, str]:
         raise ValueError("찾기 방식은 실행 파일명만 또는 실행 파일명 + 창 제목이어야 합니다.")
     if "\x00" in result["title_contains"] or (mode == "title" and not result["title_contains"]):
         raise ValueError("창 제목은 비어 있거나 NUL 문자를 포함할 수 없습니다.")
-    if result["operation"] not in WINDOW_CONTROL_OPERATIONS:
-        raise ValueError("창 동작은 최대화, 최소화, 앞으로 가져오기만 지원합니다.")
     return result
 
 
@@ -92,6 +120,8 @@ def format_window_control_summary(config: Mapping | None) -> str:
     except (ValueError, TypeError):
         return "창 제어 설정 필요"
     label = WINDOW_CONTROL_OPERATIONS[value["operation"]]
+    if value.get("multi_enabled", False):
+        return f'{label} | 멀티 {len(value["targets"])}개'
     if value.get("match_mode", "title") == "executable":
         return f'{label} | {value["executable_name"]} | 제목 무관'
     return f'{label} | {value["executable_name"]} | {value["title_contains"]}'
@@ -115,6 +145,7 @@ class WindowControlResult:
 
     status: str
     message: str
+    target_index: int | None = None
 
     @property
     def ready(self) -> bool:
@@ -123,6 +154,33 @@ class WindowControlResult:
     @property
     def detail(self) -> str:
         return self.message
+
+
+def probe_window_control_targets(config, step, *, interrupted=None, selected_index=None):
+    """Probe validated candidates without waits; only absence allows fallback.
+
+    A caller can retain target_index across pending results so a newly appearing
+    earlier candidate cannot steal an operation already in progress.
+    """
+    if not config.get("multi_enabled", False):
+        return step(config)
+    targets = config["targets"]
+    indices = list(range(len(targets)))
+    if selected_index is not None and selected_index in indices:
+        indices.remove(selected_index)
+        indices.insert(0, selected_index)
+    for index in indices:
+        if interrupted is not None and interrupted():
+            return WindowControlResult("pending", "창 후보 확인이 중단되었습니다.", selected_index)
+        target = {**targets[index], "operation": config["operation"]}
+        result = step(target)
+        if result.status != "missing":
+            return WindowControlResult(
+                result.status,
+                f'멀티 후보 {index + 1}/{len(targets)} ({target["executable_name"]}): {result.message}',
+                index,
+            )
+    return WindowControlResult("missing", f"창 후보 {len(targets)}개를 모두 확인했으나 대상 창이 없습니다.")
 
 
 class WindowBackend(Protocol):
@@ -252,6 +310,9 @@ class WindowController:
 
     def step(self, config: Mapping | None) -> WindowControlResult:
         value = validate_window_control_config(config)
+        return probe_window_control_targets(value, self._step_single)
+
+    def _step_single(self, value) -> WindowControlResult:
         try:
             backend = self._get_backend()
             if backend is None or not backend.supported:

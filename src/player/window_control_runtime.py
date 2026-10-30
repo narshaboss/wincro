@@ -3,7 +3,9 @@
 import math
 import time
 
-from ..utils.window_control import WindowController, validate_window_control_config
+from ..utils.window_control import (
+    WindowController, probe_window_control_targets, validate_window_control_config,
+)
 
 
 def wait_for_window_control(
@@ -24,6 +26,7 @@ def wait_for_window_control(
     last_log = None
     missing_since = None
     paused_since = None
+    selected_index = None
     while not should_stop():
         if is_paused():
             if paused_since is None:
@@ -35,7 +38,14 @@ def wait_for_window_control(
             if missing_since is not None:
                 missing_since += time.monotonic() - paused_since
             paused_since = None
-        result = controller.step(config)
+        result = probe_window_control_targets(
+            config, controller.step, interrupted=lambda: should_stop() or is_paused(),
+            selected_index=selected_index,
+        )
+        if result.status == "missing":
+            selected_index = None
+        elif getattr(result, "target_index", None) is not None:
+            selected_index = result.target_index
         if should_stop():
             break
         if result.status != "missing":

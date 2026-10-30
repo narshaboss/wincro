@@ -103,7 +103,8 @@ def _assert_dialog_layout(dialog):
     for (_, first), (_, second) in zip(dialog._rows, dialog._rows[1:]):
         assert _rect(first)[3] <= _rect(second)[1] + 2
     editor_children = sorted(
-        dialog._editor.winfo_children(), key=lambda child: int(child.grid_info()["row"]),
+        (child for child in dialog._editor.winfo_children() if child.grid_info()),
+        key=lambda child: int(child.grid_info()["row"]),
     )
     for first, second in zip(editor_children, editor_children[1:]):
         assert _rect(first)[3] <= _rect(second)[1] + 2
@@ -532,9 +533,134 @@ def _descendants(widget):
         yield from _descendants(child)
 
 
+@pytest.mark.parametrize("kind", ["plan", "sequence"])
+def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
+    from copy import deepcopy
+    from src.analyzer.automation_models import AutomationPlan, AutomationRule
+    from src.database.models import Action, Sequence
+    from src.utils.json_utils import dump_json_file, load_json_file
+    from tests.test_window_control_persistence import _manager_at, _assert_sequence_saved
+
+    single = {"executable_name": "msedge.exe", "title_contains": "Home", "operation": "maximize"}
+    if kind == "plan":
+        item = AutomationRule(action_type="window_control", window_control_config=single)
+        document = AutomationPlan(plan_id="multi-ui", initial_rules=[item])
+    else:
+        item = Action(action_type="window_control", window_control_config=single)
+        document = Sequence(name="Multi UI", actions=[item])
+    path = tmp_path / ("plan.json" if kind == "plan" else "sequence.db")
+    db = _manager_at(path, create=True) if kind == "sequence" else None
+    if db is not None:
+        document.id = db.create_sequence(document)
+    failed = [True]
+    writes = []
+
+    def persist(config):
+        if failed[0]:
+            raise OSError("CI multi save failure " * 20)
+        item.window_control_config = deepcopy(config)
+        if kind == "plan":
+            dump_json_file(path, document.to_dict())
+            loaded = AutomationPlan.from_dict(load_json_file(path), templates_dir=tmp_path)
+            assert loaded.to_dict() == document.to_dict()
+            actual = loaded.initial_rules[0].window_control_config
+        else:
+            assert db.update_sequence(document)
+            loaded = _assert_sequence_saved(path, document)
+            actual = loaded.actions[0].window_control_config
+        assert actual == config
+        writes.append(deepcopy(actual))
+        return True
+
+    dialog = dialog_module.WindowControlDialog(gui.root, config=single, on_save=persist)
+    _pump(gui.root)
+    assert not dialog._multi_var.get() and not dialog._target_panel.winfo_ismapped()
+    assert dialog._collect_config() == single
+    dialog._multi_toggle.invoke()
+    assert dialog._multi_var.get() and len(dialog._targets) == 1
+    original_entry = dialog._executable_entry
+    dialog._target_add.invoke()
+    dialog._executable_var.set("mudrun_tauri.exe")
+    dialog._title_var.set("Mudfish")
+    dialog._match_mode_var.set("실행 파일명만")
+    dialog._match_mode_changed()
+    dialog._target_up.invoke()
+    assert dialog._executable_entry is original_entry, "Reordering must not rebuild the form"
+    assert dialog._targets[0]["executable_name"] == "mudrun_tauri.exe"
+    dialog._multi_toggle.invoke()
+    assert dialog._executable_var.get() == single["executable_name"]
+    assert dialog._title_var.get() == single["title_contains"]
+    disabled = dialog._collect_config()
+    assert disabled["multi_enabled"] is False and len(disabled["targets"]) == 2
+    dialog._multi_toggle.invoke()
+    expected = dialog._collect_config()
+    assert expected["multi_enabled"] is True and expected["executable_name"] == "msedge.exe"
+    assert expected["targets"] == [
+        {"executable_name": "mudrun_tauri.exe", "title_contains": "", "match_mode": "executable"},
+        {"executable_name": "msedge.exe", "title_contains": "Home"},
+    ]
+    dialog._refresh_windows()
+    assert dialog._collect_config() == expected
+    dialog._editor._parent_canvas.yview_moveto(0)
+    gui.screenshot(f"multi_{kind}_ordered")
+    _assert_dialog_layout(dialog)
+    _assert_wrapped_label(dialog._target_hint)
+    _inside(_rect(dialog._multi_toggle), _rect(dialog))
+    for button in (dialog._target_up, dialog._target_down, dialog._target_add, dialog._target_delete):
+        assert button._text_label.winfo_reqwidth() <= button.winfo_width() + 4
+    assert _rect(dialog._target_menu)[2] <= _rect(dialog._target_up)[0]
+    assert _rect(dialog._target_up)[2] <= _rect(dialog._target_down)[0]
+    dialog._save_button.invoke()
+    assert dialog.winfo_exists() and not writes and dialog._result is None
+    assert dialog._collect_config() == expected
+    assert dialog._target_down.cget("state") == "normal" and dialog._target_up.cget("state") == "disabled"
+    assert "CI multi save failure" in dialog._error_label.cget("text")
+    dialog.geometry("1x1")
+    gui.screenshot(f"multi_{kind}_minimum_save_failure")
+    _assert_dialog_layout(dialog)
+    failed[0] = False
+    dialog._save_button.invoke()
+    assert not dialog.winfo_exists() and writes == [expected]
+    reopened = dialog_module.WindowControlDialog(gui.root, config=writes[0])
+    assert reopened._collect_config() == expected
+    reopened._multi_toggle.invoke()
+    restored = reopened._collect_config()
+    assert restored == {**single, "multi_enabled": False, "targets": expected["targets"]}
+    reopened._cancel_button.invoke()
+    assert writes == [expected]
+
+
+def test_multi_long_candidates_bounds_add_delete_and_no_full_refresh(gui):
+    targets = [{"executable_name": f"candidate_{index}_" + "x" * 65 + ".exe",
+                "title_contains": LONG_TITLE} for index in range(20)]
+    config = {"executable_name": "single.exe", "title_contains": "Single", "operation": "maximize",
+              "multi_enabled": True, "targets": targets}
+    dialog = dialog_module.WindowControlDialog(gui.root, config=config)
+    _pump(gui.root)
+    assert dialog._target_add.cget("state") == "disabled"
+    selected = list(dialog._target_choices)[-1]
+    dialog._choose_target(selected)
+    assert dialog._target_down.cget("state") == "disabled"
+    assert dialog._executable_var.get() == targets[-1]["executable_name"]
+    before_entry, before_rows = dialog._executable_entry, list(dialog._rows)
+    dialog._target_up.invoke()
+    assert dialog._executable_entry is before_entry and dialog._rows == before_rows
+    assert dialog._targets[-2] == targets[-1]
+    dialog._target_delete.invoke()
+    assert len(dialog._targets) == 19 and dialog._target_add.cget("state") == "normal"
+    dialog._editor._parent_canvas.yview_moveto(0)
+    gui.screenshot("multi_long_candidates")
+    _assert_dialog_layout(dialog)
+    assert dialog._target_menu._text_label.winfo_reqwidth() <= dialog._target_menu.winfo_width() + 4
+    _assert_wrapped_label(dialog._target_hint)
+    gui.controller.list_windows.assert_called_once_with()
+    dialog._cancel_button.invoke()
+
+
 @pytest.mark.parametrize("gui", (1.0,), indirect=True, ids=("100pct",))
 @pytest.mark.parametrize("kind", ("plan", "playlist"))
-def test_actual_editor_compact_window_control_row(gui, monkeypatch, kind):
+@pytest.mark.parametrize("multi", [False, True], ids=("single", "multi"))
+def test_actual_editor_compact_window_control_row(gui, monkeypatch, kind, multi):
     """Real constructors/renderers at 100%; not a scaled-editor fit claim.
 
     Existing PlanDetailDialog requires at least 980x700 logical pixels. Its
@@ -545,6 +671,11 @@ def test_actual_editor_compact_window_control_row(gui, monkeypatch, kind):
     from src.utils import input_controller
 
     config = {"executable_name": "qa.exe", "title_contains": "QA", "operation": "minimize"}
+    if multi:
+        config.update(multi_enabled=True, targets=[
+            {"executable_name": "msedge.exe", "title_contains": "", "match_mode": "executable"},
+            {"executable_name": "mudrun_tauri.exe", "title_contains": "", "match_mode": "executable"},
+        ])
     action = Action(
         action_type="window_control", description="QA", window_control_config=dict(config),
         wait_after=0.5,

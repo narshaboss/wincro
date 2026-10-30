@@ -121,11 +121,13 @@ def _result(status, message=None):
 def _runner(clock):
     contract = _load("src/utils/window_control.py", {
         "WINDOW_CONTROL_OPERATIONS", "_INVALID_EXE_CHARACTERS",
+        "MAX_WINDOW_CONTROL_TARGETS", "WindowControlResult", "probe_window_control_targets",
         "normalize_window_control_config", "validate_window_control_config",
-    }, {"Mapping": Mapping, "ntpath": ntpath, "re": re})
+    }, {"Mapping": Mapping, "ntpath": ntpath, "re": re, "dataclass": dataclass})
     return _load("src/player/window_control_runtime.py", {"wait_for_window_control"}, {
         "time": SimpleNamespace(monotonic=lambda: clock.now), "math": math,
         "validate_window_control_config": Mock(wraps=contract["validate_window_control_config"]),
+        "probe_window_control_targets": contract["probe_window_control_targets"],
         "WindowController": Mock(side_effect=AssertionError("Never construct a native controller")),
     })
 

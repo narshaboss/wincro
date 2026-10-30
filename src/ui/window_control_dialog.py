@@ -9,6 +9,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from ..utils.window_control import (
+    MAX_WINDOW_CONTROL_TARGETS,
     WindowController,
     normalize_window_control_config,
     validate_window_control_config,
@@ -66,6 +67,18 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._selected_handle = None
         self._manual_target = False
         self._enumeration_error = ""
+        self._single_selector = {
+            key: config[key] for key in ("executable_name", "title_contains", "match_mode")
+            if key in config
+        }
+        self._targets = copy.deepcopy(config.get("targets", []))
+        self._target_index = 0
+        self._displaying_multi = False
+        self._loading_selector = False
+        self._has_multi_config = "multi_enabled" in config
+        self._multi_var = tk.BooleanVar(self, value=config.get("multi_enabled", False))
+        self._target_choice_var = tk.StringVar(self, value="")
+        self._target_choices = {}
         self._executable_var = tk.StringVar(self, value=config["executable_name"])
         self._title_var = tk.StringVar(self, value=config["title_contains"])
         match_mode_label = next(
@@ -88,6 +101,7 @@ class WindowControlDialog(ctk.CTkToplevel):
         self.bind("<Escape>", lambda _event: self._cancel())
         self._configure_geometry()
         self._build_ui()
+        self._multi_changed(initial=True)
         self._sync_title_entry()
         self._refresh_windows()
         self._executable_var.trace_add("write", self._criteria_changed)
@@ -137,11 +151,20 @@ class WindowControlDialog(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1, minsize=90)
         self.grid_rowconfigure(2, weight=2, minsize=60)
-        header = ctk.CTkLabel(
-            self, text="창 제어", anchor="w", font=self._font(20, "bold"),
-            text_color=COLORS["text_primary"],
-        )
+        header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=padding, pady=(12, 6))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header, text="창 제어", anchor="w", font=self._font(20, "bold"),
+            text_color=COLORS["text_primary"],
+        ).grid(row=0, column=0, sticky="ew")
+        self._multi_toggle = ctk.CTkCheckBox(
+            header, text="멀티", variable=self._multi_var, command=self._multi_changed,
+            width=80, font=self._font(13, "bold"), text_color=COLORS["text_primary"],
+            fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
+            border_color=COLORS["border"],
+        )
+        self._multi_toggle.grid(row=0, column=1, padx=(12, 0))
 
         list_card = self._card(self)
         list_card.grid(row=1, column=0, sticky="nsew", padx=padding, pady=(0, 8))
@@ -175,8 +198,9 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._editor.grid(row=2, column=0, sticky="nsew", padx=padding, pady=(0, 8))
         self._editor.grid_columnconfigure(0, weight=1)
         self._editor.bind("<Configure>", self._resize_editor_labels, add="+")
+        self._build_target_controls()
         self._label(self._editor, "찾기 방식", heading=True).grid(
-            row=0, column=0, sticky="ew", padx=10, pady=(4, 2),
+            row=1, column=0, sticky="ew", padx=10, pady=(4, 2),
         )
         self._match_mode_menu = ctk.CTkOptionMenu(
             self._editor, variable=self._match_mode_var, values=list(MATCH_MODE_LABELS),
@@ -187,9 +211,9 @@ class WindowControlDialog(ctk.CTkToplevel):
             dropdown_text_color=COLORS["text_primary"], font=self._font(12),
             dropdown_font=self._font(12), corner_radius=IOS_METRICS["control_radius_small"],
         )
-        self._match_mode_menu.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self._match_mode_menu.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
         executable_header = ctk.CTkFrame(self._editor, fg_color="transparent")
-        executable_header.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 2))
+        executable_header.grid(row=3, column=0, sticky="ew", padx=10, pady=(4, 2))
         self._label(executable_header, "실행 파일명", heading=True).pack(side="left")
         self._manual_button = ctk.CTkButton(
             executable_header, text="직접 입력", command=self._enable_manual_target,
@@ -203,11 +227,11 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._executable_note = self._editor_note("", 4)
         self._title_label = self._label(self._editor, "창 제목에 포함할 문자열", heading=True)
         self._title_label.grid(
-            row=5, column=0, sticky="ew", padx=10, pady=(8, 2),
+            row=6, column=0, sticky="ew", padx=10, pady=(8, 2),
         )
         self._title_entry = self._entry(self._title_var, 6)
         self._label(self._editor, "동작", heading=True).grid(
-            row=7, column=0, sticky="ew", padx=10, pady=(8, 2),
+            row=8, column=0, sticky="ew", padx=10, pady=(8, 2),
         )
         self._operation_menu = ctk.CTkOptionMenu(
             self._editor, variable=self._operation_var, values=list(OPERATION_LABELS),
@@ -218,11 +242,12 @@ class WindowControlDialog(ctk.CTkToplevel):
             dropdown_text_color=COLORS["text_primary"], font=self._font(12),
             dropdown_font=self._font(12), corner_radius=IOS_METRICS["control_radius_small"],
         )
-        self._operation_menu.grid(row=8, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self._operation_menu.grid(row=9, column=0, sticky="ew", padx=10, pady=(0, 6))
         self._match_note = self._editor_note("", 9)
         self._editor_note(
             "실행 파일명만으로 찾으면 이벤트 페이지 등 제목 변경에 영향받지 않습니다. "
-            "실제 창이 여러 개면 대기하므로 제목 조건을 추가해 구분하세요. "
+            "같은 조건에 실제 창이 여러 개면 대기하므로 제목으로 구분하세요. "
+            "멀티는 없는 후보만 즉시 넘기며, 모두 없을 때 기존 S(스킵)를 적용합니다. "
             "이 설정 창에서는 대상 창을 조작하지 않습니다.", 10,
         )
         self._editor_note(
@@ -260,15 +285,186 @@ class WindowControlDialog(ctk.CTkToplevel):
             text_color=COLORS["text_primary"], border_color=COLORS["border"],
             corner_radius=IOS_METRICS["control_radius_small"],
         )
-        entry.grid(row=row, column=0, sticky="ew", padx=10, pady=(0, 4))
+        entry.grid(row=row + 1, column=0, sticky="ew", padx=10, pady=(0, 4))
         return entry
 
     def _editor_note(self, text, row):
         label = self._label(self._editor, text)
         label.configure(wraplength=300)
-        label.grid(row=row, column=0, sticky="ew", padx=10, pady=(0, 6))
+        label.grid(row=row + 1, column=0, sticky="ew", padx=10, pady=(0, 6))
         self._editor_labels.append(label)
         return label
+
+    def _build_target_controls(self) -> None:
+        self._target_panel = ctk.CTkFrame(self._editor, fg_color="transparent")
+        self._target_panel.grid(row=0, column=0, sticky="ew", padx=10, pady=(4, 10))
+        self._target_panel.grid_columnconfigure(0, weight=1)
+        self._target_heading = self._label(self._target_panel, "우선순위 후보", heading=True)
+        self._target_heading.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+        self._target_menu = ctk.CTkOptionMenu(
+            self._target_panel, variable=self._target_choice_var, values=["1번 후보"],
+            command=self._choose_target, dynamic_resizing=False,
+            height=IOS_METRICS["button_height_small"],
+            fg_color=COLORS["bg_card"], button_color=COLORS["bg_elevated"],
+            button_hover_color=COLORS["bg_card_hover"], text_color=COLORS["text_primary"],
+            dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["bg_card_hover"],
+            dropdown_text_color=COLORS["text_primary"], font=self._font(12),
+            dropdown_font=self._font(12), corner_radius=IOS_METRICS["control_radius_small"],
+        )
+        self._target_menu.grid(row=1, column=0, sticky="ew", padx=(0, 6))
+        self._target_up = ctk.CTkButton(
+            self._target_panel, text="▲", width=30, height=30, command=lambda: self._move_target(-1),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["accent_text"], font=self._font(12, "bold"),
+        )
+        self._target_down = ctk.CTkButton(
+            self._target_panel, text="▼", width=30, height=30, command=lambda: self._move_target(1),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["accent_text"], font=self._font(12, "bold"),
+        )
+        self._target_up.grid(row=1, column=1, padx=(0, 4))
+        self._target_down.grid(row=1, column=2)
+        buttons = ctk.CTkFrame(self._target_panel, fg_color="transparent")
+        buttons.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+        buttons.grid_columnconfigure((0, 1), weight=1, uniform="candidate-buttons")
+        self._target_add = ctk.CTkButton(
+            buttons, text="+ 후보 추가", command=self._add_target, width=90, height=28,
+            fg_color=COLORS["accent_blue"], hover_color=COLORS["hover_blue"],
+            text_color=COLORS["text_on_accent"], font=self._font(12, "bold"),
+        )
+        self._target_delete = ctk.CTkButton(
+            buttons, text="후보 삭제", command=self._delete_target, width=90, height=28,
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_card_hover"],
+            text_color=COLORS["text_primary"], font=self._font(12, "bold"),
+        )
+        self._target_add.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._target_delete.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self._target_hint = self._label(
+            self._target_panel,
+            "순서대로 찾아 처음 발견한 창 하나만 제어합니다. 선택한 후보의 조건을 아래에서 편집하세요.",
+        )
+        self._target_hint.configure(wraplength=280)
+        self._target_hint.grid(row=3, column=0, columnspan=3, sticky="ew")
+
+    def _selector_from_form(self) -> dict:
+        selector = {"executable_name": self._executable_var.get().strip(),
+                    "title_contains": self._title_var.get().strip()}
+        mode = MATCH_MODE_LABELS.get(self._match_mode_var.get())
+        if mode == "executable":
+            selector.update(match_mode=mode, title_contains="")
+        elif mode is None:
+            selector["match_mode"] = self._match_mode_var.get()
+        return selector
+
+    def _stash_selector(self) -> None:
+        if self._loading_selector:
+            return
+        selector = self._selector_from_form()
+        if self._displaying_multi:
+            self._targets[self._target_index] = selector
+        else:
+            self._single_selector = selector
+
+    def _load_selector(self, selector) -> None:
+        self._loading_selector = True
+        try:
+            self._executable_var.set(selector.get("executable_name", ""))
+            self._title_var.set(selector.get("title_contains", ""))
+            self._match_mode_var.set(next(
+                (label for label, mode in MATCH_MODE_LABELS.items()
+                 if mode == selector.get("match_mode", "title")), "찾기 방식을 선택하세요",
+            ))
+            self._manual_target, self._selected_handle = False, None
+        finally:
+            self._loading_selector = False
+        self._sync_title_entry()
+        self._sync_executable_entry()
+        self._sync_selection()
+        self._highlight_selection()
+        self._update_match_note()
+
+    def _multi_changed(self, *, initial=False) -> None:
+        if self._saving:
+            return
+        self._stash_selector()
+        if not initial:
+            self._has_multi_config = True
+        self._displaying_multi = bool(self._multi_var.get())
+        if self._displaying_multi:
+            if not self._targets:
+                self._targets = [copy.deepcopy(self._single_selector)]
+            self._target_index = min(self._target_index, len(self._targets) - 1)
+            self._target_panel.grid()
+            self._load_selector(self._targets[self._target_index])
+        else:
+            self._target_panel.grid_remove()
+            self._load_selector(self._single_selector)
+        self._refresh_target_controls()
+
+    def _refresh_target_controls(self) -> None:
+        self._target_heading.configure(text=f"우선순위 후보 ({len(self._targets)}개)")
+        choices = {}
+        for index, selector in enumerate(self._targets):
+            name = selector.get("executable_name", "") or "새 창 조건"
+            if len(name) > 26:
+                name = name[:19] + "..." + name[-4:]
+            choices[f"{index + 1}. {name}"] = index
+        self._target_choices = choices
+        self._target_menu.configure(values=list(choices) or ["후보 없음"])
+        if choices:
+            self._target_choice_var.set(list(choices)[self._target_index])
+        enabled = self._displaying_multi and not self._saving
+        for widget, available in (
+            (self._target_menu, bool(choices)),
+            (self._target_add, len(self._targets) < MAX_WINDOW_CONTROL_TARGETS),
+            (self._target_delete, len(self._targets) > 1),
+            (self._target_up, self._target_index > 0),
+            (self._target_down, self._target_index < len(self._targets) - 1),
+        ):
+            widget.configure(state="normal" if enabled and available else "disabled")
+
+    def _choose_target(self, label) -> None:
+        if self._saving or not self._displaying_multi:
+            return
+        index = self._target_choices.get(label)
+        if index is None:
+            return
+        self._stash_selector()
+        self._target_index = index
+        self._load_selector(self._targets[index])
+        self._refresh_target_controls()
+
+    def _add_target(self) -> None:
+        if self._saving or not self._displaying_multi or len(self._targets) >= MAX_WINDOW_CONTROL_TARGETS:
+            return
+        self._stash_selector()
+        selector = {"executable_name": "", "title_contains": ""}
+        if MATCH_MODE_LABELS.get(self._match_mode_var.get()) == "executable":
+            selector["match_mode"] = "executable"
+        self._targets.append(selector)
+        self._target_index = len(self._targets) - 1
+        self._load_selector(selector)
+        self._refresh_target_controls()
+        self._enable_manual_target()
+
+    def _delete_target(self) -> None:
+        if self._saving or not self._displaying_multi or len(self._targets) <= 1:
+            return
+        self._targets.pop(self._target_index)
+        self._target_index = min(self._target_index, len(self._targets) - 1)
+        self._load_selector(self._targets[self._target_index])
+        self._refresh_target_controls()
+
+    def _move_target(self, delta) -> None:
+        destination = self._target_index + delta
+        if self._saving or not self._displaying_multi or not 0 <= destination < len(self._targets):
+            return
+        self._stash_selector()
+        self._targets[self._target_index], self._targets[destination] = (
+            self._targets[destination], self._targets[self._target_index],
+        )
+        self._target_index = destination
+        self._refresh_target_controls()
 
     def _resize_list_labels(self, event) -> None:
         width = max(40, int(event.width / self._window_list._get_widget_scaling()) - 70)
@@ -281,6 +477,7 @@ class WindowControlDialog(ctk.CTkToplevel):
         for label in self._editor_labels:
             if label.cget("wraplength") != width:
                 label.configure(wraplength=width)
+        self._target_hint.configure(wraplength=width)
 
     def _resize_error_label(self, event) -> None:
         width = max(40, int(event.width / self._save_button._get_widget_scaling()))
@@ -334,6 +531,8 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._sync_selection()
         self._highlight_selection()
         self._update_match_note()
+        self._stash_selector()
+        self._refresh_target_controls()
 
     def _sync_selection(self) -> None:
         matches = self._matching_windows()
@@ -423,7 +622,12 @@ class WindowControlDialog(ctk.CTkToplevel):
 
     def _criteria_changed(self, *_args) -> None:
         # Only inspect the cached snapshot; no native calls or row rebuilding here.
+        if self._loading_selector:
+            return
         self._update_match_note()
+        self._stash_selector()
+        if self._displaying_multi:
+            self._refresh_target_controls()
 
     def _update_match_note(self) -> None:
         matches = self._matching_windows()
@@ -442,27 +646,15 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._match_note.configure(text=text, text_color=color)
 
     def _collect_config(self) -> dict:
-        executable = self._executable_var.get().strip()
-        if any(character in executable for character in ("/", "\\", ":")):
-            raise ValueError("실행 파일 경로가 아닌 파일명만 입력하세요 (예: app.exe).")
+        self._stash_selector()
         operation = OPERATION_LABELS.get(self._operation_var.get())
         if operation is None:
             raise ValueError("동작을 선택하세요.")
-        mode = MATCH_MODE_LABELS.get(self._match_mode_var.get())
-        if mode is None:
-            raise ValueError("찾기 방식을 선택하세요.")
         # Explicit allowlist: never retain a handle, PID, path or unrelated config key.
-        config = {
-            "executable_name": executable,
-            "title_contains": self._title_var.get().strip(),
-            "operation": operation,
-        }
-        if mode == "executable":
-            config["match_mode"] = mode
-            config["title_contains"] = ""
-        validate_window_control_config(config)
-        normalized = normalize_window_control_config(config)
-        return {key: normalized[key] for key in config}
+        config = {**copy.deepcopy(self._single_selector), "operation": operation}
+        if self._has_multi_config:
+            config.update(multi_enabled=bool(self._multi_var.get()), targets=copy.deepcopy(self._targets))
+        return validate_window_control_config(config)
 
     def _set_saving(self, saving: bool) -> None:
         self._saving = saving
@@ -471,6 +663,7 @@ class WindowControlDialog(ctk.CTkToplevel):
             self._save_button, self._cancel_button, self._refresh_button,
             self._manual_button, self._title_entry, self._operation_menu,
             self._match_mode_menu,
+            self._multi_toggle,
         ):
             widget.configure(state=state)
         if saving:
@@ -480,6 +673,7 @@ class WindowControlDialog(ctk.CTkToplevel):
             self._sync_title_entry()
             self._sync_selection()
             self._highlight_selection()
+        self._refresh_target_controls()
 
     def _save(self) -> None:
         if self._saving:

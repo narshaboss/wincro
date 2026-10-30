@@ -416,6 +416,18 @@ def test_native_child_window_state_and_ready_contract(native_fixture):
         _require_show_request(fixture, "executable_only_minimize", "minimize")
         _exercise(fixture, "executable_only_maximize", "maximize", maximized=True, preserve=maximized)
         _require_show_request(fixture, "executable_only_maximize", "maximize")
+        selector = {key: value for key, value in fixture.config.items() if key != "operation"}
+        fixture.config = {
+            **selector, "multi_enabled": True,
+            "targets": [
+                {"executable_name": "wincro-ci-absent.exe", "title_contains": "", "match_mode": "executable"},
+                selector,
+            ],
+        }
+        _exercise(fixture, "multi_fallback_minimize", "minimize")
+        _require_show_request(fixture, "multi_fallback_minimize", "minimize")
+        _exercise(fixture, "multi_fallback_maximize", "maximize", maximized=True, preserve=maximized)
+        _require_show_request(fixture, "multi_fallback_maximize", "maximize")
         fixture.report["status"] = (
             "geometry_verified_foreground_limited" if fixture.report["limitations"] else "verified_ready"
         )

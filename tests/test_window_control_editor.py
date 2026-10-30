@@ -189,7 +189,7 @@ def editor(request, tmp_path):
         state.reads.append(Path(path))
         return json.loads(Path(path).read_text(encoding="utf-8"))
 
-    namespace = {"load_json_file": read_json}
+    namespace = {"load_json_file": read_json, "copy": copy}
     imports = {
         (2, "analyzer.automation_models"): SimpleNamespace(AutomationRule=Item, AutomationPlan=Plan),
         (2, "database.models"): SimpleNamespace(Action=Item),
@@ -356,8 +356,9 @@ def test_exception_during_persistence_keeps_one_item_and_retryable_callback(edit
     ("SequenceDetailDialog", "action_id", "_copy_action", "_paste_action", "_paste_action_top"),
 ])
 @pytest.mark.parametrize("as_child", [False, True])
+@pytest.mark.parametrize("multi", [False, True])
 def test_deep_copy_and_paste_preserve_nested_window_settings_without_aliasing(
-    owner, id_attr, copy_method, paste_child, paste_top, as_child,
+    owner, id_attr, copy_method, paste_child, paste_top, as_child, multi,
 ):
     clipboard = [None]
     namespace = _load(PLAYER_VIEW, {copy_method, paste_child, paste_top}, {
@@ -369,9 +370,15 @@ def test_deep_copy_and_paste_preserve_nested_window_settings_without_aliasing(
         return SimpleNamespace(**{id_attr: node_id, "action_type": action_type,
                                   "parent_id": None, "children": [], "window_control_config": {}, **kwargs})
 
-    nested = node("nested", "window_control", window_control_config={**CONFIG, "operation": "minimize"})
+    config = copy.deepcopy(CONFIG)
+    if multi:
+        config.update(multi_enabled=True, targets=[
+            {"executable_name": "first.exe", "title_contains": "", "match_mode": "executable"},
+            {"executable_name": "second.exe", "title_contains": "second"},
+        ])
+    nested = node("nested", "window_control", window_control_config={**config, "operation": "minimize"})
     normal = node("normal", "key_press", keys=["enter"], children=[nested])
-    source = node("source", "window_control", window_control_config=dict(CONFIG), children=[normal])
+    source = node("source", "window_control", window_control_config=copy.deepcopy(config), children=[normal])
     before = copy.deepcopy(source)
     parent = node("parent", "click")
     host = SimpleNamespace(
@@ -389,7 +396,7 @@ def test_deep_copy_and_paste_preserve_nested_window_settings_without_aliasing(
     pasted = parent.children if as_child else (host._plan.initial_rules if owner == "PlanDetailDialog" else host._sequence.actions)
     assert len(pasted) == 2 and host._modified
     for item in pasted:
-        assert item.window_control_config == CONFIG
+        assert item.window_control_config == config
         assert item.window_control_config is not copied.window_control_config
         assert item.children[0].action_type == "key_press" and item.children[0].keys == ["enter"]
         assert item.children[0].children[0].window_control_config == nested.window_control_config
@@ -401,9 +408,35 @@ def test_deep_copy_and_paste_preserve_nested_window_settings_without_aliasing(
     assert len(set(ids)) == 9, "The clipboard keeps source IDs; each paste needs three fresh IDs"
     pasted[0].window_control_config["title_contains"] = "changed"
     pasted[0].children[0].children[0].window_control_config["operation"] = "foreground"
-    assert pasted[1].window_control_config == CONFIG
+    if multi:
+        pasted[0].window_control_config["targets"][0]["executable_name"] = "changed.exe"
+        pasted[0].children[0].children[0].window_control_config["targets"].reverse()
+    assert pasted[1].window_control_config == config
     assert pasted[1].children[0].children[0].window_control_config == nested.window_control_config
     assert source == before and copied == before
+
+
+def test_multi_save_handler_persists_nested_candidates_and_does_not_alias_callback_input(editor):
+    config = {**CONFIG, "multi_enabled": True, "targets": [
+        {"executable_name": "msedge.exe", "title_contains": "", "match_mode": "executable"},
+        {"executable_name": "mudrun_tauri.exe", "title_contains": "Mudfish"},
+    ]}
+    expected = copy.deepcopy(config)
+    editor.host._add_window_control_action()
+    callback = editor.dialogs[-1].on_save
+    assert callback(config) is True
+    child = editor.parent.children[0]
+    assert editor.reload().to_dict() == editor.document.to_dict()
+    config["targets"][0]["executable_name"] = "external-change.exe"
+    assert child.window_control_config == expected
+    assert editor.reload().to_dict() == editor.document.to_dict()
+    editor.host._edit_window_control_action(child)
+    edited = copy.deepcopy(expected)
+    edited["targets"].reverse()
+    edited["multi_enabled"] = False
+    assert editor.dialogs[-1].on_save(edited) is True
+    assert editor.reload().to_dict() == editor.document.to_dict()
+    assert child.window_control_config == edited
 
 
 def _monitor_helpers():
