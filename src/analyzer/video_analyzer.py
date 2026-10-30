@@ -579,6 +579,7 @@ class VideoAnalyzer:
             drag_to_x=action.drag_to_x,  # 드래그 종료 X
             drag_to_y=action.drag_to_y,  # 드래그 종료 Y
             drag_duration=action.drag_duration,  # 드래그 소요 시간
+            window_control_config=dict(getattr(action, "window_control_config", {}) or {}),
         )
 
         # 단축키/키 입력 처리

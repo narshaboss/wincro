@@ -33,3 +33,16 @@ jobs:
         run: python -m pytest -q tests/test_discord_notifier.py tests/test_discord_delivery_regression.py
       - name: Full regression including engine isolation
         run: python -m pytest -q
+      - name: Window-control layout checks on isolated Windows desktop
+        if: ${{ hashFiles('tests/test_window_control_ui_layout.py') != '' }}
+        env:
+          WINCRO_WINDOW_CONTROL_UI_QA: '1'
+          WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS: artifacts/window_control
+        run: python -m pytest -q tests/test_window_control_ui_layout.py
+      - name: Upload window-control UI verification
+        if: ${{ always() && hashFiles('artifacts/window_control/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: window-control-ui
+          path: artifacts/window_control/
+          retention-days: 14

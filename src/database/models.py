@@ -25,6 +25,7 @@ class ActionType(Enum):
     AUTO_LIST = "auto_list"
     AUTO_LIST_VALUE_INPUT = "auto_list_value_input"
     ACTION_CALL = "action_call"
+    WINDOW_CONTROL = "window_control"
     WAIT = "wait"
     WAIT_FOR_IMAGE = "wait_for_image"  # 이미지가 나타날 때까지 대기
     SCREENSHOT = "screenshot"
@@ -107,6 +108,7 @@ class Action:
     parent_id: Optional[str] = None  # 부모 액션 ID
     children: List["Action"] = field(default_factory=list)  # 자식 액션들
     action_id: str = ""  # 액션 고유 ID
+    window_control_config: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """초기화 후 처리"""
@@ -122,6 +124,11 @@ class Action:
             self.auto_list_config = normalize_auto_list_config(self.auto_list_config)
         else:
             self.auto_list_config = {}
+        if self.action_type == ActionType.WINDOW_CONTROL.value:
+            from ..utils.window_control import normalize_window_control_config
+            self.window_control_config = normalize_window_control_config(self.window_control_config)
+        else:
+            self.window_control_config = {}
         if self.action_type == ActionType.ACTION_CALL.value:
             self.action_call_rule_id = str(self.action_call_rule_id or "").strip() or None
             self.action_call_include_children = bool(self.action_call_include_children)
@@ -159,6 +166,13 @@ class Action:
             result["auto_list_config"] = auto_list_config_for_save(self.auto_list_config)
         else:
             result.pop("auto_list_config", None)
+        if self.action_type == ActionType.WINDOW_CONTROL.value:
+            from ..utils.window_control import normalize_window_control_config
+            result["window_control_config"] = normalize_window_control_config(
+                result["window_control_config"]
+            )
+        else:
+            result.pop("window_control_config", None)
         # children을 재귀적으로 변환
         result["children"] = [child.to_dict() if hasattr(child, 'to_dict') else child for child in (self.children or [])]
         return result
@@ -180,7 +194,7 @@ class Action:
             'repeat_from_auto_list_quantity',
             'auto_list_repeat_confirm_image', 'auto_list_repeat_confirm_region',
             'auto_list_repeat_confirm_confidence',
-            'auto_list_config',
+            'auto_list_config', 'window_control_config',
             'action_call_rule_id', 'action_call_include_children',
             'scroll_amount', 'drag_to_x', 'drag_to_y', 'drag_duration', 'timestamp',
             'description', 'wait_for_image', 'wait_for_image_timeout',
@@ -229,6 +243,9 @@ class Action:
             return "현재 처리수량 입력"
         elif self.action_type == ActionType.ACTION_CALL.value:
             return "액션 호출"
+        elif self.action_type == ActionType.WINDOW_CONTROL.value:
+            from ..utils.window_control import format_window_control_summary
+            return format_window_control_summary(self.window_control_config)
         elif self.action_type == ActionType.WAIT.value:
             return f"대기: {self.duration}초"
         elif self.action_type == ActionType.WAIT_FOR_IMAGE.value:

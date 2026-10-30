@@ -104,6 +104,8 @@ from ..utils.auto_list import (
     translate_screen_region,
 )
 from ..utils.action_call import ACTION_CALL_ACTION_TYPE, ACTION_CALL_MAX_DEPTH
+from ..utils.window_control import WINDOW_CONTROL_ACTION_TYPE
+from .window_control_runtime import wait_for_window_control
 from .runtime_action_options import (
     effective_action_repeat_count,
     is_runtime_action_enabled,
@@ -2349,6 +2351,8 @@ class RuleExecutor:
     @staticmethod
     def _target_images_for_rule(rule: AutomationRule) -> List[str]:
         """Return primary + multi images in OR-search order without duplicates."""
+        if getattr(rule, "action_type", "") == WINDOW_CONTROL_ACTION_TYPE:
+            return []
         images: List[str] = []
         seen = set()
         raw_images = []
@@ -2768,6 +2772,9 @@ class RuleExecutor:
         action_type = rule.action_type
 
         try:
+            if action_type == WINDOW_CONTROL_ACTION_TYPE:
+                return self._execute_window_control(rule, start_time)
+
             if action_type == AUTO_LIST_ACTION_TYPE:
                 return self._execute_auto_list(rule, start_time)
 
@@ -4294,6 +4301,16 @@ class RuleExecutor:
             if not cls._action_call_subtree_contains(child, caller_rule_id)
         ]
         return target_copy
+
+    def _execute_window_control(self, rule, start_time):
+        success, message = wait_for_window_control(
+            getattr(rule, "window_control_config", {}),
+            should_stop=self._stop_event.is_set,
+            is_paused=lambda: not self._pause_event.is_set(),
+            wait=self._stop_event.wait,
+            on_wait=lambda message: logger.info("%s[창 제어] 대기: %s", self._step_prefix, message),
+        )
+        return self._make_result(rule, success, message, start_time)
 
     def _execute_action_call(
         self,

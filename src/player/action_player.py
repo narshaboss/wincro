@@ -45,6 +45,7 @@ from ..utils.logger import get_logger, create_execution_logger
 from ..utils.config import get_config
 from ..utils.input_controller import block_automation_input, get_input_controller, unblock_automation_input
 from ..database.models import Action, ActionType, Sequence, ExecutionLog, ExecutionStatus
+from .window_control_runtime import wait_for_window_control
 from ..database.db_manager import get_db
 from ..analyzer.template_matcher import get_template_matcher
 from ..analyzer.automation_models import AutomationPlan, AutomationRule
@@ -954,7 +955,7 @@ class ActionPlayer:
             # 이미지 기반 인식 우선, 좌표는 대체 수단
             x, y = action.x, action.y
 
-            if action.target_image:
+            if action.target_image and action.action_type != "window_control":
                 # 이미지 매칭 시도 - 이미지가 나타날 때까지 대기 (타임아웃 있음)
                 # 기본 신뢰도 0.8 (0.9는 너무 엄격함)
                 confidence = action.confidence if action.confidence and action.confidence > 0 else 0.8
@@ -1030,9 +1031,23 @@ class ActionPlayer:
 
             # 액션 유형별 실행
             action_type = action.action_type
-            input_ctrl = get_input_controller()
+            input_ctrl = get_input_controller() if action_type != "window_control" else None
 
-            if action_type == ActionType.CLICK.value:
+            if action_type == "window_control":
+                success, message = wait_for_window_control(
+                    getattr(action, "window_control_config", {}),
+                    should_stop=lambda: (
+                        self._state == PlayerState.STOPPED
+                        or self._emergency_stop.is_triggered
+                    ),
+                    is_paused=lambda: self._state == PlayerState.PAUSED,
+                    wait=self._wait_for_legacy_stop,
+                    on_wait=lambda message: logger.info("[창 제어] 대기: %s", message),
+                )
+                if not success:
+                    return False, message
+
+            elif action_type == ActionType.CLICK.value:
                 if x is not None and y is not None:
                     x, y = _validate_coordinates(x, y)
                     input_ctrl.click(x, y)

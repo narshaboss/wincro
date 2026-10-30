@@ -238,6 +238,7 @@ class AutomationRule:
     is_monitoring_mode: bool = False  # ?????? ??? ???
     monitoring_final_image: Optional[str] = None  # ??? ???? (??? ??????????? ???)
     monitoring_watches: List[Dict[str, Any]] = field(default_factory=list)  # ??? ??? [{image: str, goto_index: int}]
+    window_control_config: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """??????????"""
@@ -260,6 +261,11 @@ class AutomationRule:
             if self.action_type == AUTO_LIST_ACTION_TYPE
             else {}
         )
+        if self.action_type == "window_control":
+            from ..utils.window_control import normalize_window_control_config
+            self.window_control_config = normalize_window_control_config(self.window_control_config)
+        else:
+            self.window_control_config = {}
         if self.action_type == ACTION_CALL_ACTION_TYPE:
             self.action_call_rule_id = str(self.action_call_rule_id or "").strip() or None
             self.action_call_include_children = bool(self.action_call_include_children)
@@ -503,6 +509,9 @@ class AutomationRule:
         }
         if self.action_type == AUTO_LIST_ACTION_TYPE:
             result["auto_list_config"] = auto_list_config_for_save(self.auto_list_config)
+        if self.action_type == "window_control":
+            from ..utils.window_control import normalize_window_control_config
+            result["window_control_config"] = normalize_window_control_config(self.window_control_config)
         return result
 
     @classmethod
@@ -602,6 +611,7 @@ class AutomationRule:
             auto_list_repeat_confirm_region=data.get("auto_list_repeat_confirm_region"),
             auto_list_repeat_confirm_confidence=data.get("auto_list_repeat_confirm_confidence", 0.9),
             auto_list_config=auto_list_config_from_saved(data.get("auto_list_config", {}), templates_dir),
+            window_control_config=data.get("window_control_config", {}),
             action_call_rule_id=data.get("action_call_rule_id"),
             action_call_include_children=data.get("action_call_include_children", True),
             wait_after=data.get("wait_after", 0.5),
@@ -645,6 +655,12 @@ class AutomationRule:
             monitoring_final_image=_to_absolute_path(data.get("monitoring_final_image"), templates_dir),
             monitoring_watches=watches_restored,
         )
+
+    def __str__(self) -> str:
+        if self.action_type == "window_control":
+            from ..utils.window_control import format_window_control_summary
+            return format_window_control_summary(self.window_control_config)
+        return repr(self)
 
 
 @dataclass

@@ -21,6 +21,7 @@ from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.plan_sequence_groups import sync_plan_repeat_in_groups
 from ..utils.auto_list import AUTO_LIST_EXTRACTION_BATCH_LIMIT
 from ..utils.action_call import ACTION_CALL_ACTION_TYPE
+from ..utils.window_control import WINDOW_CONTROL_ACTION_TYPE, format_window_control_summary
 from ..utils.action_timing import apply_bulk_random_waits
 from ..utils.input_controller import (
     block_automation_input,
@@ -88,6 +89,7 @@ from .virtual_scroll import VirtualScrollFrame
 from .key_input_dialog import KeyInputDialog
 from .random_key_sequence_dialog import RandomKeySequenceDialog
 from .auto_list_dialog import AutoListDialog, AutoListValueInputDialog
+from .window_control_editor import WindowControlEditorMixin
 from .analyzer_view import (
     ImageCropDialog,
     TemplateMediaSettings,
@@ -365,6 +367,13 @@ def invalidate_thumbnail_cache(image_path: str):
             del _thumbnail_cache[key]
 
 
+def _reject_window_control_monitor_paste(owner, clipboard):
+    if any(getattr(item, "action_type", "") == WINDOW_CONTROL_ACTION_TYPE for item in collect_all_actions(clipboard)):
+        messagebox.showwarning("붙여넣기 제한", "창 제어는 일반 액션 또는 일반 하위 액션으로 추가하세요.", parent=owner)
+        return True
+    return False
+
+
 def _convert_action_to_monitor_dict(action):
     """액션을 monitor_action 형식으로 변환 (모든 속성 포함).
 
@@ -373,6 +382,9 @@ def _convert_action_to_monitor_dict(action):
     """
     action_type = action.action_type
     monitor_action = None
+
+    if action_type == WINDOW_CONTROL_ACTION_TYPE:
+        return None
 
     if action_type == "type":
         monitor_action = {"type": "텍스트 입력", "text": action.action_text or ""}
@@ -1328,7 +1340,7 @@ def _flatten_children_after_parent(root_items: list, parent, id_attr: str) -> in
     return len(children)
 
 
-class PlanDetailDialog(ctk.CTkToplevel):
+class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
     """자동화 계획 상세보기/수정 다이얼로그"""
 
     def __init__(self, parent, plan: AutomationPlan):
@@ -1485,6 +1497,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             details.append(format_random_key_sequences_summary(getattr(rule, "random_key_sequences", [])))
         if getattr(rule, "action_type", None) == "auto_list":
             details.append(f"항목 {len((getattr(rule, 'auto_list_config', {}) or {}).get('items', []))}개")
+        if getattr(rule, "action_type", None) == WINDOW_CONTROL_ACTION_TYPE:
+            details.append(format_window_control_summary(getattr(rule, "window_control_config", {})))
         if getattr(rule, "action_type", None) == "auto_list_value_input":
             details.append(f"입력영역 {getattr(rule, 'search_region', None) or '미설정'}")
         if getattr(rule, "action_type", None) == ACTION_CALL_ACTION_TYPE:
@@ -1982,6 +1996,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(size=12, weight="bold"),
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left")
+
+        self._add_window_control_button(btn_container)
 
         all_rules = self._plan.initial_rules + self._plan.monitoring_rules
         ctk.CTkLabel(
@@ -2662,6 +2678,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._edit_random_key_action(r),
             ).pack(side="right", padx=3, pady=8)
+        elif rule.action_type == WINDOW_CONTROL_ACTION_TYPE:
+            self._add_window_control_settings_button(control_frame, rule, compact=True)
         elif rule.action_type == "auto_list":
             ctk.CTkButton(
                 control_frame,
@@ -3169,6 +3187,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda r=rule: self._edit_random_key_action(r),
             ).pack(side="right", padx=(4, 0))
+        elif rule.action_type == WINDOW_CONTROL_ACTION_TYPE:
+            self._add_window_control_settings_button(btn_frame, rule)
         elif rule.action_type == "auto_list":
             ctk.CTkButton(
                 btn_frame,
@@ -6669,6 +6689,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         clipboard = get_action_clipboard()
         if clipboard is None:
             return
+        if _reject_window_control_monitor_paste(self, clipboard):
+            return
 
         if rule_index >= len(self._plan.initial_rules):
             return
@@ -6703,6 +6725,8 @@ class PlanDetailDialog(ctk.CTkToplevel):
         """클립보드의 액션을 현재 액션의 모니터링 액션으로 추가 (자식 포함)"""
         clipboard = get_action_clipboard()
         if clipboard is None:
+            return
+        if _reject_window_control_monitor_paste(self, clipboard):
             return
 
         # monitoring_watches가 없으면 생성
@@ -27805,8 +27829,10 @@ class GameModeDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-class SequenceDetailDialog(ctk.CTkToplevel):
+class SequenceDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
     """재생(녹화목록) 상세보기/수정 다이얼로그"""
+
+    _window_control_is_plan = False
 
     def __init__(self, parent, sequence: Sequence, db):
         super().__init__(parent)
@@ -28220,6 +28246,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         ).pack(side="left", padx=(5, 0))
 
+        self._add_window_control_button(btn_container)
+
         created_str = self._sequence.created_at.strftime("%Y-%m-%d") if self._sequence.created_at else "알 수 없음"
         ctk.CTkLabel(
             main,
@@ -28454,6 +28482,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             details.append(format_random_key_sequences_summary(getattr(action, "random_key_sequences", [])))
         if getattr(action, "action_type", None) == "auto_list":
             details.append(f"항목 {len((getattr(action, 'auto_list_config', {}) or {}).get('items', []))}개")
+        if getattr(action, "action_type", None) == WINDOW_CONTROL_ACTION_TYPE:
+            details.append(format_window_control_summary(getattr(action, "window_control_config", {})))
         if getattr(action, "action_type", None) == "auto_list_value_input":
             details.append(f"입력영역 {getattr(action, 'search_region', None) or '미설정'}")
         if getattr(action, "action_type", None) == ACTION_CALL_ACTION_TYPE:
@@ -28494,6 +28524,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
             )
         if getattr(action, "action_type", None) == "auto_list":
             details.append(f"항목 {len((getattr(action, 'auto_list_config', {}) or {}).get('items', []))}개")
+        if getattr(action, "action_type", None) == WINDOW_CONTROL_ACTION_TYPE:
+            details.append(format_window_control_summary(getattr(action, "window_control_config", {})))
         if getattr(action, "action_type", None) == "auto_list_value_input":
             details.append(f"입력영역 {getattr(action, 'search_region', None) or '미설정'}")
         if getattr(action, "action_type", None) == ACTION_CALL_ACTION_TYPE:
@@ -29178,6 +29210,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
                 corner_radius=IOS_METRICS["control_radius_small"],
                 command=lambda a=action: self._edit_random_key_action(a),
             ).pack(side="right", padx=(4, 0))
+        elif action.action_type == WINDOW_CONTROL_ACTION_TYPE:
+            self._add_window_control_settings_button(btn_frame, action)
         elif action.action_type == "auto_list":
             ctk.CTkButton(
                 btn_frame,
@@ -30181,6 +30215,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         clipboard = get_action_clipboard()
         if clipboard is None:
             return
+        if _reject_window_control_monitor_paste(self, clipboard):
+            return
 
         # 클립보드 액션과 모든 자식 수집
         all_actions = collect_all_actions(clipboard)
@@ -30243,6 +30279,8 @@ class SequenceDetailDialog(ctk.CTkToplevel):
         """클립보드의 액션을 모니터링 액션으로 붙여넣기 (Sequence용)"""
         clipboard = get_action_clipboard()
         if clipboard is None:
+            return
+        if _reject_window_control_monitor_paste(self, clipboard):
             return
 
         if action_index >= len(self._sequence.actions):
@@ -32676,6 +32714,7 @@ class PlayerView(BaseView):
             "auto_list",
             "auto_list_value_input",
             "action_call",
+            "window_control",
             "wait",
             "game_mode",
         }:
@@ -32696,6 +32735,7 @@ class PlayerView(BaseView):
             auto_list_config=getattr(action, "auto_list_config", {}) or {},
             action_call_rule_id=getattr(action, "action_call_rule_id", None),
             action_call_include_children=getattr(action, "action_call_include_children", True),
+            window_control_config=dict(getattr(action, "window_control_config", {}) or {}),
             drag_to_x=getattr(action, "drag_to_x", None),
             drag_to_y=getattr(action, "drag_to_y", None),
             drag_duration=getattr(action, "drag_duration", None),
