@@ -240,6 +240,49 @@ def test_random_text_stop_does_not_emit_later_characters_or_success(monkeypatch)
     assert result.success is False and emitted == ["a"]
 
 
+def test_stop_during_startup_device_release_does_not_wait_for_lifecycle_lock(monkeypatch):
+    entered, finish = threading.Event(), threading.Event()
+    executor = runtime.RuleExecutor()
+    results = []
+
+    def release_all():
+        entered.set()
+        assert finish.wait(3)
+        return True
+
+    monkeypatch.setattr(runtime, "get_input_controller", lambda: SimpleNamespace(release_all=release_all))
+    monkeypatch.setattr(runtime.pyautogui, "position", lambda: (0, 0))
+    starter = threading.Thread(target=lambda: results.append(executor.execute_plan(AutomationPlan(name="startup"))))
+    starter.start()
+    try:
+        assert entered.wait(2)
+        started = time.perf_counter()
+        executor.stop()
+        assert time.perf_counter() - started < 0.1
+        assert input_controller.wait_for_input_cleanup(0) is False
+        finish.set()
+        starter.join(3)
+        assert results == [False] and executor._execution_thread is None
+        assert input_controller.wait_for_input_cleanup(3)
+    finally:
+        finish.set()
+        starter.join(3)
+        input_controller.wait_for_input_cleanup(3)
+        input_controller.unblock_automation_input()
+
+
+def test_template_cache_and_version_metadata_are_bounded_together(tmp_path):
+    matcher = TemplateMatcher()
+    for i in range(matcher._MAX_CACHE_SIZE + 3):
+        path = tmp_path / f"image_{i}.png"
+        write_image(path, i)
+        write_image(path.with_name(path.stem + "_mask.png"), 255)
+        matcher._load_template(str(path))
+        matcher._load_mask(str(path))
+    assert len(matcher._cache) == len(matcher._cache_versions) == matcher._MAX_CACHE_SIZE
+    assert len(matcher._mask_cache) == len(matcher._mask_versions) == matcher._MAX_CACHE_SIZE
+
+
 def notification_context(executor, plan):
     context = SimpleNamespace(_rule_executor=executor, _mini_active_plan=plan,
         _mini_notification_last_progress_text="stale [3-5]", _mini_notification_last_progress_snapshot={

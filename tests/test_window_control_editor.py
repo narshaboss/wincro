@@ -148,9 +148,10 @@ class DurableSequenceDB:
             raise OSError("simulated database write failure")
         data = _corrupt_readback(sequence.to_dict(), self.state.fault)
         with closing(sqlite3.connect(self.path)) as connection:
-            connection.execute("INSERT OR REPLACE INTO sequences VALUES (?, ?)",
-                               (sequence.id, json.dumps(data)))
+            cursor = connection.execute("INSERT OR REPLACE INTO sequences VALUES (?, ?)",
+                                        (sequence.id, json.dumps(data)))
             connection.commit()
+            return cursor.rowcount == 1
 
     def get_sequence(self, sequence_id):
         self.state.reads.append(("db", sequence_id))

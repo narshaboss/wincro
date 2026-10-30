@@ -776,6 +776,8 @@ class RuleExecutor:
         self._stop_join_worker_active = False
         self._stop_cleanup_done = threading.Event()
         self._stop_cleanup_done.set()
+        self._start_preparation_done = threading.Event()
+        self._start_preparation_done.set()
         self._stop_cleanup_failed = False
         self._allow_special_mode_route_handoff = False
         self._special_mode_route_handoff_lock = threading.Lock()
@@ -1090,7 +1092,9 @@ class RuleExecutor:
         if previous_thread is threading.current_thread():
             logger.warning("현재 실행 콜백 안에서는 새 실행을 바로 시작할 수 없습니다")
             return False
-        if not self._stop_cleanup_done.wait(timeout=5.0) or not wait_for_input_cleanup(timeout=5.0):
+        if (not self._start_preparation_done.wait(timeout=5.0)
+                or not self._stop_cleanup_done.wait(timeout=5.0)
+                or not wait_for_input_cleanup(timeout=5.0)):
             logger.warning("이전 입력 장치 해제가 끝나지 않아 시작할 수 없습니다")
             return False
 
@@ -1116,7 +1120,15 @@ class RuleExecutor:
                 logger.warning("중지 요청이 먼저 들어와 새 실행을 보류합니다")
                 return False
 
-            try:
+            # Reserve the run under the lock, but never hold it across device
+            # I/O: stop() must remain responsive even during startup release.
+            self._state = ExecutionState.RUNNING_INITIAL
+            self._start_preparation_done.clear()
+            self._stop_event.clear()
+            self._pause_event.set()
+            startup_token = begin_input_cleanup("RuleExecutor.start_cleanup")
+        try:
+            with self._lifecycle_lock:
                 self._current_plan = plan
                 self._allow_special_mode_route_handoff = bool(allow_special_mode_handoff)
                 with self._special_mode_route_handoff_lock:
@@ -1133,14 +1145,13 @@ class RuleExecutor:
                     self._completion_notified = False
                 self._input_reset_completed = False
                 self._stop_cleanup_failed = False
-                if not self._reset_input_state("execution-start"):
-                    raise RuntimeError("input reset failed before execution start")
-                self._stop_event.clear()
-                self._pause_event.set()
-
-                self._last_mouse_pos = pyautogui.position()
-                self._is_moving_mouse = False
-
+            if not self._reset_input_state("execution-start"):
+                raise RuntimeError("input reset failed before execution start")
+            self._last_mouse_pos = pyautogui.position()
+            self._is_moving_mouse = False
+            with self._lifecycle_lock:
+                if self._stop_event.is_set():
+                    return False
                 all_rules_count = (
                     len(self._flatten_rules(plan.initial_rules))
                     + len(self._flatten_rules(plan.monitoring_rules))
@@ -1161,19 +1172,28 @@ class RuleExecutor:
                     daemon=True,
                 )
                 self._execution_thread = execution_thread
+                finish_input_cleanup(startup_token)
+                startup_token = None
                 if unblock_automation_input() is False:
                     raise RuntimeError("이전 입력 장치 정리가 진행 중입니다.")
                 execution_thread.start()
                 return True
-            except Exception as exc:
-                logger.error(f"실행 스레드 시작 실패: {exc}")
+        except Exception as exc:
+            logger.error(f"실행 스레드 시작 실패: {exc}")
+            with self._lifecycle_lock:
                 self._execution_thread = None
                 self._state = ExecutionState.FAILED
                 self._stop_event.set()
                 self._pause_event.set()
-                block_automation_input("RuleExecutor.start_failed")
-                self._reset_input_state("execution-start-failed")
-                return False
+            block_automation_input("RuleExecutor.start_failed")
+            if startup_token is None:
+                startup_token = begin_input_cleanup("RuleExecutor.start_failed_cleanup")
+            self._reset_input_state("execution-start-failed")
+            return False
+        finally:
+            if startup_token is not None:
+                finish_input_cleanup(startup_token)
+            self._start_preparation_done.set()
 
     def execute_plan_async(
         self,
@@ -1225,6 +1245,8 @@ class RuleExecutor:
     def wait_for_worker_exit(self, timeout: float = 5.0) -> bool:
         """Wait until the execution worker has fully left its finalizer."""
         deadline = time.monotonic() + max(0.0, float(timeout))
+        if not self._start_preparation_done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            return False
         if not self._stop_cleanup_done.wait(timeout=max(0.0, deadline - time.monotonic())):
             return False
         with self._lifecycle_lock:
@@ -1286,6 +1308,7 @@ class RuleExecutor:
                         self._stop_join_worker_active = True
                         execution_thread = self._execution_thread
                         monitor_thread = self._monitor_thread
+                        preparation_done = self._start_preparation_done
             try:
                 self._update_progress("실행 중지됨")
             except Exception as e:
@@ -1304,6 +1327,7 @@ class RuleExecutor:
                         if self._stop_cleanup_done is cleanup_done:
                             self._stop_cleanup_failed = not reset_ok
                         cleanup_done.set()
+                    preparation_done.wait()
                     if execution_thread and execution_thread.is_alive():
                         execution_thread.join(timeout=3.0)
                         if execution_thread.is_alive():
