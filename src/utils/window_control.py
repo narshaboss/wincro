@@ -1,6 +1,6 @@
 """Snapshot-based Windows window control, without input emulation.
 
-Only the three config strings are suitable for persistence. WindowInfo and its
+Only selector/config strings are suitable for persistence. WindowInfo and its
 process/window identifiers are transient observations, not saved targets.
 Each step makes at most one asynchronous show request or foreground request;
 the caller owns retries, cancellation and deadlines. There are no sleeps,
@@ -55,6 +55,12 @@ def normalize_window_control_config(config: Mapping | None = None) -> dict[str, 
             raise ValueError(f"{field_labels[key]}: 문자열이 필요합니다.")
         result[key] = value.strip()
     result["operation"] = result["operation"].casefold()
+    # Omit the default key for legacy documents; never broaden their selectors.
+    if "match_mode" in config:
+        mode = config["match_mode"]
+        if not isinstance(mode, str):
+            raise ValueError("찾기 방식: 문자열이 필요합니다.")
+        result["match_mode"] = mode.strip().casefold()
     return result
 
 
@@ -69,7 +75,10 @@ def validate_window_control_config(config: Mapping | None) -> dict[str, str]:
         or ntpath.basename(name) != name
     ):
         raise ValueError("실행 파일명은 경로 없이 .exe로 끝나야 합니다.")
-    if not result["title_contains"] or "\x00" in result["title_contains"]:
+    mode = result.get("match_mode", "title")
+    if mode not in {"title", "executable"}:
+        raise ValueError("찾기 방식은 실행 파일명만 또는 실행 파일명 + 창 제목이어야 합니다.")
+    if "\x00" in result["title_contains"] or (mode == "title" and not result["title_contains"]):
         raise ValueError("창 제목은 비어 있거나 NUL 문자를 포함할 수 없습니다.")
     if result["operation"] not in WINDOW_CONTROL_OPERATIONS:
         raise ValueError("창 동작은 최대화, 최소화, 앞으로 가져오기만 지원합니다.")
@@ -83,6 +92,8 @@ def format_window_control_summary(config: Mapping | None) -> str:
     except (ValueError, TypeError):
         return "창 제어 설정 필요"
     label = WINDOW_CONTROL_OPERATIONS[value["operation"]]
+    if value.get("match_mode", "title") == "executable":
+        return f'{label} | {value["executable_name"]} | 제목 무관'
     return f'{label} | {value["executable_name"]} | {value["title_contains"]}'
 
 
@@ -150,7 +161,10 @@ def _matches(window: WindowInfo, config: Mapping[str, str]) -> bool:
         window.handle > 0
         and window.process_id > 0
         and window.executable_name.casefold() == config["executable_name"].casefold()
-        and config["title_contains"].casefold() in window.title.casefold()
+        and (
+            config.get("match_mode", "title") == "executable"
+            or config["title_contains"].casefold() in window.title.casefold()
+        )
     )
 
 

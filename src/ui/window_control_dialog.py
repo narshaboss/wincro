@@ -21,6 +21,10 @@ OPERATION_LABELS = {
     "최소화": "minimize",
     "앞으로 가져오기": "foreground",
 }
+MATCH_MODE_LABELS = {
+    "실행 파일명 + 창 제목": "title",
+    "실행 파일명만": "executable",
+}
 PREFERRED_SIZE = (760, 720)
 MINIMUM_SIZE = (420, 360)
 SCREEN_MARGIN = (48, 100)
@@ -64,6 +68,12 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._enumeration_error = ""
         self._executable_var = tk.StringVar(self, value=config["executable_name"])
         self._title_var = tk.StringVar(self, value=config["title_contains"])
+        match_mode_label = next(
+            (label for label, value in MATCH_MODE_LABELS.items()
+             if value == config.get("match_mode", "title")),
+            "찾기 방식을 선택하세요",
+        )
+        self._match_mode_var = tk.StringVar(self, value=match_mode_label)
         self._selection_var = tk.StringVar(self, value="")
         operation_label = next(
             (label for label, value in OPERATION_LABELS.items() if value == config["operation"]),
@@ -78,6 +88,7 @@ class WindowControlDialog(ctk.CTkToplevel):
         self.bind("<Escape>", lambda _event: self._cancel())
         self._configure_geometry()
         self._build_ui()
+        self._sync_title_entry()
         self._refresh_windows()
         self._executable_var.trace_add("write", self._criteria_changed)
         self._title_var.trace_add("write", self._criteria_changed)
@@ -164,8 +175,21 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._editor.grid(row=2, column=0, sticky="nsew", padx=padding, pady=(0, 8))
         self._editor.grid_columnconfigure(0, weight=1)
         self._editor.bind("<Configure>", self._resize_editor_labels, add="+")
+        self._label(self._editor, "찾기 방식", heading=True).grid(
+            row=0, column=0, sticky="ew", padx=10, pady=(4, 2),
+        )
+        self._match_mode_menu = ctk.CTkOptionMenu(
+            self._editor, variable=self._match_mode_var, values=list(MATCH_MODE_LABELS),
+            command=self._match_mode_changed, height=IOS_METRICS["button_height_small"],
+            fg_color=COLORS["bg_card"], button_color=COLORS["bg_elevated"],
+            button_hover_color=COLORS["bg_card_hover"], text_color=COLORS["text_primary"],
+            dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["bg_card_hover"],
+            dropdown_text_color=COLORS["text_primary"], font=self._font(12),
+            dropdown_font=self._font(12), corner_radius=IOS_METRICS["control_radius_small"],
+        )
+        self._match_mode_menu.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
         executable_header = ctk.CTkFrame(self._editor, fg_color="transparent")
-        executable_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(4, 2))
+        executable_header.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 2))
         self._label(executable_header, "실행 파일명", heading=True).pack(side="left")
         self._manual_button = ctk.CTkButton(
             executable_header, text="직접 입력", command=self._enable_manual_target,
@@ -175,14 +199,15 @@ class WindowControlDialog(ctk.CTkToplevel):
             corner_radius=IOS_METRICS["control_radius_small"],
         )
         self._manual_button.pack(side="right")
-        self._executable_entry = self._entry(self._executable_var, 1)
-        self._executable_note = self._editor_note("", 2)
-        self._label(self._editor, "창 제목에 포함할 문자열", heading=True).grid(
-            row=3, column=0, sticky="ew", padx=10, pady=(8, 2),
-        )
-        self._title_entry = self._entry(self._title_var, 4)
-        self._label(self._editor, "동작", heading=True).grid(
+        self._executable_entry = self._entry(self._executable_var, 3)
+        self._executable_note = self._editor_note("", 4)
+        self._title_label = self._label(self._editor, "창 제목에 포함할 문자열", heading=True)
+        self._title_label.grid(
             row=5, column=0, sticky="ew", padx=10, pady=(8, 2),
+        )
+        self._title_entry = self._entry(self._title_var, 6)
+        self._label(self._editor, "동작", heading=True).grid(
+            row=7, column=0, sticky="ew", padx=10, pady=(8, 2),
         )
         self._operation_menu = ctk.CTkOptionMenu(
             self._editor, variable=self._operation_var, values=list(OPERATION_LABELS),
@@ -193,15 +218,16 @@ class WindowControlDialog(ctk.CTkToplevel):
             dropdown_text_color=COLORS["text_primary"], font=self._font(12),
             dropdown_font=self._font(12), corner_radius=IOS_METRICS["control_radius_small"],
         )
-        self._operation_menu.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 6))
-        self._match_note = self._editor_note("", 7)
+        self._operation_menu.grid(row=8, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self._match_note = self._editor_note("", 9)
         self._editor_note(
-            "실행 파일명과 제목 일부로 찾습니다. 같은 조건의 창이 여러 개면 구별할 수 없으므로 "
-            "고유한 제목을 지정하세요. 이 설정 창에서는 대상 창을 조작하지 않습니다.", 8,
+            "실행 파일명만으로 찾으면 이벤트 페이지 등 제목 변경에 영향받지 않습니다. "
+            "실제 창이 여러 개면 대기하므로 제목 조건을 추가해 구분하세요. "
+            "이 설정 창에서는 대상 창을 조작하지 않습니다.", 10,
         )
         self._editor_note(
             "적용 후 상위 창에서 저장해야 유지됩니다."
-            if self._on_save is None else "저장 시 현재 플랜/재생목록도 함께 저장됩니다.", 9,
+            if self._on_save is None else "저장 시 현재 플랜/재생목록도 함께 저장됩니다.", 11,
         )
 
         # The footer is not inside either scroll area, including its error display.
@@ -285,12 +311,29 @@ class WindowControlDialog(ctk.CTkToplevel):
     def _matching_windows(self):
         executable = self._executable_var.get().strip().casefold()
         title = self._title_var.get().strip().casefold()
-        if not executable or not title:
+        mode = MATCH_MODE_LABELS.get(self._match_mode_var.get())
+        if not executable or mode is None or (mode == "title" and not title):
             return []
         return [
             window for window in self._windows
-            if window.executable_name.casefold() == executable and title in window.title.casefold()
+            if window.executable_name.casefold() == executable
+            and (mode == "executable" or title in window.title.casefold())
         ]
+
+    def _sync_title_entry(self) -> None:
+        title_unused = MATCH_MODE_LABELS.get(self._match_mode_var.get()) == "executable"
+        self._title_entry.configure(state="disabled" if self._saving or title_unused else "normal")
+        self._title_label.configure(
+            text="창 제목 조건 (사용 안 함)" if title_unused else "창 제목에 포함할 문자열",
+        )
+
+    def _match_mode_changed(self, _label=None) -> None:
+        if self._saving:
+            return
+        self._sync_title_entry()
+        self._sync_selection()
+        self._highlight_selection()
+        self._update_match_note()
 
     def _sync_selection(self) -> None:
         matches = self._matching_windows()
@@ -388,7 +431,7 @@ class WindowControlDialog(ctk.CTkToplevel):
             text = f"창 목록 조회 실패: {self._enumeration_error[:180]}"
             color = COLORS["warning"]
         elif len(matches) > 1:
-            text = f"현재 목록에 {len(matches)}개 창이 일치합니다. 중복 조건에서는 실행되지 않으므로 제목을 구체적으로 지정하세요."
+            text = f"현재 목록에 {len(matches)}개 창이 일치합니다. 중복 조건에서는 실행되지 않습니다. 제목 조건 방식으로 구분하세요."
             color = COLORS["warning"]
         elif matches:
             text = "현재 목록에 1개 창이 일치합니다. 실제 실행 시 다시 찾습니다."
@@ -405,12 +448,18 @@ class WindowControlDialog(ctk.CTkToplevel):
         operation = OPERATION_LABELS.get(self._operation_var.get())
         if operation is None:
             raise ValueError("동작을 선택하세요.")
+        mode = MATCH_MODE_LABELS.get(self._match_mode_var.get())
+        if mode is None:
+            raise ValueError("찾기 방식을 선택하세요.")
         # Explicit allowlist: never retain a handle, PID, path or unrelated config key.
         config = {
             "executable_name": executable,
             "title_contains": self._title_var.get().strip(),
             "operation": operation,
         }
+        if mode == "executable":
+            config["match_mode"] = mode
+            config["title_contains"] = ""
         validate_window_control_config(config)
         normalized = normalize_window_control_config(config)
         return {key: normalized[key] for key in config}
@@ -421,12 +470,14 @@ class WindowControlDialog(ctk.CTkToplevel):
         for widget in (
             self._save_button, self._cancel_button, self._refresh_button,
             self._manual_button, self._title_entry, self._operation_menu,
+            self._match_mode_menu,
         ):
             widget.configure(state=state)
         if saving:
             self._executable_entry.configure(state="disabled")
         else:
             self._sync_executable_entry()
+            self._sync_title_entry()
             self._sync_selection()
             self._highlight_selection()
 

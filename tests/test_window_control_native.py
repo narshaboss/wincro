@@ -411,6 +411,11 @@ def test_native_child_window_state_and_ready_contract(native_fixture):
             all(event["kind"] != "show_window" for event in fixture.report["requests"][offset:]),
             "Foreground-only must not restore or resize an already-maximized window.",
         )
+        fixture.config = {**fixture.config, "match_mode": "executable", "title_contains": ""}
+        _exercise(fixture, "executable_only_minimize", "minimize")
+        _require_show_request(fixture, "executable_only_minimize", "minimize")
+        _exercise(fixture, "executable_only_maximize", "maximize", maximized=True, preserve=maximized)
+        _require_show_request(fixture, "executable_only_maximize", "maximize")
         fixture.report["status"] = (
             "geometry_verified_foreground_limited" if fixture.report["limitations"] else "verified_ready"
         )

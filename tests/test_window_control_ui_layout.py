@@ -394,6 +394,70 @@ def test_offline_apply_validation_and_enumeration_failure(gui):
     assert gui.root.grab_current() is gui.root
 
 
+def test_executable_only_mode_is_explicit_persisted_and_keeps_title_disabled(gui):
+    callback = Mock(return_value=False)
+    dialog = dialog_module.WindowControlDialog(gui.root, on_save=callback)
+    assert dialog._match_mode_var.get() == "실행 파일명 + 창 제목"
+    dialog._select_window(gui.windows[0])
+    original_title = dialog._title_var.get()
+    rows = list(dialog._rows)
+    dialog._match_mode_var.set("실행 파일명만")
+    dialog._match_mode_changed()
+    assert dialog._rows == rows
+    assert dialog._title_entry.cget("state") == "disabled"
+    assert "사용 안 함" in dialog._title_label.cget("text")
+    assert dialog._title_var.get() == original_title
+    expected = {
+        "executable_name": gui.windows[0].executable_name,
+        "title_contains": "", "operation": "maximize", "match_mode": "executable",
+    }
+    assert dialog._collect_config() == expected
+    event_window = backend_module.WindowInfo(
+        gui.windows[0].handle, gui.windows[0].process_id,
+        gui.windows[0].executable_name, "이벤트 안내 - 새 페이지",
+    )
+    gui.controller.list_windows.return_value = [event_window]
+    dialog._refresh_button.invoke()
+    assert dialog._matching_windows() == [event_window]
+    assert dialog._title_var.get() == original_title
+    gui.controller.list_windows.return_value = [
+        event_window,
+        backend_module.WindowInfo(404, 505, event_window.executable_name, "다른 브라우저 창"),
+    ]
+    dialog._refresh_button.invoke()
+    assert len(dialog._matching_windows()) == 2 and "중복" in dialog._match_note.cget("text")
+    gui.controller.list_windows.return_value = [event_window]
+    dialog._refresh_button.invoke()
+    gui.screenshot("executable_only")
+    _assert_dialog_layout(dialog)
+    dialog._save_button.invoke()
+    assert dialog.winfo_exists() and dialog._result is None
+    assert dialog._title_entry.cget("state") == "disabled"
+    assert dialog._match_mode_menu.cget("state") == "normal"
+    callback.assert_called_once_with(expected)
+    dialog._match_mode_var.set("실행 파일명 + 창 제목")
+    dialog._match_mode_changed()
+    assert dialog._title_entry.cget("state") == "normal"
+    assert dialog._title_var.get() == original_title
+    assert not dialog._matching_windows()
+    dialog._match_mode_var.set("실행 파일명만")
+    dialog._match_mode_changed()
+    callback.return_value = True
+    dialog._save_button.invoke()
+    assert not dialog.winfo_exists() and dialog._result == expected
+    reopened = dialog_module.WindowControlDialog(gui.root, config=dialog._result)
+    assert reopened._match_mode_var.get() == "실행 파일명만"
+    assert reopened._title_entry.cget("state") == "disabled"
+    assert reopened._collect_config() == expected
+    reopened._cancel()
+    invalid = dialog_module.WindowControlDialog(gui.root, config={**expected, "match_mode": "unknown"})
+    assert invalid._match_mode_var.get() == "찾기 방식을 선택하세요"
+    invalid._save_button.invoke()
+    assert invalid.winfo_exists() and invalid._result is None
+    assert "찾기 방식" in invalid._error_label.cget("text")
+    invalid._cancel()
+
+
 def test_direct_destroy_respects_newer_or_destroyed_grab_owner(gui):
     gui.root.grab_set()
     dialog = dialog_module.WindowControlDialog(gui.root)
