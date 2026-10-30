@@ -1,6 +1,6 @@
 """Snapshot-based Windows window control, without input emulation.
 
-Only selector/config strings are suitable for persistence. WindowInfo and its
+Only declarative selector settings are suitable for persistence. WindowInfo and its
 process/window identifiers are transient observations, not saved targets.
 Each step makes at most one asynchronous show request or foreground request;
 the caller owns retries, cancellation and deadlines. There are no sleeps,
@@ -37,7 +37,7 @@ _SHOW_COMMANDS = {"maximize": 3, "minimize": 7, "restore": 9}
 
 
 def normalize_window_control_config(config: Mapping | None = None) -> dict:
-    """Copy only persistent strings; default the operation only when absent.
+    """Copy only persistent selectors; default the operation only when absent.
 
     Incomplete editor values remain incomplete. Use validate before execution.
     Explicit empty, None or unknown operations never default to maximize.

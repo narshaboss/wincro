@@ -197,7 +197,6 @@ class WindowControlDialog(ctk.CTkToplevel):
         )
         self._editor.grid(row=2, column=0, sticky="nsew", padx=padding, pady=(0, 8))
         self._editor.grid_columnconfigure(0, weight=1)
-        self._editor.bind("<Configure>", self._resize_editor_labels, add="+")
         self._build_target_controls()
         self._label(self._editor, "찾기 방식", heading=True).grid(
             row=1, column=0, sticky="ew", padx=10, pady=(4, 2),
@@ -263,7 +262,6 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._error_label = self._label(footer, "")
         self._error_label.configure(text_color=COLORS["error"])
         self._error_label.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
-        footer.bind("<Configure>", self._resize_error_label, add="+")
         self._save_button = ctk.CTkButton(
             footer, text="저장" if self._on_save is not None else "적용", command=self._save,
             height=IOS_METRICS["button_height"], fg_color=COLORS["success"],
@@ -278,6 +276,10 @@ class WindowControlDialog(ctk.CTkToplevel):
             font=self._font(14, "bold"), corner_radius=IOS_METRICS["pill_radius"],
         )
         self._cancel_button.grid(row=1, column=1, sticky="ew", padx=(6, 0))
+        # Widget construction can pump Configure events. Bind only once every
+        # widget used by these callbacks exists.
+        self._editor.bind("<Configure>", self._resize_editor_labels, add="+")
+        footer.bind("<Configure>", self._resize_error_label, add="+")
 
     def _entry(self, variable, row):
         entry = ctk.CTkEntry(

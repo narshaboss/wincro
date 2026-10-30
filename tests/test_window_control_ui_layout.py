@@ -576,7 +576,7 @@ def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
     _pump(gui.root)
     assert not dialog._multi_var.get() and not dialog._target_panel.winfo_ismapped()
     assert dialog._collect_config() == single
-    dialog._multi_toggle.invoke()
+    dialog._multi_toggle.toggle()
     assert dialog._multi_var.get() and len(dialog._targets) == 1
     original_entry = dialog._executable_entry
     dialog._target_add.invoke()
@@ -587,12 +587,12 @@ def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
     dialog._target_up.invoke()
     assert dialog._executable_entry is original_entry, "Reordering must not rebuild the form"
     assert dialog._targets[0]["executable_name"] == "mudrun_tauri.exe"
-    dialog._multi_toggle.invoke()
+    dialog._multi_toggle.toggle()
     assert dialog._executable_var.get() == single["executable_name"]
     assert dialog._title_var.get() == single["title_contains"]
     disabled = dialog._collect_config()
     assert disabled["multi_enabled"] is False and len(disabled["targets"]) == 2
-    dialog._multi_toggle.invoke()
+    dialog._multi_toggle.toggle()
     expected = dialog._collect_config()
     assert expected["multi_enabled"] is True and expected["executable_name"] == "msedge.exe"
     assert expected["targets"] == [
@@ -623,7 +623,7 @@ def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
     assert not dialog.winfo_exists() and writes == [expected]
     reopened = dialog_module.WindowControlDialog(gui.root, config=writes[0])
     assert reopened._collect_config() == expected
-    reopened._multi_toggle.invoke()
+    reopened._multi_toggle.toggle()
     restored = reopened._collect_config()
     assert restored == {**single, "multi_enabled": False, "targets": expected["targets"]}
     reopened._cancel_button.invoke()

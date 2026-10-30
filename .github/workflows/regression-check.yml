@@ -38,8 +38,6 @@ jobs:
       - name: Window-control contracts and protected engine isolation
         if: ${{ hashFiles('tests/test_window_control.py') != '' }}
         run: python -m pytest -q tests/test_window_control.py tests/test_window_control_multi.py tests/test_window_control_persistence.py tests/test_window_control_match_mode.py tests/test_window_control_runtime.py tests/test_window_control_editor.py tests/test_runtime_action_options.py tests/test_special_mode_engine_isolation.py
-      - name: Full regression including engine isolation
-        run: python -m pytest -q --durations=15
       - name: Window-control layout checks on isolated Windows desktop
         if: ${{ !cancelled() && hashFiles('tests/test_window_control_ui_layout.py') != '' }}
         env:
@@ -51,6 +49,9 @@ jobs:
         env:
           WINCRO_WINDOW_CONTROL_UI_QA: '1'
         run: python -m pytest -q tests/test_window_control_native.py
+      - name: Full regression including engine isolation
+        if: ${{ !cancelled() }}
+        run: python -m pytest -q --durations=15
       - name: Upload window-control UI verification
         if: ${{ always() && hashFiles('artifacts/window_control/**') != '' }}
         uses: actions/upload-artifact@v4
