@@ -594,7 +594,8 @@ def test_action_player_uses_shared_runner_without_input_or_image_lookup(success,
     namespace["logger"].info.assert_called_once()
 
 
-def test_legacy_window_skip_preserves_message_without_waiting_twice_or_accessing_input():
+@pytest.mark.parametrize("multi", [False, True])
+def test_legacy_window_skip_preserves_message_without_waiting_twice_or_accessing_input(multi):
     clock = VirtualClock()
     controller = ScriptedController(clock, _result("missing"))
     shared = _runner(clock)
@@ -613,6 +614,11 @@ def test_legacy_window_skip_preserves_message_without_waiting_twice_or_accessing
                            _wait_for_legacy_stop=clock.wait)
     action = _action(wait_before=0, wait_after=1.5, x=None, y=None,
                      target_image="must-not-open.png", skip_on_not_found=True)
+    if multi:
+        action.window_control_config.update(multi_enabled=True, targets=[
+            {"executable_name": "first.exe", "title_contains": "first"},
+            {"executable_name": "second.exe", "title_contains": "second"},
+        ])
     ok, message = namespace["_execute_action"](host, action, 1.0)
     assert ok is True and "스킵됨" in message
     assert clock.now == 1.5 and len(clock.waits) == 15
@@ -898,7 +904,8 @@ def test_window_action_dispatch_precedes_rule_type_and_stale_monitor_flags(rule_
         getattr(host, name).assert_not_called()
 
 
-def test_missing_window_skip_in_nested_tree_continues_to_following_action():
+@pytest.mark.parametrize("multi", [False, True])
+def test_missing_window_skip_in_nested_tree_continues_to_following_action(multi):
     clock = VirtualClock()
     controller = ScriptedController(clock, _result("missing"))
     shared = _runner(clock)
@@ -908,6 +915,11 @@ def test_missing_window_skip_in_nested_tree_continues_to_following_action():
 
     host, namespace, dispatched = _review_executor(clock, run)
     window = _review_rule(skip_on_not_found=True, wait_after=1.5)
+    if multi:
+        window.window_control_config.update(multi_enabled=True, targets=[
+            {"executable_name": "first.exe", "title_contains": "first"},
+            {"executable_name": "second.exe", "title_contains": "second"},
+        ])
     following = _review_rule("following", "key_press", rule_type="fixed_sequence")
     parent = _review_rule("parent", "click", children=[window, following])
     before = copy.deepcopy(parent)

@@ -251,6 +251,8 @@ def _exercise(fixture, label, operation, *, maximized=False, preserve=None):
         _check(isinstance(result, WindowControlResult), "step() returned the wrong result type.")
         _check(result.status in {"ready", "pending"}, "The established native target became unavailable.")
         _check(type(result.ready) is bool and result.ready == (result.status == "ready"), "Invalid ready/status contract.")
+        if config.get("multi_enabled"):
+            _check(result.target_index == 1, "Native fallback did not select the second fixture candidate.")
         state = _snapshot(fixture)
         record["samples"].append({
             "elapsed_seconds": round(time.monotonic() - start, 4),

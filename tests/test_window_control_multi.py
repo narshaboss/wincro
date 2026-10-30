@@ -1,7 +1,6 @@
 """Ordered fallback simulations and real temporary JSON/SQLite persistence."""
 
 from copy import deepcopy
-from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -239,6 +238,40 @@ def test_disabled_multi_keeps_the_existing_single_runtime_path(monkeypatch):
     result, clock, controller = run(monkeypatch, config, {"single.exe": "ready"})
     assert result == (True, "ready") and names(controller) == ["single.exe"]
     assert controller.calls[0][1] == config and not clock.waits
+
+
+def test_disabled_multi_skips_only_a_missing_single_target_even_if_a_dormant_candidate_exists(monkeypatch):
+    result, clock, controller = run(monkeypatch, {**MULTI, "multi_enabled": False}, {
+        "single.exe": "missing", "msedge.exe": "ready", "mudrun_tauri.exe": "ready",
+    }, skip_on_not_found=True, skip_timeout=0)
+    assert result[0] is True and "스킵됨" in result[1]
+    assert names(controller) == ["single.exe"] and not clock.waits
+
+
+def test_existing_candidate_resets_the_shared_absence_timer(monkeypatch):
+    result, clock, controller = run(monkeypatch, MULTI, {
+        "msedge.exe": "missing",
+        "mudrun_tauri.exe": lambda at: "pending" if at == 0.5 else "missing",
+    }, skip_on_not_found=True, skip_timeout=1)
+    assert result[0] is True and "스킵됨" in result[1]
+    assert clock.now == 2.0
+    assert any(at == 0.5 and value["executable_name"] == "mudrun_tauri.exe" for at, value in controller.calls)
+
+
+def test_pause_does_not_consume_the_shared_missing_deadline(monkeypatch):
+    clock = VirtualClock()
+    paused = [False]
+    def pause_and_resume():
+        if not paused[0] and clock.now >= 0.2:
+            paused[0], clock.paused = True, True
+        if paused[0] and clock.now >= 0.7:
+            clock.paused = False
+    clock.on_wait = pause_and_resume
+    result, _, controller = run(monkeypatch, MULTI, {
+        "msedge.exe": "missing", "mudrun_tauri.exe": "missing",
+    }, clock=clock, skip_on_not_found=True, skip_timeout=0.7)
+    assert result[0] is True and "스킵됨" in result[1] and clock.now >= 1.2
+    assert not any(0.2 <= at < 0.7 for at, _ in controller.calls)
 
 
 @pytest.mark.parametrize("enabled", [False, True])

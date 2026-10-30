@@ -230,7 +230,8 @@ class WindowControlDialog(ctk.CTkToplevel):
             row=6, column=0, sticky="ew", padx=10, pady=(8, 2),
         )
         self._title_entry = self._entry(self._title_var, 6)
-        self._label(self._editor, "동작", heading=True).grid(
+        self._operation_label = self._label(self._editor, "동작", heading=True)
+        self._operation_label.grid(
             row=8, column=0, sticky="ew", padx=10, pady=(8, 2),
         )
         self._operation_menu = ctk.CTkOptionMenu(
@@ -390,6 +391,7 @@ class WindowControlDialog(ctk.CTkToplevel):
         if not initial:
             self._has_multi_config = True
         self._displaying_multi = bool(self._multi_var.get())
+        self._operation_label.configure(text="동작 (모든 후보 공통)" if self._displaying_multi else "동작")
         if self._displaying_multi:
             if not self._targets:
                 self._targets = [copy.deepcopy(self._single_selector)]
