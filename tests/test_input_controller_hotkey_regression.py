@@ -2,9 +2,16 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from src.utils import input_controller
 from src.utils.arduino_hid import ArduinoHID
 from src.utils.input_controller import InputController
+
+
+@pytest.fixture(autouse=True)
+def no_live_mouse_state(monkeypatch):
+    monkeypatch.setattr(input_controller, "_get_pressed_mouse_buttons", lambda: set())
 
 
 def test_arduino_commands_are_serialized_across_threads(monkeypatch):
@@ -124,7 +131,7 @@ def test_arduino_disconnect_clears_state_even_when_serial_close_raises(monkeypat
     assert hid._connected is False
 
 
-def test_release_all_retries_arduino_and_always_releases_software_input(monkeypatch):
+def test_release_all_retries_arduino_and_releases_keys_without_idle_mouse_events(monkeypatch):
     controller = InputController()
     arduino_calls = []
     key_ups = []
@@ -150,7 +157,7 @@ def test_release_all_retries_arduino_and_always_releases_software_input(monkeypa
 
     assert controller.release_all() is True
     assert len(arduino_calls) == 2
-    assert {"left", "right", "middle"}.issubset(mouse_ups)
+    assert mouse_ups == []
     assert {"shift", "ctrl", "alt", "win"}.issubset(key_ups)
 
 

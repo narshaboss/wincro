@@ -5,6 +5,7 @@ Mouse move currently stays on pyautogui.
 Mouse click / button / keyboard / scroll can use Arduino HID when enabled.
 """
 
+import ctypes
 import math
 import threading
 import time
@@ -172,6 +173,22 @@ def request_input_release(reason: str, *, workers=(), release=None) -> threading
 
 def is_automation_input_blocked() -> bool:
     return _input_block_event.is_set()
+
+
+def _get_pressed_mouse_buttons() -> set[str]:
+    """Read current Windows button state; never synthesize a release to probe it."""
+    try:
+        get_state = ctypes.windll.user32.GetAsyncKeyState
+        get_state.argtypes = [ctypes.c_int]
+        get_state.restype = ctypes.c_short
+        # The low bit means "pressed since last query", not "held now".
+        return {
+            button for button, virtual_key in (("left", 0x01), ("right", 0x02), ("middle", 0x04))
+            if get_state(virtual_key) & 0x8000
+        }
+    except Exception as exc:
+        logger.warning("[InputSafety] mouse state unavailable; releasing tracked buttons only: %s", exc)
+        return set()
 
 
 def _recorded_modifier_direction_combo_keys(events) -> list[str] | None:
@@ -1077,7 +1094,14 @@ class InputController:
                 self._track_key(key, False)
             except Exception:
                 software_released = False
-        for button in sorted({"left", "right", "middle"} | tracked_buttons):
+        observed_buttons = _get_pressed_mouse_buttons()
+        buttons_to_release = tracked_buttons | observed_buttons
+        if buttons_to_release:
+            logger.info("[InputSafety] mouse cleanup: tracked=%s held=%s",
+                        sorted(tracked_buttons), sorted(observed_buttons))
+        # An unsolicited right-button UP can open WM_CONTEXTMENU even without
+        # a preceding DOWN. Keep stuck-input recovery, but never release idle buttons.
+        for button in sorted(buttons_to_release):
             try:
                 pyautogui.mouseUp(button=button, _pause=False)
                 self._track_button(button, False)
