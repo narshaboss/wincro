@@ -157,7 +157,7 @@
           "monitoring_final_image": null,
           "monitoring_watches": [],
           "window_control_config": {
-            "executable_name": "mudrun_tauri.exe",
+            "executable_name": "msedge.exe",
             "title_contains": "",
             "operation": "maximize",
             "match_mode": "executable"
@@ -242,7 +242,7 @@
           "monitoring_final_image": null,
           "monitoring_watches": [],
           "window_control_config": {
-            "executable_name": "mudrun_tauri.exe",
+            "executable_name": "msedge.exe",
             "title_contains": "",
             "operation": "minimize",
             "match_mode": "executable"
