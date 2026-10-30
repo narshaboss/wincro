@@ -43,7 +43,10 @@ from pynput import keyboard
 
 from ..utils.logger import get_logger, create_execution_logger
 from ..utils.config import get_config
-from ..utils.input_controller import block_automation_input, get_input_controller, unblock_automation_input
+from ..utils.input_controller import (
+    block_automation_input, get_input_controller, request_input_release,
+    unblock_automation_input, wait_for_input_cleanup,
+)
 from ..database.models import Action, ActionType, Sequence, ExecutionLog, ExecutionStatus
 from .window_control_runtime import wait_for_window_control
 from ..database.db_manager import get_db
@@ -522,6 +525,9 @@ class ActionPlayer:
         Returns:
             bool: 시작 성공 여부
         """
+        if not wait_for_input_cleanup(timeout=0.0):
+            logger.warning("이전 입력 장치 정리가 끝나지 않아 시작할 수 없습니다")
+            return False
         if self.is_running:
             logger.warning("이미 실행 중입니다")
             return False
@@ -593,7 +599,8 @@ class ActionPlayer:
             daemon=True,
         )
         try:
-            unblock_automation_input()
+            if unblock_automation_input() is False:
+                raise RuntimeError("이전 입력 장치 정리가 진행 중이거나 해제에 실패했습니다.")
             self._thread.start()
         except Exception as exc:
             self._rollback_execution_start(run_generation, str(exc))
@@ -635,14 +642,15 @@ class ActionPlayer:
         self._state = PlayerState.STOPPED
         self._set_legacy_stop_signal()
         block_automation_input("ActionPlayer.stop")
-        self._reset_input_state("legacy-execution-stop")
+        request_input_release("ActionPlayer.stop", workers=(worker,),
+                              release=lambda: self._reset_input_state("legacy-execution-stop"))
         self._progress.state = PlayerState.STOPPED
-        self._emergency_stop.stop()
         self._update_progress("사용자에 의해 중지됨")
         logger.info("실행 중지")
 
         # 스레드 종료 대기를 별도 스레드에서 수행 (UI 차단 방지)
         def _join_and_finalize():
+            self._emergency_stop.stop()
             if worker and worker.is_alive():
                 wait_started = time.monotonic()
                 warned = False
@@ -670,10 +678,15 @@ class ActionPlayer:
 
     def _on_emergency_stop(self) -> None:
         """긴급 중지 콜백"""
+        if self.stop():
+            self._update_progress("긴급 중지!")
+            logger.warning("긴급 중지!")
+            return
         self._state = PlayerState.STOPPED
         self._set_legacy_stop_signal()
         block_automation_input("ActionPlayer.emergency_stop")
-        self._reset_input_state("legacy-emergency-stop")
+        request_input_release("ActionPlayer.emergency_stop", workers=(self._thread,),
+                              release=lambda: self._reset_input_state("legacy-emergency-stop"))
         self._progress.state = PlayerState.STOPPED
         self._update_progress("긴급 중지!")
         logger.warning("긴급 중지!")

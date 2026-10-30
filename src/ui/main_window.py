@@ -47,7 +47,7 @@ from ..utils.plan_sequence_groups import (
 from ..utils.window_position import setup_window_position
 from ..i18n import t, VIEWS
 from ..analyzer.automation_models import AutomationPlan
-from ..player.rule_executor import RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
+from ..player.rule_executor import ExecutionProgress, RuleExecutor, PLAYLIST_SKIP_TRIGGER_MISSING
 from ..player.runtime_action_options import is_runtime_action_enabled, should_skip_pumpkin_action
 from .capture_cleanup import remove_auto_capture_source_after_crop
 from .text_overflow import truncate_ui_text
@@ -1434,6 +1434,8 @@ class MainWindow(ctk.CTk):
         """Treat hidden special-mode runtime logs as playback progress for stuck alerts."""
         gm = gm if gm is not None else getattr(self, "_mini_gm_dialog", None)
         if gm is None:
+            return
+        if getattr(gm, "_pending_start_token", None) is not None:
             return
         try:
             if not gm.winfo_exists() or not getattr(gm, "_is_running", False):
@@ -2960,6 +2962,26 @@ class MainWindow(ctk.CTk):
             trigger_rewind_attempts=self._mini_trigger_rewind_attempts,
         )
         self._mini_gm_current_rule = source_rule
+        def find_step(rules, prefix=""):
+            visible = 0
+            for candidate in rules or []:
+                if not is_runtime_action_enabled(candidate, self._config.player):
+                    continue
+                visible += 1
+                step = f"{prefix}-{visible}" if prefix else str(visible)
+                if source_rule is not None and candidate.rule_id == source_rule.rule_id:
+                    return step
+                nested = find_step(getattr(candidate, "children", []), step)
+                if nested:
+                    return nested
+            return ""
+
+        self._mini_record_notification_progress(ExecutionProgress(
+            current_rule=getattr(source_rule, "rule_id", None),
+            current_action_number=find_step(getattr(active_plan, "_original_initial_rules", None) or active_plan.initial_rules),
+            current_action_name=getattr(source_rule, "description", "") or "특화모드",
+            message="특화모드 실행 준비: 입력 장치 정리 대기",
+        ))
         self._mini_cancel_game_mode_wait()
         self._mini_gm_dialog._suppress_completion_notification = True
         self._mini_gm_dialog.withdraw()
@@ -3374,10 +3396,14 @@ class MainWindow(ctk.CTk):
             # A repeat transition briefly has no active executor. A stop in
             # that window must still release any HID state left by the prior run.
             try:
-                from ..utils.input_controller import get_input_controller
+                from ..utils.input_controller import request_input_release
 
-                if not get_input_controller().release_all():
-                    logger.error("[InputSafety] mini-player transition stop reset was incomplete")
+                gm = getattr(self, "_mini_gm_dialog", None)
+                request_input_release(
+                    "mini-player-transition-stop",
+                    workers=tuple(getattr(gm, name, None) for name in
+                                  ("_run_thread", "_bosstest_thread", "_itemtest_thread")),
+                )
             except Exception as exc:
                 logger.error(f"[InputSafety] mini-player transition stop reset failed: {exc}")
 
@@ -3395,7 +3421,7 @@ class MainWindow(ctk.CTk):
                     pass
             try:
                 gm._bosstest_stop_event.set()
-                gm._bosstest_release_key()
+                gm._bosstest_current_key = None
             except Exception:
                 pass
 

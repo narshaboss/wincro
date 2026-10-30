@@ -26,8 +26,10 @@ from ..utils.action_timing import apply_bulk_random_waits
 from ..utils.input_controller import (
     block_automation_input,
     get_input_controller,
+    request_input_release,
     temporary_pyautogui_pause,
     unblock_automation_input,
+    wait_for_input_cleanup,
 )
 from ..utils.window_position import setup_window_position
 from ..i18n import PLAYER, BUTTONS, SEQUENCE
@@ -8614,6 +8616,7 @@ class GameModeDialog(ctk.CTkToplevel):
 
     def request_hard_stop(self, reason="hard_stop", detail="", *, schedule_ui_stop=True):
         """Stop every special-mode activity and prevent leftover threads from sending input."""
+        self._pending_start_token = None
         self._hard_stop_requested = True
         try:
             self._mark_manual_stop_context(reason, detail or "hard stop requested")
@@ -8631,11 +8634,12 @@ class GameModeDialog(ctk.CTkToplevel):
             except Exception:
                 pass
         try:
-            self._bosstest_release_key()
-        except Exception:
-            pass
-        try:
-            get_input_controller().release_all()
+            self._bosstest_current_key = None
+            request_input_release(
+                f"{reason}: {detail}",
+                workers=tuple(getattr(self, name, None) for name in
+                              ("_run_thread", "_bosstest_thread", "_itemtest_thread")),
+            )
         except Exception:
             pass
         self._is_mapping = False
@@ -9194,8 +9198,17 @@ class GameModeDialog(ctk.CTkToplevel):
         if not self._ensure_arduino_ready_for_execution("특화모드 실행"):
             return
         if unblock_automation_input() is False:
-            self._append_log("이전 입력 장치 정리가 진행 중입니다. 완료 후 다시 실행하세요.")
+            if wait_for_input_cleanup(timeout=0.0):
+                request_input_release("special-mode-start-cleanup-retry")
+            token = getattr(self, "_pending_start_token", None)
+            if token is None:
+                token = self._pending_start_token = object()
+                self._is_running = True
+                self._completed_normally = False
+                self._append_log("이전 입력 장치 정리 완료를 기다린 뒤 실행합니다.")
+                self.after(100, lambda: self._retry_pending_execution_start(token))
             return
+        self._pending_start_token = None
         try:
             self._apply_settings()
         except Exception as e:
@@ -9246,7 +9259,18 @@ class GameModeDialog(ctk.CTkToplevel):
         self._run_thread = t
         t.start()
 
+    def _retry_pending_execution_start(self, token):
+        if getattr(self, "_pending_start_token", None) is not token or not self.winfo_exists():
+            return
+        if not wait_for_input_cleanup(timeout=0.0):
+            self.after(100, lambda: self._retry_pending_execution_start(token))
+            return
+        self._pending_start_token = None
+        self._is_running = False
+        self._start_execution()
+
     def _stop_execution(self):
+        self._pending_start_token = None
         # 이미 중지된 상태면 무시 (중복 호출 방지)
         if not self._is_running and self._stop_event.is_set():
             return
@@ -9285,7 +9309,11 @@ class GameModeDialog(ctk.CTkToplevel):
         self._stop_event.set()
         try:
             block_automation_input(f"{self._stop_reason or 'stop_execution'}: {self._stop_detail or ''}")
-            get_input_controller().release_all()
+            request_input_release(
+                self._stop_reason or "special-mode-stop",
+                workers=tuple(getattr(self, name, None) for name in
+                              ("_run_thread", "_bosstest_thread", "_itemtest_thread")),
+            )
         except Exception:
             pass
         self._is_running = False

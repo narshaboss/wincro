@@ -53,6 +53,8 @@ _input_block_event = threading.Event()
 _input_block_reason = ""
 _cleanup_condition = threading.Condition()
 _cleanup_tokens: set[object] = set()
+_cleanup_release_failed = False
+_release_jobs: dict[tuple, threading.Event] = {}
 
 
 @contextmanager
@@ -83,9 +85,14 @@ def begin_input_cleanup(reason: str = "") -> object:
     return token
 
 
-def finish_input_cleanup(token: object) -> None:
+def finish_input_cleanup(token: object, *, success: Optional[bool] = None) -> None:
+    global _cleanup_release_failed
     with _cleanup_condition:
         _cleanup_tokens.discard(token)
+        if success is False:
+            _cleanup_release_failed = True
+        elif success is True and not _cleanup_tokens:
+            _cleanup_release_failed = False
         _cleanup_condition.notify_all()
 
 
@@ -104,11 +111,63 @@ def unblock_automation_input() -> bool:
     """Allow automation-generated input again."""
     global _input_block_reason
     with _cleanup_condition:
-        if _cleanup_tokens:
+        if _cleanup_tokens or _cleanup_release_failed:
             return False
         _input_block_reason = ""
         _input_block_event.clear()
         return True
+
+
+def request_input_release(reason: str, *, workers=(), release=None) -> threading.Event:
+    """Nonblocking UI stop with a bounded, per-actor cleanup job."""
+    actors = tuple(worker for worker in workers if worker is not None)
+    key = tuple(sorted(id(worker) for worker in actors))
+    with _cleanup_condition:
+        if key in _release_jobs:
+            return _release_jobs[key]
+        token = begin_input_cleanup(reason)
+        done = threading.Event()
+        done.succeeded = False
+        _release_jobs[key] = done
+
+    def cleanup():
+        ok = False
+        try:
+            release_fn = release if release is not None else lambda: get_input_controller().release_all()
+            try:
+                ok = bool(release_fn())
+            except Exception as exc:
+                logger.error("[InputSafety] initial release failed (%s): %s", reason, exc)
+            for actor in actors:
+                while actor.is_alive():
+                    actor.join(timeout=0.3)
+            if actors:
+                ok = bool(release_fn()) and ok
+            if not ok:
+                logger.error("[InputSafety] asynchronous release incomplete: %s", reason)
+        except Exception as exc:
+            logger.error("[InputSafety] asynchronous release failed (%s): %s", reason, exc)
+        finally:
+            with _cleanup_condition:
+                done.succeeded = ok
+                if any(actor.is_alive() for actor in actors):
+                    logger.critical("[InputSafety] live actor after cleanup failure; new input remains blocked: %s", reason)
+                    done.set()
+                    return
+                _release_jobs.pop(key, None)
+                finish_input_cleanup(token, success=ok)
+                done.set()
+
+    try:
+        threading.Thread(target=cleanup, name="wincro-input-release", daemon=True).start()
+    except Exception:
+        with _cleanup_condition:
+            if not any(actor.is_alive() for actor in actors):
+                _release_jobs.pop(key, None)
+                finish_input_cleanup(token, success=False)
+            done.set()
+        logger.exception("[InputSafety] could not dispatch input release: %s", reason)
+    return done
 
 
 def is_automation_input_blocked() -> bool:

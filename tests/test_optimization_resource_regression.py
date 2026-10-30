@@ -135,6 +135,9 @@ def test_monitoring_scan_reuses_one_capture_then_releases_it(tmp_path, monkeypat
 
 def test_repeated_stop_uses_one_join_worker(monkeypatch):
     import src.player.rule_executor as rule_executor_module
+    from src.utils import input_controller as devices
+
+    monkeypatch.setattr(devices, "_cleanup_release_failed", False)
 
     join_started = threading.Event()
     release_join = threading.Event()

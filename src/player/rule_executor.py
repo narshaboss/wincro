@@ -1134,6 +1134,7 @@ class RuleExecutor:
             with self._progress_lock:
                 self._progress = ExecutionProgress(message="실행 준비: 입력 장치 정리")
             startup_token = begin_input_cleanup("RuleExecutor.start_cleanup")
+            startup_reset_ok = False
         try:
             with self._lifecycle_lock:
                 self._current_plan = plan
@@ -1152,6 +1153,7 @@ class RuleExecutor:
                     self._completion_notified = False
             if not self._reset_input_state("execution-start"):
                 raise RuntimeError("input reset failed before execution start")
+            startup_reset_ok = True
             self._last_mouse_pos = pyautogui.position()
             self._is_moving_mouse = False
             with self._lifecycle_lock:
@@ -1177,7 +1179,7 @@ class RuleExecutor:
                     daemon=True,
                 )
                 self._execution_thread = execution_thread
-                finish_input_cleanup(startup_token)
+                finish_input_cleanup(startup_token, success=True)
                 startup_token = None
                 if unblock_automation_input() is False:
                     raise RuntimeError("이전 입력 장치 정리가 진행 중입니다.")
@@ -1193,11 +1195,11 @@ class RuleExecutor:
             block_automation_input("RuleExecutor.start_failed")
             if startup_token is None:
                 startup_token = begin_input_cleanup("RuleExecutor.start_failed_cleanup")
-            self._reset_input_state("execution-start-failed")
+            startup_reset_ok = self._reset_input_state("execution-start-failed")
             return False
         finally:
             if startup_token is not None:
-                finish_input_cleanup(startup_token)
+                finish_input_cleanup(startup_token, success=startup_reset_ok)
             self._start_preparation_done.set()
 
     def execute_plan_async(
@@ -1257,11 +1259,12 @@ class RuleExecutor:
         with self._lifecycle_lock:
             worker = self._execution_thread
         if worker is None:
-            return True
+            return wait_for_input_cleanup(timeout=max(0.0, deadline - time.monotonic()))
         if worker is threading.current_thread():
             return False
         worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        return not worker.is_alive()
+        return (not worker.is_alive()
+                and wait_for_input_cleanup(timeout=max(0.0, deadline - time.monotonic())))
 
     def pause(self) -> None:
         """실행 일시정지"""
@@ -1314,15 +1317,10 @@ class RuleExecutor:
                         execution_thread = self._execution_thread
                         monitor_thread = self._monitor_thread
                         preparation_done = self._start_preparation_done
-            try:
-                self._update_progress("실행 중지됨")
-            except Exception as e:
-                logger.debug(f"중지 UI 업데이트 실패: {e}")
-            self._log_monitoring_stop_context("stop_called", self._step_prefix)
-
             # Own the release barrier before dispatching device I/O. Completion
             # callbacks and later runs must not overtake this worker's release.
             def _join_threads():
+                reset_ok = False
                 try:
                     try:
                         reset_ok = self._reset_input_state("execution-stop")
@@ -1345,11 +1343,13 @@ class RuleExecutor:
                             logger.warning("모니터링 스레드가 2초 후에도 응답 없음")
                         while monitor_thread.is_alive():
                             monitor_thread.join(timeout=0.3)
+                    if execution_thread is not None or monitor_thread is not None:
+                        reset_ok = self._reset_input_state("execution-stop-final")
                 finally:
                     with self._stop_join_lock:
                         if self._stop_cleanup_done is cleanup_done:
                             self._stop_join_worker_active = False
-                        finish_input_cleanup(cleanup_token)
+                        finish_input_cleanup(cleanup_token, success=reset_ok)
                         cleanup_done.set()
             if start_join_worker:
                 try:
@@ -1361,10 +1361,15 @@ class RuleExecutor:
                 except Exception:
                     self._stop_cleanup_failed = True
                     self._stop_join_worker_active = False
-                    finish_input_cleanup(cleanup_token)
+                    finish_input_cleanup(cleanup_token, success=False)
                     cleanup_done.set()
                     raise
 
+            try:
+                self._update_progress("실행 중지됨")
+            except Exception as e:
+                logger.debug(f"중지 UI 업데이트 실패: {e}")
+            self._log_monitoring_stop_context("stop_called", self._step_prefix)
             logger.info(f"{_MAGENTA}{self._step_prefix}■ 실행 중지됨{_RESET}")
         except Exception as e:
             logger.error(f"중지 오류: {e}")

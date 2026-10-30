@@ -28,9 +28,9 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v5
+        timeout-minutes: 3
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
         shell: pwsh

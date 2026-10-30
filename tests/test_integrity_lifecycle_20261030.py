@@ -20,9 +20,9 @@ from src.analyzer.template_matcher import TemplateMatcher
 from src.database.db_manager import DatabaseManager
 from src.database.models import Action, Sequence
 from src.player import rule_executor as runtime
-from src.ui import settings_view
+from src.ui import player_view, settings_view
 from src.ui.main_window import MainWindow
-from src.ui.player_view import SequenceDetailDialog
+from src.ui.player_view import GameModeDialog, SequenceDetailDialog
 from src.utils import config as configuration
 from src.utils import input_controller
 from src.utils.discord_notifier import DiscordAlert, build_discord_payload
@@ -389,3 +389,106 @@ def test_invalid_progress_does_not_reset_stuck_deadline():
         _mini_format_notification_progress=Mock(side_effect=ValueError("invalid progress")))
     MainWindow._mini_record_notification_progress(context, object())
     assert context._mini_notification_last_progress_at == 10.0
+
+
+def test_ui_release_is_nonblocking_coalesced_and_waits_for_actor_exit(monkeypatch):
+    entered, release, actor_exit = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def reset():
+        calls.append(threading.current_thread().name)
+        entered.set()
+        assert release.wait(3)
+        return True
+
+    monkeypatch.setattr(input_controller, "get_input_controller", lambda: SimpleNamespace(release_all=reset))
+    actor = threading.Thread(target=lambda: actor_exit.wait(3))
+    actor.start()
+    try:
+        started = time.perf_counter()
+        done = input_controller.request_input_release("fixture stop", workers=(actor,))
+        assert time.perf_counter() - started < 0.1
+        assert entered.wait(2)
+        assert input_controller.request_input_release("duplicate stop", workers=(actor,)) is done
+        assert input_controller.unblock_automation_input() is False
+        release.set()
+        assert not done.wait(0.05)
+        actor_exit.set()
+        assert done.wait(3) and done.succeeded is True
+        assert len(calls) == 2 and input_controller.wait_for_input_cleanup(0)
+    finally:
+        release.set()
+        actor_exit.set()
+        actor.join(3)
+        input_controller.wait_for_input_cleanup(3)
+        input_controller.unblock_automation_input()
+
+
+def test_failed_ui_release_refuses_unblock_until_a_fresh_verified_release(monkeypatch):
+    reset = Mock(return_value=False)
+    monkeypatch.setattr(input_controller, "get_input_controller", lambda: SimpleNamespace(release_all=reset))
+    failed = input_controller.request_input_release("failed fixture")
+    assert failed.wait(3) and failed.succeeded is False
+    assert input_controller.unblock_automation_input() is False
+    reset.return_value = True
+    recovered = input_controller.request_input_release("verified retry fixture")
+    assert recovered.wait(3) and recovered.succeeded is True
+    assert input_controller.unblock_automation_input() is True
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_pending_special_mode_start_waits_without_ui_blocking_and_cannot_restart_after_cancel(monkeypatch, cancelled):
+    callbacks = []
+    monkeypatch.setattr(player_view, "unblock_automation_input", lambda: False)
+    monkeypatch.setattr(player_view, "wait_for_input_cleanup", lambda **kwargs: False)
+    release = Mock(side_effect=AssertionError("Do not add a release while another cleanup is pending"))
+    monkeypatch.setattr(player_view, "request_input_release", release)
+    host = SimpleNamespace(_is_running=False, _ensure_arduino_ready_for_execution=lambda _: True,
+        _append_log=Mock(), after=lambda delay, callback: callbacks.append(callback), winfo_exists=lambda: True)
+    host._retry_pending_execution_start = GameModeDialog._retry_pending_execution_start.__get__(host)
+    GameModeDialog._start_execution(host)
+    assert host._is_running and host._pending_start_token is not None and len(callbacks) == 1
+    host._start_execution = Mock()
+    if cancelled:
+        host._pending_start_token = None
+    monkeypatch.setattr(player_view, "wait_for_input_cleanup", lambda **kwargs: True)
+    callbacks.pop()()
+    assert host._start_execution.call_count == (0 if cancelled else 1)
+    release.assert_not_called()
+
+
+def test_pending_special_mode_start_is_not_reported_as_fresh_navigation_progress():
+    host = SimpleNamespace(_mini_gm_dialog=SimpleNamespace(_pending_start_token=object()),
+        _mini_notification_last_progress_at=5.0)
+    MainWindow._mini_record_game_mode_notification_activity(host)
+    assert host._mini_notification_last_progress_at == 5.0
+
+
+def test_legacy_stop_does_not_wait_for_hid_or_listener_on_ui_thread():
+    from src.player.action_player import ActionPlayer, PlaybackProgress, PlayerState
+
+    release, entered = threading.Event(), threading.Event()
+    player = object.__new__(ActionPlayer)
+    player._finalize_lock = threading.Lock()
+    player._execution_generation, player._execution_finalized = 1, False
+    player._state, player._thread = PlayerState.RUNNING, None
+    player._progress = PlaybackProgress()
+    player._update_progress = Mock()
+    player._finalize_execution = Mock()
+
+    def delayed():
+        entered.set()
+        assert release.wait(3)
+        return True
+
+    player._reset_input_state = lambda _: delayed()
+    player._emergency_stop = SimpleNamespace(stop=delayed)
+    try:
+        started = time.perf_counter()
+        assert player.stop()
+        assert time.perf_counter() - started < 0.1
+        assert entered.wait(2)
+    finally:
+        release.set()
+        assert input_controller.wait_for_input_cleanup(3)
+        input_controller.unblock_automation_input()
