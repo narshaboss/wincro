@@ -160,7 +160,20 @@
             "executable_name": "msedge.exe",
             "title_contains": "",
             "operation": "maximize",
-            "match_mode": "executable"
+            "match_mode": "executable",
+            "multi_enabled": false,
+            "targets": [
+              {
+                "executable_name": "msedge.exe",
+                "title_contains": "",
+                "match_mode": "executable"
+              },
+              {
+                "executable_name": "mudrun.exe",
+                "title_contains": "",
+                "match_mode": "executable"
+              }
+            ]
           }
         },
         {
