@@ -124,7 +124,7 @@ def _runner(clock):
         "normalize_window_control_config", "validate_window_control_config",
     }, {"Mapping": Mapping, "ntpath": ntpath, "re": re})
     return _load("src/player/window_control_runtime.py", {"wait_for_window_control"}, {
-        "time": SimpleNamespace(monotonic=lambda: clock.now),
+        "time": SimpleNamespace(monotonic=lambda: clock.now), "math": math,
         "validate_window_control_config": Mock(wraps=contract["validate_window_control_config"]),
         "WindowController": Mock(side_effect=AssertionError("Never construct a native controller")),
     })
@@ -165,6 +165,118 @@ def test_missing_ambiguous_focus_denied_can_recover_to_verified_ready():
 
     assert _run(_runner(clock), clock, controller) == (True, "verified foreground and size")
     assert [at for at, _ in controller.steps] == pytest.approx([0, 0.5, 1, 1.5])
+
+
+@pytest.mark.parametrize("timeout,finished_at", [(0, 0), (-1, 0), (1.5, 1.5), (0.55, 1.0)])
+def test_skip_missing_window_uses_saved_wait_after_and_reports_a_skip(timeout, finished_at):
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"))
+    ok, message = _run(_runner(clock), clock, controller,
+                       skip_on_not_found=True, skip_timeout=timeout)
+    assert ok is True and "스킵됨" in message and "대상 창 없음" in message
+    assert clock.now == pytest.approx(finished_at)
+    assert controller.steps and len(clock.waits) == round(finished_at * 10)
+
+
+def test_missing_maximize_then_minimize_both_skip_using_their_own_saved_delays():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"))
+    namespace = _runner(clock)
+    for operation, delay in [("maximize", 1.5), ("minimize", 1.3)]:
+        ok, message = namespace["wait_for_window_control"](
+            {**WINDOW_CONFIG, "operation": operation}, should_stop=lambda: clock.stopped,
+            is_paused=lambda: clock.paused, wait=clock.wait, controller=controller,
+            skip_on_not_found=True, skip_timeout=delay,
+        )
+        assert ok is True and "스킵됨" in message
+    assert clock.now == pytest.approx(3.0)
+    assert [at for at, config in controller.steps if config["operation"] == "minimize"] == [1.5, 2.0, 2.5, 3.0]
+
+
+@pytest.mark.parametrize("status", ["ambiguous", "pending"])
+def test_skip_option_never_bypasses_existing_but_unready_windows(status):
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result(status))
+    clock.on_wait = lambda: setattr(clock, "stopped", clock.now >= 2.1)
+    ok, message = _run(_runner(clock), clock, controller,
+                       skip_on_not_found=True, skip_timeout=0)
+    assert ok is False and "스킵됨" not in message
+    assert len(controller.steps) == 5 and clock.now == pytest.approx(2.1)
+
+
+def test_skipping_requires_continuous_absence_not_time_spent_with_an_existing_window():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"), _result("pending"), _result("missing"))
+    ok, message = _run(_runner(clock), clock, controller,
+                       skip_on_not_found=True, skip_timeout=1)
+    assert ok is True and "스킵됨" in message
+    assert clock.now == 2.0 and len(controller.steps) == 5
+
+
+def test_delayed_window_arriving_at_skip_deadline_is_verified_instead_of_skipped():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"), _result("missing"), _result("ready"))
+    assert _run(_runner(clock), clock, controller, skip_on_not_found=True, skip_timeout=1) == (True, "ready")
+    assert clock.now == 1.0
+
+
+def test_missing_window_skip_timer_excludes_pause_duration():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"))
+    clock.on_wait = lambda: setattr(clock, "paused", 0.2 <= clock.now < 2.2)
+    ok, message = _run(_runner(clock), clock, controller, skip_on_not_found=True, skip_timeout=1)
+    assert ok is True and "스킵됨" in message
+    assert clock.now == pytest.approx(3.2)
+    assert [at for at, _ in controller.steps] == pytest.approx([0, 2.2, 2.7, 3.2])
+
+
+def test_window_seen_during_pause_resets_the_missing_skip_deadline():
+    clock = VirtualClock()
+    steps = []
+
+    def step(config):
+        steps.append(clock.now)
+        if len(steps) == 2:
+            clock.paused = True
+            return _result("pending")
+        return _result("missing")
+
+    def tick():
+        if clock.now >= 1.0:
+            clock.paused = False
+
+    clock.on_wait = tick
+    ok, message = _run(_runner(clock), clock, SimpleNamespace(step=step),
+                       skip_on_not_found=True, skip_timeout=1)
+    assert ok is True and "스킵됨" in message
+    assert clock.now == 2.0 and steps == [0, 0.5, 1.0, 1.5, 2.0]
+
+
+@pytest.mark.parametrize("interruption", ["stop", "pause"])
+def test_stop_or_pause_during_missing_step_precedes_immediate_skip(interruption):
+    clock = VirtualClock()
+
+    def step(config):
+        if clock.now == 0:
+            setattr(clock, "stopped" if interruption == "stop" else "paused", True)
+        return _result("missing")
+
+    clock.on_wait = lambda: setattr(clock, "paused", clock.now < 0.3)
+    ok, message = _run(_runner(clock), clock, SimpleNamespace(step=step),
+                       skip_on_not_found=True, skip_timeout=0)
+    assert ok is (interruption == "pause")
+    assert ("스킵됨" in message) is (interruption == "pause")
+    assert clock.now == (0.3 if interruption == "pause" else 0)
+
+
+@pytest.mark.parametrize("timeout", [None, "invalid", float("inf"), float("-inf"), float("nan"), 10 ** 400])
+def test_invalid_skip_deadline_fails_before_native_controller_access(timeout):
+    clock = VirtualClock()
+    controller = Mock()
+    ok, message = _run(_runner(clock), clock, controller, skip_on_not_found=True, skip_timeout=timeout)
+    assert ok is False and "설정 오류" in message
+    controller.step.assert_not_called()
+    assert not clock.waits
 
 
 @pytest.mark.parametrize("status", ["unsupported", "invalid_config"])
@@ -398,11 +510,14 @@ def test_unrelated_fixed_dispatch_still_uses_its_original_handler(action_type, m
 
 
 @pytest.mark.parametrize("success", [True, False])
-def test_executor_forwards_wait_contract_and_logs_without_reporting_progress(success):
+@pytest.mark.parametrize("skip", [False, True])
+def test_executor_forwards_wait_contract_and_logs_without_reporting_progress(success, skip):
     clock = VirtualClock()
 
-    def runner(config, *, should_stop, is_paused, wait, on_wait=None, controller=None):
+    def runner(config, *, should_stop, is_paused, wait, on_wait=None, controller=None,
+               skip_on_not_found=False, skip_timeout=0):
         assert config == WINDOW_CONFIG and controller is None
+        assert skip_on_not_found is skip and skip_timeout == 1.5
         assert not should_stop() and not is_paused()
         clock.paused = True
         assert is_paused()
@@ -416,7 +531,9 @@ def test_executor_forwards_wait_contract_and_logs_without_reporting_progress(suc
         return success, "runner result"
 
     host, namespace = _executor(clock, runner)
-    result = host._execute_fixed_action(_rule(), datetime.now())
+    rule = _rule()
+    rule.skip_on_not_found, rule.wait_after = skip, 1.5
+    result = host._execute_fixed_action(rule, datetime.now())
     assert result.success is success and result.message == "runner result"
     assert result.rule_id == "window-rule"
     assert namespace["logger"].info.call_count == 3
@@ -425,7 +542,8 @@ def test_executor_forwards_wait_contract_and_logs_without_reporting_progress(suc
 
 
 @pytest.mark.parametrize("success", [True, False])
-def test_action_player_uses_shared_runner_without_input_or_image_lookup(success):
+@pytest.mark.parametrize("skip", [False, True])
+def test_action_player_uses_shared_runner_without_input_or_image_lookup(success, skip):
     state = SimpleNamespace(PLAYING="playing", STOPPED="stopped", PAUSED="paused")
     namespace = _load("src/player/action_player.py", {"_execute_action"}, {
         "PlayerState": state, "logger": Mock(),
@@ -440,8 +558,10 @@ def test_action_player_uses_shared_runner_without_input_or_image_lookup(success)
         _find_all_images_on_screen=Mock(side_effect=AssertionError("Unexpected image search")),
     )
 
-    def runner(config, *, should_stop, is_paused, wait, on_wait=None, controller=None):
+    def runner(config, *, should_stop, is_paused, wait, on_wait=None, controller=None,
+               skip_on_not_found=False, skip_timeout=0):
         assert config == WINDOW_CONFIG and controller is None
+        assert skip_on_not_found is skip and skip_timeout == 0
         assert not should_stop() and not is_paused()
         host._state = state.PAUSED
         assert is_paused()
@@ -456,7 +576,8 @@ def test_action_player_uses_shared_runner_without_input_or_image_lookup(success)
         return success, "not ready"
 
     namespace["wait_for_window_control"] = Mock(side_effect=runner)
-    action = _action(wait_before=0, wait_after=0, x=None, y=None, target_image="must-not-open.png")
+    action = _action(wait_before=0, wait_after=0, x=None, y=None, target_image="must-not-open.png",
+                     skip_on_not_found=skip)
     result = namespace["_execute_action"](host, action, 1.0)
     assert result == ((True, "") if success else (False, "not ready"))
     namespace["wait_for_window_control"].assert_called_once()
@@ -467,6 +588,32 @@ def test_action_player_uses_shared_runner_without_input_or_image_lookup(success)
     host._update_progress.assert_not_called()
     host._wait_for_legacy_stop.assert_called_once_with(0.1)
     namespace["logger"].info.assert_called_once()
+
+
+def test_legacy_window_skip_preserves_message_without_waiting_twice_or_accessing_input():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"))
+    shared = _runner(clock)
+
+    def run(config, **kwargs):
+        return shared["wait_for_window_control"](config, controller=controller, **kwargs)
+
+    state = SimpleNamespace(STOPPED="stopped", PAUSED="paused")
+    namespace = _load("src/player/action_player.py", {"_execute_action"}, {
+        "PlayerState": state, "logger": Mock(), "wait_for_window_control": run,
+        "Path": Mock(side_effect=AssertionError("No image lookup for window control")),
+        "get_input_controller": Mock(side_effect=AssertionError("No input for window control")),
+        "pyautogui": SimpleNamespace(FailSafeException=type("FakeFailSafe", (Exception,), {})),
+    }, owner="ActionPlayer")
+    host = SimpleNamespace(_state="playing", _emergency_stop=SimpleNamespace(is_triggered=False),
+                           _wait_for_legacy_stop=clock.wait)
+    action = _action(wait_before=0, wait_after=1.5, x=None, y=None,
+                     target_image="must-not-open.png", skip_on_not_found=True)
+    ok, message = namespace["_execute_action"](host, action, 1.0)
+    assert ok is True and "스킵됨" in message
+    assert clock.now == 1.5 and len(clock.waits) == 15
+    namespace["get_input_controller"].assert_not_called()
+    namespace["Path"].assert_not_called()
 
 
 def _converter():
@@ -516,6 +663,14 @@ def test_window_conversion_does_not_change_unrelated_action_fields(action_type, 
     assert rule.action_keys == ["ctrl", "a"] and rule.action_keys is not action.keys
     assert (rule.wait_after, rule.repeat_count, rule.target_image) == (0.7, 3, "target.png")
     assert not getattr(rule, "window_control_config", {})
+
+
+def test_sequence_conversion_preserves_window_skip_and_saved_delay():
+    source = _action(skip_on_not_found=True, wait_after=1.5)
+    before = copy.deepcopy(source)
+    rule = _converter()._sequence_action_to_playback_rule(source)
+    assert rule.skip_on_not_found is True and rule.wait_after == 1.5
+    assert source == before
 
 
 class InlineThread:
@@ -736,6 +891,26 @@ def test_window_action_dispatch_precedes_rule_type_and_stale_monitor_flags(rule_
     namespace["Path"].assert_not_called()
     for name in ("_execute_monitoring_mode", "_wait_for_image", "_find_image_on_screen", "_click_at"):
         getattr(host, name).assert_not_called()
+
+
+def test_missing_window_skip_in_nested_tree_continues_to_following_action():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("missing"))
+    shared = _runner(clock)
+
+    def run(config, **kwargs):
+        return shared["wait_for_window_control"](config, controller=controller, **kwargs)
+
+    host, namespace, dispatched = _review_executor(clock, run)
+    window = _review_rule(skip_on_not_found=True, wait_after=1.5)
+    following = _review_rule("following", "key_press", rule_type="fixed_sequence")
+    parent = _review_rule("parent", "click", children=[window, following])
+    before = copy.deepcopy(parent)
+    assert host._execute_rule_tree_once(parent, "1") is None
+    assert dispatched == ["parent", "window", "following"]
+    assert clock.now == 1.5 and parent == before
+    assert host._results[1].success is True and "스킵됨" in host._results[1].message
+    namespace["get_input_controller"].assert_not_called()
 
 
 @pytest.mark.parametrize("entrypoint", ["tree", "loop"])

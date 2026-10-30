@@ -1062,6 +1062,8 @@ class ActionPlayer:
             if action_type == "window_control":
                 success, message = wait_for_window_control(
                     getattr(action, "window_control_config", {}),
+                    skip_on_not_found=bool(getattr(action, "skip_on_not_found", False)),
+                    skip_timeout=getattr(action, "wait_after", 0.0),
                     should_stop=lambda: (
                         self._state == PlayerState.STOPPED
                         or self._emergency_stop.is_triggered
@@ -1072,6 +1074,9 @@ class ActionPlayer:
                 )
                 if not success:
                     return False, message
+                if "스킵됨" in message:
+                    logger.info("[창 제어] %s", message)
+                    return True, message
 
             elif action_type == ActionType.CLICK.value:
                 if x is not None and y is not None:

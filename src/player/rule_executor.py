@@ -4311,6 +4311,8 @@ class RuleExecutor:
     def _execute_window_control(self, rule, start_time):
         success, message = wait_for_window_control(
             getattr(rule, "window_control_config", {}),
+            skip_on_not_found=bool(getattr(rule, "skip_on_not_found", False)),
+            skip_timeout=getattr(rule, "wait_after", 0.0),
             should_stop=self._stop_event.is_set,
             is_paused=lambda: not self._pause_event.is_set(),
             wait=self._stop_event.wait,
