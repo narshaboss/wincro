@@ -28,6 +28,7 @@ MATCH_MODE_LABELS = {
 }
 PREFERRED_SIZE = (760, 720)
 MINIMUM_SIZE = (420, 360)
+MULTI_MINIMUM_HEIGHT = 420
 SCREEN_MARGIN = (48, 100)
 
 
@@ -117,6 +118,8 @@ class WindowControlDialog(ctk.CTkToplevel):
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         width, height, minimum = _bounded_size(screen_width, screen_height, scale)
+        self._single_minimum = minimum
+        self._available_height = max(height, int((screen_height - SCREEN_MARGIN[1]) / scale))
         self.minsize(*minimum)
         self.maxsize(
             max(width, int((screen_width - SCREEN_MARGIN[0]) / scale)),
@@ -394,6 +397,12 @@ class WindowControlDialog(ctk.CTkToplevel):
             self._has_multi_config = True
         self._displaying_multi = bool(self._multi_var.get())
         self._operation_label.configure(text="동작 (모든 후보 공통)" if self._displaying_multi else "동작")
+        self.minsize(
+            self._single_minimum[0],
+            min(self._available_height, MULTI_MINIMUM_HEIGHT)
+            if self._displaying_multi else self._single_minimum[1],
+        )
+        self._window_list.configure(height=90 if self._displaying_multi else 150)
         if self._displaying_multi:
             if not self._targets:
                 self._targets = [copy.deepcopy(self._single_selector)]
@@ -404,6 +413,7 @@ class WindowControlDialog(ctk.CTkToplevel):
             self._target_panel.grid_remove()
             self._load_selector(self._single_selector)
         self._refresh_target_controls()
+        self._editor._parent_canvas.yview_moveto(0)
 
     def _refresh_target_controls(self) -> None:
         self._target_heading.configure(text=f"우선순위 후보 ({len(self._targets)}개)")

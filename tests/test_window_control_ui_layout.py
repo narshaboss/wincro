@@ -610,14 +610,23 @@ def test_multi_candidates_toggle_order_and_durable_save(gui, tmp_path, kind):
         assert button._text_label.winfo_reqwidth() <= button.winfo_width() + 4
     assert _rect(dialog._target_menu)[2] <= _rect(dialog._target_up)[0]
     assert _rect(dialog._target_up)[2] <= _rect(dialog._target_down)[0]
+    dialog._editor._parent_canvas.yview_moveto(1)
+    gui.screenshot(f"multi_{kind}_conditions")
+    assert dialog._operation_label.cget("text") == "동작 (모든 후보 공통)"
+    dialog._editor._parent_canvas.yview_moveto(0)
     dialog._save_button.invoke()
     assert dialog.winfo_exists() and not writes and dialog._result is None
     assert dialog._collect_config() == expected
     assert dialog._target_down.cget("state") == "normal" and dialog._target_up.cget("state") == "disabled"
     assert "CI multi save failure" in dialog._error_label.cget("text")
     dialog.geometry("1x1")
+    dialog._editor._parent_canvas.yview_moveto(0)
     gui.screenshot(f"multi_{kind}_minimum_save_failure")
     _assert_dialog_layout(dialog)
+    viewport = _rect(dialog._editor._parent_canvas)
+    for widget in (dialog._target_menu, dialog._target_up, dialog._target_down,
+                   dialog._target_add, dialog._target_delete):
+        _inside(_rect(widget), viewport)
     failed[0] = False
     dialog._save_button.invoke()
     assert not dialog.winfo_exists() and writes == [expected]
