@@ -2849,7 +2849,8 @@ del "%~f0"
 
     def _save_settings(self) -> bool:
         """설정 저장"""
-        config = copy.deepcopy(get_config())
+        baseline = copy.deepcopy(get_config())
+        config = copy.deepcopy(baseline)
         validation_errors = []
 
         # 일반 설정
@@ -2964,7 +2965,7 @@ del "%~f0"
             return False
 
         # 저장
-        if save_config(config):
+        if save_config(config, baseline=baseline):
             logger.info("설정 저장 완료")
             self._sync_shutdown_schedule_from_settings()
             if new_auto_start != old_auto_start or old_app_name != config.ui.app_name:
@@ -2978,8 +2979,9 @@ del "%~f0"
             self._show_message(MESSAGES["success"], SETTINGS["changes_saved"])
             return True
         else:
-            logger.error("설정 저장 실패")
-            self._show_message(MESSAGES["error"], "설정 저장에 실패했습니다.")
+            detail = config_manager.get_load_error()
+            logger.error("설정 저장 실패: %s", detail or "알 수 없는 저장 오류")
+            self._show_message(MESSAGES["error"], "설정 저장에 실패했습니다.\n" + detail)
             return False
     def _refresh_shutdown_status_label(self) -> None:
         """PC 자동종료 작업 등록 상태를 설정 화면에 표시한다."""

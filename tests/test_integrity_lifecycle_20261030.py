@@ -87,6 +87,26 @@ def test_failed_candidate_save_keeps_live_object_and_allows_verified_retry(tmp_p
     assert manager._config_to_dict(manager.load()) == saved
 
 
+def test_settings_candidate_merges_unrelated_runtime_changes_and_rejects_conflicts(tmp_path, monkeypatch):
+    manager = manager_at(tmp_path, monkeypatch)
+    assert manager.save()
+    baseline = copy.deepcopy(manager.get())
+    candidate = copy.deepcopy(baseline)
+    candidate.system.pc_number = "17"
+    manager.get().update.last_version = "background-update-result"
+    assert manager.save(candidate, baseline=baseline)
+    assert manager.get().update.last_version == "background-update-result"
+    assert manager.get().system.pc_number == "17"
+    before = configuration.CONFIG_FILE.read_bytes()
+    baseline = copy.deepcopy(manager.get())
+    candidate = copy.deepcopy(baseline)
+    candidate.system.pc_number = "18"
+    manager.get().system.pc_number = "19"
+    assert manager.save(candidate, baseline=baseline) is False
+    assert manager.get().system.pc_number == "19"
+    assert configuration.CONFIG_FILE.read_bytes() == before
+
+
 def settings_form(monkeypatch, manager):
     values = {
         "_pc_number_var": "17", "_discord_enabled_var": False, "_discord_webhook_var": "",

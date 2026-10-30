@@ -262,7 +262,8 @@ class ConfigManager:
                 self._source_read_failed = False
             return self._config
 
-    def save(self, candidate: Optional[AppConfig] = None, *, _allow_recovery: bool = False) -> bool:
+    def save(self, candidate: Optional[AppConfig] = None, *, baseline: Optional[AppConfig] = None,
+             _allow_recovery: bool = False) -> bool:
         with self._lock:
             if self._config is None and candidate is None:
                 return False
@@ -272,6 +273,24 @@ class ConfigManager:
                 return False
             try:
                 data = self._config_to_dict(candidate if candidate is not None else self._config)
+                if candidate is not None and baseline is not None:
+                    base_data = self._config_to_dict(baseline)
+                    current = self._config_to_dict(self._config)
+                    for section, desired in data.items():
+                        base = base_data[section]
+                        if isinstance(desired, dict) and isinstance(base, dict):
+                            for key, value in desired.items():
+                                if value == base.get(key):
+                                    continue
+                                live = current[section].get(key)
+                                if live != base.get(key) and live != value:
+                                    raise ValueError(f"동시에 변경된 설정이 있습니다: {section}.{key}")
+                                current[section][key] = value
+                        elif desired != base:
+                            if current[section] != base and current[section] != desired:
+                                raise ValueError(f"동시에 변경된 설정이 있습니다: {section}")
+                            current[section] = desired
+                    data = current
                 dump_json_file(CONFIG_FILE, data, ensure_ascii=False, indent=2)
                 if load_json_file(CONFIG_FILE) != data:
                     raise OSError("설정 저장 재검증 실패")
@@ -580,7 +599,9 @@ def get_config() -> AppConfig:
     return config_manager.get()
 
 
-def save_config(candidate: Optional[AppConfig] = None) -> bool:
+def save_config(candidate: Optional[AppConfig] = None, *, baseline: Optional[AppConfig] = None) -> bool:
+    if baseline is not None:
+        return config_manager.save(candidate, baseline=baseline)
     return config_manager.save(candidate) if candidate is not None else config_manager.save()
 
 
