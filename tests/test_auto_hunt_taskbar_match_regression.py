@@ -5,16 +5,22 @@ import threading
 import cv2
 import numpy as np
 
-from src.analyzer.automation_models import AutomationPlan
+from src.analyzer.automation_models import AutomationRule
 from src.player import rule_executor as runtime
-from src.utils.json_utils import load_json_file
 
 
 def load_action():
     root = Path(__file__).resolve().parents[1]
-    plan = AutomationPlan.from_dict(load_json_file(root / "data/plans/plan_20260118_174859.json"),
-                                    templates_dir=root / "data/templates")
-    return plan.initial_rules[3].children[1]
+    # Preserve the historical matcher regression independently of user-editable
+    # plan positions: that slot can legitimately become a window-control action.
+    return AutomationRule.from_dict({
+        "rule_id": "taskbar_v300_fixture", "action_type": "click",
+        "confidence": 0.8081818181818181,
+        "search_region": [2, 990, 1919, 1079],
+        "verify_image_color": True, "verify_image_brightness": True,
+        "target_image": "trigger_20260207_144146_543_crop_66a295.png",
+        "target_images": ["trigger_20260207_153642_614_crop_a6de63.png"],
+    }, templates_dir=root / "data/templates")
 
 
 def executor():

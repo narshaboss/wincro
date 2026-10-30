@@ -192,14 +192,27 @@ def test_all_shipped_plans_have_unique_ids_before_any_runtime_repair():
         validate_rule_identities(load_json_file(path))
 
 
-def test_old_auto_hunt_plan_repairs_to_the_exact_shipped_document():
+def test_auto_hunt_legacy_repair_preserves_settings_without_freezing_editable_ids():
     root = Path(__file__).resolve().parents[1]
     saved = load_json_file(root / "data/plans/plan_20260118_174859.json")
     legacy = deepcopy(saved)
     for parent, child, old_id in ((1, 4, "rule_0006"), (3, 1, "rule_0003"),
                                   (3, 2, "rule_0003"), (6, 8, "rule_0006")):
         legacy["initial_rules"][parent]["children"][child]["rule_id"] = old_id
-    assert repair_legacy_rule_identities(legacy) == saved
+    repaired = repair_legacy_rule_identities(legacy)
+    validate_rule_identities(repaired)
+    assert repair_legacy_rule_identities(legacy) == repaired
+
+    def without_identity(value):
+        if isinstance(value, dict):
+            return {key: without_identity(item) for key, item in value.items()
+                    if key not in {"rule_id", "parent_id"}}
+        if isinstance(value, list):
+            return [without_identity(item) for item in value]
+        return value
+
+    assert without_identity(repaired) == without_identity(saved)
+    assert legacy != repaired, "Legacy duplicate IDs must actually be repaired"
 
 
 def test_keyboard_never_searches_image_and_image_wait_reports_its_real_step(tmp_path, monkeypatch):
