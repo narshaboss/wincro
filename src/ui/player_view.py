@@ -2729,6 +2729,7 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
             text_color=COLORS["text_on_accent"] if is_monitoring else COLORS["text_primary"],
             corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_monitoring_mode(r),
+            state="disabled" if rule.action_type == WINDOW_CONTROL_ACTION_TYPE else "normal",
         ).pack(side="right", padx=3, pady=8)
 
         has_trigger = bool(getattr(rule, "trigger_image", None))
@@ -2743,6 +2744,7 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
             text_color=COLORS["text_on_accent"] if has_trigger else COLORS["text_primary"],
             corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_trigger_image(r),
+            state="disabled" if rule.action_type == WINDOW_CONTROL_ACTION_TYPE else "normal",
         )
         trigger_btn.pack(side="right", padx=3, pady=8)
         self._rule_widgets[rule.rule_id]["trigger_btn"] = trigger_btn
@@ -3300,6 +3302,7 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
             height=26,
             corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_trigger_image(r),
+            state="disabled" if rule.action_type == WINDOW_CONTROL_ACTION_TYPE else "normal",
         )
         trigger_btn.pack(side="right", padx=(4, 0))
 
@@ -3323,6 +3326,7 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
             height=26,
             corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._edit_monitoring_mode(r),
+            state="disabled" if rule.action_type == WINDOW_CONTROL_ACTION_TYPE else "normal",
         ).pack(side="right", padx=(4, 0))
 
         # 자식 규칙들 표시 (항상 생성, visibility로 제어)
@@ -4932,6 +4936,8 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
 
     def _edit_trigger_image(self, rule: AutomationRule):
         """트리거 이미지 설정 (이 이미지가 나타나면 액션 실행)"""
+        if rule.action_type == WINDOW_CONTROL_ACTION_TYPE:
+            return
         from tkinter import filedialog
 
         dialog = ctk.CTkToplevel(self)
@@ -6534,6 +6540,8 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
 
     def _edit_monitoring_mode(self, rule: AutomationRule):
         """모니터링 모드 설정"""
+        if rule.action_type == WINDOW_CONTROL_ACTION_TYPE:
+            return
         from .monitoring_editor import MonitoringModeEditor
 
         save_applied = {"value": False}
@@ -28810,6 +28818,9 @@ class SequenceDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         )
         name_label.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
         bind_row(name_label)
+
+        if action.action_type == WINDOW_CONTROL_ACTION_TYPE:
+            self._add_window_control_settings_button(control_frame, action, compact=True)
 
         is_skip_action = getattr(action, "skip_on_not_found", False)
         skip_btn_action = ctk.CTkButton(

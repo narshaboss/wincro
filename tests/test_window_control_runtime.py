@@ -265,6 +265,30 @@ def test_wait_reporting_cancellation_stops_even_before_stop_callback_changes():
     waits.assert_called_once_with(0.1)
 
 
+def test_paused_wait_reporting_cancellation_stops_without_a_controller_step():
+    clock = VirtualClock()
+    waits, controller = Mock(return_value=True), Mock()
+    ok, message = _runner(clock)["wait_for_window_control"](
+        WINDOW_CONFIG, should_stop=lambda: False, is_paused=lambda: True,
+        wait=waits, controller=controller,
+    )
+    assert ok is False and message
+    waits.assert_called_once_with(0.1)
+    controller.step.assert_not_called()
+
+
+def test_runner_passes_validated_normalized_config_to_controller():
+    clock = VirtualClock()
+    controller = ScriptedController(clock, _result("ready"))
+    config = {"executable_name": " client.exe ", "title_contains": " Test client ", "operation": " MAXIMIZE "}
+    assert _runner(clock)["wait_for_window_control"](
+        config, should_stop=lambda: False, is_paused=lambda: False,
+        wait=clock.wait, controller=controller,
+    )[0] is True
+    assert controller.steps == [(0.0, WINDOW_CONFIG)]
+    assert config["operation"] == " MAXIMIZE ", "Validation must not rewrite the source model"
+
+
 @pytest.mark.parametrize("bad_config", [
     {}, {**WINDOW_CONFIG, "operation": "launch"},
     {**WINDOW_CONFIG, "executable_name": "C:/client.exe"},
@@ -326,6 +350,33 @@ def test_fixed_dispatch_respects_stop_before_window_control():
     assert result.success is False
     host._execute_window_control.assert_not_called()
     namespace["get_input_controller"].assert_not_called()
+
+
+def test_window_target_images_are_excluded_without_skipping_window_action_in_lookahead():
+    names = {"_target_images_for_rule", "_next_runtime_rule"}
+    namespace = _load(EXECUTOR, names, {"WINDOW_CONTROL_ACTION_TYPE": "window_control"}, owner="RuleExecutor")
+    host = type("LookaheadHarness", (), {name: namespace[name] for name in names})()
+    host._should_skip_runtime_action = lambda rule: getattr(rule, "skip", False)
+    window = _rule()
+    window.target_image = "stray-primary.png"
+    window.target_images = ["stray-multi.png"]
+    following = SimpleNamespace(action_type="click", target_image="following.png")
+    skipped = SimpleNamespace(action_type="click", skip=True)
+    assert host._next_runtime_rule([skipped, window, following], 0) is window
+    assert host._target_images_for_rule(window) == []
+    assert window.target_image == "stray-primary.png" and window.target_images == ["stray-multi.png"]
+
+
+@pytest.mark.parametrize("action_type", ["click", "double_click", "wait_for_image"])
+def test_ordinary_target_images_keep_primary_order_and_deduplication(action_type):
+    namespace = _load(EXECUTOR, {"_target_images_for_rule"},
+                      {"WINDOW_CONTROL_ACTION_TYPE": "window_control"}, owner="RuleExecutor")
+    helper = namespace["_target_images_for_rule"].__func__
+    rule = SimpleNamespace(action_type=action_type, target_image=Path("primary.png"),
+                           target_images=["primary.png", "alternate.png", "", None, "alternate.png"])
+    before = copy.deepcopy(rule)
+    assert helper(rule) == ["primary.png", "alternate.png"]
+    assert rule == before
 
 
 @pytest.mark.parametrize("action_type,method", [
@@ -509,7 +560,7 @@ def _watchdog(monkeypatch, clock, http_status=200):
         "truncate_ui_text": lambda text, limit: text[:limit],
         "logger": logging.getLogger("window-control-watchdog-test"),
     }, owner="MainWindow")
-    main_window = SimpleNamespace(**main)
+    main_window = SimpleNamespace(**main, get_config=lambda: None)
     main_window.MainWindow = type("MainWindowHarness", (), {name: main[name] for name in method_names})
 
     def config():
@@ -518,6 +569,7 @@ def _watchdog(monkeypatch, clock, http_status=200):
             discord_stuck_seconds=180, discord_cooldown_seconds=300,
         ))
 
+    main_window.get_config = config
     previous = _load("tests/test_discord_delivery_regression.py", {"URL", "RECEIPT", "Response", "context"}, {
         "json": json, "SimpleNamespace": SimpleNamespace, "AppConfig": config,
         "DiscordDeliveryState": delivery["DiscordDeliveryState"], "main_window": main_window,

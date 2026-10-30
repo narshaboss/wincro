@@ -1,10 +1,11 @@
 """Opt-in Windows GUI QA. Never run on a user's desktop.
 
-Run only on an isolated interactive Windows runner with a desktop at least
+Run serially (without xdist) on an isolated interactive Windows runner with a desktop at least
 1024x768 and WINCRO_WINDOW_CONTROL_UI_QA=1. Screenshots go to
-artifacts/window_control_ui_qa (override with WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS).
+artifacts/window_control (override with WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS).
 The 1024x768 root is a test surface, not a desktop-resolution change. CTk DPI
-autodetection is disabled for deterministic explicit 100/125/150 percent scales.
+autodetection is mocked for deterministic explicit 100/125/150 percent scales;
+normal CTk process DPI awareness is retained to avoid coordinate virtualization.
 All target enumeration is mocked. No target action, input emulation, process
 launch, external activation, get_result(), or modal wait is used here.
 Save callbacks test the UI contract only, not durable parent persistence.
@@ -95,6 +96,15 @@ def _assert_dialog_layout(dialog):
     assert dialog._editor._parent_canvas.winfo_height() >= 10
     for label in dialog._row_labels + dialog._editor_labels:
         _assert_wrapped_label(label)
+    for title, executable in zip(dialog._row_labels[::2], dialog._row_labels[1::2]):
+        assert _rect(title)[3] <= _rect(executable)[1] + 2
+    for (_, first), (_, second) in zip(dialog._rows, dialog._rows[1:]):
+        assert _rect(first)[3] <= _rect(second)[1] + 2
+    editor_children = sorted(
+        dialog._editor.winfo_children(), key=lambda child: int(child.grid_info()["row"]),
+    )
+    for first, second in zip(editor_children, editor_children[1:]):
+        assert _rect(first)[3] <= _rect(second)[1] + 2
     if dialog._error_label.cget("text"):
         _assert_wrapped_label(dialog._error_label)
         _inside(_rect(dialog._error_label), bounds)
@@ -104,7 +114,8 @@ def _assert_dialog_layout(dialog):
 @pytest.fixture(params=(1.0, 1.25, 1.5), ids=("100pct", "125pct", "150pct"))
 def gui(request, monkeypatch):
     scale = request.param
-    monkeypatch.setattr(ScalingTracker, "deactivate_automatic_dpi_awareness", True)
+    monkeypatch.setattr(ScalingTracker, "deactivate_automatic_dpi_awareness", False)
+    monkeypatch.setattr(ScalingTracker, "get_window_dpi_scaling", classmethod(lambda cls, window: 1.0))
     old_widget_scale = ScalingTracker.widget_scaling
     old_window_scale = ScalingTracker.window_scaling
     ctk.set_widget_scaling(scale)
@@ -126,9 +137,8 @@ def gui(request, monkeypatch):
     monkeypatch.setattr(dialog_module.WindowControlDialog, "winfo_screenheight", lambda self: SCREEN[1])
     root = None
     errors = []
-    snapshots = []
     artifact_dir = Path(os.environ.get(
-        "WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS", "artifacts/window_control_ui_qa",
+        "WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS", "artifacts/window_control",
     ))
     artifact_dir.mkdir(parents=True, exist_ok=True)
     name = request.node.name.replace("[", "_").replace("]", "")
@@ -139,7 +149,9 @@ def gui(request, monkeypatch):
         assert image.size == SCREEN
         path = artifact_dir / f"{name}_{phase}.png"
         image.save(path)
-        snapshots.append(path)
+        assert any(high - low > 20 for low, high in image.convert("RGB").getextrema()), (
+            "Blank screenshot: the isolated runner needs an unlocked interactive desktop."
+        )
 
     try:
         root = ctk.CTk(fg_color=COLORS["bg_content"])
@@ -151,6 +163,11 @@ def gui(request, monkeypatch):
         root.overrideredirect(True)
         # Raw Tk geometry is physical; CTk.geometry would scale the test surface twice.
         tk.Wm.geometry(root, "1024x768+0+0")
+        ctk.CTkLabel(
+            root, text=f"Isolated UI QA / 1024x768 / {scale * 100:.0f}%",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
+            text_color=COLORS["text_muted"],
+        ).place(relx=0.5, rely=1.0, anchor="s", y=-8)
         _pump(root)
         yield SimpleNamespace(
             root=root, scale=scale, windows=windows, controller=controller,
@@ -170,6 +187,7 @@ def gui(request, monkeypatch):
 
 
 def test_dialog_layout_selection_and_save_contract(gui):
+    gui.root.grab_set()
     callback = Mock(return_value=False)
     dialog = dialog_module.WindowControlDialog(gui.root, on_save=callback)
     gui.screenshot("long_title")
@@ -177,6 +195,7 @@ def test_dialog_layout_selection_and_save_contract(gui):
     assert dialog._window_list._get_widget_scaling() == pytest.approx(gui.scale)
     _assert_dialog_layout(dialog)
     gui.controller.list_windows.assert_called_once_with()
+    assert gui.root.grab_current() is dialog
     assert dialog._save_button.cget("text") == "저장"
     assert dialog._operation_var.get() == "최대화"
     assert any(
@@ -205,6 +224,7 @@ def test_dialog_layout_selection_and_save_contract(gui):
     dialog._save_button.invoke()
     gui.screenshot("callback_false")
     assert dialog.winfo_exists() and dialog._result is None
+    assert gui.root.grab_current() is dialog
     assert "변경사항은 편집기에 남아 있습니다" in dialog._error_label.cget("text")
     assert dialog._save_button.cget("state") == "normal"
     assert _rect(dialog._save_button)[3] == pytest.approx(initial_bottom, abs=2)
@@ -213,6 +233,7 @@ def test_dialog_layout_selection_and_save_contract(gui):
     dialog._save_button.invoke()
     gui.screenshot("callback_exception")
     assert dialog.winfo_exists() and dialog._result is None
+    assert gui.root.grab_current() is dialog
     assert "disk full" in dialog._error_label.cget("text")
     assert "변경사항은 편집기에 남아 있습니다" in dialog._error_label.cget("text")
     _assert_dialog_layout(dialog)
@@ -236,10 +257,23 @@ def test_dialog_layout_selection_and_save_contract(gui):
     assert gui.controller.list_windows.call_count == 2
     assert dialog._title_var.get() == "사용자가 편집한 부분 제목"
     assert dialog._operation_var.get() == "최소화"
-    callback.side_effect = None
-    callback.return_value = True
+
+    def save_success(config):
+        assert dialog._saving
+        assert dialog._title_entry.cget("state") == "disabled"
+        assert dialog._operation_menu.cget("state") == "disabled"
+        # A callback processing Tk events must not re-enter or cancel its save.
+        dialog._cancel()
+        dialog._save()
+        assert dialog.winfo_exists()
+        config["title_contains"] = "콜백이 전달받은 복사본만 변경"
+        return True
+
+    callback.side_effect = save_success
     dialog._save_button.invoke()
     assert not dialog.winfo_exists()
+    assert gui.root.grab_current() is gui.root
+    assert gui.root.grab_status() == "local"
     assert dialog._result == {
         "executable_name": "qa-duplicate.exe",
         "title_contains": "사용자가 편집한 부분 제목",
@@ -249,6 +283,7 @@ def test_dialog_layout_selection_and_save_contract(gui):
 
 
 def test_offline_apply_validation_and_enumeration_failure(gui):
+    gui.root.grab_set()
     dialog = dialog_module.WindowControlDialog(gui.root, config={
         "executable_name": "qa-offline.exe", "title_contains": "오프라인 제목",
         "handle": 999, "process_id": 888, "path": "C:/not-persisted.exe",
@@ -258,6 +293,11 @@ def test_offline_apply_validation_and_enumeration_failure(gui):
     assert dialog._executable_entry.cget("state") == "normal"
     assert any("상위 창에서 저장" in label.cget("text") for label in dialog._editor_labels)
     _assert_dialog_layout(dialog)
+    dialog._select_window(gui.windows[0])
+    assert dialog._executable_entry.cget("state") == "readonly"
+    dialog._manual_button.invoke()
+    assert dialog._executable_entry.cget("state") == "normal"
+    dialog._title_var.set("오프라인 제목")
     dialog._executable_var.set("C:/not-a-basename.exe")
     dialog._save_button.invoke()
     gui.screenshot("invalid_path")
@@ -276,14 +316,53 @@ def test_offline_apply_validation_and_enumeration_failure(gui):
     _assert_dialog_layout(dialog)
     dialog._save_button.invoke()
     assert not dialog.winfo_exists()
+    assert gui.root.grab_current() is gui.root
     assert dialog._result == {
         "executable_name": "qa-offline.exe", "title_contains": "오프라인 제목",
         "operation": "foreground",
     }
 
-    cancelled = dialog_module.WindowControlDialog(gui.root)
+    cancelled = dialog_module.WindowControlDialog(
+        gui.root, config=dialog._result, on_save=Mock(return_value=False),
+    )
+    cancelled._save_button.invoke()
+    assert cancelled.winfo_exists() and gui.root.grab_current() is cancelled
     cancelled._cancel_button.invoke()
     assert not cancelled.winfo_exists() and cancelled._result is None
+    assert gui.root.grab_current() is gui.root
+
+    invalid_operation = dialog_module.WindowControlDialog(gui.root, config={
+        "executable_name": "qa-offline.exe", "title_contains": "오프라인 제목",
+        "operation": "unknown-operation",
+    })
+    assert invalid_operation._operation_var.get() != "최대화"
+    invalid_operation._save_button.invoke()
+    gui.screenshot("invalid_operation")
+    assert invalid_operation.winfo_exists() and invalid_operation._result is None
+    assert "동작" in invalid_operation._error_label.cget("text")
+    _assert_dialog_layout(invalid_operation)
+    invalid_operation._cancel_button.invoke()
+    assert gui.root.grab_current() is gui.root
+
+
+def test_direct_destroy_respects_newer_or_destroyed_grab_owner(gui):
+    gui.root.grab_set()
+    dialog = dialog_module.WindowControlDialog(gui.root)
+    newer_modal = ctk.CTkToplevel(gui.root)
+    newer_modal.title("CI-only nested modal grab")
+    newer_modal.grab_set()
+    dialog.destroy()
+    assert gui.root.grab_current() is newer_modal
+    assert dialog._result is None
+    newer_modal.destroy()
+
+    previous_modal = ctk.CTkToplevel(gui.root)
+    previous_modal.grab_set()
+    dialog = dialog_module.WindowControlDialog(gui.root)
+    previous_modal.destroy()
+    dialog.destroy()
+    assert gui.root.grab_current() is None
+    assert dialog._result is None
 
 
 @pytest.mark.parametrize("is_plan", (True, False), ids=("plan", "playlist"))

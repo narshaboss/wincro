@@ -317,6 +317,28 @@ class ActionPlayer:
 
     def _get_enabled_actions(self, sequence: Sequence) -> List[Action]:
         """실행 대상 액션만 반환"""
+        def contains_window_control(actions):
+            return any(
+                action.action_type == "window_control"
+                or contains_window_control(getattr(action, "children", []) or [])
+                for action in actions
+            )
+
+        if contains_window_control(sequence.actions):
+            actions = []
+            seen = set()
+
+            def collect(items):
+                for action in items:
+                    if id(action) in seen or not is_runtime_action_enabled(action, self._config.player):
+                        continue
+                    seen.add(id(action))
+                    if not should_skip_pumpkin_action(action, self._config.player):
+                        actions.append(action)
+                    collect(getattr(action, "children", []) or [])
+
+            collect(sequence.actions)
+            return actions
         return [
             action
             for action in sequence.actions
@@ -791,6 +813,10 @@ class ActionPlayer:
                             self._on_action_complete(i, action, success)
                         except Exception as cb_err:
                             logger.warning(f"on_action_complete 콜백 오류: {cb_err}")
+
+                    if not success and action.action_type == "window_control":
+                        self._finalize_execution(False, error, generation=generation)
+                        return
 
                 self._execution_logger.info(f"=== 반복 {iteration} 완료 ===")
 

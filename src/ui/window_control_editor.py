@@ -48,9 +48,15 @@ class WindowControlEditorMixin:
         if not self._save_sequence_silent():
             return False
         reloaded = self._db.get_sequence(self._sequence.id)
-        return reloaded is not None and [a.to_dict() for a in reloaded.actions] == [
-            a.to_dict() for a in self._sequence.actions
-        ]
+        if reloaded is None:
+            return False
+        expected = self._sequence.to_dict()
+        actual = reloaded.to_dict()
+        # Run statistics and timestamps belong to the database, not this editor.
+        for key in ("created_at", "updated_at", "last_run", "run_count", "success_count", "failure_count"):
+            expected.pop(key, None)
+            actual.pop(key, None)
+        return actual == expected
 
     def _refresh_window_control_item(self, item, *, parent=None, added=False):
         if self._window_control_is_plan:

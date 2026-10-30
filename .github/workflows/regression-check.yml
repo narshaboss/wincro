@@ -12,6 +12,7 @@ permissions:
 jobs:
   regression:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,11 +35,16 @@ jobs:
       - name: Full regression including engine isolation
         run: python -m pytest -q
       - name: Window-control layout checks on isolated Windows desktop
-        if: ${{ hashFiles('tests/test_window_control_ui_layout.py') != '' }}
+        if: ${{ !cancelled() && hashFiles('tests/test_window_control_ui_layout.py') != '' }}
         env:
           WINCRO_WINDOW_CONTROL_UI_QA: '1'
           WINCRO_WINDOW_CONTROL_UI_QA_ARTIFACTS: artifacts/window_control
         run: python -m pytest -q tests/test_window_control_ui_layout.py
+      - name: Native window-control checks against isolated test windows
+        if: ${{ !cancelled() && hashFiles('tests/test_window_control_native.py') != '' }}
+        env:
+          WINCRO_WINDOW_CONTROL_UI_QA: '1'
+        run: python -m pytest -q tests/test_window_control_native.py
       - name: Upload window-control UI verification
         if: ${{ always() && hashFiles('artifacts/window_control/**') != '' }}
         uses: actions/upload-artifact@v4

@@ -1618,6 +1618,7 @@ class RuleExecutor:
                     has_monitoring_watches = len(getattr(rule, 'monitoring_watches', []) or []) > 0
                     is_monitoring = (
                         not runtime_skip
+                        and rule.action_type != WINDOW_CONTROL_ACTION_TYPE
                         and (getattr(rule, 'is_monitoring_mode', False) or has_monitoring_watches)
                     )
                     self._progress.current_rule = rule.rule_id
@@ -2210,6 +2211,8 @@ class RuleExecutor:
         can_rewind_previous: bool = False,
     ) -> Optional[RuleExecutionResult]:
         """트리거 이미지 대기/재생목록 종료 옵션을 공통 처리한다."""
+        if getattr(rule, "action_type", "") == WINDOW_CONTROL_ACTION_TYPE:
+            return None
         trigger_image = getattr(rule, "trigger_image", None)
         if not trigger_image:
             return None
@@ -2660,6 +2663,9 @@ class RuleExecutor:
 
         try:
             rule_type = rule.rule_type
+
+            if rule.action_type == WINDOW_CONTROL_ACTION_TYPE:
+                return self._execute_window_control(rule, start_time)
 
             if rule_type == RuleType.WAIT_FOR_IMAGE.value:
                 # 이미지가 나타날 때까지 대기
@@ -4679,6 +4685,7 @@ class RuleExecutor:
         has_monitoring_watches = len(getattr(rule, "monitoring_watches", []) or []) > 0
         is_monitoring = (
             not runtime_skip
+            and rule.action_type != WINDOW_CONTROL_ACTION_TYPE
             and (getattr(rule, "is_monitoring_mode", False) or has_monitoring_watches)
         )
         self._progress.current_rule = rule.rule_id

@@ -49,6 +49,8 @@ class WindowControlDialog(ctk.CTkToplevel):
         config = normalize_window_control_config(copy.deepcopy(config))
         if on_save is not None and not callable(on_save):
             raise TypeError("on_save must be callable or None")
+        self._previous_grab = None
+        self._previous_grab_status = None
         super().__init__(parent)
         self._result: dict | None = None
         self._on_save = on_save
@@ -79,6 +81,9 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._refresh_windows()
         self._executable_var.trace_add("write", self._criteria_changed)
         self._title_var.trace_add("write", self._criteria_changed)
+        self._previous_grab = self.grab_current()
+        if self._previous_grab is not None:
+            self._previous_grab_status = self._previous_grab.grab_status()
         self.grab_set()
 
     def _configure_geometry(self) -> None:
@@ -316,7 +321,7 @@ class WindowControlDialog(ctk.CTkToplevel):
             row = ctk.CTkFrame(
                 self._window_list, fg_color=COLORS["bg_card"],
                 corner_radius=IOS_METRICS["control_radius_small"],
-                border_width=1, border_color=COLORS["border"],
+                border_width=IOS_METRICS["card_border_width"], border_color=COLORS["border"],
             )
             row.grid(row=index, column=0, sticky="ew", pady=3)
             row.grid_columnconfigure(1, weight=1)
@@ -460,6 +465,26 @@ class WindowControlDialog(ctk.CTkToplevel):
         self._result = None
         self.grab_release()
         self.destroy()
+
+    def destroy(self) -> None:
+        previous = self._previous_grab
+        previous_status = self._previous_grab_status
+        self._previous_grab = None
+        self._previous_grab_status = None
+        try:
+            super().destroy()
+        finally:
+            # Restore Tk modality, not OS focus. Never steal a newer modal's grab.
+            if previous is not None:
+                try:
+                    if previous.winfo_exists() and previous.grab_current() is None:
+                        if previous_status == "global":
+                            previous.grab_set_global()
+                        elif previous_status == "local":
+                            previous.grab_set()
+                except tk.TclError:
+                    # The owning document or Tcl interpreter may be closing too.
+                    pass
 
     def get_result(self) -> dict | None:
         self.wait_window()
