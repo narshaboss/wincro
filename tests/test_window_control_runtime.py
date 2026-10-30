@@ -662,7 +662,7 @@ def _review_rule(rule_id="window", action_type="window_control", **overrides):
 
 def _review_executor(clock, runner):
     host, namespace = _executor(clock, runner)
-    names = {"_execute_rule", "_handle_trigger_gate", "_execute_rule_tree_once", "_execution_loop"}
+    names = {"_execute_rule", "_handle_trigger_gate", "_execute_rule_tree_once", "_execution_loop", "_safe_int"}
     namespace.update({
         "_CYAN": "", "_GREEN": "", "_YELLOW": "", "_RED": "", "_RESET": "",
         "ExecutionState": SimpleNamespace(
@@ -791,7 +791,11 @@ def test_window_monitor_flags_do_not_hide_controller_or_mark_progress_as_monitor
         host._notify_complete = Mock()
         host._execution_loop()
         host._notify_complete.assert_called_once()
-        assert host._notify_complete.call_args.args[0] is ready
+        assert host._notify_complete.call_args.args[0] is ready, host._notify_complete.call_args
+        if ready:
+            host._on_error.assert_not_called()
+        else:
+            assert "controller result" in host._notify_complete.call_args.args[1]
         host._end_shared_image_scan.assert_called_once_with()
         host._reset_input_state.assert_not_called()
         expected = ["window"] + (["following-child"] if ready else [])
