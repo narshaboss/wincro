@@ -4,6 +4,7 @@ import ast
 import json
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import cv2
@@ -179,6 +180,46 @@ def test_large_encoded_video_falls_back_without_decoding(monkeypatch, tmp_path):
     monkeypatch.setattr(bank.cv2, "VideoCapture", forbidden)
     assert bank.get_dedicated_video_frames(path) is None
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["이미지 클릭", "동영상클릭", "동영상 입력"])
+def test_monitor_action_dispatch_changes_only_video_actions(monkeypatch, kind):
+    executor = runtime.RuleExecutor()
+    find = Mock(return_value=(15, 16, .99))
+    monkeypatch.setattr(executor, "_find_image_on_screen", find)
+    monkeypatch.setattr(executor, "_check_user_intervention", lambda: False)
+    monkeypatch.setattr(executor, "_wait_for_resume", lambda: False)
+    device = Mock()
+    monkeypatch.setattr(runtime, "get_input_controller", lambda: device)
+    assert executor._execute_monitor_action({"type": kind, "image": str(CLIP), "confidence": .8})
+    assert find.call_args.kwargs.get("dedicated_video", False) == (kind != "이미지 클릭")
+    assert find.call_args.args[1] == .8
+    device.click.assert_called_once_with()
+
+
+@pytest.mark.parametrize("dedicated", [False, True])
+def test_video_test_ui_uses_same_frame_bank_as_runtime_without_opening_ui(monkeypatch, dedicated):
+    from src.ui import monitoring_editor as ui
+
+    editor = ui.MonitoringModeEditor
+    host = SimpleNamespace(**{name: getattr(editor, name) for name in (
+        "_safe_confidence", "_normalize_search_region_value", "_region_label_text", "_condition_verify_label",
+    )})
+    frame = read_clip()[48]
+    monkeypatch.setattr(ui, "_grab_screen_bgr", lambda: frame)
+    load = Mock(wraps=bank.get_dedicated_video_frames)
+    monkeypatch.setattr(bank, "get_dedicated_video_frames", load)
+    route = {"condition_image": str(CLIP), "condition_confidence": .8,
+             "condition_verify_image_color": True, "condition_verify_image_brightness": True}
+    if dedicated:
+        route["dedicated_video_test"] = True
+    result = editor._match_condition_image_for_test(host, route)
+    assert result["ok"]
+    if dedicated:
+        load.assert_called_once_with(str(CLIP))
+        assert result["found"]
+    else:
+        load.assert_not_called()
 
 
 def test_ui_test_and_runtime_routes_are_opt_in_only():
