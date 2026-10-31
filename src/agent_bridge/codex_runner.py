@@ -140,10 +140,10 @@ class CodexRunner:
         if features.returncode or any(values.get(name) != "false" for name in CRITICAL_FEATURES):
             missing = ", ".join(sorted(name for name in CRITICAL_FEATURES if values.get(name) != "false"))
             raise BridgeError("RUNTIME_UNSUPPORTED", "셸·앱·PC 제어 도구 비활성화를 확인하지 못했습니다: " + missing)
-        dependency = subprocess.run([str(python), "-c", "import importlib.metadata; assert importlib.metadata.version('mcp') == '1.25.0'"],
+        dependency = subprocess.run([str(python), "-c", "import importlib.metadata; from mcp.server.fastmcp import FastMCP; assert importlib.metadata.version('mcp') == '1.25.0'; print('WINCRO_MCP_READY')"],
                                     capture_output=True, timeout=15, **hidden_options())
-        if dependency.returncode:
-            raise BridgeError("MCP_MISSING", "선택한 Python에 검수한 mcp==1.25.0 설치가 필요합니다.")
+        if dependency.returncode or b"WINCRO_MCP_READY" not in dependency.stdout:
+            raise BridgeError("MCP_MISSING", "표준 입출력이 가능한 Python과 검수한 mcp==1.25.0 설치가 필요합니다.")
         return str(codex.resolve()), str(python.resolve()), str(server)
 
     def arguments(self, codex, python, server, descriptor):

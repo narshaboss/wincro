@@ -138,6 +138,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert restored == pane.current
         assert restored["analysis"] is None
         assert workspace.jobs.list_jobs()[0]["status"] == "needs_review"
+        assert _pump_until(ui_root, lambda: "추가 확인 필요" in pane.jobs.get(), 5)
         assert original.read_bytes() == before
         assert list((data / "plans").iterdir()) == [original]
         session.start.assert_not_called()

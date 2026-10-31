@@ -257,7 +257,7 @@ class RecordingJobs:
             raise BridgeError("PATH_DENIED", "Draft folder is outside this job")
         metadata = read_json(within(folder / "job.json", folder))
         if not metadata.get("draft_id"):
-            raise BridgeError("NOT_FOUND", "아직 저장된 초안이 없습니다.")
+            raise BridgeError("NOT_FOUND", metadata.get("message", "아직 저장된 초안이 없습니다."))
         service = self.service if self.active and self.active["job_id"] == job_id and self.service else DraftService(
             self.plans_dir, self.templates_dir, folder / "drafts", allow_publication=False)
         state = service.read_draft(metadata["draft_id"])

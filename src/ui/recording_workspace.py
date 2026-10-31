@@ -196,7 +196,7 @@ class RecordingWorkspace(ctk.CTkFrame):
                 message = state["message"].replace("\n", " ")
                 self.status.configure(text=message if len(message) <= 140 else message[:120] + "… (눌러서 상세 보기)")
                 if not busy:
-                    self._refresh_jobs(select=state["job_id"])
+                    self._refresh_jobs(select=state["job_id"] if state.get("draft_id") else None)
         self.result.set_running(busy)
         if self._was_running and not busy:
             state = self.jobs.snapshot()
@@ -405,13 +405,17 @@ class DraftResultPane(ctk.CTkFrame):
         self._after_id = self.after(120, self._poll)
 
     def set_jobs(self, states, select=None):
+        previous = self.options.get(self.jobs.get())
         self.options = {f"{state['recording_name']} · {JOB_LABELS.get(state['status'], state['status'])} · {state['job_id'][-6:]}": state["job_id"] for state in states}
         self.jobs.configure(values=list(self.options) or ["아직 분석 결과가 없습니다"])
+        selected_label = next((name for name, key in self.options.items() if key == (select or previous)), None)
+        if selected_label:
+            self.jobs.set(selected_label)
+        elif not self.options:
+            self.jobs.set("아직 분석 결과가 없습니다")
         if select and not self.dirty and not self.busy:
-            label = next((name for name, key in self.options.items() if key == select), None)
-            if label:
-                self.jobs.set(label)
-                self._select(label)
+            if selected_label:
+                self._select(selected_label)
 
     def set_running(self, running):
         self.running = running
