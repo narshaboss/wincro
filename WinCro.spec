@@ -65,9 +65,6 @@ datas = [
     ('src/agent_bridge/contracts.py', 'src/agent_bridge'),
     ('src/agent_bridge/storage.py', 'src/agent_bridge'),
     ('src/agent_bridge/transport.py', 'src/agent_bridge'),
-    ('src/agent_bridge/codex_models_recording.json', 'src/agent_bridge'),
-    ('docs/third_party/CODEX_LICENSE.txt', 'licenses'),
-    ('docs/third_party/CODEX_MODEL_CATALOG.md', 'licenses'),
 ]
 datas += collect_packaged_data()
 datas += collect_data_files('certifi', includes=['cacert.pem'])

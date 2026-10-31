@@ -233,8 +233,10 @@ def test_recording_catalog_never_includes_templates_or_writes_database(tmp_path)
 def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(tmp_path):
     runner = CodexRunner({}, tmp_path)
     args = runner.arguments("codex.exe", "python.exe", "C:/work/tools/wincro_mcp_server.py", "secret-path.json")
-    assert "--ignore-user-config" in args and "--ignore-rules" in args and "--ephemeral" in args
-    assert args[args.index("--sandbox")+1] == "read-only"
+    assert args[1:4] == ["app-server", "--listen", "stdio://"]
+    parameters = runner.thread_parameters()
+    assert parameters["environments"] == [] and parameters["ephemeral"] is True
+    assert parameters["sandbox"] == "read-only" and parameters["approvalPolicy"] == "never"
     for feature in DISABLED_FEATURES:
         assert f"features.{feature}=false" in args
     assert "approval_policy=\"never\"" in args
@@ -243,10 +245,7 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     tools = json.loads(next(value.split("=", 1)[1] for value in args if value.startswith("mcp_servers.wincroRecording.enabled_tools=")))
     assert "get_frames" in tools and "stage_edits" in tools
     assert "publish_new_plan" not in tools and "open_draft" not in tools
-    catalog_path = Path(json.loads(next(value.split("=", 1)[1] for value in args if value.startswith("model_catalog_json="))))
-    catalog = read_json(catalog_path)
-    assert catalog["models"]
-    assert all(model["apply_patch_tool_type"] is None and model["experimental_supported_tools"] == [] for model in catalog["models"])
+    assert "notify=[]" in args and 'model_reasoning_effort="high"' in args
 
 
 def test_preflight_refuses_missing_executable_and_secret_errors_are_bounded(tmp_path):

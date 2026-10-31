@@ -1,4 +1,4 @@
-"""Opt-in Codex execution with only the recording MCP and read-only sandbox."""
+"""Opt-in Codex app-server job with MCP tools and NO local environment."""
 
 import json
 import os
@@ -144,9 +144,9 @@ class CodexRunner:
         server = Path(__file__).resolve().parents[2] / "tools" / "wincro_mcp_server.py"
         if not server.is_file():
             raise BridgeError("RUNTIME_MISSING", "이 설치에는 GPT 연결 서버가 없습니다. 편집 도구 설치가 필요합니다.")
-        help_result = subprocess.run([str(codex), "exec", "--help"], capture_output=True, timeout=15, **hidden_options())
+        help_result = subprocess.run([str(codex), "app-server", "--help"], capture_output=True, timeout=15, **hidden_options())
         output = help_result.stdout.decode("utf-8", "replace")
-        if help_result.returncode or not all(flag in output for flag in ("--ignore-user-config", "--ignore-rules", "--ephemeral", "--json")):
+        if help_result.returncode or not all(flag in output for flag in ("--listen", "stdio://")):
             raise BridgeError("RUNTIME_UNSUPPORTED", "이 Codex 실행기는 안전한 자동 분석 실행 옵션을 지원하지 않습니다.")
         probe = self.folder / "capability-probe"
         probe.mkdir(parents=True, exist_ok=True)
@@ -163,24 +163,15 @@ class CodexRunner:
                                     capture_output=True, timeout=15, **hidden_options())
         if dependency.returncode or b"WINCRO_MCP_READY" not in dependency.stdout:
             raise BridgeError("MCP_MISSING", "표준 입출력이 가능한 Python과 검수한 mcp==1.25.0 설치가 필요합니다.")
-        from .storage import read_json
-        catalog = read_json(Path(__file__).with_name("codex_models_recording.json"))
-        models = catalog.get("models", []) if isinstance(catalog, dict) else []
-        if not models or any(model.get("apply_patch_tool_type") is not None or model.get("experimental_supported_tools") for model in models):
-            raise BridgeError("RUNTIME_UNSUPPORTED", "분석용 모델의 파일 수정 도구 차단 설정을 확인하지 못했습니다.")
-        selected = self.settings.get("model", "").strip()
-        if selected and selected not in {model["slug"] for model in models}:
-            raise BridgeError("RUNTIME_UNSUPPORTED", "분석용으로 검수된 모델이 아닙니다. 모델 이름을 비우거나 검수된 모델을 선택하세요.")
         return str(codex.resolve()), str(python.resolve()), str(server)
 
     def arguments(self, codex, python, server, descriptor):
         from .recording_jobs import JOB_TOOLS
-        args = [codex, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check",
-                "--sandbox", "read-only", "--cd", str(self.folder), "--color", "never", "--json"]
+        args = [codex, "app-server", "--listen", "stdio://"]
         configs = {
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
-            "tools.view_image": False, "project_doc_max_bytes": 0,
-            "model_catalog_json": str(Path(__file__).with_name("codex_models_recording.json").resolve()),
+            "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
+            "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
             "mcp_servers": {}, "mcp_servers.wincroRecording.command": python,
             "mcp_servers.wincroRecording.args": [server, "--connection-file", str(descriptor)],
             "mcp_servers.wincroRecording.cwd": str(Path(server).parent.parent),
@@ -195,8 +186,12 @@ class CodexRunner:
         if model:
             if len(model) > 100 or not re.fullmatch(r"[a-zA-Z0-9_.:-]+", model):
                 raise BridgeError("INVALID_FIELD", "모델 이름이 올바르지 않습니다.")
-            args += ["--model", model]
-        return args + ["-"]
+            args += ["-c", "model=" + json.dumps(model)]
+        return args
+
+    def thread_parameters(self):
+        return {"cwd": str(self.folder), "ephemeral": True, "environments": [],
+            "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": "read-only", "serviceTier": None}
 
     def run(self, descriptor, prompt, cancelled, progress):
         codex, python, server = self.preflight()
@@ -255,14 +250,18 @@ class CodexRunner:
         for thread in threads:
             thread.start()
         final = ""
-        completed = False
+        thread_id = None
         count = 0
         started = time.monotonic()
         try:
             if cancelled.is_set():
                 raise BridgeError("JOB_CANCELLED", "분석 취소")
-            process.stdin.write(prompt.encode("utf-8"))
-            process.stdin.close()
+            def send(value):
+                process.stdin.write((json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8"))
+                process.stdin.flush()
+            send({"id": 1, "method": "initialize", "params": {"clientInfo": {
+                "name": "wincro_recording", "title": "WinCro recording analyst", "version": "1.0"},
+                "capabilities": {"experimentalApi": True}}})
             while True:
                 if cancelled.is_set():
                     raise BridgeError("JOB_CANCELLED", "분석 취소")
@@ -273,7 +272,7 @@ class CodexRunner:
                 except queue.Empty:
                     continue
                 if line is None:
-                    break
+                    raise BridgeError("GPT_EXECUTION_FAILED", "GPT 연결이 정상 턴 종료 전에 닫혔습니다. " + clean_message(stderr.decode("utf-8", "replace")))
                 if isinstance(line, dict):
                     raise BridgeError("LIMIT_REACHED", "GPT 응답이 허용 크기를 초과했습니다.")
                 if not line.strip():
@@ -284,35 +283,49 @@ class CodexRunner:
                 try:
                     event = json.loads(line)
                 except (ValueError, UnicodeError):
-                    # Windows MCP cleanup can inherit stdout (localized taskkill text).
-                    # Only tolerate this AFTER a valid model-turn completion event.
-                    if completed:
-                        continue
                     sample = clean_message(line.decode("utf-8", "replace"))[:300]
                     raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기 JSON 응답을 해석할 수 없습니다: " + repr(sample))
-                if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                if not isinstance(event, dict):
                     raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기의 이벤트 형식이 잘못되었습니다.")
-                if event["type"] == "turn.completed":
-                    completed = True
-                item = event.get("item", {})
+                if "id" in event and "method" in event:
+                    send({"id": event["id"], "error": {"code": -32601, "message": "Interactive or permission requests are disabled"}})
+                    raise BridgeError("PERMISSION_REQUIRED", "GPT가 허용되지 않은 승인·대화 요청을 보냈습니다. 초안을 확인하세요.")
+                if "error" in event:
+                    raise BridgeError("GPT_EXECUTION_FAILED", clean_message(event["error"]))
+                if event.get("id") == 1:
+                    send({"method": "initialized"})
+                    send({"id": 2, "method": "thread/start", "params": self.thread_parameters()})
+                    continue
+                if event.get("id") == 2:
+                    result = event.get("result", {})
+                    thread_id = result.get("thread", {}).get("id")
+                    if not isinstance(thread_id, str) or result.get("approvalPolicy") != "never" or result.get("sandbox", {}).get("type") not in {"readOnly", "read-only"}:
+                        raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 읽기 제한을 확인하지 못했습니다.")
+                    send({"id": 3, "method": "turn/start", "params": {"threadId": thread_id,
+                        "input": [{"type": "text", "text": prompt}]}})
+                    continue
+                method = event.get("method", "")
+                params = event.get("params", {})
+                if method == "turn/completed" and params.get("threadId") == thread_id:
+                    turn = params.get("turn", {})
+                    if turn.get("status") != "completed":
+                        raise BridgeError("GPT_EXECUTION_FAILED", clean_message(turn.get("error") or turn.get("status")))
+                    return {"exit_code": 0, "message": final}
+                item = params.get("item", {})
                 kind = item.get("type")
-                if kind in {"command_execution", "file_change", "web_search", "collab_tool_call"}:
+                if kind in {"commandExecution", "fileChange", "webSearch", "collabAgentToolCall", "imageView", "imageGeneration"}:
                     raise BridgeError("UNSAFE_TOOL", "허용하지 않은 실행 도구가 감지되어 분석을 중단했습니다.")
-                if event.get("type") in {"turn.failed", "error"}:
-                    raise BridgeError("GPT_EXECUTION_FAILED", clean_message(event.get("error", event.get("message", "GPT 오류"))))
-                if kind == "mcp_tool_call" and event.get("type") == "item.started":
+                if method == "error":
+                    raise BridgeError("GPT_EXECUTION_FAILED", clean_message(params.get("error", "GPT 오류")))
+                if kind == "mcpToolCall" and method == "item/started":
                     tool = item.get("tool", "")
                     progress({"get_frames": "GPT가 실제 녹화 장면을 확인하고 있습니다.",
                         "stage_edits": "GPT가 독립 초안의 액션을 편집하고 있습니다.",
                         "record_analysis": "GPT가 행동 목적과 영상 근거를 정리하고 있습니다.",
                         "record_crosscheck": "GPT가 영상과 초안을 번갈아 교차검수하고 있습니다.",
                         "save_draft": "초안을 파일에 저장하고 다시 읽고 있습니다."}.get(tool, "GPT가 선택한 자료와 초안을 확인하고 있습니다."))
-                if kind == "agent_message" and event.get("type") == "item.completed":
+                if kind == "agentMessage" and method == "item/completed":
                     final = clean_message(item.get("text", ""))
-            code = process.wait(timeout=5)
-            if code == 0 and not completed:
-                raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기의 정상 턴 종료를 확인하지 못했습니다.")
-            return {"exit_code": code, "message": final if code == 0 else clean_message(stderr.decode("utf-8", "replace"))}
         finally:
             stop_reading.set()
             self.cancel()
@@ -322,7 +335,7 @@ class CodexRunner:
                 process.kill()
             for thread in threads:
                 thread.join(timeout=2)
-            for stream in (process.stdout, process.stderr):
+            for stream in (process.stdin, process.stdout, process.stderr):
                 stream.close()
 
     def cancel(self):

@@ -43,6 +43,12 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     auth_home = tmp_path / "empty-auth-home"
     auth_home.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(auth_home))
+    config_path = auth_home / "config.toml"
+    bridge = str(Path(__file__).resolve().parents[1] / "tools/wincro_mcp_server.py")
+    config_path.write_text('model_reasoning_effort="ultra"\nnotify=["wincro-notify-must-not-run.exe"]\n'
+        + '[mcp_servers.unselected]\ncommand=' + json.dumps(os.sys.executable) + '\nargs='
+        + json.dumps([bridge, "--connection-file", str(tmp_path / "never-consented.json")]) + '\n', encoding="utf-8")
+    config_before = config_path.read_bytes()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     requests = []
@@ -92,7 +98,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
             "model_providers.wincro_offline.requires_openai_auth": False,
         }
         for key, value in extras.items():
-            args[-1:-1] = ["-c", key + "=" + json.dumps(value)]
+            args += ["-c", key + "=" + json.dumps(value)]
         return args
     monkeypatch.setattr(CodexRunner, "arguments", arguments)
     from PIL import Image
@@ -141,10 +147,11 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         (artifacts / filename).write_text(json.dumps({"tool_names": sorted(tools), "status": state["status"],
             "real_model_called": False, "original_plan_unchanged": original.read_bytes() == before}, indent=2), encoding="utf-8")
         assert any("get_frames" in name for name in tools), tools
-        forbidden = ("exec_command", "shell", "apply_patch", "computer", "browser", "spawn_agent", "publish_new_plan", "open_draft", "view_image")
+        forbidden = ("exec_command", "shell", "apply_patch", "computer", "browser", "spawn_agent", "publish_new_plan", "open_draft", "view_image", "unselected")
         assert not any(any(word in name for word in forbidden) for name in tools), tools
         assert original.read_bytes() == before
         assert list(plans.iterdir()) == [original]
+        assert config_path.read_bytes() == config_before
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
         filename = "cancelled-tool-surface.json" if cancel_job else "codex-tool-surface.json"
