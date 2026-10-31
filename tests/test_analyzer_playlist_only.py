@@ -171,10 +171,10 @@ def test_lock_toggle_writes_database_and_reloads_without_touching_plan_json(tmp_
     fresh = object.__new__(db_manager.DatabaseManager)
     fresh._db_path = database._db_path
     fresh._wal_initialized = False
-    assert fresh.get_recording(key).locked is True
+    assert bool(fresh.get_recording(key).locked) is True
     confirm.assert_not_called()
     AnalyzerView._toggle_plan_lock(view, plan)
-    assert fresh.get_recording(key).locked is False
+    assert bool(fresh.get_recording(key).locked) is False
     confirm.assert_called_once()
     assert view._load_plans.call_count == 2
     assert plan_file.read_bytes() == before

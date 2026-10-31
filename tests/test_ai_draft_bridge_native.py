@@ -536,7 +536,13 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
     finally:
         if view is not None:
-            view.cleanup()
+            try:
+                artifact_dir = Path("artifacts/ai_draft")
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(
+                    artifact_dir / f"analyzer_playlist_end_{int(scale * 100)}pct.png")
+            finally:
+                view.cleanup()
         window.destroy()
         ui_root.update()
         ctk.set_widget_scaling(1.0)
