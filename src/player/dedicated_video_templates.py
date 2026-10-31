@@ -25,6 +25,8 @@ def get_dedicated_video_frames(path, stop_event=None):
         return []
     path = Path(path)
     try:
+        if path.stat().st_size > MAX_ENCODED_BYTES:
+            return None
         with path.open("rb") as source:
             encoded = source.read(MAX_ENCODED_BYTES + 1)
         if len(encoded) > MAX_ENCODED_BYTES:

@@ -118,6 +118,7 @@ def test_negative_screen_is_not_accepted(monkeypatch):
     assert executor._find_image_on_screen(str(CLIP), .8, verify_color=True, verify_brightness=True,
                                            dedicated_video=True) is None
     assert "below_threshold" in executor._dedicated_video_diagnostic
+    assert "best=0.0%" in executor._dedicated_video_diagnostic
 
 
 def test_cache_detects_same_metadata_content_replacement_and_is_bounded(monkeypatch, tmp_path):
@@ -168,6 +169,16 @@ def test_decode_cancellation_releases_capture(monkeypatch, tmp_path):
     assert bank.get_dedicated_video_frames(path, stop) == []
     cap.release.assert_called_once_with()
     assert not bank._cache
+
+
+def test_large_encoded_video_falls_back_without_decoding(monkeypatch, tmp_path):
+    path = tmp_path / "oversized.mp4"
+    path.write_bytes(b"1234")
+    monkeypatch.setattr(bank, "MAX_ENCODED_BYTES", 2)
+    forbidden = Mock(side_effect=AssertionError("over-budget decode"))
+    monkeypatch.setattr(bank.cv2, "VideoCapture", forbidden)
+    assert bank.get_dedicated_video_frames(path) is None
+    forbidden.assert_not_called()
 
 
 def test_ui_test_and_runtime_routes_are_opt_in_only():

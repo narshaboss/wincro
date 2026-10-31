@@ -3463,6 +3463,7 @@ class RuleExecutor:
             best_match = None
             best_scale = 1.0
             best_variant = ""
+            video_best_score = -1.0
             for tmpl_gray, th, tw, template_bgr, variant_label in template_variants:
                 if dedicated_video and self._stop_event.is_set():
                     return None
@@ -3480,6 +3481,8 @@ class RuleExecutor:
                     result = cv2.matchTemplate(screen_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
                     time.sleep(0)  # GIL 해제
                     _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    if dedicated_video:
+                        video_best_score = max(video_best_score, float(max_val))
                     if best_match is None or max_val > best_match[2]:
                         best_match = (max_loc, stw, sth, float(max_val))
                         best_scale = scale
@@ -3519,12 +3522,12 @@ class RuleExecutor:
 
             if best_match is not None:
                 logger.debug(
-                    f"[이미지 검색] CCOEFF: conf={best_match[2]:.2f}, 설정={confidence:.2f}, "
+                    f"[이미지 검색] CCOEFF: conf={(video_best_score if dedicated_video else best_match[2]):.2f}, 설정={confidence:.2f}, "
                     f"best_scale={best_scale:.2f}, {best_variant} - {Path(image_path).name}"
                 )
 
             if dedicated_video:
-                score = best_match[2] if best_match is not None else 0.0
+                score = max(0.0, video_best_score)
                 reason = "template_outside_region" if best_match is None else (
                     "visual_rejected" if score >= confidence and verify_visual else "below_threshold"
                 )
