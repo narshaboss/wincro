@@ -256,7 +256,8 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert not workspace.jobs.busy
         workspace.jobs.runner_factory = RejectedModelActor
         workspace.badge.invoke()
-        assert _pump_until(ui_root, lambda: workspace.connection.connected, 12)
+        assert _pump_until(ui_root, lambda: workspace.connection.connected and workspace.badge.cget("text") == "GPT 연결 ON"
+            and workspace.analyze.cget("state") == "normal", 12)
         workspace.analyze.invoke()
         consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
         consent.consent.set(True)

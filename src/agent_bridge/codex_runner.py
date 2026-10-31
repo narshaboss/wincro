@@ -21,11 +21,12 @@ DISABLED_FEATURES = (
     "code_mode_only", "image_generation", "memories", "remote_control", "tool_suggest",
     "request_permissions_tool", "workspace_dependencies", "skill_mcp_dependency_install",
     "tool_search", "apply_patch_freeform", "unavailable_dummy_tools", "fast_mode", "ultrafast_mode",
-    "view_image", "unified_exec", "code_mode_host", "multi_agent_v2", "multi_agent_v2_dynamic_tools",
+    "view_image", "unified_exec_tty", "code_mode_host", "multi_agent_v2", "multi_agent_v2_dynamic_tools",
     "browser_use_full_cdp_access", "mcp_connection_sharing", "remote_plugin", "plugin_discovery_prefetch",
     "skill_search", "sleep_tool", "goals", "artifact", "non_prefixed_mcp_tool_names", "daemon_auto_start",
 )
-CRITICAL_FEATURES = {"shell_tool", "view_image", "unified_exec", "code_mode_host", "apps", "plugins",
+# In 0.166 unified_exec selects an always-on backend; ShellTool gates its authority.
+CRITICAL_FEATURES = {"shell_tool", "view_image", "code_mode_host", "apps", "plugins",
     "hooks", "multi_agent", "browser_use", "computer_use", "image_generation"}
 MAX_EVENT_BYTES = 8_000_000
 SUPPORTED_CODEX_VERSIONS = {"codex-cli 0.166.0"}
