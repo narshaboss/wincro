@@ -143,6 +143,12 @@ class RecordingWorkspace(ctk.CTkFrame):
     def _consented(self, path, log, excluded):
         if self.jobs.busy or self.busy or not self.selected or path != self.selected.path:
             return False
+        if self.owner._is_recording or self.owner._starting or self.owner._stopping:
+            self.status.configure(text="녹화가 진행 중입니다. 녹화를 마친 뒤 자료 추가를 다시 누르세요.")
+            return False
+        if self.result.dirty or self.result.busy:
+            self.status.configure(text="분석 결과의 미저장 입력을 먼저 저장하거나 취소하세요.")
+            return False
         try:
             self.jobs.start(path, self.goal.get().strip() or DEFAULT_GOAL, self.runtime,
                 input_log=log, excluded=excluded, reference=self.runtime.get("reference"))

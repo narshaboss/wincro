@@ -128,6 +128,10 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         workspace.analyze.invoke()
         consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
         consent.consent.set(True)
+        view._is_recording = True
+        consent.add_button.invoke()
+        assert consent.winfo_exists() and not workspace.jobs.busy and workspace.jobs.snapshot() is None
+        view._is_recording = False
         consent.add_button.invoke()
         assert _pump_until(ui_root, lambda: workspace.badge.cget("text") == "GPT 연결 ON", 12), workspace.jobs.snapshot()
         MCPPipelineActor.release.set()
