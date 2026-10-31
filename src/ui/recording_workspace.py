@@ -123,9 +123,10 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.analyze.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.cancel_button = self._button(buttons, "분석 취소", self._cancel, width=86, state="disabled")
         self.cancel_button.grid(row=0, column=1)
-        self.status = ctk.CTkLabel(panel, text="먼저 GPT 연결 OFF를 눌러 연결하세요. 녹화를 선택한 뒤 분석을 시작합니다.", height=44,
+        self.status = ctk.CTkLabel(panel, text="", height=32,
             anchor="w", justify="left", width=1, wraplength=560, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
         self.status.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.set_status("먼저 GPT 연결 OFF를 눌러 연결하세요. 녹화를 선택한 뒤 분석을 시작합니다.")
         self.status.bind("<Button-1>", lambda _event: self._job_details(), add="+")
         tk.Misc.bind(self.status, "<Configure>", lambda event: configure_changed(self.status,
             wraplength=max(120, int(event.width / self.status._get_widget_scaling()) - 4)), add="+")
@@ -133,7 +134,7 @@ class RecordingWorkspace(ctk.CTkFrame):
     def set_status(self, text):
         self._status_detail = str(text)
         display = " ".join(self._status_detail.split())
-        configure_changed(self.status, text=display if len(display) <= 86 else display[:76] + "… (상세)")
+        configure_changed(self.status, text=display if len(display) <= 58 else display[:50] + "… (상세)")
 
     def _toggle_connection(self):
         if self.connection.busy:

@@ -445,6 +445,9 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         for button in row_buttons(row):
             assert button.winfo_rootx() + button.winfo_width() <= view.winfo_rootx() + view.winfo_width()
             assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4
+            canvas = view._recordings_scroll._canvas
+            assert button.winfo_rooty() >= canvas.winfo_rooty()
+            assert button.winfo_rooty() + button.winfo_height() <= canvas.winfo_rooty() + canvas.winfo_height()
         workspace.analyze.invoke()
         assert "선택" in workspace.status.cget("text")
         session.start.assert_not_called()

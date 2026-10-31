@@ -30,6 +30,7 @@ from .ui_batcher import LatestOnlyWorker, UiCallbackDispatcher, resolve_widget_u
 from .virtual_scroll import VirtualScrollFrame
 
 logger = get_logger(__name__)
+RECORDING_ROW_HEIGHT = 54
 
 
 @dataclass(frozen=True)
@@ -129,7 +130,7 @@ class RecorderView(BaseView):
         if self._recording_ui_closed:
             return
         rows = self._recordings_scroll
-        height = max(1, round(self._apply_widget_scaling(82)))
+        height = max(1, round(self._apply_widget_scaling(RECORDING_ROW_HEIGHT)))
         if height != rows._item_height:
             position = rows._canvas.yview()[0]
             rows._item_height = height
@@ -145,23 +146,23 @@ class RecorderView(BaseView):
         self._fps_var = tk.StringVar(master=self, value=str(self._config.recording.fps))
         self._name_entry = ctk.CTkEntry(card, placeholder_text="녹화 이름 (비우면 자동 생성)", height=30,
             fg_color=COLORS["bg_glass"], border_color=COLORS["border"], text_color=COLORS["text_primary"])
-        self._name_entry.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
+        self._name_entry.grid(row=0, column=0, sticky="ew", padx=8, pady=5)
         self._start_btn = self.create_button(card, "녹화 시작 (F7)", self._on_start_recording, width=110, height=30)
-        self._start_btn.grid(row=0, column=1, padx=(0, 5), pady=6)
+        self._start_btn.grid(row=0, column=1, padx=(0, 5), pady=5)
         self._stop_btn = self.create_button(card, "녹화 중지", self._on_stop_recording, style="danger", width=85, height=30)
-        self._stop_btn.grid(row=0, column=2, padx=(0, 8), pady=6)
+        self._stop_btn.grid(row=0, column=2, padx=(0, 8), pady=5)
         self._stop_btn.configure(state="disabled")
         line = ctk.CTkFrame(card, fg_color="transparent")
         line.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8)
         line.grid_columnconfigure(1, weight=1)
-        self._status_indicator = ctk.CTkLabel(line, text="●", width=18, text_color=COLORS["text_muted"])
+        self._status_indicator = ctk.CTkLabel(line, text="●", width=18, height=18, text_color=COLORS["text_muted"])
         self._status_indicator.grid(row=0, column=0)
-        self._status_label = ctk.CTkLabel(line, text="녹화 대기", anchor="w", text_color=COLORS["text_primary"])
+        self._status_label = ctk.CTkLabel(line, text="녹화 대기", anchor="w", height=18, text_color=COLORS["text_primary"])
         self._status_label.grid(row=0, column=1, sticky="ew")
-        self._stat_labels = {"duration": ctk.CTkLabel(line, text="00:00:00", width=65, text_color=COLORS["text_secondary"])}
+        self._stat_labels = {"duration": ctk.CTkLabel(line, text="00:00:00", width=65, height=18, text_color=COLORS["text_secondary"])}
         self._stat_labels["duration"].grid(row=0, column=2)
         self._status_hint = ctk.CTkLabel(card, text="F7 시작·중지 / 녹화 후 목록에서 선택해 GPT 분석",
-            height=22, anchor="w", width=1, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
+            height=18, anchor="w", width=1, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
         self._status_hint.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 3))
 
     def _setup_recordings_card(self, parent):
@@ -175,7 +176,7 @@ class RecorderView(BaseView):
         self.create_button(header, "파일 추가", self._add_recording_file, style="secondary", width=75, height=26).pack(side="right", padx=5)
         self._recordings_empty_label = ctk.CTkLabel(card, text="저장된 녹화가 없습니다. 녹화하거나 영상 파일을 추가하세요.",
             text_color=COLORS["text_muted"], wraplength=400)
-        self._recordings_scroll = VirtualScrollFrame(card, item_height=max(1, round(self._apply_widget_scaling(82))),
+        self._recordings_scroll = VirtualScrollFrame(card, item_height=max(1, round(self._apply_widget_scaling(RECORDING_ROW_HEIGHT))),
             buffer_count=5, fg_color=COLORS["bg_glass"], corner_radius=IOS_METRICS["card_radius_compact"])
         self._recordings_scroll.set_render_callback(self._render_recording_item)
         self._recordings_scroll.pack(fill="both", expand=True, padx=5, pady=(0, 5))
@@ -310,28 +311,28 @@ class RecorderView(BaseView):
     def _create_media_item(self, media: TemplateMediaItem, parent=None):
         selected = bool(self._workspace.selected and self._workspace.selected.path == media.path)
         item = tk.Frame(parent or self._recordings_scroll, bg=COLORS["bg_glass"],
-            height=max(1, round(self._apply_widget_scaling(82))), borderwidth=0, highlightthickness=0)
+            height=max(1, round(self._apply_widget_scaling(RECORDING_ROW_HEIGHT))), borderwidth=0, highlightthickness=0)
         item.pack_propagate(False)
         if parent is None:
             item.pack(fill="x")
-        body = ctk.CTkFrame(item, fg_color=COLORS["bg_elevated"], height=76,
+        body = ctk.CTkFrame(item, fg_color=COLORS["bg_elevated"], height=50,
             border_color=COLORS["accent"] if selected else COLORS["border"], border_width=IOS_METRICS["card_border_width"],
             corner_radius=IOS_METRICS["control_radius"])
         body.pack(fill="x", padx=2, pady=2)
         body.pack_propagate(False)
-        content = ctk.CTkFrame(body, fg_color="transparent", height=60)
-        content.pack(fill="x", padx=8, pady=8)
+        content = ctk.CTkFrame(body, fg_color="transparent", height=40)
+        content.pack(fill="x", padx=8, pady=4)
         content.grid_propagate(False)
         content.grid_columnconfigure(1, weight=1)
-        thumb_host = ctk.CTkFrame(content, width=58, height=58, fg_color="transparent")
+        thumb_host = ctk.CTkFrame(content, width=40, height=40, fg_color="transparent")
         thumb_host.grid(row=0, column=0, rowspan=2, padx=(0, 8))
         thumb_host.pack_propagate(False)
         self._render_media_thumbnail(thumb_host, media)
         from .text_overflow import truncate_ui_text
-        name = ctk.CTkLabel(content, text=truncate_ui_text(media.name, 64), width=1, anchor="w",
+        name = ctk.CTkLabel(content, text=truncate_ui_text(media.name, 64), width=1, height=18, anchor="w",
             font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"), text_color=COLORS["text_primary"])
         name.grid(row=0, column=1, sticky="ew")
-        detail = ctk.CTkLabel(content, width=1, text=f"{media.modified_at:%Y-%m-%d %H:%M}  |  {self._format_file_size(media.size_bytes)}",
+        detail = ctk.CTkLabel(content, width=1, height=16, text=f"{media.modified_at:%Y-%m-%d %H:%M}  |  {self._format_file_size(media.size_bytes)}",
             anchor="w", font=(IOS_FONTS["family"], 10), text_color=COLORS["text_muted"])
         detail.grid(row=1, column=1, sticky="ew")
         choose = self.create_button(content, "선택됨" if selected else "선택", lambda: self._workspace.choose(media),
@@ -374,7 +375,7 @@ class RecorderView(BaseView):
 
 
     def _media_thumbnail_cache_key(self, media: TemplateMediaItem) -> str:
-        return f"{media.path}|58|{media.modified_at.timestamp():.6f}"
+        return f"{media.path}|40|{media.modified_at.timestamp():.6f}"
 
     def _render_media_thumbnail(self, host, media: TemplateMediaItem) -> None:
         cache_key = self._media_thumbnail_cache_key(media)
@@ -430,8 +431,8 @@ class RecorderView(BaseView):
             host,
             image=thumbnail,
             text="",
-            width=58,
-            height=58,
+            width=40,
+            height=40,
             fg_color="transparent",
             hover_color=COLORS["bg_card_hover"],
             corner_radius=IOS_METRICS["control_radius_small"],
@@ -465,7 +466,7 @@ class RecorderView(BaseView):
             h, w = rgb.shape[:2]
             if w <= 0 or h <= 0:
                 return None
-            scale = min(54 / w, 54 / h)
+            scale = min(36 / w, 36 / h)
             new_w = max(1, int(w * scale))
             new_h = max(1, int(h * scale))
             resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
