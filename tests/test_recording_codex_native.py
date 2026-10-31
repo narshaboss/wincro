@@ -22,6 +22,14 @@ from src.agent_bridge.recording_jobs import RecordingJobs
 from src.agent_bridge.recording_connection import RecordingConnection
 
 
+def declared_tools(request):
+    tools = list(request.get("tools", []))
+    for item in request.get("input", []):
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            tools.extend(item.get("tools", []))
+    return tools
+
+
 def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path):
     import shutil
     import subprocess
@@ -145,7 +153,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
                 "content": [{"type": "output_text", "text": "Offline transport-only simulation; no actual GPT analysis.", "annotations": []}]}
             number = len(requests)
             if not cancel_job and number <= 2:
-                namespace = next(tool["name"] for tool in requests[0]["tools"]
+                namespace = next(tool["name"] for tool in declared_tools(requests[0])
                     if tool.get("name", "").startswith("mcp__wincroRecording_"))
                 recording = re.search(r"recording_id=(recording_[a-z0-9]+)", json.dumps(requests[0]))[1]
                 name = "connection_status" if number == 1 else "get_frames"
@@ -222,9 +230,9 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         assert state["status"] == ("cancelled" if cancel_job else "needs_review"), json.dumps(state, ensure_ascii=False)
         assert requests, state
         (artifacts / ("cancelled-request-tools.json" if cancel_job else "request-tools.json")).write_text(json.dumps({
-            "request_keys": list(requests[0]), "tools": requests[0].get("tools"),
+            "request_keys": list(requests[0]), "tools": declared_tools(requests[0]),
             "input_types": [item.get("type") for item in requests[0].get("input", []) if isinstance(item, dict)],
-            "tool_names_in_any_request": [sorted(set(names_value.get("name", "") for names_value in request.get("tools", []) if isinstance(names_value, dict))) for request in requests]
+            "tool_names_in_any_request": [sorted(set(names_value.get("name", "") for names_value in declared_tools(request) if isinstance(names_value, dict))) for request in requests]
         }, indent=2), encoding="utf-8")
         assert all(request.get("service_tier") in (None, "default") for request in requests), "Bootstrap tier leaked into inference"
         if cancel_job:
@@ -239,7 +247,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
             elif isinstance(value, list):
                 for item in value:
                     yield from names(item)
-        tools = set(names(requests[0].get("tools", [])))
+        tools = set(names(declared_tools(requests[0])))
         filename = "cancelled-tool-surface.json" if cancel_job else "codex-tool-surface.json"
         (artifacts / filename).write_text(json.dumps({"tool_names": sorted(tools), "status": state["status"],
             "real_model_called": False, "original_plan_unchanged": original.read_bytes() == before}, indent=2), encoding="utf-8")
