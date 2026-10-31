@@ -32,6 +32,12 @@ jobs:
           }
       - name: Notification delivery simulations (no network)
         run: python -m pytest -q tests/test_discord_notifier.py tests/test_discord_delivery_regression.py
+      - name: AI draft save, media, permissions and contract simulations (no input)
+        run: python -m pytest -q tests/test_ai_draft_bridge.py
+      - name: AI draft local-pipe and layout verification on isolated Windows
+        env:
+          WINCRO_AI_EDITOR_UI_QA: '1'
+        run: python -m pytest -q tests/test_ai_draft_bridge_native.py
       - name: Dedicated video real-clip simulations and recognition isolation
         run: python -m pytest -q tests/test_dedicated_video_sampling.py tests/test_monitoring_condition_video_regression.py tests/test_optimization_resource_regression.py
       - name: Save integrity, stop handoff and notification identity simulations

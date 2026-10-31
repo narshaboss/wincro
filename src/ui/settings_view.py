@@ -140,6 +140,14 @@ class SettingsView(BaseView):
         )
         scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
+        # Lazy opt-in editor: no bridge threads/imports during normal playback.
+        ctk.CTkButton(
+            scroll_frame, text="AI 플랜 초안 편집 (연결 기본 OFF)",
+            command=self._open_ai_draft_editor, height=30,
+            fg_color=COLORS["bg_elevated"], text_color=COLORS["text_primary"],
+            border_width=1, border_color=COLORS["border"],
+        ).pack(fill="x", padx=10, pady=(5, 8))
+
         # 프로그램 이름 섹션
         name_label = ctk.CTkLabel(
             scroll_frame,
@@ -811,6 +819,14 @@ class SettingsView(BaseView):
             options_frame, "입력 로그 저장", self._input_log_var,
             help_text="자동화 분석에 필요"
         )
+
+    def _open_ai_draft_editor(self) -> None:
+        from .ai_draft_editor import open_ai_draft_editor
+        try:
+            open_ai_draft_editor(self)
+        except Exception as exc:
+            from tkinter import messagebox
+            messagebox.showerror("AI 초안 편집", str(exc), parent=self)
 
     def _setup_player_settings(self, parent) -> None:
         """재생 설정 섹션"""
