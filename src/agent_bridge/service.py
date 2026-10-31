@@ -308,7 +308,24 @@ class DraftService:
             state = self._load(draft_id)
             rows = validate(state["plan"])
             for name in set(assets(state["plan"])):
-                self._asset_path(state, name)
+                path = self._asset_path(state, name)
+                try:
+                    if path.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".webm"}:
+                        import cv2
+                        capture = cv2.VideoCapture(str(path))
+                        try:
+                            if not capture.isOpened() or capture.get(cv2.CAP_PROP_FRAME_COUNT) <= 0:
+                                raise ValueError("Undecodable video")
+                        finally:
+                            capture.release()
+                    else:
+                        from PIL import Image
+                        with Image.open(path) as image:
+                            if image.width * image.height > 16_000_000:
+                                raise ValueError("Oversized image")
+                            image.verify()
+                except Exception as exc:
+                    raise BridgeError("MEDIA_NOT_READY", "Referenced asset cannot be decoded: " + name) from exc
             # Test runtime-model loading without importing the player or generating input.
             from ..analyzer.automation_models import AutomationPlan
             from dataclasses import fields

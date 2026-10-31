@@ -280,6 +280,14 @@ def test_reference_asset_replacement_invalidates_validation(service):
     assert err.value.code == "MEDIA_NOT_READY"
 
 
+def test_existing_but_corrupt_asset_is_not_reported_valid(service):
+    (service.templates_dir / "corrupt.png").write_bytes(b"not an image")
+    draft = add(service, service.open_draft("corrupt asset"), target_image="corrupt.png")
+    with pytest.raises(BridgeError) as err:
+        service.validate_draft(draft["draft_id"])
+    assert err.value.code == "MEDIA_NOT_READY"
+
+
 def test_oversized_state_is_rejected_before_overwriting_durable_draft(service, monkeypatch):
     draft = service.open_draft("size limit")
     import src.agent_bridge.service as module
