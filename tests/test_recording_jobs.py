@@ -246,6 +246,8 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     assert "get_frames" in tools and "stage_edits" in tools
     assert "publish_new_plan" not in tools and "open_draft" not in tools
     assert "notify=[]" in args and 'model_reasoning_effort="high"' in args
+    assert 'service_tier="fast"' in args and "features.fast_mode=false" in args
+    assert parameters["serviceTier"] is None
     assert f'profile="{runner.server_name}"' in args and f"profiles.{runner.server_name}={{}}" in args
     connections = runner.thread_parameters([runner.server_name, "unselected", "other.with.dots"])["config"]["mcp_servers"]
     assert connections["unselected"] == connections["other.with.dots"] == {"enabled": False}

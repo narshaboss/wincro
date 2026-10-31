@@ -20,7 +20,7 @@ DISABLED_FEATURES = (
     "browser_use", "browser_use_external", "computer_use", "in_app_browser", "code_mode",
     "code_mode_only", "image_generation", "memories", "remote_control", "tool_suggest",
     "request_permissions_tool", "workspace_dependencies", "skill_mcp_dependency_install",
-    "tool_search", "apply_patch_freeform", "unavailable_dummy_tools",
+    "tool_search", "apply_patch_freeform", "unavailable_dummy_tools", "fast_mode",
 )
 CRITICAL_FEATURES = {"shell_tool", "apps", "plugins", "hooks", "multi_agent", "browser_use", "computer_use"}
 MAX_EVENT_BYTES = 8_000_000
@@ -181,6 +181,9 @@ class CodexRunner:
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
             "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
             "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
+            # The bootstrap parser rejects desktop `priority` before thread overrides.
+            # This compatible value is cleared by serviceTier:null before any turn.
+            "service_tier": "fast",
         }
         configs.update({f"mcp_servers.{self.server_name}.{key}": value for key, value in self.mcp_config.items()})
         for key, value in configs.items():
@@ -330,6 +333,8 @@ class CodexRunner:
                     thread_id = result.get("thread", {}).get("id")
                     if not isinstance(thread_id, str) or result.get("approvalPolicy") != "never" or result.get("sandbox", {}).get("type") not in {"readOnly", "read-only"}:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 읽기 제한을 확인하지 못했습니다.")
+                    if result.get("serviceTier") is not None:
+                        raise BridgeError("RUNTIME_UNSUPPORTED", "분석 작업의 서비스 등급 초기화를 확인하지 못해 실행하지 않습니다.")
                     if idle:
                         send({"id": 20, "method": "account/read", "params": {"refreshToken": False}})
                     else:

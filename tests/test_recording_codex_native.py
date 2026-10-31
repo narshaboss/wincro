@@ -44,6 +44,9 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
     home = tmp_path / "auth"
     home.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(home))
+    config = home / "config.toml"
+    config.write_text('service_tier="priority"\n', encoding="utf-8")
+    config_before = config.read_bytes()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     calls = []
@@ -79,6 +82,7 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
             assert connection.snapshot()["state"] == "error"
             assert "LOGIN_REQUIRED" in connection.snapshot()["message"]
             assert not calls
+            assert config.read_bytes() == config_before
             return
         assert connection.connected, connection.snapshot()
         runner = connection.runner
@@ -90,6 +94,7 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
         connection.worker.join(8)
         assert not connection.busy and runner.process.poll() is not None
         assert not calls
+        assert config.read_bytes() == config_before
         assert not list(connection.root.rglob("draft_*.json"))
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -117,7 +122,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     foreign_wrapper = tmp_path / "foreign_mcp.py"
     foreign_wrapper.write_text("from pathlib import Path\nimport runpy\nPath(" + repr(str(foreign_marker))
         + ").write_text('unexpected startup')\nrunpy.run_path(" + repr(bridge) + ", run_name='__main__')\n", encoding="utf-8")
-    config_path.write_text('profile="foreign"\nmodel_reasoning_effort="ultra"\nnotify=["wincro-notify-must-not-run.exe"]\n'
+    config_path.write_text('profile="foreign"\nservice_tier="priority"\nmodel_reasoning_effort="ultra"\nnotify=["wincro-notify-must-not-run.exe"]\n'
         + '[profiles.foreign.features]\nshell_tool=true\napps=true\nbrowser_use=true\ncomputer_use=true\n'
         + '[mcp_servers.unselected]\ncommand=' + json.dumps(os.sys.executable) + '\nargs='
         + json.dumps([str(foreign_wrapper), "--connection-file", str(tmp_path / "never-consented.json")]) + '\n', encoding="utf-8")
@@ -216,6 +221,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         (artifacts / filename).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         assert state["status"] == ("cancelled" if cancel_job else "needs_review"), json.dumps(state, ensure_ascii=False)
         assert requests, state
+        assert all(request.get("service_tier") in (None, "default") for request in requests), "Bootstrap tier leaked into inference"
         if cancel_job:
             assert runner is not None and runner.process.poll() is not None
             assert not jobs.connected
