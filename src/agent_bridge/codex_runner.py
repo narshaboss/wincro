@@ -302,7 +302,7 @@ class CodexRunner:
                     if not isinstance(thread_id, str) or result.get("approvalPolicy") != "never" or result.get("sandbox", {}).get("type") not in {"readOnly", "read-only"}:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 읽기 제한을 확인하지 못했습니다.")
                     send({"id": 3, "method": "turn/start", "params": {"threadId": thread_id,
-                        "input": [{"type": "text", "text": prompt}]}})
+                        "environments": [], "input": [{"type": "text", "text": prompt}]}})
                     continue
                 method = event.get("method", "")
                 params = event.get("params", {})
@@ -316,6 +316,9 @@ class CodexRunner:
                 if kind in {"commandExecution", "fileChange", "webSearch", "collabAgentToolCall", "imageView", "imageGeneration"}:
                     raise BridgeError("UNSAFE_TOOL", "허용하지 않은 실행 도구가 감지되어 분석을 중단했습니다.")
                 if method == "error":
+                    if params.get("willRetry") is True:
+                        progress("GPT 연결 오류로 재시도하고 있습니다. 저장된 초안은 유지됩니다.")
+                        continue
                     raise BridgeError("GPT_EXECUTION_FAILED", clean_message(params.get("error", "GPT 오류")))
                 if kind == "mcpToolCall" and method == "item/started":
                     tool = item.get("tool", "")
