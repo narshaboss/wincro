@@ -28,6 +28,28 @@ def _job_diagnostics(window):
     return "\n".join(info)
 
 
+def _pump_until(root, predicate, timeout):
+    """Use production's mainloop, including Tk's cross-thread event dispatch."""
+    deadline = time.monotonic() + timeout
+    passed = False
+    pending = None
+
+    def check():
+        nonlocal passed, pending
+        passed = bool(predicate())
+        if passed or time.monotonic() >= deadline:
+            pending = None
+            root.quit()
+        else:
+            pending = root.after(15, check)
+
+    pending = root.after(0, check)
+    root.mainloop()
+    if pending is not None:
+        root.after_cancel(pending)
+    return passed
+
+
 def test_real_local_pipe_auth_scope_and_shutdown(tmp_path):
     service = DraftService(tmp_path / "plans", tmp_path / "templates", tmp_path / "drafts")
     host = LocalHost(service, tmp_path / "connections")
@@ -173,7 +195,8 @@ def ui_root():
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
-def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
+@pytest.mark.parametrize("cycle", range(2))
+def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, cycle, ui_root):
     import customtkinter as ctk
     from src.ui.ai_draft_editor import AIDraftEditor, MediaConsentDialog, NO_REFERENCE
     from PIL import ImageGrab
@@ -255,10 +278,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
             {"op": "add_rule", "action_type": "hotkey", "fields": {"description": "확인 키 입력", "action_keys": ["enter"]}},
             {"op": "add_rule", "action_type": "click", "fields": {"description": "다음 화면 선택"}},
             {"op": "add_rule", "action_type": "type", "fields": {"description": "수량 입력", "action_text": "10"}}])
-        deadline = time.monotonic() + 4
-        while window.current is None and time.monotonic() < deadline:
-            root.update()
-            time.sleep(.03)
+        assert _pump_until(root, lambda: window.current is not None, 4)
         assert window.current is not None  # MCP-created draft is visible without manual selection.
         assert window.plans.get() == NO_REFERENCE
         assert "AI 초안 레이아웃 검수" in window.drafts.get()
@@ -286,10 +306,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         assert window.form_context[1] == old_revision
         assert window.current["revision"] > old_revision
         window._apply_fields()
-        deadline = time.monotonic() + 4
-        while window.busy and time.monotonic() < deadline:
-            root.update()
-            time.sleep(.02)
+        assert _pump_until(root, lambda: not window.busy, 4), _job_diagnostics(window)
         assert not window.busy
         assert "REVISION_CONFLICT" in window.status.get()
         window._reload_form()
@@ -302,20 +319,14 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         window.entries["wait_after"].delete(0, "end")
         window.entries["wait_after"].insert(0, "3.7")
         window._apply_fields()
-        deadline = time.monotonic() + 5
-        while window.busy and time.monotonic() < deadline:
-            root.update()
-            time.sleep(.02)
+        assert _pump_until(root, lambda: not window.busy, 5), _job_diagnostics(window)
         assert not window.busy and not window.form_dirty, _job_diagnostics(window)
         assert "수정 사항을 초안 파일에 저장" in window.status.get()
         restored = DraftService(plans, templates, window.service.workspace).read_draft(draft["draft_id"])
         assert restored["plan"] == window.current["plan"]
         assert restored["plan"]["initial_rules"][0]["wait_after"] == 3.7
         window._save()
-        deadline = time.monotonic() + 5
-        while window.busy and time.monotonic() < deadline:
-            root.update()
-            time.sleep(.02)
+        assert _pump_until(root, lambda: not window.busy, 5), _job_diagnostics(window)
         assert "저장·재로딩 확인 완료" in window.status.get()
         assert not root._ai_callback_errors, root._ai_callback_errors
         # Text/controls stay inside the window's client bounds at each scaling.
