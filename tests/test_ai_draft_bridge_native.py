@@ -24,6 +24,9 @@ def test_real_local_pipe_auth_scope_and_shutdown(tmp_path):
         assert not host.client_connected  # Starting the app-side listener alone is OFF.
         assert call(descriptor, "connection_status", {})["result"]["live_execution"] is False
         assert not host.client_connected  # Local status reads are not external-client heartbeats.
+        assert call(descriptor, "client_heartbeat", {"session_id": "a" * 32,
+            "sent_at": time.monotonic() - 60})["code"] == "STALE_HEARTBEAT"
+        assert not host.client_connected
         result = call(descriptor, "open_draft", {"name": "Native draft"})
         assert result["ok"]
         draft = result["result"]
@@ -181,6 +184,18 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         window.request_entry.insert("1.0", "제작하고 종료해 줘")
         window._copy_request()
         assert not copied and "OFF" in window.status.get()
+        from types import SimpleNamespace
+        window.host = SimpleNamespace(client_connected=True, error=None)
+        window.plans.set("참고 플랜")
+        window.plan_options["참고 플랜"] = "plan_reference"
+        window._update_connection_indicator()
+        window._copy_request()
+        assert window.connection_status.get() == "GPT 연결 ON"
+        assert "녹화 없음" in copied[-1] and "plan_reference" in copied[-1]
+        window.host = None
+        window.plans.set(NO_REFERENCE)
+        window._update_connection_indicator()
+        assert window.connection_status.get() == "GPT 연결 OFF"
         help_dialog = window._show_help()
         root.update()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_help_{int(scale*100)}pct.png")
@@ -195,6 +210,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         consent.exclusions.set("0-5")
         assert consent.log is None
         assert consent.log_button.cget("state") == "disabled"
+        assert consent.add_button.cget("state") == "normal"
         root.update()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_consent_{int(scale*100)}pct.png")
         consent._accept()
@@ -250,6 +266,24 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         assert "GPT" in window.review_status.get()
         assert window.publish_button.cget("state") == "disabled"
         assert "입력 키: ENTER" in window.details.get("1.0", "end")
+        window.entries["wait_after"].delete(0, "end")
+        window.entries["wait_after"].insert(0, "3.7")
+        window._apply_fields()
+        deadline = time.monotonic() + 5
+        while window.busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.02)
+        assert not window.busy and not window.form_dirty
+        assert "수정 사항을 초안 파일에 저장" in window.status.get()
+        restored = DraftService(plans, templates, window.service.workspace).read_draft(draft["draft_id"])
+        assert restored["plan"] == window.current["plan"]
+        assert restored["plan"]["initial_rules"][0]["wait_after"] == 3.7
+        window._save()
+        deadline = time.monotonic() + 5
+        while window.busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.02)
+        assert "저장·재로딩 확인 완료" in window.status.get()
         # Text/controls stay inside the window's client bounds at each scaling.
         for widget in [window.tree, window.drafts, window.publish_button, window.connection_badge, *window.entries.values()]:
             assert widget.winfo_width() > 40

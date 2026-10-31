@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -33,6 +34,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.service = DraftService(plans_dir, templates_dir, root / "drafts")
         self.connection_dir = root / "connections"
         self.host = None
+        self._host_lock = threading.Lock()
         self.closed = False
         self.current = None
         self._row_cache = {}
@@ -276,13 +278,15 @@ class AIDraftEditor(ctk.CTkToplevel):
     def _update_connection_indicator(self):
         connected = bool(self.host and self.host.client_connected)
         prepared = self.host is not None
-        state = (prepared, connected)
+        failed = bool(self.host and self.host.error)
+        state = (prepared, connected, failed)
         if state == self._connection_display:
             return
         self._connection_display = state
         self.connection_status.set("GPT 연결 ON" if connected else "GPT 연결 OFF")
         self.connection_badge.configure(text_color=COLORS["success_text"] if connected else COLORS["text_muted"])
-        self.connection_hint.configure(text=("GPT 연결 ON · 통신 확인됨. 작업은 GPT 대화에서 요청하세요." if connected else
+        self.connection_hint.configure(text=("연결 준비가 중단되었습니다. 준비를 끄고 다시 켜세요." if failed else
+            "GPT 연결 ON · 통신 확인됨. 작업은 GPT 대화에서 요청하세요." if connected else
             "GPT 연결 OFF · 연결 준비만 켜져 있습니다. 외부 도구 설정 또는 연결 확인이 필요합니다." if prepared else
             "GPT 연결 OFF · 연결 준비를 켜고 설정 안내를 확인하세요."))
 
@@ -669,13 +673,14 @@ class AIDraftEditor(ctk.CTkToplevel):
             host = LocalHost(self.service, self.connection_dir)
             try:
                 path = host.start()
-                if self.closed:
-                    host.close()
-                    return None
+                with self._host_lock:
+                    if self.closed:
+                        host.close()
+                        return None
+                    self.host = host
             except Exception:
                 self.service.closed = False
                 raise
-            self.host = host
             return path
         def connected(path):
             self.connection_path = path
@@ -699,11 +704,13 @@ class AIDraftEditor(ctk.CTkToplevel):
             self._shutdown()
 
     def _shutdown(self):
-        if self.closed:
-            return
-        self.closed = True
-        if self.host:
-            self.host.close()
+        with self._host_lock:
+            if self.closed:
+                return
+            self.closed = True
+            host, self.host = self.host, None
+        if host:
+            host.close()
         self.service.closed = True
         self.worker.shutdown(wait=False, cancel_futures=True)
         try:
@@ -751,17 +758,21 @@ class MediaConsentDialog(ctk.CTkToplevel):
         self.log_button = parent._button(content, "키 입력 기록 추가 (선택)", self._select_log)
         self.log_button.grid(row=5, column=0, sticky="ew", padx=8, pady=4)
         self.log_label = label("추가된 키 입력 기록 없음", 6)
-        self.consent = tk.BooleanVar(master=self, value=False)
-        self.consent_check = ctk.CTkCheckBox(content, text="GPT 자료 제공에 동의", variable=self.consent,
-            text_color=COLORS["text_primary"], fg_color=COLORS["accent"], checkmark_color=COLORS["text_on_accent"])
-        self.consent_check.grid(row=7, column=0, sticky="w", padx=8, pady=8)
-        self.error_label = label("동의 후 자료 추가를 누르세요. 취소하면 자료를 전달하지 않습니다.", 8)
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure((0, 1), weight=1, uniform="actions")
-        self.add_button = parent._button(footer, "자료 추가", self._accept)
-        self.add_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        parent._button(footer, "취소", self.destroy).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.consent = tk.BooleanVar(master=self, value=False)
+        self.consent_check = ctk.CTkCheckBox(footer, text="GPT 자료 제공에 동의", variable=self.consent,
+            text_color=COLORS["text_primary"], fg_color=COLORS["accent"], checkmark_color=COLORS["text_on_accent"])
+        self.consent_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.add_button = parent._button(footer, "자료 추가", self._accept, state="disabled")
+        self.add_button.grid(row=1, column=0, sticky="ew", padx=(0, 4))
+        parent._button(footer, "취소", self.destroy).grid(row=1, column=1, sticky="ew", padx=(4, 0))
+        self.error_label = ctk.CTkLabel(footer, text="동의 후 자료 추가를 누르세요. 취소하면 전달하지 않습니다.",
+            anchor="w", justify="left", wraplength=350, text_color=COLORS["text_secondary"])
+        self.error_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.labels.append(self.error_label)
+        self.consent.trace_add("write", lambda *_: self.add_button.configure(state="normal" if self.consent.get() else "disabled"))
         self.exclusions.trace_add("write", self._private_changed)
         self.bind("<Configure>", self._resize, add="+")
         self.transient(parent)
