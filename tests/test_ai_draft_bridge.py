@@ -243,6 +243,29 @@ def test_real_saved_plan_trees_are_read_only_and_never_normalized(service):
     assert original == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.glob("*.json")}
 
 
+def test_large_user_plan_is_inspected_without_truncating_its_tree(service):
+    root = Path(__file__).resolve().parents[1] / "data/plans"
+    reader = DraftService(root, root.parent / "templates", service.workspace)
+    plan_id = "plan_20260118_174859"
+    with pytest.raises(BridgeError):
+        reader.read_actions(plan_id=plan_id)
+    reader.granted_sources.add(plan_id)
+    offset, rows, source_hashes = 0, [], set()
+    while offset is not None:
+        page = reader.read_actions(plan_id=plan_id, offset=offset, limit=20)
+        assert len(page["rows"]) <= 20
+        assert len(json.dumps(page, ensure_ascii=False)) < 25000
+        rows.extend(page["rows"])
+        source_hashes.add(page["source_sha256"])
+        offset = page["next_offset"]
+    assert len(rows) == 213
+    assert len({r["rule_id"] for r in rows}) == 213
+    assert len(source_hashes) == 1
+    selected = reader.inspect_action(rows[0]["rule_id"], plan_id=plan_id)
+    assert "children" not in selected["action"]
+    assert len(selected["children_ids"]) == rows[0]["children_count"]
+
+
 def test_mcp_registry_excludes_approval_and_input(monkeypatch):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     import wincro_mcp_server as server

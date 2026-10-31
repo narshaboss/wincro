@@ -140,6 +140,57 @@ class DraftService:
         with self.lock:
             return self._public(self._load(draft_id))
 
+    def _inspection_source(self, draft_id=None, plan_id=None):
+        if (draft_id is None) == (plan_id is None):
+            raise BridgeError("INVALID_REQUEST", "Select exactly one draft or reference plan")
+        if draft_id:
+            state = self._load(draft_id)
+            return state["plan"], {"draft_id": draft_id, "revision": state["revision"]}
+        if plan_id not in self.granted_sources:
+            raise BridgeError("PERMISSION_REQUIRED", "Select this reference plan in WinCro first")
+        source = self.read_plan(plan_id)
+        return source["plan"], {"plan_id": plan_id, "source_sha256": source["source_sha256"]}
+
+    def read_actions(self, draft_id=None, plan_id=None, offset=0, limit=20):
+        with self.lock:
+            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 50:
+                raise BridgeError("INVALID_REQUEST", "Use an offset and a page size from 1 to 50")
+            plan, header = self._inspection_source(draft_id, plan_id)
+            rows = list(walk(plan))
+            result = []
+            keys = {"rule_id", "description", "action_type", "enabled", "target_image", "confidence",
+                    "search_region", "wait_after", "wait_random", "repeat_count", "repeat_delay",
+                    "skip_on_not_found", "click_until_image_disappears"}
+            for rule, _, parent, step in rows[offset:offset + limit]:
+                entry = {k: copy.deepcopy(v) for k, v in rule.items() if k in keys}
+                entry.update(parent_id=parent, step=step, children_count=len(rule.get("children", [])),
+                             monitoring_watch_count=len(rule.get("monitoring_watches", [])))
+                result.append(entry)
+            return dict(header, name=plan["name"], total=len(rows), rows=result,
+                        next_offset=offset + limit if offset + limit < len(rows) else None)
+
+    def inspect_action(self, rule_id, draft_id=None, plan_id=None):
+        with self.lock:
+            plan, header = self._inspection_source(draft_id, plan_id)
+            for rule, _, parent, step in walk(plan):
+                if rule["rule_id"] == rule_id:
+                    detail = {k: copy.deepcopy(v) for k, v in rule.items() if k != "children"}
+                    if len(encoded(detail)) > 100_000:
+                        raise BridgeError("MESSAGE_TOO_LARGE", "Protected action configuration exceeds detail limit")
+                    return dict(header, step=step, action=detail,
+                                children_ids=[r["rule_id"] for r in rule.get("children", [])])
+            raise BridgeError("NOT_FOUND", "Action ID not found")
+
+    def draft_status(self, draft_id):
+        with self.lock:
+            state = self._load(draft_id)
+            analysis = state.get("analysis") or {}
+            return {"draft_id": draft_id, "revision": state["revision"], "name": state["plan"]["name"],
+                    "rule_count": len(list(walk(state["plan"]))), "goal": analysis.get("goal"),
+                    "open_questions": analysis.get("open_questions", []), "publication": state.get("publication"),
+                    "crosschecks": [{"direction": r["direction"], "passed": r["passed"], "remaining_issues": r["remaining_issues"]}
+                                    for r in state.get("crosschecks", [])]}
+
     def list_drafts(self):
         with self.lock:
             self._check()
@@ -506,7 +557,8 @@ class DraftService:
     def dispatch(self, method, arguments):
         allowed = {"list_plans", "read_plan", "open_draft", "read_draft", "list_drafts",
                    "stage_edits", "validate_draft", "save_draft", "publish_new_plan",
-                   "record_analysis", "record_crosscheck", "list_recordings", "read_recording", "get_frames", "get_input_events", "create_asset_crop"}
+                   "read_actions", "inspect_action", "draft_status", "record_analysis", "record_crosscheck",
+                   "list_recordings", "read_recording", "get_frames", "get_input_events", "create_asset_crop"}
         if method not in allowed:
             raise BridgeError("TOOL_DENIED", "Tool not available in the initial bridge")
         with self.lock:

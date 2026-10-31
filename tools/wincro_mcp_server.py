@@ -73,6 +73,27 @@ def read_draft(draft_id: str) -> dict:
 
 
 @mcp.tool()
+def read_actions(draft_id: str | None = None, plan_id: str | None = None, offset: int = 0, limit: int = 20) -> dict:
+    """Read action summaries in pages (max 50). Prefer this over full JSON for large plans.
+    Select exactly one draft_id or granted plan_id; keep paging until next_offset is null.
+    Compare source_sha256/revision across pages and restart if they differ.
+    """
+    return invoke("read_actions", locals())
+
+
+@mcp.tool()
+def inspect_action(rule_id: str, draft_id: str | None = None, plan_id: str | None = None) -> dict:
+    """Read one action's complete settings and child IDs, without dumping its entire subtree."""
+    return invoke("inspect_action", locals())
+
+
+@mcp.tool()
+def draft_status(draft_id: str) -> dict:
+    """Compact revision, goal, review/issue and publication status; no giant plan payload."""
+    return invoke("draft_status", locals())
+
+
+@mcp.tool()
 def stage_edits(draft_id: str, expected_revision: int, request_id: str, operations: list[dict]) -> dict:
     """Apply an atomic batch. Operations: add_rule(action_type, fields, parent_id?, before_id?),
     update_rule(rule_id, fields), move_rule(rule_id, parent_id?, before_id?),
