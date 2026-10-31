@@ -17,6 +17,7 @@ import time
 import cv2
 import numpy as np
 import json
+import hashlib
 from collections import OrderedDict, deque
 from PIL import Image, ImageTk
 
@@ -26,9 +27,8 @@ from ..utils.json_utils import dump_json_file, load_json_file
 from ..utils.window_position import setup_window_position
 
 PLANS_DIR = DATA_DIR / "plans"
-from ..analyzer import get_video_analyzer, AnalysisProgress
 from ..analyzer.automation_models import AutomationPlan, AutomationRule
-from ..database import get_db, Recording, Sequence
+from ..database import get_db
 from .main_window import BaseView, COLORS
 from .theme import IOS_FONTS, IOS_METRICS
 from .text_overflow import truncate_ui_text
@@ -4556,47 +4556,27 @@ class AutomationPlanDialog(ctk.CTkToplevel):
 
 
 class AnalyzerView(BaseView):
-    """분석 화면 - 프리미엄 디자인"""
+    """분석된 재생목록 관리 화면. 녹화와 분석 요청은 이 뷰에서 실행하지 않는다."""
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
 
-        self._video_analyzer = get_video_analyzer()
         self._db = get_db()
-
-        self._selected_video: Optional[str] = None
-        self._selected_input_log: Optional[str] = None
-        self._is_analyzing = False
-        self._analyze_lock = threading.Lock()  # 다중 호출 방지용 Lock
-        self._selected_item_widget = None  # 선택된 항목 위젯
-        self._selected_recording_id: Optional[int] = None
-
-        self._automation_plan_result: Optional[bool] = None
-        self._automation_plan_event = threading.Event()
-        self._last_automation_plan: Optional[AutomationPlan] = None
-
-        self._plan_modified_cache = {}  # plan_id ? modified ??
-        self._plan_lock_cache = {}  # plan_id ? locked ??
+        self._closed = False
+        self._plan_lock_cache = {}
+        self._plan_content_cache = {}
         self._plans_load_generation: int = 0  # async/sync plan load generation guard
-        self._recordings_load_generation: int = 0
         self._plan_items = []
-        self._recording_items = []
-        self._recording_index_by_id = {}
         self._ui_dispatcher = UiCallbackDispatcher(self, tick_ms=20, max_callbacks_per_tick=72)
         self._plans_loader = LatestOnlyWorker(
             "wincro-analyzer-plans",
             lambda exc: logger.error(f"plan list background load failed: {exc}"),
         )
-        self._recordings_loader = LatestOnlyWorker(
-            "wincro-analyzer-recordings",
-            lambda exc: logger.error(f"recording list background load failed: {exc}"),
-        )
-
         self._setup_ui()
-        self.after(0, self._deferred_load)  # UI ?? ? ??? ??
+        self._deferred_load_id = self.after(0, self._deferred_load)
 
     def after(self, ms, func=None, *args):
-        """AnalyzerView? worker-thread after() ??? ????? dispatcher? ????."""
+        """Route worker-thread scheduling through the UI dispatcher."""
         if func is None:
             return super().after(ms)
         dispatcher = getattr(self, "_ui_dispatcher", None)
@@ -4605,7 +4585,7 @@ class AnalyzerView(BaseView):
 
         def _schedule_on_main():
             try:
-                if not self.winfo_exists():
+                if self._closed or not self.winfo_exists():
                     return
                 super(AnalyzerView, self).after(ms, func, *args)
             except (tk.TclError, RuntimeError):
@@ -4615,6 +4595,8 @@ class AnalyzerView(BaseView):
         return None
 
     def _analyzer_ui_post(self, callback) -> None:
+        if self._closed:
+            return
         try:
             dispatcher = getattr(self, "_ui_dispatcher", None)
             if dispatcher is not None:
@@ -4628,45 +4610,19 @@ class AnalyzerView(BaseView):
             pass
 
     def _deferred_load(self):
-        """UI ?? ? ??? ?? (after(0) ??)"""
-        self._load_recordings_async()  # ???? _build_plan_modified_cache() ??
+        self._deferred_load_id = None
         self._load_plans_async()
-
-    def _collect_plan_modified_cache(self) -> tuple[dict, dict]:
-        """Build immutable cache snapshots without exposing partial worker state."""
-        prev_cache = dict(getattr(self, '_plan_modified_cache', {}))
-        prev_mtime = dict(getattr(self, '_plan_mtime_cache', {}))
-        modified_cache = {}
-        mtime_cache = {}
-        if PLANS_DIR.exists():
-            for plan_file in PLANS_DIR.glob("*.json"):
-                try:
-                    plan_id = plan_file.stem
-                    mtime = os.path.getmtime(plan_file)
-                    mtime_cache[plan_id] = mtime
-                    # mtime 변경 없으면 이전 캐시 값 재사용 (전체 JSON 파싱 방지)
-                    if plan_id in prev_mtime and prev_mtime[plan_id] == mtime:
-                        modified_cache[plan_id] = prev_cache.get(plan_id, False)
-                    else:
-                        data = load_json_file(plan_file)
-                        modified_cache[plan_id] = data.get("modified", False)
-                except Exception:
-                    pass
-        return modified_cache, mtime_cache
-
-    def _build_plan_modified_cache(self):
-        """Refresh plan modified caches atomically."""
-        modified_cache, mtime_cache = self._collect_plan_modified_cache()
-        self._plan_modified_cache = modified_cache
-        self._plan_mtime_cache = mtime_cache
 
     def _load_plans_async(self):
         """플랜 목록을 백그라운드 스레드에서 로드"""
+        if self._closed:
+            return
         self._plans_load_generation += 1
         current_gen = self._plans_load_generation
 
         def _load():
             plans = []
+            content_cache = {}
             templates_dir = DATA_DIR / "templates"
             if PLANS_DIR.exists():
                 for plan_file in PLANS_DIR.glob("*.json"):
@@ -4676,6 +4632,9 @@ class AnalyzerView(BaseView):
                             continue
                         plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
                         plans.append(plan)
+                        content_cache[plan.plan_id] = hashlib.sha256(
+                            json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                        ).hexdigest()
                     except json.JSONDecodeError as e:
                         logger.error(f"계획 JSON 파싱 실패: {plan_file} - {e}")
                     except KeyError as e:
@@ -4691,24 +4650,29 @@ class AnalyzerView(BaseView):
                 if recording.automation_plan_id
             }
             lock_cache = {
-                plan.plan_id: bool(getattr(rec_by_plan.get(plan.plan_id), "locked", False))
+                plan.plan_id: bool(rec_by_plan[plan.plan_id].locked)
                 for plan in plans
+                if plan.plan_id in rec_by_plan
             }
             self._analyzer_ui_post(
-                lambda: self._apply_plans(plans, current_gen, lock_cache)
+                lambda: self._apply_plans(plans, current_gen, lock_cache, content_cache)
             )
 
         self._plans_loader.submit(_load)
 
-    def _apply_plans(self, plans, generation=None, lock_cache=None):
+    def _apply_plans(self, plans, generation=None, lock_cache=None, content_cache=None):
         """백그라운드에서 로드된 플랜을 UI에 적용"""
-        # generation이 현재보다 오래된 경우 무시 (sync 로드가 이미 최신 데이터 적용)
-        if generation is not None and generation < self._plans_load_generation:
+        # Late worker results must not replace a newer refresh or a closed view.
+        if self._closed or (generation is not None and generation != self._plans_load_generation):
             return
 
+        previous_locks = self._plan_lock_cache
+        previous_content = self._plan_content_cache
         self._plan_lock_cache = dict(lock_cache or {})
+        self._plan_content_cache = dict(content_cache or {})
         if not plans:
             self._plan_items = []
+            self._plans_scroll.set_items([], preserve_scroll=False)
             self._plans_scroll.pack_forget()
             self._plans_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
             return
@@ -4717,127 +4681,22 @@ class AnalyzerView(BaseView):
         self._plans_empty_label.pack_forget()
         self._plans_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)
+        # Virtual rows retain callbacks; replace only rows whose disk data changed.
+        for index, plan in enumerate(self._plan_items):
+            if (
+                previous_locks.get(plan.plan_id) != self._plan_lock_cache.get(plan.plan_id)
+                or previous_content.get(plan.plan_id) != self._plan_content_cache.get(plan.plan_id)
+            ):
+                self._plans_scroll.refresh_item(index)
 
     def _setup_ui(self):
-        # 스크롤 가능한 메인 컨테이너 (로그 패널 확장 시 축소 가능)
-        self._scroll_frame = ctk.CTkScrollableFrame(
+        # The playlist owns scrolling; a second outer scroll area wastes height.
+        self._scroll_frame = ctk.CTkFrame(
             self,
             fg_color="transparent",
         )
-        self._scroll_frame.pack(fill="both", expand=True)
-
-        # 그리드 컨테이너
-        main_frame = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # 그리드 설정 (2행 2열, 균등 비율)
-        main_frame.grid_columnconfigure(0, weight=1, uniform="col")
-        main_frame.grid_columnconfigure(1, weight=1, uniform="col")
-        main_frame.grid_rowconfigure(0, weight=1)
-        main_frame.grid_rowconfigure(1, weight=1)
-
-        # 좌상단: 분석된 재생 목록
-        plans_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        plans_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
-        self._setup_plans_card(plans_frame)
-
-        # 우상단: 녹화 목록
-        recordings_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        recordings_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
-        self._setup_recordings_card(recordings_frame)
-
-        # 좌하단: 분석 실행
-        analyze_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        analyze_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
-        self._setup_analyze_card(analyze_frame)
-
-        # 우하단: 분석 결과
-        result_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        result_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
-        self._setup_result_card(result_frame)
-
-    def _setup_analyze_card(self, parent):
-        """분석 카드"""
-        card = self.create_card(parent, title="분석 실행")
-        card.pack(fill="both", expand=True)
-
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="x", padx=20, pady=15)
-
-        # 계획 이름
-        self.create_label(content, "자동화 계획 이름", style="body").pack(anchor="w")
-
-        self._plan_name_entry = ctk.CTkEntry(
-            content,
-            placeholder_text="자동 생성됨",
-            height=38,
-            fg_color=COLORS["bg_dark"],
-            border_color=COLORS["border"],
-            text_color=COLORS["text_primary"],
-        )
-        self._plan_name_entry.pack(fill="x", pady=(5, 15))
-
-        # 버튼
-        btn_row = ctk.CTkFrame(content, fg_color="transparent")
-        btn_row.pack(fill="x")
-
-        self._analyze_btn = self.create_button(
-            btn_row,
-            text="🔍  동작 분석 시작",
-            command=self._on_analyze,
-            style="primary",
-            width=180,
-            height=44,
-        )
-        self._analyze_btn.pack(side="left", padx=(0, 10))
-
-        self._cancel_btn = self.create_button(
-            btn_row,
-            text="취소",
-            command=self._on_cancel,
-            style="secondary",
-            width=80,
-            height=44,
-        )
-        self._cancel_btn.pack(side="left")
-        self._cancel_btn.configure(state="disabled")
-
-        # 진행 상태
-        progress_frame = ctk.CTkFrame(content, fg_color="transparent")
-        progress_frame.pack(fill="x", pady=(15, 0))
-
-        self._progress_label = ctk.CTkLabel(
-            progress_frame,
-            text="대기 중",
-            font=ctk.CTkFont(size=12),
-            text_color=COLORS["text_muted"],
-        )
-        self._progress_label.pack(anchor="w")
-
-        self._progress_bar = ctk.CTkProgressBar(
-            progress_frame,
-            fg_color=COLORS["bg_dark"],
-            progress_color=COLORS["accent"],
-            height=6,
-        )
-        self._progress_bar.pack(fill="x", pady=(5, 0))
-        self._progress_bar.set(0)
-
-    def _setup_result_card(self, parent):
-        """결과 카드"""
-        card = self.create_card(parent, title="분석 결과")
-        card.pack(fill="both", expand=True)
-
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="x", padx=20, pady=15)
-
-        self._result_status = ctk.CTkLabel(
-            content,
-            text="분석 결과가 여기에 표시됩니다",
-            font=ctk.CTkFont(size=13),
-            text_color=COLORS["text_muted"],
-        )
-        self._result_status.pack(anchor="w")
+        self._scroll_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        self._setup_plans_card(self._scroll_frame)
 
     def _setup_plans_card(self, parent):
         """분석된 재생 목록 카드"""
@@ -4881,7 +4740,7 @@ class AnalyzerView(BaseView):
 
         self._plans_empty_label = ctk.CTkLabel(
             card,
-            text="분석된 재생이 없습니다\n녹화를 분석하세요",
+            text="분석된 재생목록이 없습니다\n녹화·GPT 분석은 화면 녹화 탭에서 진행하세요",
             font=ctk.CTkFont(size=12),
             text_color=COLORS["text_muted"],
             justify="center",
@@ -4991,6 +4850,20 @@ class AnalyzerView(BaseView):
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
         ).pack(side="right", padx=(0, 3))
+
+        if plan.plan_id in self._plan_lock_cache:
+            ctk.CTkButton(
+                content,
+                text="잠금 해제" if is_locked else "잠금",
+                command=lambda p=plan: self._toggle_plan_lock(p),
+                width=72,
+                height=20,
+                fg_color=COLORS["bg_elevated"],
+                hover_color=COLORS["bg_card_hover"],
+                text_color=COLORS["text_secondary"],
+                font=ctk.CTkFont(size=11),
+                corner_radius=IOS_METRICS["pill_radius"],
+            ).pack(side="right", padx=(0, 3))
         return item_wrapper
 
     def _edit_plan(self, plan: AutomationPlan):
@@ -4998,7 +4871,6 @@ class AnalyzerView(BaseView):
         from .player_view import PlanDetailDialog
         dialog = PlanDetailDialog(self, plan)
         self.wait_window(dialog)
-        self._load_recordings()  # 녹화 목록도 새로고침 (이름 동기화)
         self._load_plans()
 
     def _create_plan(self):
@@ -5013,7 +4885,6 @@ class AnalyzerView(BaseView):
         )
         dialog = PlanDetailDialog(self, plan)
         self.wait_window(dialog)
-        self._load_recordings()
         self._load_plans()
 
     def _delete_plan(self, plan: AutomationPlan):
@@ -5049,518 +4920,31 @@ class AnalyzerView(BaseView):
             logger.error(f"재생 삭제 실패: {e}")
             messagebox.showerror("오류", f"삭제 실패: {e}")
 
-    def _setup_recordings_card(self, parent):
-        """녹화 목록 카드"""
-        card = self.create_card(parent, title="녹화 목록")
-        card.pack(fill="both", expand=True)
-
-        header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=15, pady=(10, 5))
-
-        self.create_button(
-            header,
-            text="새로고침",
-            command=self._load_recordings_async,
-            style="ghost",
-            width=70,
-            height=26,
-        ).pack(side="right")
-
-        self._recordings_empty_label = ctk.CTkLabel(
-            card,
-            text="녹화 파일이 없습니다\n먼저 녹화를 진행하세요",
-            font=ctk.CTkFont(size=12),
-            text_color=COLORS["text_muted"],
-            justify="center",
-        )
-
-        self._recordings_scroll = VirtualScrollFrame(
-            card,
-            item_height=78,
-            buffer_count=5,
-            fg_color=COLORS["bg_card"],
-        )
-        self._recordings_scroll.set_render_callback(self._render_recording_item)
-        self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-    def _load_recordings(self):
-        """녹화 목록 로드"""
-        self._load_recordings_async()
-
-    def _load_recordings_async(self):
-        self._recordings_load_generation += 1
-        current_gen = self._recordings_load_generation
-
-        def _load():
-            modified_cache, mtime_cache = self._collect_plan_modified_cache()
-            recordings = self._db.get_all_recordings()
-            self._analyzer_ui_post(
-                lambda: self._apply_recordings(
-                    recordings,
-                    current_gen,
-                    modified_cache,
-                    mtime_cache,
-                )
-            )
-
-        self._recordings_loader.submit(_load)
-
-    def _apply_recordings(
-        self,
-        recordings,
-        generation=None,
-        modified_cache=None,
-        mtime_cache=None,
-    ):
-        if generation is not None and generation < self._recordings_load_generation:
-            return
-
-        if modified_cache is not None:
-            self._plan_modified_cache = dict(modified_cache)
-        if mtime_cache is not None:
-            self._plan_mtime_cache = dict(mtime_cache)
-        self._recording_items = list(recordings)
-        self._recording_index_by_id = {
-            recording.id: idx for idx, recording in enumerate(self._recording_items) if recording.id is not None
-        }
-
-        if self._selected_recording_id not in self._recording_index_by_id:
-            self._selected_recording_id = None
-            self._selected_item_widget = None
-
-        if not self._recording_items:
-            self._recordings_scroll.pack_forget()
-            self._recordings_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-            return
-
-        self._recordings_empty_label.pack_forget()
-        self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)
-
-    def _render_recording_item(self, parent, recording: Recording, index: int):
-        return self._create_recording_item(recording, parent=parent)
-
-    def _create_recording_item(self, recording: Recording, parent=None):
-        """녹화 항목 생성"""
-        item = ctk.CTkFrame(
-            parent or self._recordings_scroll,
-            fg_color=COLORS["accent"] if recording.id == self._selected_recording_id else COLORS["bg_glass"],
-            corner_radius=IOS_METRICS["control_radius"],
-            cursor="hand2",
-            height=72,
-        )
-        item.pack_propagate(False)
-        if parent is None:
-            item.pack(fill="x", pady=3)
-
-        # 클릭으로 선택 기능
-        def on_click(event, r=recording):
-            self._select_recording_item(r)
-
-        # 항목 전체에 클릭 이벤트 바인딩
-        item.bind("<Button-1>", on_click)
-
-        # 상단: 이름 + 상태
-        top_row = ctk.CTkFrame(item, fg_color="transparent")
-        top_row.pack(fill="x", padx=10, pady=(8, 2))
-        top_row.bind("<Button-1>", on_click)
-
-        # 잠금 아이콘 (녹화가 잠겨있으면 표시)
-        if recording.locked:
-            lock_label = ctk.CTkLabel(
-                top_row,
-                text="🔒",
-                font=ctk.CTkFont(size=16, weight="bold"),
-                text_color=COLORS["danger_hover"],
-                cursor="hand2",
-            )
-            lock_label.pack(side="left", padx=(0, 5))
-            lock_label.bind("<Button-1>", on_click)
-
-        name_label = ctk.CTkLabel(
-            top_row,
-            text=truncate_ui_text(recording.name, 38),
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["text_primary"],
-            anchor="w",
-            cursor="hand2",
-            width=190,
-        )
-        name_label.pack(side="left", fill="x", expand=True)
-        name_label.bind("<Button-1>", on_click)
-
-        # ai_analyzed 또는 automation_plan_id로 분석 완료 여부 확인
-        is_analyzed = recording.ai_analyzed or recording.automation_plan_id
-        is_modified = False
-
-        # 수정 여부 확인 (캐시 사용 — 파일 I/O 방지)
-        if recording.automation_plan_id:
-            is_modified = self._plan_modified_cache.get(recording.automation_plan_id, False)
-
-        if is_modified:
-            status = "🔒 수정됨"
-            status_color = COLORS["accent_blue"]
-        elif is_analyzed:
-            status = "✅ 분석완료"
-            status_color = COLORS["success"]
-        else:
-            status = "⏳ 미분석"
-            status_color = COLORS["warning"]
-
-        status_label = ctk.CTkLabel(
-            top_row,
-            text=status,
-            font=ctk.CTkFont(size=10),
-            text_color=status_color,
-            cursor="hand2",
-        )
-        status_label.pack(side="right")
-        status_label.bind("<Button-1>", on_click)
-
-        # 하단: 버튼들 (오른쪽 정렬)
-        btn_row = ctk.CTkFrame(item, fg_color="transparent")
-        btn_row.pack(fill="x", padx=10, pady=(2, 8))
-        btn_row.bind("<Button-1>", on_click)
-
-        # 삭제 버튼
-        ctk.CTkButton(
-            btn_row,
-            text="삭제",
-            command=lambda r=recording: self._delete_recording(r),
-            width=50,
-            height=26,
-            fg_color=COLORS["bg_card"],
-            hover_color=COLORS["bg_card_hover"],
-            text_color=COLORS["text_secondary"],
-            font=ctk.CTkFont(size=12),
-            corner_radius=IOS_METRICS["pill_radius"],
-        ).pack(side="right")
-
-        # 잠금/해제 버튼
-        lock_text = "🔓 해제" if recording.locked else "🔒 잠금"
-        lock_color = COLORS["error"] if recording.locked else COLORS["bg_elevated"]
-        ctk.CTkButton(
-            btn_row,
-            text=lock_text,
-            command=lambda r=recording: self._toggle_recording_lock(r),
-            width=70,
-            height=28,
-            fg_color=lock_color,
-            hover_color=COLORS["danger_hover"] if recording.locked else COLORS["bg_card_hover"],
-            text_color=COLORS["text_on_accent"] if recording.locked else COLORS["text_secondary"],
-            font=ctk.CTkFont(size=13, weight="bold"),
-            corner_radius=IOS_METRICS["pill_radius"],
-        ).pack(side="right", padx=(0, 5))
-
-        # 수정은 '분석된 재생 목록'에서만 가능 (녹화 목록에서는 수정 버튼 제거)
-        return item
-
-    def _select_recording_item(self, recording: Recording, widget=None):
-        """녹화 항목 선택 (클릭으로)"""
-        previous_id = self._selected_recording_id
-        self._selected_recording_id = recording.id
-
-        # 녹화 정보 설정
-        self._selected_video = recording.video_path
-        self._selected_input_log = recording.input_log_path
-        self._plan_name_entry.delete(0, "end")
-        self._plan_name_entry.insert(0, f"{recording.name}_자동화")
-        self._selected_item_widget = widget
-
-        if previous_id in self._recording_index_by_id:
-            self._recordings_scroll.refresh_item(self._recording_index_by_id[previous_id])
-        if recording.id in self._recording_index_by_id:
-            self._recordings_scroll.refresh_item(self._recording_index_by_id[recording.id])
-
-    def _show_recording_detail(self, recording: Recording):
-        """녹화 상세보기 - 재생 또는 자동화 계획"""
-        # 재생가 있으면 재생 상세보기
-        if recording.sequence_id:
-            sequence = self._db.get_sequence(recording.sequence_id)
-            if sequence:
-                from .player_view import SequenceDetailDialog
-                dialog = SequenceDetailDialog(self, sequence, self._db)
-                self.wait_window(dialog)
-                return
-
-        # 자동화 계획이 있으면 계획 상세보기
-        if recording.automation_plan_id:
-            self._show_plan_detail(recording)
-
-    def _show_plan_detail(self, recording: Recording):
-        """분석된 계획 상세보기"""
-        if not recording.automation_plan_id:
-            return
-
-        plan_file = PLANS_DIR / f"{recording.automation_plan_id}.json"
-        if not plan_file.exists():
-            from tkinter import messagebox
-            messagebox.showwarning("계획 없음", "저장된 자동화 계획을 찾을 수 없습니다.")
-            return
-
-        try:
-            data = load_json_file(plan_file)
-            templates_dir = DATA_DIR / "templates"
-            plan = AutomationPlan.from_dict(data, templates_dir=templates_dir)
-
-            # PlanDetailDialog 열기 (player_view에서 import)
-            from .player_view import PlanDetailDialog
-            dialog = PlanDetailDialog(self, plan)
-            self.wait_window(dialog)
-            self._load_recordings()  # 녹화 목록 새로고침 (이름 동기화)
-            self._load_plans()  # 분석된 재생 목록도 새로고침
-        except Exception as e:
-            logger.error(f"계획 로드 실패: {e}")
-            from tkinter import messagebox
-            messagebox.showerror("오류", f"계획을 불러올 수 없습니다:\n{e}")
-
-    def _toggle_recording_lock(self, recording: Recording):
-        """녹화 잠금/해제 토글"""
+    def _toggle_plan_lock(self, plan: AutomationPlan):
+        """Keep linked recording locks accessible without a second recording list."""
         from tkinter import messagebox
 
-        if not recording.id:
-            return
-
-        # 잠금 해제 시 확인
-        if recording.locked:
-            if not messagebox.askyesno(
+        try:
+            recording = self._db.get_recording_by_plan_id(plan.plan_id)
+            if recording is None or recording.id is None:
+                self._load_plans()
+                return
+            if recording.locked and not messagebox.askyesno(
                 "잠금 해제",
-                f"'{recording.name}'의 잠금을 해제하시겠습니까?\n\n"
-                "잠금 해제 후 삭제가 가능해집니다."
+                f"'{plan.name}'의 잠금을 해제하시겠습니까?\n잠금 해제 후 삭제가 가능해집니다.",
+                parent=self,
             ):
                 return
-
-        new_locked = not recording.locked
-        self._db.update_recording_locked(recording.id, new_locked)
-        self._load_recordings()  # 목록 새로고침
-        self._load_plans()  # 분석된 재생 목록도 새로고침
-
-    def _delete_recording(self, recording: Recording):
-        """분석 목록에서 녹화 삭제 (원본 파일도 함께 삭제)"""
-        from tkinter import messagebox
-
-        # 잠금 체크
-        if recording.locked:
-            messagebox.showwarning(
-                "삭제 불가",
-                f"'{recording.name}'은(는) 잠금 상태입니다.\n\n"
-                "삭제하려면 먼저 🔓해제 버튼을 눌러 잠금을 해제하세요."
-            )
-            return
-
-        # 삭제 확인
-        msg = f"'{recording.name}'을(를) 삭제하시겠습니까?\n\n"
-        msg += "원본 녹화 파일이 삭제됩니다.\n"
-        msg += "(분석된 재생 목록은 유지됩니다)"
-
-        if not messagebox.askyesno("삭제", msg):
-            return
-
-        # 선택된 녹화가 삭제되는 경우 선택 해제
-        if self._selected_video == recording.video_path:
-            self._selected_video = None
-            self._selected_input_log = None
-            self._selected_item_widget = None
-            self._selected_recording_id = None
-
-        # DB에서 녹화 삭제 (원본 파일도 함께 삭제)
-        try:
-            self._db.delete_recording(recording.id, delete_files=True)
-            logger.info(f"녹화 삭제 완료 (파일 포함): {recording.name}")
-        except Exception as e:
-            logger.error(f"녹화 삭제 실패: {e}")
-            messagebox.showerror("오류", f"삭제 실패: {e}")
-            return
-
-        # 양쪽 목록 새로고침
-        self._load_recordings()
+            locked = not recording.locked
+            if not self._db.update_recording_locked(recording.id, locked):
+                raise OSError("잠금 설정을 저장하지 못했습니다.")
+            saved = self._db.get_recording(recording.id)
+            if saved is None or bool(saved.locked) != locked:
+                raise OSError("저장한 잠금 설정을 다시 확인하지 못했습니다.")
+        except Exception as exc:
+            logger.error(f"재생목록 잠금 변경 실패: {exc}")
+            messagebox.showerror("잠금 변경 실패", str(exc), parent=self)
         self._load_plans()
-
-    def _on_analyze(self):
-        """분석 시작"""
-        try:
-            if not self._selected_video:
-                self._progress_label.configure(text="녹화를 먼저 선택하세요", text_color=COLORS["warning_text"])
-                return
-
-            # 수정된 녹화는 재분석 불가
-            try:
-                recording = self._db.get_recording_by_video_path(self._selected_video)
-                if recording and recording.automation_plan_id:
-                    plan_file = PLANS_DIR / f"{recording.automation_plan_id}.json"
-                    if plan_file.exists():
-                        try:
-                            plan_data = load_json_file(plan_file)
-                            if plan_data.get("modified", False):
-                                self._progress_label.configure(
-                                    text="⚠️ 수정된 녹화는 재분석할 수 없습니다",
-                                    text_color=COLORS["error"]
-                                )
-                                return
-                        except Exception as e:
-                            logger.warning(f"계획 파일 확인 실패: {e}")
-            except Exception as e:
-                logger.warning(f"녹화 정보 확인 실패: {e}")
-
-            # 다중 호출 방지 (Lock 사용)
-            with self._analyze_lock:
-                if self._is_analyzing:
-                    return
-                self._is_analyzing = True
-        except Exception as e:
-            logger.error(f"분석 시작 오류: {e}")
-            return
-
-        plan_name = self._plan_name_entry.get().strip()
-        if not plan_name:
-            plan_name = f"자동화_{Path(self._selected_video).stem}"
-
-        self._analyze_btn.configure(state="disabled")
-        self._cancel_btn.configure(state="normal")
-        self._progress_label.configure(text="🔍 분석 준비 중... (입력 로그 확인)", text_color=COLORS["text_secondary"])
-
-        self._video_analyzer.set_callbacks(
-            on_progress=self._on_progress,
-            on_automation_plan_ready=self._on_automation_plan_ready,
-        )
-
-        self._video_analyzer.analyze_for_automation_async(
-            video_path=self._selected_video,
-            input_log_path=self._selected_input_log,
-            plan_name=plan_name,
-            on_complete=self._on_analysis_complete,
-        )
-
-    def _on_cancel(self):
-        try:
-            self._video_analyzer.cancel()
-            with self._analyze_lock:
-                self._is_analyzing = False
-            self._analyze_btn.configure(state="normal")
-            self._cancel_btn.configure(state="disabled")
-            self._progress_label.configure(text="취소됨", text_color=COLORS["warning_text"])
-        except Exception as e:
-            logger.error(f"취소 오류: {e}")
-
-    def _on_progress(self, progress: AnalysisProgress):
-        import time as _time
-        now = _time.time()
-        if not hasattr(self, '_last_progress_time') or now - self._last_progress_time >= 0.2 or progress.current >= progress.total:
-            self._last_progress_time = now
-            self._analyzer_ui_post(lambda: self._update_progress(progress))
-
-    def _update_progress(self, progress: AnalysisProgress):
-        self._progress_label.configure(text=truncate_ui_text(progress.message, 72))
-        self._progress_bar.set(progress.progress_percent / 100)
-
-    def _on_automation_plan_ready(self, plan: AutomationPlan) -> bool:
-        try:
-            self._automation_plan_event.clear()
-            self._automation_plan_result = None
-            self._dialog_scheduled = False
-
-            def show_dialog_wrapper():
-                try:
-                    self._dialog_scheduled = True
-                    self._show_automation_plan_dialog(plan)
-                except Exception as e:
-                    logger.error(f"다이얼로그 표시 오류: {e}")
-                    self._automation_plan_event.set()
-
-            self._analyzer_ui_post(show_dialog_wrapper)
-
-            # 다이얼로그 완료 대기 (설정에서 타임아웃 값 가져오기)
-            from ..utils.config import get_config
-            timeout_seconds = get_config().analyzer.dialog_timeout_seconds
-            if not self._automation_plan_event.wait(timeout=timeout_seconds):
-                # 타임아웃 발생
-                if not self._dialog_scheduled:
-                    logger.error("자동화 계획 대화상자가 스케줄되지 않음 - UI 스레드 문제 가능성")
-                else:
-                    logger.warning(f"자동화 계획 대화상자 응답 타임아웃 ({timeout_seconds}초)")
-                return False
-
-            return self._automation_plan_result if self._automation_plan_result is not None else False
-        except Exception as e:
-            logger.error(f"_on_automation_plan_ready 오류: {e}")
-            return False
-
-    def _show_automation_plan_dialog(self, plan: AutomationPlan):
-        try:
-            dialog = AutomationPlanDialog(self, plan)
-            dialog.grab_set()  # 모달 설정
-            self.wait_window(dialog)
-            self._automation_plan_result = dialog.get_result()
-            if self._automation_plan_result:
-                self._last_automation_plan = dialog.get_plan()
-        except Exception as e:
-            logger.error(f"다이얼로그 오류: {e}")
-            self._automation_plan_result = False
-        finally:
-            try:
-                self._automation_plan_event.set()
-            except:
-                pass
-
-    def _on_analysis_complete(self, plan: Optional[AutomationPlan]):
-        self._analyzer_ui_post(lambda: self._show_analysis_result(plan))
-
-    def _show_analysis_result(self, plan: Optional[AutomationPlan]):
-        with self._analyze_lock:
-            self._is_analyzing = False
-        self._analyze_btn.configure(state="normal")
-        self._cancel_btn.configure(state="disabled")
-
-        if plan is not None:
-            self._progress_label.configure(text="✅ 분석 완료", text_color=COLORS["success_text"])
-            self._progress_bar.set(1)
-
-            all_rules = plan.initial_rules + plan.monitoring_rules
-            status = "✅ 승인됨" if plan.user_verified else "⏳ 미승인"
-            status_color = COLORS["success"] if plan.user_verified else COLORS["warning"]
-
-            self._result_status.configure(
-                text=f"계획: {truncate_ui_text(plan.name, 52)}\n동작 수: {len(all_rules)}개\n상태: {status}",
-                text_color=status_color
-            )
-
-            self._last_automation_plan = plan
-            logger.info(f"자동화 계획 완료: {plan.name}")
-
-            if plan.user_verified:
-                self._save_automation_plan(plan)
-
-                if self._selected_video:
-                    recording = self._db.get_recording_by_video_path(self._selected_video)
-                    if recording and recording.id:
-                        self._db.update_recording_ai_analyzed(recording.id, plan.plan_id)
-        else:
-            self._progress_label.configure(text="❌ 분석 실패", text_color=COLORS["error"])
-            self._result_status.configure(
-                text="분석에 실패했습니다.\n\n가능한 원인:\n• 입력 로그 파일이 없음\n• 영상 파일 손상\n• 녹화 중 동작 없음\n\n해결: 녹화를 다시 시도해보세요.",
-                text_color=COLORS["error"]
-            )
-
-        self._load_recordings()
-        self._load_plans()
-
-    def _save_automation_plan(self, plan: AutomationPlan) -> bool:
-        try:
-            PLANS_DIR.mkdir(parents=True, exist_ok=True)
-            file_path = PLANS_DIR / f"{plan.plan_id}.json"
-
-            plan_data = plan.to_dict()
-            dump_json_file(file_path, plan_data, ensure_ascii=False, indent=2)
-            if load_json_file(file_path) != plan_data:
-                raise OSError("자동화 계획 저장 재검증 실패")
-            logger.info(f"자동화 계획 저장: {file_path}")
-            return True
-        except Exception as e:
-            logger.error(f"저장 실패: {e}")
-            return False
-
-    def get_last_automation_plan(self) -> Optional[AutomationPlan]:
-        return self._last_automation_plan
 
     def _cleanup_unused_images(self) -> None:
         """미사용 이미지 파일 정리 (스캔은 백그라운드, UI는 메인 스레드)"""
@@ -5657,16 +5041,18 @@ class AnalyzerView(BaseView):
 
     def refresh(self):
         """뷰 새로고침"""
-        self._load_recordings()  # 내부에서 _build_plan_modified_cache() 호출
         self._load_plans_async()
 
     def cleanup(self):
-        for loader_name in ("_plans_loader", "_recordings_loader"):
-            loader = getattr(self, loader_name, None)
-            if loader is not None:
-                loader.close()
+        self._closed = True
+        self._plans_load_generation += 1
+        if self._deferred_load_id is not None:
+            try:
+                self.after_cancel(self._deferred_load_id)
+            except (tk.TclError, RuntimeError):
+                pass
+            self._deferred_load_id = None
+        self._plans_loader.close()
         dispatcher = getattr(self, "_ui_dispatcher", None)
         if dispatcher is not None:
             dispatcher.close()
-        if self._is_analyzing:
-            self._video_analyzer.cancel()

@@ -317,7 +317,7 @@ def test_latest_only_worker_rolls_back_when_thread_start_fails(monkeypatch):
     assert len(errors) == 1
 
 
-def test_analyzer_view_uses_virtual_lists_and_async_apply():
+def test_analyzer_view_uses_virtual_playlist_and_async_apply():
     text = _read_text(ANALYZER_VIEW)
     plan_item_method = text[
         text.index("def _create_plan_item(self, plan: AutomationPlan, parent=None):"):
@@ -327,15 +327,12 @@ def test_analyzer_view_uses_virtual_lists_and_async_apply():
     assert 'from .virtual_scroll import VirtualScrollFrame' in text
     assert 'list_frame = VirtualScrollFrame(' in text
     assert 'self._plans_scroll = VirtualScrollFrame(' in text
-    assert 'self._recordings_scroll = VirtualScrollFrame(' in text
     assert 'def _render_image_row(self, parent, item_data, _index: int):' in text
-    assert 'def _load_recordings_async(self):' in text
-    assert 'def _collect_plan_modified_cache(self) -> tuple[dict, dict]:' in text
-    assert 'modified_cache, mtime_cache = self._collect_plan_modified_cache()' in text
-    assert 'def _apply_recordings(' in text
-    assert 'self._plan_modified_cache = dict(modified_cache)' in text
+    assert 'def _load_plans_async(self):' in text
+    assert 'lambda: self._apply_plans(plans, current_gen, lock_cache, content_cache)' in text
     assert 'self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)' in text
-    assert 'self._recordings_scroll.set_items(self._recording_items, preserve_scroll=True)' in text
+    assert 'self._plans_scroll.refresh_item(index)' in text
+    assert '_recordings_scroll' not in text[text.index('class AnalyzerView'):]
     assert 'item_wrapper = ctk.CTkFrame(' in plan_item_method
     assert 'height=2' in plan_item_method
     assert 'fg_color=COLORS["accent"]' in plan_item_method

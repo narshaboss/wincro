@@ -432,3 +432,111 @@ def test_recording_tab_gpt_entry_layout_and_launch_without_capture(ui_root, monk
         window.destroy()
         ui_root.update()
         ctk.set_widget_scaling(1.0)
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
+def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_root, monkeypatch, tmp_path, scale):
+    import customtkinter as ctk
+    import tkinter as tk
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from PIL import ImageGrab
+    from src.analyzer.automation_models import AutomationPlan
+    from src.ui import analyzer_view, main_window
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    def buttons(widget):
+        return [child for child in descendants(widget) if isinstance(child, ctk.CTkButton)]
+
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    expected = {}
+    for index in range(24):
+        plan = AutomationPlan(plan_id=f"plan_{index:02d}", name=f"{index + 1:02d}. 분석된 재생목록 이름이 길 때도 버튼이 잘리지 않아야 합니다")
+        path = plans / f"{plan.plan_id}.json"
+        path.write_text(json.dumps(plan.to_dict(), ensure_ascii=False), encoding="utf-8")
+        expected[path.name] = path.read_bytes()
+    database = Mock()
+    database.get_all_recordings.return_value = [SimpleNamespace(automation_plan_id="plan_00", locked=True)]
+    monkeypatch.setattr(analyzer_view, "get_db", lambda: database)
+    monkeypatch.setattr(analyzer_view, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(analyzer_view, "PLANS_DIR", plans)
+    monkeypatch.setattr(main_window, "get_config", lambda: SimpleNamespace())
+    forbidden_save = Mock(side_effect=AssertionError("Opening and refreshing must not save a plan"))
+    monkeypatch.setattr(analyzer_view, "dump_json_file", forbidden_save)
+    ctk.set_widget_scaling(scale)
+    ui_root._ai_callback_errors.clear()
+    window = ctk.CTkToplevel(ui_root)
+    window.overrideredirect(True)
+    tk.Wm.geometry(window, "1024x768+0+0")
+    window.grid_columnconfigure(1, weight=1)
+    window.grid_rowconfigure(0, weight=1)
+    sidebar = ctk.CTkFrame(window, width=180)
+    sidebar.grid(row=0, column=0, sticky="ns")
+    sidebar.grid_propagate(False)
+    log_panel = ctk.CTkFrame(window, height=120)
+    log_panel.grid(row=1, column=0, columnspan=2, sticky="ew")
+    view = None
+    try:
+        view = analyzer_view.AnalyzerView(window)
+        view.grid(row=0, column=1, sticky="nsew")
+        assert _pump_until(ui_root, lambda: len(view._plan_items) == 24 and bool(view._plans_scroll._visible_widgets), 10)
+        labels = [child.cget("text") for child in descendants(view) if isinstance(child, ctk.CTkLabel)]
+        assert "분석된 재생 목록" in labels
+        assert not {"녹화 목록", "분석 실행", "분석 결과"} & set(labels)
+        assert not hasattr(view, "_recordings_scroll")
+        assert not hasattr(view, "_video_analyzer")
+        viewport = view._plans_scroll._canvas
+        assert viewport.winfo_width() > view.winfo_width() * .85
+        assert viewport.winfo_height() > view.winfo_height() * .5
+        row = view._plans_scroll._visible_widgets[0]
+        first_buttons = {button.cget("text"): button for button in buttons(row)}
+        assert {"수정", "삭제", "잠금 해제"} <= set(first_buttons)
+        for button in buttons(view):
+            # Rows outside the viewport may be pre-rendered in the bounded buffer.
+            if not button.winfo_ismapped():
+                continue
+            assert view.winfo_rootx() <= button.winfo_rootx()
+            assert button.winfo_rootx() + button.winfo_width() <= view.winfo_rootx() + view.winfo_width(), button.cget("text")
+            assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4, button.cget("text")
+        artifact_dir = Path("artifacts/ai_draft")
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(
+            artifact_dir / f"analyzer_playlist_only_{int(scale * 100)}pct.png")
+
+        first_path = plans / "plan_00.json"
+        data = json.loads(first_path.read_text(encoding="utf-8"))
+        data["name"] = "이름을 수정한 재생목록"
+        first_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        expected[first_path.name] = first_path.read_bytes()
+        view.refresh()
+        assert _pump_until(ui_root, lambda: view._plan_items[0].name == data["name"], 10)
+        row = view._plans_scroll._visible_widgets[0]
+        changed_labels = [child.cget("text") for child in descendants(row) if isinstance(child, ctk.CTkLabel)]
+        assert data["name"] in changed_labels
+        edit = Mock()
+        view._edit_plan = edit
+        next(button for button in buttons(row) if button.cget("text") == "수정").invoke()
+        assert edit.call_args.args[0].name == data["name"]
+
+        view._plans_scroll.scroll_to_item(23)
+        assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets, 5)
+        last = view._plans_scroll._visible_widgets[23]
+        assert viewport.winfo_rooty() <= last.winfo_rooty()
+        assert last.winfo_rooty() + last.winfo_height() <= viewport.winfo_rooty() + viewport.winfo_height() + 2
+        assert len(view._plans_scroll._visible_widgets) < 24
+        assert {path.name: path.read_bytes() for path in plans.iterdir()} == expected
+        forbidden_save.assert_not_called()
+        database.create_recording.assert_not_called()
+        database.update_recording_ai_analyzed.assert_not_called()
+        assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
+    finally:
+        if view is not None:
+            view.cleanup()
+        window.destroy()
+        ui_root.update()
+        ctk.set_widget_scaling(1.0)

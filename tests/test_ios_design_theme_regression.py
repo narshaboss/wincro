@@ -337,20 +337,19 @@ def test_analyzer_action_rows_use_ios_tokens_while_preserving_batch_rendering():
     assert "corner_radius=8" not in analyzer_view
 
 
-def test_analyzer_layout_places_plans_left_and_recordings_right():
+def test_analyzer_layout_only_keeps_full_width_playlist():
     analyzer_view = ANALYZER_VIEW.read_text(encoding="utf-8")
-    setup_slice = analyzer_view[
-        analyzer_view.index("def _setup_ui(self):"):
-        analyzer_view.index("def _setup_analyze_card")
+    view_slice = analyzer_view[analyzer_view.index("class AnalyzerView"):]
+    setup_slice = view_slice[
+        view_slice.index("def _setup_ui(self):"):
+        view_slice.index("def _setup_plans_card")
     ]
 
-    assert 'plans_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))' in setup_slice
-    assert 'recordings_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))' in setup_slice
-    assert 'analyze_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))' in setup_slice
-    assert 'result_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))' in setup_slice
-    assert setup_slice.index("self._setup_plans_card(plans_frame)") < setup_slice.index(
-        "self._setup_recordings_card(recordings_frame)"
-    )
+    assert 'self._setup_plans_card(self._scroll_frame)' in setup_slice
+    assert 'pack(fill="both", expand=True, padx=8, pady=8)' in setup_slice
+    assert "CTkScrollableFrame" not in setup_slice
+    for removed in ("_setup_recordings_card", "_setup_analyze_card", "_setup_result_card"):
+        assert removed not in view_slice
 
 
 def test_image_crop_dialog_uses_ios_editor_surfaces():
