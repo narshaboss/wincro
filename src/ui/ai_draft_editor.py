@@ -679,7 +679,7 @@ class AIDraftEditor(ctk.CTkToplevel):
                         return None
                     self.host = host
             except Exception:
-                self.service.closed = False
+                host.close()
                 raise
             return path
         def connected(path):

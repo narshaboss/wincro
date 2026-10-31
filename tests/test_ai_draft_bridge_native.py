@@ -185,7 +185,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         window._copy_request()
         assert not copied and "OFF" in window.status.get()
         from types import SimpleNamespace
-        window.host = SimpleNamespace(client_connected=True, error=None)
+        window.host = SimpleNamespace(client_connected=True, error=None, close=lambda: None)
         window.plans.set("참고 플랜")
         window.plan_options["참고 플랜"] = "plan_reference"
         window._update_connection_indicator()
@@ -297,3 +297,37 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         root.update()
         ctk.set_widget_scaling(1.0)
     assert window.service.closed
+
+
+@pytest.mark.parametrize("start_fails", [False, True])
+def test_closing_during_connection_start_cannot_leave_a_listener_or_reopen_service(tmp_path, ui_root, monkeypatch, start_fails):
+    from threading import Event
+    from src.ui.ai_draft_editor import AIDraftEditor
+    from src.agent_bridge import transport
+    entered, release, stopped = Event(), Event(), Event()
+
+    class DelayedHost:
+        def start(self):
+            entered.set()
+            assert release.wait(5)
+            if start_fails:
+                raise OSError("simulated connection start failure")
+            return "connection.json"
+
+        def close(self):
+            stopped.set()
+
+    window = AIDraftEditor(ui_root, tmp_path / "plans", tmp_path / "templates", workspace=tmp_path / "workspace")
+    monkeypatch.setattr(transport, "LocalHost", lambda *_: DelayedHost())
+    try:
+        window._toggle()
+        assert entered.wait(3)
+        window._close()
+        release.set()
+        assert stopped.wait(5)
+        assert window.closed and window.service.closed and window.host is None
+    finally:
+        release.set()
+        window.form_dirty = False
+        window._close()
+        ui_root.update()
