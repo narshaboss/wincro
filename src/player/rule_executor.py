@@ -3368,6 +3368,7 @@ class RuleExecutor:
         search_region: Optional[list] = None,
         verify_color: bool = False,
         verify_brightness: bool = False,
+        dedicated_video: bool = False,
     ) -> Optional[tuple]:
         """
         화면에서 이미지 찾기 (마스크 매칭)
@@ -3379,6 +3380,9 @@ class RuleExecutor:
         """
         func_start = time.time()
         screenshot_bgr = None
+        dedicated_video = bool(dedicated_video and image_path and _is_video_template_path(image_path))
+        if dedicated_video:
+            self._dedicated_video_diagnostic = "capture/file/region not ready"
 
         # 중지 체크
         if self._stop_event.is_set():
@@ -3434,8 +3438,18 @@ class RuleExecutor:
                 return None
 
             # TM_CCOEFF_NORMED 매칭 (오탐률 낮음 — 절대 변경 금지)
-            template_variants = _get_cached_template_variants(image_path)
+            if dedicated_video and _is_video_template_path(image_path):
+                from .dedicated_video_templates import get_dedicated_video_frames
+                template_variants = get_dedicated_video_frames(image_path, self._stop_event)
+                if self._stop_event.is_set():
+                    return None
+                if template_variants is None:
+                    template_variants = _get_cached_template_variants(image_path)
+            else:
+                template_variants = _get_cached_template_variants(image_path)
             if not template_variants:
+                if dedicated_video:
+                    self._dedicated_video_diagnostic = "reason=video_decode_failed frames=0"
                 logger.warning(f"템플릿 로드 실패: {Path(image_path).name}")
                 return None
             verify_visual = bool(verify_color or verify_brightness)
@@ -3450,6 +3464,8 @@ class RuleExecutor:
             best_scale = 1.0
             best_variant = ""
             for tmpl_gray, th, tw, template_bgr, variant_label in template_variants:
+                if dedicated_video and self._stop_event.is_set():
+                    return None
                 if tw > sw or th > sh:
                     continue
                 if verify_visual and template_bgr is None:
@@ -3505,6 +3521,16 @@ class RuleExecutor:
                 logger.debug(
                     f"[이미지 검색] CCOEFF: conf={best_match[2]:.2f}, 설정={confidence:.2f}, "
                     f"best_scale={best_scale:.2f}, {best_variant} - {Path(image_path).name}"
+                )
+
+            if dedicated_video:
+                score = best_match[2] if best_match is not None else 0.0
+                reason = "template_outside_region" if best_match is None else (
+                    "visual_rejected" if score >= confidence and verify_visual else "below_threshold"
+                )
+                self._dedicated_video_diagnostic = (
+                    f"reason={reason} best={score:.1%} threshold={confidence:.1%} "
+                    f"frames={len(template_variants)} region={search_region}"
                 )
 
             return None
@@ -6395,6 +6421,7 @@ class RuleExecutor:
                             search_region=search_region,
                             verify_color=bool(monitor_action.get("verify_image_color", False)),
                             verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
+                            **({"dedicated_video": True} if action_type in {"동영상클릭", "동영상 입력"} else {}),
                         )
                         if location:
                             break
@@ -6417,6 +6444,8 @@ class RuleExecutor:
                                 f"{_YELLOW}  ⏳ 모니터링 전용액션 {media_label} 대기 중... "
                                 f"{elapsed:.0f}초{skip_info} - {Path(image_path).name}{_RESET}"
                             )
+                            if action_type in {"동영상클릭", "동영상 입력"}:
+                                logger.info("[동영상진단] %s", getattr(self, "_dedicated_video_diagnostic", "-"))
                         if self._stop_event.wait(timeout=0.5):
                             return None
                 if location:
@@ -6511,6 +6540,7 @@ class RuleExecutor:
                 search_region=search_region,
                 verify_color=bool(monitor_action.get("verify_image_color", False)),
                 verify_brightness=bool(monitor_action.get("verify_image_brightness", False)),
+                **({"dedicated_video": True} if monitor_action.get("type") in {"동영상클릭", "동영상 입력"} else {}),
             )
             if not location:
                 misses += 1

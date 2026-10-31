@@ -668,6 +668,7 @@ class MonitorActionEditorDialog(ctk.CTkToplevel):
 
         route = {
             "condition_image": self._image_path,
+            "dedicated_video_test": True,
             "condition_confidence": self._confidence,
             "condition_search_region": copy.deepcopy(self._search_region),
             "condition_verify_image_color": bool(self._field_vars.get("verify_image_color").get()) if self._field_vars.get("verify_image_color") is not None else False,
@@ -2675,7 +2676,13 @@ class MonitoringModeEditor(ctk.CTkToplevel):
             offset_y = y1
             region_label = self._region_label_text([x1, y1, x2, y2])
 
-        template_variants = _get_cached_template_variants(image_path)
+        if route.get("dedicated_video_test") and is_video_media_path(image_path):
+            from ..player.dedicated_video_templates import get_dedicated_video_frames
+            template_variants = get_dedicated_video_frames(image_path)
+            if template_variants is None:
+                template_variants = _get_cached_template_variants(image_path)
+        else:
+            template_variants = _get_cached_template_variants(image_path)
         if not template_variants:
             return {"ok": False, "error": "조건 템플릿 로드 실패"}
         if verify_visual and not any(item[3] is not None for item in template_variants):
