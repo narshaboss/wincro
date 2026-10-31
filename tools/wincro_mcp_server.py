@@ -16,6 +16,8 @@ mcp = FastMCP("wincro-draft-editor", instructions=(
     "YOU must analyze recording frames and input context, understand the user's task and explain "
     "each action's purpose. WinCro does NOT infer intentions. Never substitute log conversion for "
     "AI interpretation. Record concise observation/purpose/expected-result evidence via record_analysis. "
+    "Then repeatedly cross-check video against plan and plan against video yourself; record both directions. "
+    "After a correction, redo analysis and cross-checks. Two records alone are not proof of perfection. "
     "Edit independent drafts only. Read the latest revision before editing. "
     "Use unique request IDs and stable rule IDs, never displayed action numbers. "
     "User consent in WinCro is required to select media and publish a new plan. "
@@ -87,6 +89,17 @@ def record_analysis(draft_id: str, expected_revision: int, goal: str, steps: lis
     rules. A later edit invalidates this review. WinCro does not analyze intentions itself.
     """
     return invoke("record_analysis", locals())
+
+
+@mcp.tool()
+def record_crosscheck(draft_id: str, expected_revision: int, direction: str, checks: list[dict], remaining_issues: list[str] | None = None) -> dict:
+    """Record YOUR review after actually alternating frames and current draft. direction is
+    video_to_plan (missing/wrong actions) or plan_to_video (every action justified by footage/goal).
+    Each check: rule_id, frame_trace_id, result(match/mismatch/uncertain), note.
+    Cover all actions. Correct issues and repeat until stable; edits invalidate prior reviews.
+    This stores your assessment, not an automatic WinCro semantic analysis.
+    """
+    return invoke("record_crosscheck", locals())
 
 
 @mcp.tool()

@@ -38,6 +38,8 @@ def test_real_local_pipe_auth_scope_and_shutdown(tmp_path):
                 "token": "bad", "method": "open_draft", "arguments": {"name": "unauthorized"}}))
             assert decode(peer.recv_bytes())["code"] == "PERMISSION_REQUIRED"
         assert len(service.list_drafts()) == 1
+        for _ in range(60):
+            assert call(descriptor, "connection_status", {})["ok"]
     finally:
         host.close()
         host.thread.join(5)
@@ -87,8 +89,16 @@ def test_real_mcp_stdio_to_live_pipe_and_durable_publication(tmp_path):
                     "observation": "A confirmation control is visible", "purpose": "Confirm the current selection",
                     "expected_result": "Move to the next screen"}]})
                 # Owner-side UI authority only; there is deliberately no approval tool.
-                service.approve_publication(draft["draft_id"], report["revision"])
-                published = await invoke("publish_new_plan", {"draft_id": draft["draft_id"], "expected_revision": report["revision"]})
+                revision = report["revision"]
+                for direction in ("video_to_plan", "plan_to_video"):
+                    latest = await invoke("read_draft", {"draft_id": draft["draft_id"]})
+                    frames = await client.call_tool("get_frames", {"recording_id": recording, "timestamps": [0]})
+                    trace = json.loads(frames.content[0].text)["frame_trace_id"]
+                    checked = await invoke("record_crosscheck", {"draft_id": draft["draft_id"], "expected_revision": latest["revision"],
+                        "direction": direction, "checks": [{"rule_id": key, "frame_trace_id": trace, "result": "match", "note": "The action matches the observed confirmation step"}]})
+                    revision = checked["revision"]
+                service.approve_publication(draft["draft_id"], revision)
+                published = await invoke("publish_new_plan", {"draft_id": draft["draft_id"], "expected_revision": revision})
                 assert published["saved_and_reloaded"]
                 saved = json.loads((service.plans_dir / (published["plan_id"] + ".json")).read_text(encoding="utf-8"))
                 assert saved["initial_rules"][0]["action_keys"] == ["enter"]

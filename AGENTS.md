@@ -8,6 +8,9 @@ interpret the user's goal, actions, rules, and expected results. WinCro only
 provides media, applies bounded edits, and checks mechanical integrity.
 Never substitute input-log replay or automatic action extraction for AI analysis.
 Record concise evidence-backed observations and purposes, not hidden reasoning.
+After editing, the agent must repeatedly alternate video-to-plan and plan-to-video
+cross-checks. Correct findings and redo both reviews after any edit. Recording
+two clean passes is a minimum traceability gate, never proof of perfection.
 Unknown intentions require clarification. An analysis record is traceability,
 not proof of understanding or successful recognition/playback.
 

@@ -135,6 +135,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         if self.busy or self.closed:
             return
         self.busy = True
+        for entry in self.entries.values():
+            entry.configure(state="disabled")
 
         def work():
             try:
@@ -155,6 +157,8 @@ class AIDraftEditor(ctk.CTkToplevel):
             pass
         else:
             self.busy = False
+            for entry in self.entries.values():
+                entry.configure(state="normal")
             if error:
                 if self.form_dirty:
                     self.form_error = error
@@ -189,6 +193,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.drafts.configure(values=list(self.draft_options) or ["초안 선택"])
 
     def _new_draft(self):
+        if self.busy:
+            return
         if self.form_dirty:
             self.status.set("미적용 입력을 먼저 적용하거나 취소하세요.")
             return
@@ -240,6 +246,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         self._selected_rule()
 
     def _selected_rule(self, _event=None):
+        if self.busy:
+            return
         if not self.current or not self.tree.selection():
             return
         if self.form_dirty:
@@ -341,7 +349,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         dialog.geometry("700x500")
         text = ctk.CTkTextbox(dialog, wrap="word")
         text.pack(fill="both", expand=True, padx=12, pady=12)
-        text.insert("1.0", json.dumps(self.current.get("analysis") or {"status": "AI 분석 미등록"}, ensure_ascii=False, indent=2))
+        text.insert("1.0", json.dumps({"analysis": self.current.get("analysis"),
+            "crosschecks": self.current.get("crosschecks", []), "note": "AI 판단 기록이며 인식/재생 성공 증명이 아닙니다."}, ensure_ascii=False, indent=2))
         text.configure(state="disabled")
 
     def _publish(self):

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import threading
+import time
 
 from .contracts import BridgeError, MAX_MESSAGE, PROTOCOL, decode, encoded
 from .storage import new_id, read_json, write_json
@@ -101,7 +102,7 @@ class LocalHost:
                     "address": self.address, "token": self.token})
         return str(self.connection_file)
 
-    def _create(self):
+    def _create(self, first=False):
         adv, kernel, descriptor = _security()
 
         class Attributes(ctypes.Structure):
@@ -112,8 +113,9 @@ class LocalHost:
                                           wt.DWORD, wt.DWORD, wt.DWORD, ctypes.POINTER(Attributes)]
         kernel.CreateNamedPipeW.restype = wt.HANDLE
         try:
-            handle = kernel.CreateNamedPipeW(self.address, 3 | 0x40000000 | 0x80000,
-                                             4 | 2 | 8, 1, 65536, 65536, 0, ctypes.byref(attributes))
+            flags = 3 | 0x40000000 | (0x80000 if first else 0)
+            handle = kernel.CreateNamedPipeW(self.address, flags,
+                                             4 | 2 | 8, 255, 65536, 65536, 0, ctypes.byref(attributes))
             if handle == ctypes.c_void_p(-1).value:
                 raise ctypes.WinError(ctypes.get_last_error())
             return int(handle)
@@ -123,42 +125,51 @@ class LocalHost:
     def _serve(self):
         import _winapi
         from multiprocessing.connection import PipeConnection
-        while not self.stop.is_set():
-            handle = None
-            try:
-                handle = self._create()
-                self.ready.set()
+        next_handle = None
+        try:
+            next_handle = self._create(first=True)
+            self.ready.set()
+            while not self.stop.is_set():
+                handle, next_handle = next_handle, None
                 try:
-                    pending = _winapi.ConnectNamedPipe(handle, overlapped=True)
-                except OSError as exc:
-                    if exc.winerror != 535:  # ERROR_PIPE_CONNECTED
+                    try:
+                        pending = _winapi.ConnectNamedPipe(handle, overlapped=True)
+                    except OSError as exc:
+                        if exc.winerror != 535:  # ERROR_PIPE_CONNECTED
+                            raise
+                    else:
+                        while _winapi.WaitForSingleObject(pending.event, 100) != 0:
+                            if self.stop.is_set():
+                                pending.cancel()
+                                pending.GetOverlappedResult(True)
+                                return
+                        pending.GetOverlappedResult(True)
+                    # Keep a listening instance alive BEFORE closing this peer.
+                    # Otherwise fast successive RPCs can hit ERROR_FILE_NOT_FOUND.
+                    next_handle = self._create()
+                    connection = PipeConnection(handle)
+                    handle = None
+                    with connection:
+                        if not connection.poll(3):
+                            continue
+                        request = decode(connection.recv_bytes(MAX_MESSAGE))
+                        response = self.handle_request(request)
+                        data = encoded(response)
+                        if len(data) > MAX_MESSAGE:
+                            data = encoded({"ok": False, "code": "MESSAGE_TOO_LARGE", "message": "Read fewer frames/actions"})
+                        connection.send_bytes(data)
+                except (OSError, ValueError, TypeError, KeyError, RecursionError):
+                    if next_handle is None:
                         raise
-                else:
-                    while _winapi.WaitForSingleObject(pending.event, 100) != 0:
-                        if self.stop.is_set():
-                            pending.cancel()
-                            pending.GetOverlappedResult(True)
-                            return
-                    pending.GetOverlappedResult(True)
-                connection = PipeConnection(handle)
-                handle = None
-                with connection:
-                    if not connection.poll(3):
-                        continue
-                    request = decode(connection.recv_bytes(MAX_MESSAGE))
-                    response = self.handle_request(request)
-                    data = encoded(response)
-                    if len(data) > MAX_MESSAGE:
-                        data = encoded({"ok": False, "code": "MESSAGE_TOO_LARGE", "message": "Read fewer frames/actions"})
-                    connection.send_bytes(data)
-            except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
-                if not self.ready.is_set():
-                    self.error = type(exc).__name__
-                    self.ready.set()
-                    return
-            finally:
-                if handle is not None:
-                    _winapi.CloseHandle(handle)
+                finally:
+                    if handle is not None:
+                        _winapi.CloseHandle(handle)
+        except Exception as exc:
+            self.error = type(exc).__name__
+        finally:
+            if next_handle is not None:
+                _winapi.CloseHandle(next_handle)
+            self.ready.set()
 
     def handle_request(self, request):
         try:
@@ -181,7 +192,10 @@ class LocalHost:
             with self.service.lock:
                 if self.stop.is_set():
                     raise BridgeError("APP_NOT_CONNECTED", "Connection is closed")
-                return {"ok": True, "result": self.service.dispatch(method, arguments)}
+                result = self.service.dispatch(method, arguments)
+                if self.stop.is_set():
+                    raise BridgeError("APP_NOT_CONNECTED", "Connection was revoked; reread saved state on reconnect")
+                return {"ok": True, "result": result}
         except BridgeError as exc:
             return {"ok": False, "code": exc.code, "message": str(exc)}
         except Exception:
@@ -197,7 +211,17 @@ def call(connection_file, method, arguments):
     info = read_json(connection_file)
     if info.get("protocol") != PROTOCOL or not str(info.get("address", "")).startswith("\\\\.\\pipe\\wincro-ai-app_"):
         raise BridgeError("PROTOCOL_MISMATCH", "Select a WinCro AI connection descriptor")
-    with Client(info["address"], family="AF_PIPE") as connection:
+    deadline = time.monotonic() + 3
+    while True:
+        try:
+            connection = Client(info["address"], family="AF_PIPE")
+            break
+        except OSError as exc:
+            if exc.winerror not in (2, 121, 231) or time.monotonic() >= deadline:
+                raise
+            # No request bytes have been sent: connection-only retry is safe.
+            time.sleep(.03)
+    with connection:
         connection.send_bytes(encoded({"protocol": PROTOCOL, "instance_id": info["instance_id"],
             "token": info["token"], "method": method, "arguments": arguments}))
         if not connection.poll(45):

@@ -44,6 +44,12 @@ def review(service, draft, recording_id=None, questions=None):
         {"rule_id": rule["rule_id"], "recording_id": recording_id, "seconds": 0, "frame_trace_id": trace,
          "observation": "A confirmation control is visible", "purpose": "Confirm the user's selection",
          "expected_result": "The next screen is shown"} for rule, *_ in walk(draft["plan"])], questions)
+    for direction in ("video_to_plan", "plan_to_video"):
+        current = service.read_draft(draft["draft_id"])
+        trace = MediaTools(service).get_frames(recording_id, [0])["frames"][0]["frame_trace_id"]
+        service.record_crosscheck(draft["draft_id"], current["revision"], direction, [
+            {"rule_id": rule["rule_id"], "frame_trace_id": trace, "result": "match", "note": "This action agrees with the observed control and goal"}
+            for rule, *_ in walk(current["plan"])])
     return service.read_draft(draft["draft_id"])
 
 
@@ -281,3 +287,19 @@ def test_oversized_state_is_rejected_before_overwriting_durable_draft(service, m
     with pytest.raises(BridgeError):
         add(service, draft)
     assert service.read_draft(draft["draft_id"])["revision"] == 1
+
+
+def test_crosscheck_must_be_clean_in_both_directions_and_is_reset_by_edit(service):
+    draft = review(service, add(service, service.open_draft("cross review")))
+    assert service.validate_draft(draft["draft_id"])["crosscheck_ready"]
+    trace = next(iter(service.frame_traces))
+    key = draft["plan"]["initial_rules"][0]["rule_id"]
+    service.record_crosscheck(draft["draft_id"], draft["revision"], "video_to_plan", [
+        {"rule_id": key, "frame_trace_id": trace, "result": "uncertain", "note": "The repeat stopping condition is not visible"}], ["Ask the user about termination"])
+    latest = service.read_draft(draft["draft_id"])
+    with pytest.raises(BridgeError) as err:
+        service.approve_publication(latest["draft_id"], latest["revision"])
+    assert err.value.code == "CROSSCHECK_REQUIRED"
+    updated = add(service, latest)
+    assert updated["analysis"] is None
+    assert updated["crosschecks"] == []

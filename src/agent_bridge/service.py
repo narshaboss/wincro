@@ -123,7 +123,8 @@ class DraftService:
             validate(plan)
             state = {"draft_id": new_id("draft_"), "revision": 1, "plan": plan,
                      "source": {"plan_id": plan_id, "sha256": source["source_sha256"]} if source else None,
-                     "receipts": {}, "asset_files": {}, "source_assets": {}, "analysis": None, "approval": None, "publication": None}
+                     "receipts": {}, "asset_files": {}, "source_assets": {}, "analysis": None,
+                     "crosschecks": [], "approval": None, "publication": None}
             self._pin_assets(state)
             self._save(state)
             return self._public(state)
@@ -180,6 +181,7 @@ class DraftService:
             candidate["revision"] += 1
             candidate["approval"] = None
             candidate["analysis"] = None
+            candidate["crosschecks"] = []
             receipt = {"request_id": request_id, "digest": fingerprint, "revision": candidate["revision"]}
             candidate["receipts"][request_id] = receipt
             self._save(candidate)
@@ -322,6 +324,7 @@ class DraftService:
             return {"valid": True, "revision": state["revision"], "rule_count": len(rows),
                     "publish_allowed": not protected, "runtime_tested": False,
                     "ai_analysis_current": bool(state.get("analysis") and state["analysis"]["plan_digest"] == digest(state["plan"])),
+                    "crosscheck_ready": self._crosscheck_ready(state),
                     "warning": "Special-mode plans cannot be published through this bridge" if protected else "Recognition and real execution require separate verification"}
 
     def record_analysis(self, draft_id, expected_revision, goal, steps, open_questions=None):
@@ -363,11 +366,52 @@ class DraftService:
                 raise BridgeError("INVALID_ANALYSIS", "Open questions must be a list of text")
             state["analysis"] = {"goal": goal, "steps": copy.deepcopy(steps), "open_questions": questions,
                                  "plan_digest": digest(state["plan"]), "understanding_not_proven": True}
+            state["crosschecks"] = []
             state["revision"] += 1
             state["approval"] = None
             self._save(state)
             return {"revision": state["revision"], "actions_covered": len(covered), "open_questions": questions,
                     "saved_and_reloaded": True}
+
+    @staticmethod
+    def _crosscheck_ready(state):
+        latest = state.get("crosschecks", [])[-2:]
+        return (len(latest) == 2 and [r["direction"] for r in latest] == ["video_to_plan", "plan_to_video"]
+                and all(r["passed"] and r["plan_digest"] == digest(state["plan"]) for r in latest))
+
+    def record_crosscheck(self, draft_id, expected_revision, direction, checks, remaining_issues=None):
+        """Record the AI's alternating video/plan review, not a local semantic verdict."""
+        with self.lock:
+            state = self._load(draft_id)
+            self._expect(state, expected_revision)
+            if not state.get("analysis") or state["analysis"]["plan_digest"] != digest(state["plan"]):
+                raise BridgeError("ANALYSIS_REQUIRED", "Analyze the current edited draft first")
+            if direction not in {"video_to_plan", "plan_to_video"} or not isinstance(checks, list):
+                raise BridgeError("INVALID_ANALYSIS", "Select a video-to-plan or plan-to-video review")
+            ids = {r["rule_id"] for r, *_ in walk(state["plan"])}
+            covered = set()
+            for check in checks:
+                if not isinstance(check, dict) or check.get("rule_id") not in ids or check["rule_id"] in covered:
+                    raise BridgeError("INVALID_ANALYSIS", "Review each action exactly once per pass")
+                trace = self.frame_traces.get(check.get("frame_trace_id"))
+                if not trace or trace["recording_id"] not in self.selected_media:
+                    raise BridgeError("ANALYSIS_REQUIRED", "Cross-check against frames read through get_frames")
+                if check.get("result") not in {"match", "mismatch", "uncertain"} or not isinstance(check.get("note"), str) or not 1 <= len(check["note"].strip()) <= 2000:
+                    raise BridgeError("INVALID_ANALYSIS", "Record a result and concise comparison note")
+                covered.add(check["rule_id"])
+            if covered != ids:
+                raise BridgeError("INVALID_ANALYSIS", "The cross-check must cover every action")
+            issues = remaining_issues or []
+            if not isinstance(issues, list) or not all(isinstance(i, str) and len(i) <= 2000 for i in issues):
+                raise BridgeError("INVALID_ANALYSIS", "Remaining issues must be text")
+            entry = {"direction": direction, "checks": copy.deepcopy(checks), "remaining_issues": issues,
+                     "plan_digest": digest(state["plan"]), "passed": not issues and all(c["result"] == "match" for c in checks)}
+            state["crosschecks"] = (state.get("crosschecks", []) + [entry])[-6:]
+            state["revision"] += 1
+            state["approval"] = None
+            self._save(state)
+            return {"revision": state["revision"], "passed": entry["passed"],
+                    "crosscheck_ready": self._crosscheck_ready(state), "saved_and_reloaded": True}
 
     def approve_publication(self, draft_id, expected_revision):
         """UI-only method. Never exposed through MCP dispatch."""
@@ -379,6 +423,8 @@ class DraftService:
                 raise BridgeError("PROTECTED_ACTION", result["warning"])
             if not result["ai_analysis_current"] or state["analysis"]["open_questions"]:
                 raise BridgeError("ANALYSIS_REQUIRED", "The AI must review this revision and resolve open questions before approval")
+            if not result["crosscheck_ready"]:
+                raise BridgeError("CROSSCHECK_REQUIRED", "AI must complete clean video-to-plan AND plan-to-video reviews after the last edit")
             state["approval"] = {"instance_id": self.instance_id, "revision": expected_revision,
                                  "digest": digest(state["plan"])}
             self._save(state)
@@ -441,7 +487,7 @@ class DraftService:
     def dispatch(self, method, arguments):
         allowed = {"list_plans", "read_plan", "open_draft", "read_draft", "list_drafts",
                    "stage_edits", "validate_draft", "save_draft", "publish_new_plan",
-                   "record_analysis", "list_recordings", "read_recording", "get_frames", "get_input_events", "create_asset_crop"}
+                   "record_analysis", "record_crosscheck", "list_recordings", "read_recording", "get_frames", "get_input_events", "create_asset_crop"}
         if method not in allowed:
             raise BridgeError("TOOL_DENIED", "Tool not available in the initial bridge")
         with self.lock:

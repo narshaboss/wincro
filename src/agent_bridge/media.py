@@ -175,6 +175,7 @@ class MediaTools:
             state["revision"] += 1
             state["approval"] = None
             state["analysis"] = None
+            state["crosschecks"] = []
             self.service._save(state)
             return {"asset_name": name, "revision": state["revision"], "region": region,
                     "source_seconds": actual, "saved_and_reloaded": True}
