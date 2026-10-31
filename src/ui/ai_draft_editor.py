@@ -824,12 +824,13 @@ class MediaConsentDialog(ctk.CTkToplevel):
         try:
             accepted = self.accept(self.path, self.log, ())
         except Exception as exc:
-            self.error_label.configure(text=str(exc))
+            self.error_label.configure(text=str(exc)[:160])
             return
         if accepted:
             self.destroy()
         else:
-            self.error_label.configure(text=getattr(self.master, "_status_detail", "") or "요청을 시작하지 못했습니다. 연결·녹화·미저장 입력 상태를 확인하고 다시 누르세요.")
+            detail = getattr(self.master, "_status_detail", "") or "요청을 시작하지 못했습니다. 연결·녹화·미저장 입력 상태를 확인하고 다시 누르세요."
+            self.error_label.configure(text=detail if len(detail) <= 160 else detail[:150] + "…")
 
 
 def open_ai_draft_editor(parent):

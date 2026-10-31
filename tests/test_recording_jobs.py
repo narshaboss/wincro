@@ -250,7 +250,7 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     assert parameters["serviceTier"] is None
     assert runner.turn_parameters("isolated-thread", "goal")["serviceTier"] is None
     assert runner.turn_parameters("isolated-thread", "goal")["environments"] == []
-    assert f'profile="{runner.server_name}"' in args and f"profiles.{runner.server_name}={{}}" in args
+    assert not any(value.startswith(("profile=", "profiles.")) for value in args)
     connections = runner.thread_parameters([runner.server_name, "unselected", "other.with.dots"])["config"]["mcp_servers"]
     assert connections["unselected"] == connections["other.with.dots"] == {"enabled": False}
     assert connections[runner.server_name] == runner.mcp_config

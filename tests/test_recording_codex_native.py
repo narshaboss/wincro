@@ -122,8 +122,8 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     foreign_wrapper = tmp_path / "foreign_mcp.py"
     foreign_wrapper.write_text("from pathlib import Path\nimport runpy\nPath(" + repr(str(foreign_marker))
         + ").write_text('unexpected startup')\nrunpy.run_path(" + repr(bridge) + ", run_name='__main__')\n", encoding="utf-8")
-    config_path.write_text('profile="foreign"\nservice_tier="priority"\nmodel_reasoning_effort="ultra"\nnotify=["wincro-notify-must-not-run.exe"]\n'
-        + '[profiles.foreign.features]\nshell_tool=true\napps=true\nbrowser_use=true\ncomputer_use=true\n'
+    config_path.write_text('service_tier="priority"\nmodel_reasoning_effort="ultra"\nnotify=["wincro-notify-must-not-run.exe"]\n'
+        + '[features]\nshell_tool=true\napps=true\nbrowser_use=true\ncomputer_use=true\n'
         + '[mcp_servers.unselected]\ncommand=' + json.dumps(os.sys.executable) + '\nargs='
         + json.dumps([str(foreign_wrapper), "--connection-file", str(tmp_path / "never-consented.json")]) + '\n', encoding="utf-8")
     config_before = config_path.read_bytes()

@@ -201,7 +201,6 @@ class CodexRunner:
             "default_tools_approval_mode": "approve", "enabled_tools": sorted(
                 JOB_TOOLS | {"connection_status"} if self.allowed_tools is None else self.allowed_tools)}
         configs = {
-            "profile": self.server_name, f"profiles.{self.server_name}": {},
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
             "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
             "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
