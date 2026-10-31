@@ -87,7 +87,17 @@ class AIDraftEditor(ctk.CTkToplevel):
         options.update(kwargs)
         label = ctk.CTkLabel(parent, text=text, **options)
         self._wrapped.append(label)
+        # CTkLabel.bind targets its internal text widget; observe the outer frame instead.
+        tk.Misc.bind(label, "<Configure>", lambda event, item=label: self._wrap_label(item), add="+")
         return label
+
+    def _wrap_label(self, label):
+        if self.closed or label.winfo_width() <= 1:
+            return
+        width = max(120, int(label.winfo_width() / label._get_widget_scaling()) - 4)
+        if self._wrap_sizes.get(label) != width:
+            self._wrap_sizes[label] = width
+            label.configure(wraplength=width)
 
     def _section(self, title, explanation):
         card = ctk.CTkFrame(self.prepare_page, fg_color=COLORS["bg_card"], border_width=1, border_color=COLORS["border"])
@@ -232,6 +242,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.preview = ctk.CTkLabel(detail, text="등록된 PNG 이미지를 확인할 수 있습니다.", text_color=COLORS["text_secondary"], wraplength=200)
         self.preview.grid(row=14, column=0, sticky="ew", padx=6, pady=6)
         self.preview_image = None
+        self.preview_context = None
         bottom = ctk.CTkFrame(self.review_page, fg_color="transparent")
         bottom.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         for column in range(3):
@@ -262,17 +273,15 @@ class AIDraftEditor(ctk.CTkToplevel):
         if event is not None and event.widget is not self:
             return
         for label in self._wrapped:
-            available = label.winfo_width() if label.winfo_width() > 1 else label.master.winfo_width() - 30
-            width = max(180, int(available / label._get_widget_scaling()) - 4)
-            if self._wrap_sizes.get(label) != width:
-                self._wrap_sizes[label] = width
-                label.configure(wraplength=width)
+            self._wrap_label(label)
 
     def _update_review_controls(self):
         message, ready = review_progress(self.current, self.form_dirty)
         self.review_status.set(message)
         editable = self.current and not self.current.get("publication") and not self.busy
-        self.publish_button.configure(state="normal" if ready and not self.busy else "disabled")
+        self.publish_button.configure(state="normal" if ready and not self.busy else "disabled",
+            fg_color=COLORS["accent"] if ready and not self.busy else COLORS["bg_elevated"],
+            text_color_disabled=COLORS["text_muted"])
         self.save_button.configure(state="normal" if editable and not self.form_dirty else "disabled")
         self.validate_button.configure(state="normal" if self.current and not self.busy else "disabled")
         self.apply_button.configure(state="normal" if editable and self.form_context else "disabled")
@@ -411,6 +420,8 @@ class AIDraftEditor(ctk.CTkToplevel):
                     self.form_error = message
                 self.status.set(message)
             elif done:
+                self.last_error = None
+                self.error_button.configure(state="disabled")
                 done(result)
             self._refresh_choices()
             self._update_review_controls()
@@ -514,6 +525,11 @@ class AIDraftEditor(ctk.CTkToplevel):
         key = self.tree.selection()[0]
         rule = next((r for r, *_ in walk(self.current["plan"]) if r["rule_id"] == key), None)
         if rule:
+            context = (self.current["draft_id"], key, rule.get("target_image"))
+            if self.preview_context != context:
+                self.preview_context = context
+                self.preview_image = None
+                self.preview.configure(image=None, text="이미지 미리보기를 눌러 선택한 액션의 PNG를 확인하세요.")
             self.form_context = (self.current["draft_id"], self.current["revision"], key)
             self._loading_form = True
             try:
@@ -595,7 +611,9 @@ class AIDraftEditor(ctk.CTkToplevel):
                 return result
 
         def show(image):
-            if self.tree.selection() and self.tree.selection()[0] == key:
+            latest = next((r for r, *_ in walk(self.current["plan"]) if r["rule_id"] == key), {}) if self.current else {}
+            if (self.current and self.current["draft_id"] == state["draft_id"] and latest.get("target_image") == name
+                    and self.tree.selection() and self.tree.selection()[0] == key):
                 self.preview_image = ctk.CTkImage(light_image=image, dark_image=image, size=image.size)
                 self.preview.configure(image=self.preview_image, text="")
         self._submit(load, show)

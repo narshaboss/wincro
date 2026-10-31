@@ -174,6 +174,10 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         for _ in range(5):
             root.update()
             time.sleep(.03)
+        for label in window._wrapped:
+            if label.winfo_ismapped():
+                actual = label.winfo_width() / label._get_widget_scaling()
+                assert abs(label.cget("wraplength") - max(120, int(actual) - 4)) <= 2
         assert window.active_page == "prepare"
         assert window.connection_status.get() == "GPT 연결 OFF"
         artifacts = Path("artifacts/ai_draft")
@@ -265,6 +269,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         assert window.entries["wait_after"].get() == "3.2"
         assert "GPT" in window.review_status.get()
         assert window.publish_button.cget("state") == "disabled"
+        assert window.publish_button.cget("fg_color") != "#E0B341"
         assert "입력 키: ENTER" in window.details.get("1.0", "end")
         window.entries["wait_after"].delete(0, "end")
         window.entries["wait_after"].insert(0, "3.7")
