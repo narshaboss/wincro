@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import time
+import sys
 
 import pytest
 
@@ -42,6 +43,59 @@ def test_real_local_pipe_auth_scope_and_shutdown(tmp_path):
         host.thread.join(5)
     assert not Path(descriptor).exists()
     assert not host.thread.is_alive()
+
+
+def test_real_mcp_stdio_to_live_pipe_and_durable_publication(tmp_path):
+    import asyncio
+    import cv2
+    import numpy as np
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from src.agent_bridge.media import MediaTools
+    service = DraftService(tmp_path / "plans", tmp_path / "templates", tmp_path / "drafts")
+    evidence = tmp_path / "evidence.png"
+    evidence.write_bytes(cv2.imencode(".png", np.full((40, 50, 3), 150, np.uint8))[1].tobytes())
+    recording = MediaTools(service).register(evidence)["recording_id"]
+    host = LocalHost(service, tmp_path / "connections")
+    descriptor = host.start()
+
+    async def exercise():
+        server = Path(__file__).resolve().parents[1] / "tools/wincro_mcp_server.py"
+        params = StdioServerParameters(command=sys.executable, args=[str(server), "--connection-file", descriptor])
+        async with stdio_client(params) as streams:
+            async with ClientSession(*streams) as client:
+                await client.initialize()
+
+                async def invoke(name, arguments):
+                    result = await client.call_tool(name, arguments)
+                    assert not result.isError, result
+                    response = json.loads(result.content[0].text)
+                    assert response["ok"], response
+                    return response["result"]
+
+                draft = await invoke("open_draft", {"name": "MCP end-to-end"})
+                await invoke("stage_edits", {"draft_id": draft["draft_id"], "expected_revision": 1,
+                    "request_id": "mcp-add", "operations": [{"op": "add_rule", "action_type": "hotkey", "fields": {"action_keys": ["enter"]}}]})
+                draft = await invoke("read_draft", {"draft_id": draft["draft_id"]})
+                frames = await client.call_tool("get_frames", {"recording_id": recording, "timestamps": [0]})
+                assert not frames.isError
+                assert any(item.type == "image" for item in frames.content)
+                key = draft["plan"]["initial_rules"][0]["rule_id"]
+                report = await invoke("record_analysis", {"draft_id": draft["draft_id"], "expected_revision": draft["revision"],
+                    "goal": "Confirm selection", "steps": [{"rule_id": key, "recording_id": recording, "seconds": 0,
+                    "observation": "A confirmation control is visible", "purpose": "Confirm the current selection",
+                    "expected_result": "Move to the next screen"}]})
+                # Owner-side UI authority only; there is deliberately no approval tool.
+                service.approve_publication(draft["draft_id"], report["revision"])
+                published = await invoke("publish_new_plan", {"draft_id": draft["draft_id"], "expected_revision": report["revision"]})
+                assert published["saved_and_reloaded"]
+                saved = json.loads((service.plans_dir / (published["plan_id"] + ".json")).read_text(encoding="utf-8"))
+                assert saved["initial_rules"][0]["action_keys"] == ["enter"]
+    try:
+        asyncio.run(asyncio.wait_for(exercise(), timeout=30))
+    finally:
+        host.close()
+        host.thread.join(5)
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])

@@ -145,7 +145,7 @@ class SettingsView(BaseView):
             scroll_frame, text="AI 플랜 초안 편집 (연결 기본 OFF)",
             command=self._open_ai_draft_editor, height=30,
             fg_color=COLORS["bg_elevated"], text_color=COLORS["text_primary"],
-            border_width=1, border_color=COLORS["border"],
+            border_width=2, border_color=COLORS["button_border"],
         ).pack(fill="x", padx=10, pady=(5, 8))
 
         # 프로그램 이름 섹션

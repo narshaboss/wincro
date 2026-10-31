@@ -22,6 +22,18 @@ IMAGE_FIELDS = {"image", "target_image", "target_images", "trigger_image", "moni
                 "condition_image", "auto_list_repeat_confirm_image"}
 
 
+def has_legacy_relative_jump(value):
+    if isinstance(value, dict):
+        if value.get("rewind_previous_on_trigger_missing") and not value.get("trigger_missing_rewind_rule_id"):
+            return True
+        if value.get("jump_enabled") and not value.get("goto_rule_id"):
+            return True
+        return any(has_legacy_relative_jump(item) for item in value.values())
+    if isinstance(value, list):
+        return any(has_legacy_relative_jump(item) for item in value)
+    return False
+
+
 def assets(value, key=""):
     if isinstance(value, dict):
         for k, item in value.items():
@@ -102,6 +114,8 @@ class DraftService:
             }
             plan["plan_id"] = new_id("plan_")
             plan["name"] = name.strip()
+            plan["user_verified"] = False
+            plan["modified"] = True
             validate(plan)
             state = {"draft_id": new_id("draft_"), "revision": 1, "plan": plan,
                      "source": {"plan_id": plan_id, "sha256": source["source_sha256"]} if source else None,
@@ -170,6 +184,8 @@ class DraftService:
             raise BridgeError("INVALID_REQUEST", "Operation must be an object")
         rows = {r["rule_id"]: (r, siblings, parent) for r, siblings, parent, _ in walk(plan)}
         kind = op.get("op")
+        if kind in {"add_rule", "move_rule", "delete_rule"} and has_legacy_relative_jump(plan):
+            raise BridgeError("INVALID_REFERENCE", "Legacy positional jumps must be resolved before changing order")
         if kind == "rename_plan":
             name = op.get("name")
             if not isinstance(name, str) or not name.strip() or len(name) > 200:
@@ -269,7 +285,15 @@ class DraftService:
                 self._asset_path(state, name)
             # Test runtime-model loading without importing the player or generating input.
             from ..analyzer.automation_models import AutomationPlan
+            from dataclasses import fields
+            from ..analyzer.automation_models import AutomationRule
             AutomationPlan.from_dict(copy.deepcopy(state["plan"]), self.templates_dir)
+            unknown = set(state["plan"]) - {f.name for f in fields(AutomationPlan)} - {"game_mode"}
+            known_rule_fields = {f.name for f in fields(AutomationRule)} | set(AutomationRule().to_dict())
+            unknown_rules = {key for rule, *_ in rows for key in set(rule) - known_rule_fields}
+            if unknown or unknown_rules:
+                raise BridgeError("UNSUPPORTED_SCHEMA", "Unknown fields are preserved in the draft but cannot be published: "
+                                  + ", ".join(sorted(unknown | unknown_rules)))
             protected = bool(state["plan"].get("game_modes")) or any(r.get("action_type") == "game_mode" for r, *_ in rows)
             return {"valid": True, "revision": state["revision"], "rule_count": len(rows),
                     "publish_allowed": not protected, "runtime_tested": False,

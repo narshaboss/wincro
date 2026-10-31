@@ -95,14 +95,13 @@ def test_batch_is_atomic_and_duplicate_request_is_not_reapplied(service):
 
 
 def test_stale_edit_approval_and_reference_source_change_are_rejected(service):
-    source = {"plan_id": "plan_source", "name": "source", "initial_rules": [], "monitoring_rules": [], "unknown_future_field": {"keep": True}}
+    source = {"plan_id": "plan_source", "name": "source", "initial_rules": [], "monitoring_rules": []}
     path = service.plans_dir / "plan_source.json"
     write_json(path, source)
     original = path.read_bytes()
     draft = service.open_draft("copy", "plan_source")
-    assert draft["plan"]["unknown_future_field"] == {"keep": True}
-    draft["plan"]["unknown_future_field"]["keep"] = False
-    assert service.read_draft(draft["draft_id"])["plan"]["unknown_future_field"]["keep"]
+    draft["plan"]["name"] = "mutated returned copy"
+    assert service.read_draft(draft["draft_id"])["plan"]["name"] == "copy"
     with pytest.raises(BridgeError) as err:
         service.stage_edits(draft["draft_id"], 0, "stale", [{"op": "rename_plan", "name": "bad"}])
     assert err.value.code == "REVISION_CONFLICT"
@@ -252,3 +251,14 @@ def test_ai_analysis_is_required_and_edits_invalidate_it(service):
     draft = add(service, draft, "hotkey", action_keys=["enter"])
     assert service.read_draft(draft["draft_id"])["analysis"] is None
     assert not service.validate_draft(draft["draft_id"])["ai_analysis_current"]
+
+
+def test_unknown_schema_is_preserved_but_never_silently_published(service):
+    source = {"name": "future", "initial_rules": [], "future_field": {"keep": [1, 2, 3]}}
+    write_json(service.plans_dir / "plan_future.json", source)
+    draft = service.open_draft("copy future", "plan_future")
+    assert draft["plan"]["future_field"] == source["future_field"]
+    with pytest.raises(BridgeError) as err:
+        service.validate_draft(draft["draft_id"])
+    assert err.value.code == "UNSUPPORTED_SCHEMA"
+    assert read_json(service.plans_dir / "plan_future.json") == source

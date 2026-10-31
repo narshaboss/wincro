@@ -35,6 +35,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.form_dirty = False
         self.form_error = None
         self.form_context = None
+        self._loading_form = False
         self.results = queue.Queue(maxsize=8)
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ai-draft-ui")
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -53,7 +54,7 @@ class AIDraftEditor(ctk.CTkToplevel):
     def _button(self, parent, text, command, **kwargs):
         return ctk.CTkButton(parent, text=text, command=command, height=30,
             fg_color=COLORS["bg_elevated"], text_color=COLORS["text_primary"],
-            border_width=1, border_color=COLORS["border"], **kwargs)
+            border_width=2, border_color=COLORS["button_border"], **kwargs)
 
     def _build(self):
         top = ctk.CTkFrame(self, fg_color="transparent")
@@ -104,10 +105,12 @@ class AIDraftEditor(ctk.CTkToplevel):
         for index, (key, label) in enumerate((("description", "액션 이름"), ("wait_after", "액션 후 대기 (초)"),
                                               ("repeat_count", "반복 횟수"), ("repeat_delay", "반복 사이 대기 (초)"))):
             ctk.CTkLabel(detail, text=label, anchor="w").grid(row=index * 2, column=0, sticky="ew", padx=6)
-            entry = ctk.CTkEntry(detail)
+            variable = tk.StringVar(master=self)
+            variable.trace_add("write", lambda *_: self._dirty())
+            entry = ctk.CTkEntry(detail, textvariable=variable)
             entry.grid(row=index * 2 + 1, column=0, sticky="ew", padx=6, pady=(0, 5))
             self.entries[key] = entry
-            entry.bind("<KeyRelease>", self._dirty)
+            entry._ai_value = variable
         self._button(detail, "선택 액션에 적용", self._apply_fields).grid(row=8, column=0, sticky="ew", padx=6, pady=6)
         self.details = ctk.CTkTextbox(detail, height=180, wrap="word")
         self.details.grid(row=9, column=0, sticky="ew", padx=6, pady=6)
@@ -246,9 +249,13 @@ class AIDraftEditor(ctk.CTkToplevel):
         rule = next((r for r, *_ in walk(self.current["plan"]) if r["rule_id"] == key), None)
         if rule:
             self.form_context = (self.current["draft_id"], self.current["revision"], key)
-            for field, entry in self.entries.items():
-                entry.delete(0, "end")
-                entry.insert(0, str(rule.get(field, "")))
+            self._loading_form = True
+            try:
+                for field, entry in self.entries.items():
+                    entry.delete(0, "end")
+                    entry.insert(0, str(rule.get(field, "")))
+            finally:
+                self._loading_form = False
             safe = {k: rule.get(k) for k in ("rule_id", "action_type", "target_image", "search_region", "action_keys", "wait_random", "wait_random_range")}
             self.details.configure(state="normal")
             self.details.delete("1.0", "end")
@@ -276,6 +283,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         self._submit(lambda: self.service.stage_edits(draft_id, revision, new_id("ui_"), [{"op": "update_rule", "rule_id": key, "fields": fields}]), applied)
 
     def _dirty(self, _event=None):
+        if self._loading_form:
+            return
         self.form_dirty = True
         self.form_error = None
 
