@@ -376,3 +376,59 @@ def test_closing_during_connection_start_cannot_leave_a_listener_or_reopen_servi
         window.form_dirty = False
         window._close()
         ui_root.update()
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
+def test_recording_tab_gpt_entry_layout_and_launch_without_capture(ui_root, monkeypatch, scale):
+    import customtkinter as ctk
+    import tkinter as tk
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from PIL import ImageGrab
+    from src.ui import ai_draft_editor, main_window, recorder_view
+
+    config = SimpleNamespace(recording=SimpleNamespace(fps=30, include_cursor=True, save_input_log=True))
+    session, capture, database = Mock(), Mock(), Mock()
+    monkeypatch.setattr(main_window, "get_config", lambda: config)
+    monkeypatch.setattr(recorder_view, "RecordingSession", Mock(return_value=session))
+    monkeypatch.setattr(recorder_view, "get_screen_recorder", Mock(return_value=capture))
+    monkeypatch.setattr(recorder_view, "get_db", Mock(return_value=database))
+    monkeypatch.setattr(recorder_view, "UiCallbackDispatcher", Mock())
+    monkeypatch.setattr(recorder_view, "LatestOnlyWorker", Mock())
+    monkeypatch.setattr(recorder_view.RecorderView, "_setup_hotkeys", Mock())
+    monkeypatch.setattr(recorder_view.RecorderView, "_refresh_recordings_list_async", Mock())
+    opened = Mock()
+    monkeypatch.setattr(ai_draft_editor, "open_ai_draft_editor", opened)
+    ctk.set_widget_scaling(scale)
+    ui_root._ai_callback_errors.clear()
+    window = ctk.CTkToplevel(ui_root)
+    window.overrideredirect(True)
+    tk.Wm.geometry(window, "1024x768+0+0")
+    view = None
+    try:
+        view = recorder_view.RecorderView(window)
+        view.pack(fill="both", expand=True)
+        for _ in range(8):
+            ui_root.update()
+            time.sleep(.04)
+        button = view._ai_draft_button
+        assert button.winfo_ismapped()
+        assert window.winfo_rootx() <= button.winfo_rootx()
+        assert button.winfo_rootx() + button.winfo_width() <= window.winfo_rootx() + window.winfo_width()
+        assert window.winfo_rooty() <= button.winfo_rooty() < window.winfo_rooty() + 90
+        assert button.winfo_rooty() < view._start_btn.winfo_rooty()
+        button.invoke()
+        opened.assert_called_once_with(view)
+        session.start.assert_not_called()
+        capture.start.assert_not_called()
+        database.create_recording.assert_not_called()
+        assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
+        artifacts = Path("artifacts/ai_draft")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recorder_gpt_entry_{int(scale*100)}pct.png")
+    finally:
+        if view is not None:
+            view.cleanup()
+        window.destroy()
+        ui_root.update()
+        ctk.set_widget_scaling(1.0)

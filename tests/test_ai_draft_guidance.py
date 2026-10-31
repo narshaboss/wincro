@@ -140,3 +140,23 @@ def test_descriptor_delete_failure_still_revokes_the_client_and_does_not_trap_gu
     assert host.close() is False
     assert host.cleanup_error == "PermissionError"
     assert host.stop.is_set() and not host.client_connected
+
+
+def test_gpt_entry_is_in_recording_tab_and_still_lazy():
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    settings = (root / "src/ui/settings_view.py").read_text(encoding="utf-8-sig")
+    source = (root / "src/ui/recorder_view.py").read_text(encoding="utf-8-sig")
+    assert "_open_ai_draft_editor" not in settings
+    assert "GPT로 플랜 만들기" not in settings
+    tree = ast.parse(source)
+    recorder = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RecorderView")
+    methods = {node.name: node for node in recorder.body if isinstance(node, ast.FunctionDef)}
+    entry = methods["_setup_ai_draft_entry"]
+    assert any(isinstance(node, ast.Constant) and node.value == "GPT로 플랜 만들기 · 사용방법 / 초안 편집" for node in ast.walk(entry))
+    assert any(isinstance(node, ast.ImportFrom) and node.module == "ai_draft_editor" for node in ast.walk(methods["_open_ai_draft_editor"]))
+    assert not any(isinstance(node, ast.ImportFrom) and node.module and "agent_bridge" in node.module for node in tree.body)
+    calls = [node for node in ast.walk(methods["_setup_ui"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+    entry_line = next(node.lineno for node in calls if node.func.attr == "_setup_ai_draft_entry")
+    assert entry_line < next(node.lineno for node in calls if node.func.attr == "_setup_record_card")

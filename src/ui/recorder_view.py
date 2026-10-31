@@ -113,6 +113,8 @@ class RecorderView(BaseView):
         )
         self._scroll_frame.pack(fill="both", expand=True)
 
+        self._setup_ai_draft_entry(self._scroll_frame)
+
         # 그리드 컨테이너
         main_frame = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=8, pady=8)
@@ -142,6 +144,25 @@ class RecorderView(BaseView):
         recordings_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         recordings_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
         self._setup_recordings_card(recordings_frame)
+
+    def _setup_ai_draft_entry(self, parent):
+        self._ai_draft_button = self.create_button(
+            parent,
+            text="GPT로 플랜 만들기 · 사용방법 / 초안 편집",
+            command=self._open_ai_draft_editor,
+            style="secondary",
+            height=36,
+        )
+        self._ai_draft_button.pack(fill="x", padx=8, pady=(8, 0))
+
+    def _open_ai_draft_editor(self) -> None:
+        # Keep the editing bridge opt-in; opening the recording tab must not start it.
+        from .ai_draft_editor import open_ai_draft_editor
+        try:
+            open_ai_draft_editor(self)
+        except Exception as exc:
+            from tkinter import messagebox
+            messagebox.showerror("GPT 플랜 만들기", str(exc), parent=self)
 
     def _setup_record_card(self, parent):
         """녹화 컨트롤 카드"""
