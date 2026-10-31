@@ -109,18 +109,35 @@ def test_real_mcp_stdio_to_live_pipe_and_durable_publication(tmp_path):
         host.thread.join(5)
 
 
+@pytest.fixture(scope="module")
+def ui_root():
+    """Production owns one Tcl interpreter; reuse it for successive child editors."""
+    import customtkinter as ctk
+    from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+    old_widget, old_window = ScalingTracker.widget_scaling, ScalingTracker.window_scaling
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ScalingTracker, "deactivate_automatic_dpi_awareness", False)
+        patch.setattr(ScalingTracker, "get_window_dpi_scaling", classmethod(lambda cls, window: 1.0))
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            yield root
+        finally:
+            root.destroy()
+            ctk.set_widget_scaling(old_widget)
+            ctk.set_window_scaling(old_window)
+
+
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
-def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, monkeypatch):
+def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
     import customtkinter as ctk
     from src.ui.ai_draft_editor import AIDraftEditor
     from PIL import ImageGrab
     import tkinter as tk
-    from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
-    monkeypatch.setattr(ScalingTracker, "get_window_dpi_scaling", classmethod(lambda cls, window: 1.0))
-    ctk.set_window_scaling(1.0)
     ctk.set_widget_scaling(scale)
-    root = ctk.CTk()
-    root.withdraw()
+    root = ui_root
     plans, templates = tmp_path / "plans", tmp_path / "templates"
     plans.mkdir()
     templates.mkdir()
@@ -179,6 +196,6 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, monkeypatch)
     finally:
         window.form_dirty = False
         window._close()
-        root.destroy()
+        root.update()
         ctk.set_widget_scaling(1.0)
     assert window.service.closed
