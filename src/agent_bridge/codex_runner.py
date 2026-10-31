@@ -206,6 +206,8 @@ class CodexRunner:
             "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
             "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
             "agents.enabled": False,
+            "sqlite_home": str(self.folder / "codex-state"), "log_dir": str(self.folder / "codex-logs"),
+            "history.persistence": "none",
             # The bootstrap parser rejects desktop `priority` before thread overrides.
             # This compatible value is cleared by serviceTier:null before any turn.
             "service_tier": "fast",

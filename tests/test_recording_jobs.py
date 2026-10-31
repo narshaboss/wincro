@@ -242,6 +242,9 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     assert "approval_policy=\"never\"" in args
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
     assert "agents.enabled=false" in args
+    assert "history.persistence=\"none\"" in args
+    assert "sqlite_home=" + json.dumps(str(tmp_path / "codex-state")) in args
+    assert "log_dir=" + json.dumps(str(tmp_path / "codex-logs")) in args
     tools = json.loads(next(value.split("=", 1)[1] for value in args if value.startswith(f"mcp_servers.{runner.server_name}.enabled_tools=")))
     assert "get_frames" in tools and "stage_edits" in tools
     assert "publish_new_plan" not in tools and "open_draft" not in tools

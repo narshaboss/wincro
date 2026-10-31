@@ -103,6 +103,7 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
         assert not connection.busy and runner.process.poll() is not None
         assert not calls
         assert config.read_bytes() == config_before
+        assert not list(home.glob("*.sqlite")), "Analysis runtime used the shared Codex state database"
         assert not list(connection.root.rglob("draft_*.json"))
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -261,6 +262,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         assert original.read_bytes() == before
         assert list(plans.iterdir()) == [original]
         assert config_path.read_bytes() == config_before
+        assert not list(auth_home.glob("*.sqlite")), "Analysis runtime used the shared Codex state database"
         assert not foreign_marker.exists(), "An unconsented global MCP process was started"
         frames_received = not cancel_job and len(requests) >= 3 and "data:image/" in json.dumps(requests[2])
         if not cancel_job:
