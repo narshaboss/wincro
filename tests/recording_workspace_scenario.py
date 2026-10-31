@@ -168,6 +168,16 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         deadline = time.monotonic() + .7
         _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
         badge_update.assert_not_called()
+        controls = (workspace.badge, workspace.analyze, workspace.cancel_button,
+            view._start_btn, view._stop_btn, view._recordings_scroll._canvas)
+        samples = []
+        deadline = time.monotonic() + .6
+        def sample_geometry():
+            samples.append(tuple((widget.winfo_rootx(), widget.winfo_rooty(), widget.winfo_width(), widget.winfo_height())
+                for widget in controls))
+            return time.monotonic() > deadline
+        assert _pump_until(ui_root, sample_geometry, 2)
+        assert len(set(samples)) == 1, "Idle polling moved or resized recording controls"
         view._refresh_recordings_list_async()
         assert _pump_until(ui_root, lambda: view._catalog_loaded and not workspace.busy, 5)
         deadline = time.monotonic() + .2
