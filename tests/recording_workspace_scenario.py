@@ -165,6 +165,11 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         deadline = time.monotonic() + .7
         _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
         badge_update.assert_not_called()
+        view._refresh_recordings_list_async()
+        assert _pump_until(ui_root, lambda: view._catalog_loaded and not workspace.busy, 5)
+        deadline = time.monotonic() + .2
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        assert view._recordings_scroll._visible_widgets[0] is row
         workspace.analyze.invoke()
         consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
         consent.consent.set(True)
@@ -208,9 +213,19 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         view._add_recording_file()
         assert _pump_until(ui_root, lambda: len(view._recording_items) == 1 and not workspace.busy, 5)
         assert not RecordingVisibility(workspace.visibility.path).hidden()
+        workspace.choose(view._recording_items[0])
+        MCPPipelineActor.release.clear()
+        workspace.analyze.invoke()
+        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
+        consent.consent.set(True)
+        consent.add_button.invoke()
+        assert _pump_until(ui_root, lambda: workspace.jobs.busy and workspace.jobs.runner is not None, 8)
         workspace.badge.invoke()
         assert _pump_until(ui_root, lambda: not workspace.connection.busy and workspace.badge.cget("text") == "GPT 연결 OFF", 8)
+        assert _pump_until(ui_root, lambda: not workspace.jobs.busy, 8)
+        assert workspace.jobs.snapshot()["status"] == "cancelled"
         assert workspace.badge.cget("text_color") == recording_workspace.COLORS["error"]
+        assert workspace.analyze.cget("state") == "disabled"
         assert not workspace.jobs.busy
         assert original.read_bytes() == before
         assert list((data / "plans").iterdir()) == [original]

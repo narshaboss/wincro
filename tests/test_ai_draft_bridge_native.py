@@ -386,6 +386,7 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
     from unittest.mock import Mock
     from PIL import ImageGrab
     from src.ui import main_window, recorder_view, recording_workspace
+    from datetime import datetime
 
     config = SimpleNamespace(recording=SimpleNamespace(fps=30, include_cursor=True, save_input_log=True))
     session, capture, database = Mock(), Mock(), Mock()
@@ -398,6 +399,7 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
     monkeypatch.setattr(recorder_view, "get_screen_recorder", Mock(return_value=capture))
     monkeypatch.setattr(recorder_view, "get_db", Mock(return_value=database))
     monkeypatch.setattr(recorder_view.RecorderView, "_setup_hotkeys", Mock())
+    monkeypatch.setattr(recorder_view.RecorderView, "_decode_media_thumbnail", lambda *_: None)
     ctk.set_widget_scaling(scale)
     ui_root._ai_callback_errors.clear()
     window = ctk.CTkToplevel(ui_root)
@@ -427,6 +429,22 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
             assert button.winfo_rooty() + button.winfo_height() <= window.winfo_rooty() + window.winfo_height()
             assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4
         assert not hasattr(view, "_fps_combo")
+        assert _pump_until(ui_root, lambda: view._catalog_loaded, 5)
+        sample = recorder_view.TemplateMediaItem(path=str(tmp_path / "sample.mp4"),
+            name="긴 녹화 이름도 선택·삭제 버튼을 밀거나 잘라서는 안 됩니다", media_type="video", size_bytes=1, modified_at=datetime.now())
+        view._apply_recordings_list([sample])
+        assert _pump_until(ui_root, lambda: 0 in view._recordings_scroll._visible_widgets, 5)
+        deadline = time.monotonic() + .2
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        row = view._recordings_scroll._visible_widgets[0]
+        def row_buttons(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ctk.CTkButton):
+                    yield child
+                yield from row_buttons(child)
+        for button in row_buttons(row):
+            assert button.winfo_rootx() + button.winfo_width() <= view.winfo_rootx() + view.winfo_width()
+            assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4
         workspace.analyze.invoke()
         assert "선택" in workspace.status.cget("text")
         session.start.assert_not_called()
