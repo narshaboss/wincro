@@ -62,7 +62,7 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
     original = CodexRunner.arguments
     def arguments(self, *values):
         args = original(self, *values)
-        extras = {"model_provider": "offline", "model": "gpt-5.4",
+        extras = {"model_provider": "offline", "model": "gpt-6.1-sol",
             "model_providers.offline.name": "Offline connection test",
             "model_providers.offline.base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
             "model_providers.offline.wire_api": "responses", "model_providers.offline.requires_openai_auth": requires_credentials}
@@ -182,7 +182,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     def arguments(self, *values):
         args = original_arguments(self, *values)
         extras = {
-            "model_provider": "wincro_offline", "model": "gpt-5.4", "features.enable_request_compression": False,
+            "model_provider": "wincro_offline", "model": "gpt-6.1-sol", "features.enable_request_compression": False,
             "model_providers.wincro_offline.name": "WinCro offline test",
             "model_providers.wincro_offline.base_url": f"http://127.0.0.1:{port}/v1",
             "model_providers.wincro_offline.wire_api": "responses",

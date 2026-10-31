@@ -53,8 +53,8 @@ jobs:
           $folder = Join-Path $env:RUNNER_TEMP 'wincro-codex-qa'
           New-Item -ItemType Directory -Force -Path $folder | Out-Null
           $archive = Join-Path $folder 'codex.zip'
-          Invoke-WebRequest 'https://github.com/openai/codex/releases/download/rust-v0.130.0-alpha.5/codex-x86_64-pc-windows-msvc.exe.zip' -OutFile $archive
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '4e3fae3ecb47eb94759f58b426ae1fdc8991d9c6ec4a72f296353609e124f684') { throw 'Codex archive integrity mismatch' }
+          Invoke-WebRequest 'https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-x86_64-pc-windows-msvc.exe.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'bf67d9662ed539f305849b74ad6420cc7b23aa2be07753710ca3db9134a0246d') { throw 'Codex archive integrity mismatch' }
           Expand-Archive -LiteralPath $archive -DestinationPath (Join-Path $folder 'bin')
           $executable = Get-ChildItem -LiteralPath (Join-Path $folder 'bin') -Recurse -File | Where-Object { $_.Name -in @('codex.exe', 'codex-x86_64-pc-windows-msvc.exe') } | Select-Object -First 1
           if (-not $executable) { throw 'Codex executable not found' }

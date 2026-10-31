@@ -256,9 +256,9 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, cycle, ui_ro
         assert not accepted
         consent.consent.set(True)
         consent.log = "selected-input.json"
-        consent.exclusions.set("0-5")
-        assert consent.log is None
-        assert consent.log_button.cget("state") == "disabled"
+        assert not hasattr(consent, "exclusions")
+        assert not hasattr(consent, "exclude_entry")
+        assert consent.log_button.cget("state") == "normal"
         assert consent.add_button.cget("state") == "normal"
         assert "동의 확인됨" in consent.error_label.cget("text")
         for _ in range(7):
@@ -269,7 +269,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, cycle, ui_ro
         root.update()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_consent_{int(scale*100)}pct.png")
         consent._accept()
-        assert accepted == [("민감정보를제거한작업녹화_긴파일이름.mp4", None, [[0, 5]])]
+        assert accepted == [("민감정보를제거한작업녹화_긴파일이름.mp4", "selected-input.json", ())]
         assert not window.service.selected_media  # The fake acceptance above never registered data.
         window._show_page("review")
         root.update()

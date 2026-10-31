@@ -13,7 +13,7 @@ from src.agent_bridge import recording_jobs as jobs_module
 from src.agent_bridge.recording_jobs import JobScope, RecordingJobs
 from src.agent_bridge.service import DraftService
 from src.agent_bridge.storage import read_json, write_json
-from src.agent_bridge.codex_runner import CodexRunner, CRITICAL_FEATURES, DISABLED_FEATURES, clean_message, load_runtime
+from src.agent_bridge.codex_runner import CodexRunner, CRITICAL_FEATURES, DISABLED_FEATURES, clean_message, load_runtime, validate_model, execution_error
 
 
 class FakeHost:
@@ -282,6 +282,26 @@ def test_runtime_reload_retains_only_supported_settings(tmp_path):
     assert load_runtime(path) == values
     assert load_runtime(tmp_path / "not_created.json")["max_seconds"] == 1200
     assert not (tmp_path / "not_created.json").exists()
+
+
+def test_model_gate_never_substitutes_another_model_and_checks_image_and_effort():
+    model = {"id": "chosen", "model": "chosen", "inputModalities": ["text", "image"],
+        "supportedReasoningEfforts": [{"reasoningEffort": "high"}]}
+    assert validate_model("chosen", [model]) is model
+    for selected, entry in (("unknown", model), ("chosen", dict(model, inputModalities=["text"])),
+                            ("chosen", dict(model, supportedReasoningEfforts=[]))):
+        with pytest.raises(BridgeError):
+            validate_model(selected, [entry])
+    assert validate_model("chosen", [{key: value for key, value in model.items() if key != "inputModalities"}])
+
+
+def test_remote_model_denial_has_actionable_error_and_never_looks_completed():
+    error = execution_error({"message": json.dumps({"error": {"code": "model_not_found", "message":
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}})})
+    assert error.code == "MODEL_UNAVAILABLE"
+    assert "다른 모델로 자동 변경하지 않았습니다" in str(error)
+    assert "model_not_found" in str(error)
+    assert execution_error("ordinary failure").code == "GPT_EXECUTION_FAILED"
 
 
 @pytest.mark.parametrize("value", [None, [], {"job_id": "wrong"}])

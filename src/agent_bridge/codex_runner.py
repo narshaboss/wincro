@@ -20,16 +20,21 @@ DISABLED_FEATURES = (
     "browser_use", "browser_use_external", "computer_use", "in_app_browser", "code_mode",
     "code_mode_only", "image_generation", "memories", "remote_control", "tool_suggest",
     "request_permissions_tool", "workspace_dependencies", "skill_mcp_dependency_install",
-    "tool_search", "apply_patch_freeform", "unavailable_dummy_tools", "fast_mode",
+    "tool_search", "apply_patch_freeform", "unavailable_dummy_tools", "fast_mode", "ultrafast_mode",
+    "view_image", "unified_exec", "code_mode_host", "multi_agent_v2", "multi_agent_v2_dynamic_tools",
+    "browser_use_full_cdp_access", "mcp_connection_sharing", "remote_plugin", "plugin_discovery_prefetch",
+    "skill_search", "sleep_tool", "goals", "artifact", "non_prefixed_mcp_tool_names", "daemon_auto_start",
 )
-CRITICAL_FEATURES = {"shell_tool", "apps", "plugins", "hooks", "multi_agent", "browser_use", "computer_use"}
+CRITICAL_FEATURES = {"shell_tool", "view_image", "unified_exec", "code_mode_host", "apps", "plugins",
+    "hooks", "multi_agent", "browser_use", "computer_use", "image_generation"}
 MAX_EVENT_BYTES = 8_000_000
-SUPPORTED_CODEX_VERSIONS = {"codex-cli 0.130.0-alpha.5"}
+SUPPORTED_CODEX_VERSIONS = {"codex-cli 0.166.0"}
 
 
 def default_runtime():
+    managed = Path(os.environ.get("LOCALAPPDATA", "")) / "WinCro" / "gpt_runtime" / "0.166.0" / "codex-x86_64-pc-windows-msvc.exe"
     local = Path(os.environ.get("LOCALAPPDATA", "")) / "OpenAI" / "Codex" / "bin" / "codex.exe"
-    candidate = local if local.is_file() else Path(shutil.which("codex.exe") or "")
+    candidate = managed if managed.is_file() else local if local.is_file() else Path(shutil.which("codex.exe") or "")
     return {"codex": str(candidate) if candidate.is_file() else "", "python": sys.executable if not getattr(sys, "frozen", False) else "",
             "model": "", "max_seconds": 1200}
 
@@ -61,6 +66,24 @@ def clean_message(message):
 
 def hidden_options():
     return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+
+
+def execution_error(value):
+    message = clean_message(value)
+    if "model_not_found" in message or "model is not supported" in message:
+        return BridgeError("MODEL_UNAVAILABLE", "선택한 모델이 현재 실행기·계정에서 거부됐습니다. 연결 설정에서 Codex 0.166.0과 사용 가능한 모델을 확인하세요. 다른 모델로 자동 변경하지 않았습니다.\n" + message)
+    return BridgeError("GPT_EXECUTION_FAILED", message)
+
+
+def validate_model(model, catalog):
+    entry = next((item for item in catalog if isinstance(item, dict) and model in (item.get("model"), item.get("id"))), None)
+    if entry is None:
+        raise BridgeError("MODEL_UNAVAILABLE", f"선택한 모델 '{model}'이 이 실행기의 모델 목록에 없습니다. 연결 설정의 모델과 Codex 버전을 확인하세요. 다른 모델로 자동 변경하지 않았습니다.")
+    if "image" not in entry.get("inputModalities", ["text", "image"]):
+        raise BridgeError("MODEL_UNSUPPORTED", f"선택한 모델 '{model}'은 녹화 장면의 이미지 입력을 지원하지 않습니다.")
+    if not any(item.get("reasoningEffort") == "high" for item in entry.get("supportedReasoningEfforts", []) if isinstance(item, dict)):
+        raise BridgeError("MODEL_UNSUPPORTED", f"선택한 모델 '{model}'은 분석용 high 추론 설정을 지원하지 않습니다.")
+    return entry
 
 
 class _ProcessTree:
@@ -144,7 +167,7 @@ class CodexRunner:
             raise BridgeError("RUNTIME_MISSING", "MCP용 Python 실행 파일(.exe)을 선택하세요.")
         version = subprocess.run([str(codex), "--version"], capture_output=True, timeout=10, **hidden_options())
         if version.returncode or version.stdout.decode("utf-8", "replace").strip() not in SUPPORTED_CODEX_VERSIONS:
-            raise BridgeError("RUNTIME_UNSUPPORTED", "이 Codex 버전의 도구 격리는 아직 검수되지 않았습니다. 검수된 실행기를 지정하거나 호환성 패치를 기다리세요.")
+            raise BridgeError("RUNTIME_UNSUPPORTED", "분석용 Codex 0.166.0이 필요합니다. 구형 0.130 실행기는 최신 모델 연결에 사용하지 않습니다. tools/setup_recording_codex.ps1로 별도 설치한 뒤 연결 설정에서 선택하세요. 전역 Codex는 변경하지 않습니다.")
         server = Path(__file__).resolve().parents[2] / "tools" / "wincro_mcp_server.py"
         if not server.is_file():
             raise BridgeError("RUNTIME_MISSING", "이 설치에는 GPT 연결 서버가 없습니다. 편집 도구 설치가 필요합니다.")
@@ -274,6 +297,8 @@ class CodexRunner:
         last_ping = None
         pending_ping = None
         requires_auth = None
+        selected_model = None
+        catalog, catalog_cursors = [], set()
         count = 0
         started = time.monotonic()
         try:
@@ -321,7 +346,7 @@ class CodexRunner:
                     send({"id": event["id"], "error": {"code": -32601, "message": "Interactive or permission requests are disabled"}})
                     raise BridgeError("PERMISSION_REQUIRED", "GPT가 허용되지 않은 승인·대화 요청을 보냈습니다. 초안을 확인하세요.")
                 if "error" in event:
-                    raise BridgeError("GPT_EXECUTION_FAILED", clean_message(event["error"]))
+                    raise execution_error(event["error"])
                 if event.get("id") == 1:
                     send({"method": "initialized"})
                     send({"id": 10, "method": "config/read", "params": {"includeLayers": False}})
@@ -339,6 +364,25 @@ class CodexRunner:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 읽기 제한을 확인하지 못했습니다.")
                     if "serviceTier" not in result or result["serviceTier"] is not None:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "분석 작업의 서비스 등급 초기화를 확인하지 못해 실행하지 않습니다.")
+                    selected_model = result.get("model")
+                    if not isinstance(selected_model, str) or not selected_model:
+                        raise BridgeError("MODEL_UNAVAILABLE", "분석에 선택된 모델을 확인하지 못했습니다.")
+                    send({"id": 11, "method": "model/list", "params": {"limit": 100, "includeHidden": True}})
+                    continue
+                if event.get("id") == 11:
+                    result = event.get("result", {})
+                    rows = result.get("data")
+                    if not isinstance(rows, list):
+                        raise BridgeError("MODEL_UNAVAILABLE", "실행기의 모델 목록을 읽지 못했습니다.")
+                    catalog.extend(rows)
+                    cursor = result.get("nextCursor")
+                    if cursor is not None:
+                        if not isinstance(cursor, str) or cursor in catalog_cursors or len(catalog_cursors) >= 10:
+                            raise BridgeError("MODEL_UNAVAILABLE", "실행기의 모델 목록 응답이 올바르지 않습니다.")
+                        catalog_cursors.add(cursor)
+                        send({"id": 11, "method": "model/list", "params": {"limit": 100, "includeHidden": True, "cursor": cursor}})
+                        continue
+                    validate_model(selected_model, catalog)
                     if idle:
                         send({"id": 20, "method": "account/read", "params": {"refreshToken": False}})
                     else:
@@ -370,7 +414,7 @@ class CodexRunner:
                 if method == "turn/completed" and params.get("threadId") == thread_id:
                     turn = params.get("turn", {})
                     if turn.get("status") != "completed":
-                        raise BridgeError("GPT_EXECUTION_FAILED", clean_message(turn.get("error") or turn.get("status")))
+                        raise execution_error(turn.get("error") or turn.get("status"))
                     return {"exit_code": 0, "message": final}
                 item = params.get("item", {})
                 kind = item.get("type")
@@ -380,7 +424,7 @@ class CodexRunner:
                     if params.get("willRetry") is True:
                         progress("GPT 연결 오류로 재시도하고 있습니다. 저장된 초안은 유지됩니다.")
                         continue
-                    raise BridgeError("GPT_EXECUTION_FAILED", clean_message(params.get("error", "GPT 오류")))
+                    raise execution_error(params.get("error", "GPT 오류"))
                 if kind == "mcpToolCall" and method == "item/started":
                     tool = item.get("tool", "")
                     progress({"get_frames": "GPT가 실제 녹화 장면을 확인하고 있습니다.",

@@ -18,7 +18,7 @@ from ..agent_bridge.contracts import walk
 from ..agent_bridge.service import DraftService
 from ..agent_bridge.media import MediaTools
 from .ai_draft_guidance import (ROLE_TEXT, HELP_TEXT, ACTION_NAMES, authoring_request,
-                                friendly_error, parse_exclusions, readable_action,
+                                friendly_error, readable_action,
                                 readable_analysis, review_progress)
 
 NO_REFERENCE = "참고 플랜 없음 · 새 작업 만들기"
@@ -749,7 +749,7 @@ class AIDraftEditor(ctk.CTkToplevel):
 class MediaConsentDialog(ctk.CTkToplevel):
     """One explicit consent screen; no registration until the user accepts."""
 
-    def __init__(self, parent, path, accept):
+    def __init__(self, parent, path, accept, *, action_text="자료 추가"):
         super().__init__(parent)
         self.path = path
         self.accept = accept
@@ -776,15 +776,10 @@ class MediaConsentDialog(ctk.CTkToplevel):
 
         label("선택한 자료: " + Path(path).name, 0)
         label("장면 분석은 GPT가 합니다. 비밀번호·인증코드가 담긴 자료는 추가하지 마세요. 자동 민감정보 가림 기능은 없습니다.", 1)
-        label("보여주지 않을 시간 구간 (선택 / 초)", 2)
-        self.exclusions = tk.StringVar(master=self)
-        self.exclude_entry = ctk.CTkEntry(content, textvariable=self.exclusions, placeholder_text="예: 0-5,12-18 / 없으면 빈칸",
-            fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
-        self.exclude_entry.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
-        label("키 입력 기록은 없어도 됩니다. 제외 구간을 입력하면 시간 어긋남에 따른 유출 방지를 위해 키 기록은 제공하지 않습니다.", 4)
+        label("선택한 녹화 장면과 아래에서 추가한 키 입력 기록을 GPT 분석 자료로 제공합니다. 키 입력 기록은 없어도 됩니다.", 2)
         self.log_button = parent._button(content, "키 입력 기록 추가 (선택)", self._select_log)
-        self.log_button.grid(row=5, column=0, sticky="ew", padx=8, pady=4)
-        self.log_label = label("추가된 키 입력 기록 없음", 6)
+        self.log_button.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
+        self.log_label = label("추가된 키 입력 기록 없음", 4)
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure((0, 1), weight=1, uniform="actions")
@@ -792,40 +787,31 @@ class MediaConsentDialog(ctk.CTkToplevel):
         self.consent_check = ctk.CTkCheckBox(footer, text="GPT 자료 제공에 동의", variable=self.consent,
             text_color=COLORS["text_primary"], fg_color=COLORS["accent"], checkmark_color=COLORS["text_on_accent"])
         self.consent_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.add_button = parent._button(footer, "자료 추가", self._accept, state="disabled")
+        self.action_text = action_text
+        self.add_button = parent._button(footer, action_text, self._accept, state="disabled")
         self.add_button.grid(row=1, column=0, sticky="ew", padx=(0, 4))
         parent._button(footer, "취소", self.destroy).grid(row=1, column=1, sticky="ew", padx=(4, 0))
-        self.error_label = ctk.CTkLabel(footer, text="동의 후 자료 추가를 누르세요. 취소하면 전달하지 않습니다.",
+        self.error_label = ctk.CTkLabel(footer, text=f"동의 체크 후 '{action_text}'을 누르세요. 취소하면 전달하지 않습니다.",
             anchor="w", justify="left", wraplength=350, text_color=COLORS["text_secondary"])
         self.error_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.labels.append(self.error_label)
         self.consent.trace_add("write", self._consent_changed)
-        self.exclusions.trace_add("write", self._private_changed)
         self.bind("<Configure>", self._resize, add="+")
         self.transient(parent.winfo_toplevel())
 
     def _resize(self, event=None):
         if event is not None and event.widget is not self:
             return
-        width = max(220, int(self.winfo_width() / self.exclude_entry._get_widget_scaling()) - 65)
+        width = max(220, int(self.winfo_width() / self.log_button._get_widget_scaling()) - 65)
         for label in self.labels:
             if label.cget("wraplength") != width:
                 label.configure(wraplength=width)
 
-    def _private_changed(self, *_):
-        private = bool(self.exclusions.get().strip())
-        if private:
-            self.log = None
-            self.log_label.configure(text="비공개 구간 사용 중 · 키 입력 기록은 제공하지 않습니다.")
-        else:
-            self.log_label.configure(text="추가된 키 입력 기록 없음")
-        self.log_button.configure(state="disabled" if private else "normal")
-
     def _consent_changed(self, *_):
         agreed = self.consent.get()
         self.add_button.configure(state="normal" if agreed else "disabled")
-        self.error_label.configure(text="동의 확인됨 · 자료 추가를 누르면 GPT에 제공할 자료로 등록합니다." if agreed else
-                                   "동의 후 자료 추가를 누르세요. 취소하면 전달하지 않습니다.")
+        self.error_label.configure(text=f"동의 확인됨 · '{self.action_text}' 버튼을 누르세요." if agreed else
+                                   f"동의 체크 후 '{self.action_text}'을 누르세요. 취소하면 전달하지 않습니다.")
 
     def _select_log(self):
         self.log = filedialog.askopenfilename(parent=self, title="선택한 녹화의 키 입력 기록 JSON", filetypes=[("키 입력 기록", "*.json")]) or None
@@ -836,12 +822,14 @@ class MediaConsentDialog(ctk.CTkToplevel):
             self.error_label.configure(text="자료를 확인하고 GPT 자료 제공에 동의해주세요.")
             return
         try:
-            excluded = parse_exclusions(self.exclusions.get())
-        except ValueError as exc:
+            accepted = self.accept(self.path, self.log, ())
+        except Exception as exc:
             self.error_label.configure(text=str(exc))
             return
-        if self.accept(self.path, None if excluded else self.log, excluded):
+        if accepted:
             self.destroy()
+        else:
+            self.error_label.configure(text=getattr(self.master, "_status_detail", "") or "요청을 시작하지 못했습니다. 연결·녹화·미저장 입력 상태를 확인하고 다시 누르세요.")
 
 
 def open_ai_draft_editor(parent):

@@ -91,6 +91,16 @@ class MCPIdleActor:
         return asyncio.run(run())
 
 
+class RejectedModelActor:
+    def __init__(self, *_):
+        pass
+    def cancel(self):
+        pass
+    def run(self, *args):
+        from src.agent_bridge.contracts import BridgeError
+        raise BridgeError("MODEL_UNAVAILABLE", "선택한 모델이 거부됐습니다. 연결 설정의 모델을 확인하세요.")
+
+
 def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     import customtkinter as ctk
     import cv2
@@ -185,10 +195,14 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert view._recordings_scroll._visible_widgets[0] is row
         workspace.analyze.invoke()
         consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
+        assert consent.add_button.cget("text") == "동의하고 분석 시작"
+        workspace._analyze()
+        assert len([child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog)]) == 1
         consent.consent.set(True)
         view._is_recording = True
         consent.add_button.invoke()
         assert consent.winfo_exists() and not workspace.jobs.busy and workspace.jobs.snapshot() is None
+        assert "녹화가 진행 중" in consent.error_label.cget("text")
         view._is_recording = False
         consent.add_button.invoke()
         assert _pump_until(ui_root, lambda: workspace.badge.cget("text") == "GPT 연결 ON", 12), workspace.jobs.snapshot()
@@ -240,6 +254,29 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert workspace.badge.cget("text_color") == recording_workspace.COLORS["error"]
         assert workspace.analyze.cget("state") == "disabled"
         assert not workspace.jobs.busy
+        workspace.jobs.runner_factory = RejectedModelActor
+        workspace.badge.invoke()
+        assert _pump_until(ui_root, lambda: workspace.connection.connected, 12)
+        workspace.analyze.invoke()
+        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
+        consent.consent.set(True)
+        consent.add_button.invoke()
+        def error_windows():
+            return [child for child in workspace.winfo_children() if isinstance(child, ctk.CTkToplevel)
+                and child.winfo_exists() and child.title() == "GPT 분석 실패 · 원인 확인"]
+        assert _pump_until(ui_root, lambda: not workspace.jobs.busy and len(error_windows()) == 1, 12)
+        assert "MODEL_UNAVAILABLE" in workspace._status_detail
+        assert workspace.jobs.snapshot()["status"] == "error"
+        persisted = json.loads((workspace.jobs.root / workspace.jobs.snapshot()["job_id"] / "job.json").read_text(encoding="utf-8"))
+        assert persisted == workspace.jobs.snapshot()
+        error_window = error_windows()[0]
+        deadline = time.monotonic() + .6
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        assert error_windows() == [error_window]
+        error_window.lift()
+        ui_root.update()
+        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_model_error.png")
+        error_window.destroy()
         assert original.read_bytes() == before
         assert list((data / "plans").iterdir()) == [original]
         session.start.assert_not_called()
