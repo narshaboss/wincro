@@ -214,7 +214,8 @@ class RecorderView(BaseView):
                 media_items = self._load_template_media_items()
             except Exception as exc:
                 message = "녹화 목록을 읽지 못했습니다. 기존 자료는 보존했습니다: " + str(exc)
-                self._recorder_ui_post(lambda: self._workspace.set_status(message))
+                self._recorder_ui_post(lambda: self._workspace.set_status(message)
+                    if current_gen == self._recordings_load_generation else None)
                 return
             self._recorder_ui_post(lambda: self._apply_recordings_list(
                 media_items,

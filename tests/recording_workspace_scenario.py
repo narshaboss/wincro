@@ -154,6 +154,9 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: workspace.connection.connected and workspace.badge.cget("text") == "GPT 연결 ON", 12)
         assert workspace.badge.cget("text_color") == recording_workspace.COLORS["success"]
         assert workspace.jobs.snapshot() is None
+        artifacts = Path("artifacts/ai_draft")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_manual_connected.png")
         assert _pump_until(ui_root, lambda: 0 in view._recordings_scroll._visible_widgets, 5)
         row = view._recordings_scroll._visible_widgets[0]
         workspace.choose(view._recording_items[0])
