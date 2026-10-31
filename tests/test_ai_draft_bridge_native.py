@@ -110,10 +110,14 @@ def test_real_mcp_stdio_to_live_pipe_and_durable_publication(tmp_path):
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
-def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale):
+def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, monkeypatch):
     import customtkinter as ctk
     from src.ui.ai_draft_editor import AIDraftEditor
     from PIL import ImageGrab
+    import tkinter as tk
+    from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+    monkeypatch.setattr(ScalingTracker, "get_window_dpi_scaling", classmethod(lambda cls, window: 1.0))
+    ctk.set_window_scaling(1.0)
     ctk.set_widget_scaling(scale)
     root = ctk.CTk()
     root.withdraw()
@@ -121,10 +125,14 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale):
     plans.mkdir()
     templates.mkdir()
     window = AIDraftEditor(root, plans, templates, workspace=tmp_path / "workspace")
+    window.overrideredirect(True)
+    tk.Wm.geometry(window, "1024x768+0+0")
     try:
         draft = window.service.open_draft("AI 초안 레이아웃 검수")
         window.service.stage_edits(draft["draft_id"], 1, "setup", [
-            {"op": "add_rule", "action_type": "hotkey", "fields": {"description": "확인 키 입력", "action_keys": ["enter"]}}])
+            {"op": "add_rule", "action_type": "hotkey", "fields": {"description": "확인 키 입력", "action_keys": ["enter"]}},
+            {"op": "add_rule", "action_type": "click", "fields": {"description": "다음 화면 선택"}},
+            {"op": "add_rule", "action_type": "type", "fields": {"description": "수량 입력", "action_text": "10"}}])
         window._render(window.service.read_draft(draft["draft_id"]))
         key = window.current["plan"]["initial_rules"][0]["rule_id"]
         window.tree.selection_set(key)
@@ -138,7 +146,14 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale):
         window._dirty()
         window.service.stage_edits(draft["draft_id"], old_revision, "external", [
             {"op": "update_rule", "rule_id": key, "fields": {"wait_after": 3.2}}])
+        from unittest.mock import Mock
+        original_item, original_move = window.tree.item, window.tree.move
+        window.tree.item = Mock(wraps=original_item)
+        window.tree.move = Mock(wraps=original_move)
         window._render(window.service.read_draft(draft["draft_id"]))
+        assert window.tree.item.call_count == 1
+        assert window.tree.move.call_count == 0
+        window.tree.item, window.tree.move = original_item, original_move
         assert window.entries["wait_after"].get() == "7.5"
         assert window.form_context[1] == old_revision
         assert window.current["revision"] > old_revision
@@ -150,16 +165,17 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale):
         assert not window.busy
         assert "REVISION_CONFLICT" in window.status.get()
         window._reload_form()
+        root.update()
         assert window.entries["wait_after"].get() == "3.2"
         # Text/controls stay inside the window's client bounds at each scaling.
         for widget in [window.tree, window.plans, window.drafts, *window.entries.values()]:
             assert widget.winfo_width() > 40
             assert window.winfo_rootx() <= widget.winfo_rootx()
             assert widget.winfo_rootx() + widget.winfo_width() <= window.winfo_rootx() + window.winfo_width() + 2
+        assert window.winfo_screenwidth() >= 1024 and window.winfo_screenheight() >= 768
         artifacts = Path("artifacts/window_control")
         artifacts.mkdir(parents=True, exist_ok=True)
-        ImageGrab.grab(bbox=(window.winfo_rootx(), window.winfo_rooty(),
-            window.winfo_rootx() + window.winfo_width(), window.winfo_rooty() + window.winfo_height())).save(artifacts / f"ai_draft_{int(scale*100)}pct.png")
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_draft_{int(scale*100)}pct.png")
     finally:
         window.form_dirty = False
         window._close()

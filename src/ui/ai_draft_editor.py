@@ -30,6 +30,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.host = None
         self.closed = False
         self.current = None
+        self._row_cache = {}
         self.serial = -1
         self.busy = False
         self.form_dirty = False
@@ -41,8 +42,11 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Destroy>", self._destroyed, add="+")
         self.title("AI 플랜 초안 편집")
-        self.geometry("1060x760")
-        self.minsize(820, 640)
+        window_scale = self._get_window_scaling()
+        width = max(620, min(1060, int(self.winfo_screenwidth() / window_scale) - 40))
+        height = max(480, min(760, int(self.winfo_screenheight() / window_scale) - 90))
+        self.geometry(f"{width}x{height}+20+20")
+        self.minsize(min(740, width), min(580, height))
         self.configure(fg_color=COLORS["bg_content"])
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
@@ -60,17 +64,21 @@ class AIDraftEditor(ctk.CTkToplevel):
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 4))
         top.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(top, text="AI 플랜 초안", font=(IOS_FONTS["family"], 18, "bold")).grid(row=0, column=0, sticky="w")
-        self._button(top, "연결 ON / OFF", self._toggle, width=140).grid(row=0, column=1)
+        ctk.CTkLabel(top, text="AI 플랜 초안", text_color=COLORS["text_primary"], font=(IOS_FONTS["family"], 18, "bold")).grid(row=0, column=0, sticky="w")
+        self.connection_button = self._button(top, "연결 ON으로 전환", self._toggle, width=140)
+        self.connection_button.grid(row=0, column=1)
         ctk.CTkLabel(self, textvariable=self.status, anchor="w", wraplength=780,
                      text_color=COLORS["text_secondary"]).grid(row=1, column=0, sticky="ew", padx=14)
-        controls = ctk.CTkFrame(self)
+        controls = ctk.CTkFrame(self, fg_color=COLORS["bg_card"])
         controls.grid(row=2, column=0, sticky="ew", padx=14, pady=6)
         controls.grid_columnconfigure(0, weight=1)
         controls.grid_columnconfigure(1, weight=1)
-        self.plans = ctk.CTkComboBox(controls, values=["빈 플랜"], state="readonly")
+        combo_style = dict(fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"],
+            border_color=COLORS["border"], button_color=COLORS["bg_elevated"],
+            dropdown_fg_color=COLORS["bg_card"], dropdown_text_color=COLORS["text_primary"])
+        self.plans = ctk.CTkComboBox(controls, values=["빈 플랜"], state="readonly", **combo_style)
         self.plans.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        self.drafts = ctk.CTkComboBox(controls, values=["초안 선택"], state="readonly", command=self._select_draft)
+        self.drafts = ctk.CTkComboBox(controls, values=["초안 선택"], state="readonly", command=self._select_draft, **combo_style)
         self.drafts.grid(row=0, column=1, sticky="ew", padx=6, pady=6)
         self._button(controls, "참고 플랜 복사 / 새 초안", self._new_draft).grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
         self._button(controls, "녹화 자료 선택", self._select_media).grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 6))
@@ -79,13 +87,20 @@ class AIDraftEditor(ctk.CTkToplevel):
         body.grid_columnconfigure(0, weight=3)
         body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(0, weight=1)
-        tree_frame = ctk.CTkFrame(body)
+        tree_frame = ctk.CTkFrame(body, fg_color=COLORS["bg_card"])
         tree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         tree_frame.grid_columnconfigure(0, weight=1)
         tree_frame.grid_rowconfigure(0, weight=1)
         style = ttk.Style(self)
+        # Import only a scoped field element; never change the app's global ttk theme.
+        if "AIDraft.field" not in style.element_names():
+            style.element_create("AIDraft.field", "from", "clam", "Treeview.field")
+        style.layout("AIDraft.Treeview", [("AIDraft.field", {"sticky": "nswe", "children": [
+            ("Treeview.padding", {"sticky": "nswe", "children": [("Treeview.treearea", {"sticky": "nswe"})]})]})])
         style.configure("AIDraft.Treeview", background=COLORS["bg_dark"], foreground=COLORS["text_primary"],
                         fieldbackground=COLORS["bg_dark"], rowheight=28)
+        style.map("AIDraft.Treeview", background=[("selected", COLORS["accent"])],
+                  foreground=[("selected", COLORS["text_on_accent"])])
         self.tree = ttk.Treeview(tree_frame, columns=("type", "wait"), style="AIDraft.Treeview", selectmode="browse")
         self.tree.heading("#0", text="액션 순서 / 이름")
         self.tree.heading("type", text="종류")
@@ -104,23 +119,24 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.entries = {}
         for index, (key, label) in enumerate((("description", "액션 이름"), ("wait_after", "액션 후 대기 (초)"),
                                               ("repeat_count", "반복 횟수"), ("repeat_delay", "반복 사이 대기 (초)"))):
-            ctk.CTkLabel(detail, text=label, anchor="w").grid(row=index * 2, column=0, sticky="ew", padx=6)
+            ctk.CTkLabel(detail, text=label, anchor="w", text_color=COLORS["text_primary"]).grid(row=index * 2, column=0, sticky="ew", padx=6)
             variable = tk.StringVar(master=self)
             variable.trace_add("write", lambda *_: self._dirty())
-            entry = ctk.CTkEntry(detail, textvariable=variable)
+            entry = ctk.CTkEntry(detail, textvariable=variable, fg_color=COLORS["bg_dark"],
+                                 text_color=COLORS["text_primary"], border_color=COLORS["border"])
             entry.grid(row=index * 2 + 1, column=0, sticky="ew", padx=6, pady=(0, 5))
             self.entries[key] = entry
             entry._ai_value = variable
         self._button(detail, "선택 액션에 적용", self._apply_fields).grid(row=8, column=0, sticky="ew", padx=6, pady=6)
-        self.details = ctk.CTkTextbox(detail, height=180, wrap="word")
+        self.details = ctk.CTkTextbox(detail, height=180, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         self.details.grid(row=9, column=0, sticky="ew", padx=6, pady=6)
         self.details.configure(state="disabled")
         ctk.CTkLabel(detail, text="이미지·키·범위·상하위 구성은 MCP로 편집합니다.\n구조 검사는 실제 인식/재생 성공을 의미하지 않습니다.",
-                     wraplength=280, justify="left", text_color=COLORS["text_muted"]).grid(row=10, column=0, sticky="ew", padx=6)
+                     wraplength=200, justify="left", text_color=COLORS["text_muted"]).grid(row=10, column=0, sticky="ew", padx=6)
         self._button(detail, "미적용 입력 취소 / 최신값 읽기", self._reload_form).grid(row=11, column=0, sticky="ew", padx=6, pady=6)
         self._button(detail, "AI 행동 분석 요약 보기", self._show_analysis).grid(row=12, column=0, sticky="ew", padx=6, pady=6)
         self._button(detail, "대상 이미지 미리보기", self._preview_asset).grid(row=13, column=0, sticky="ew", padx=6, pady=6)
-        self.preview = ctk.CTkLabel(detail, text="등록된 PNG 이미지를 확인할 수 있습니다.", wraplength=270)
+        self.preview = ctk.CTkLabel(detail, text="등록된 PNG 이미지를 확인할 수 있습니다.", text_color=COLORS["text_secondary"], wraplength=200)
         self.preview.grid(row=14, column=0, sticky="ew", padx=6, pady=6)
         self.preview_image = None
         bottom = ctk.CTkFrame(self, fg_color="transparent")
@@ -233,16 +249,22 @@ class AIDraftEditor(ctk.CTkToplevel):
         for rule, _, parent, path in rows:
             key = rule["rule_id"]
             position = int(path.split("-")[-1]) - 1
+            label = f"{path}  {rule.get('description') or rule.get('action_type')}"
+            values = (rule.get("action_type"), rule.get("wait_after", .5))
+            metadata = (parent or "", position, label, values)
             if self.tree.exists(key):
-                self.tree.move(key, parent or "", position)
-                self.tree.item(key, text=f"{path}  {rule.get('description') or rule.get('action_type')}",
-                               values=(rule.get("action_type"), rule.get("wait_after", .5)))
+                old = self._row_cache.get(key)
+                if old is None or old[:2] != metadata[:2]:
+                    self.tree.move(key, parent or "", position)
+                if old is None or old[2:] != metadata[2:]:
+                    self.tree.item(key, text=label, values=values)
             else:
-                self.tree.insert(parent or "", position, iid=key, text=f"{path}  {rule.get('description') or rule.get('action_type')}",
-                                 values=(rule.get("action_type"), rule.get("wait_after", .5)), open=True)
+                self.tree.insert(parent or "", position, iid=key, text=label, values=values, open=True)
+            self._row_cache[key] = metadata
+        self._row_cache = {key: self._row_cache[key] for key in desired}
         if selected and self.tree.exists(selected[0]):
             self.tree.selection_set(selected[0])
-        self.status.set(f"초안: {state['plan']['name']} · 버전 {state['revision']} · {len(rows)}개 액션 · 실제 실행 없음")
+        self.status.set(f"연결 {'ON' if self.host else 'OFF'} · 초안: {state['plan']['name']} · 버전 {state['revision']} · {len(rows)}개 액션 · 실제 실행 없음")
         self._selected_rule()
 
     def _selected_rule(self, _event=None):
@@ -347,7 +369,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         dialog = ctk.CTkToplevel(self)
         dialog.title("AI 행동 분석 요약")
         dialog.geometry("700x500")
-        text = ctk.CTkTextbox(dialog, wrap="word")
+        dialog.configure(fg_color=COLORS["bg_content"])
+        text = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         text.pack(fill="both", expand=True, padx=12, pady=12)
         text.insert("1.0", json.dumps({"analysis": self.current.get("analysis"),
             "crosschecks": self.current.get("crosschecks", []), "note": "AI 판단 기록이며 인식/재생 성공 증명이 아닙니다."}, ensure_ascii=False, indent=2))
@@ -394,6 +417,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         if self.host:
             self.host.close()
             self.host = None
+            self.connection_button.configure(text="연결 ON으로 전환")
             self.status.set("연결 OFF · 이전 연결 정보는 폐기했습니다.")
             return
         from ..agent_bridge.transport import LocalHost
@@ -413,7 +437,11 @@ class AIDraftEditor(ctk.CTkToplevel):
                 raise
             self.host = host
             return path
-        self._submit(start, lambda path: messagebox.showinfo("MCP 연결 ON", "MCP 설정의 --connection-file에 아래 파일 경로를 지정하세요.\n\n" + path + "\n\n이 파일에는 인증 정보가 있으므로 공유하지 마세요.", parent=self))
+        def connected(path):
+            self.connection_button.configure(text="연결 OFF로 전환")
+            self.status.set("연결 ON · 선택한 참고 플랜과 등록 자료만 허용 · 실제 실행 없음")
+            messagebox.showinfo("MCP 연결 ON", "MCP 설정의 --connection-file에 아래 파일 경로를 지정하세요.\n\n" + path + "\n\n이 파일에는 인증 정보가 있으므로 공유하지 마세요.", parent=self)
+        self._submit(start, connected)
 
     def _close(self):
         if self.closed:
