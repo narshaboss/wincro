@@ -138,7 +138,7 @@ class RecorderView(BaseView):
 
     def _setup_record_card(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg_glass"],
-            corner_radius=IOS_METRICS["card_radius_compact"], border_width=1, border_color=COLORS["border"])
+            corner_radius=IOS_METRICS["card_radius_compact"], border_width=IOS_METRICS["card_border_width"], border_color=COLORS["border"])
         card.pack(fill="x")
         card.grid_columnconfigure(0, weight=1)
         self._fps_var = tk.StringVar(master=self, value=str(self._config.recording.fps))
@@ -165,7 +165,7 @@ class RecorderView(BaseView):
 
     def _setup_recordings_card(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg_glass"],
-            corner_radius=IOS_METRICS["card_radius_compact"], border_width=1, border_color=COLORS["border"])
+            corner_radius=IOS_METRICS["card_radius_compact"], border_width=IOS_METRICS["card_border_width"], border_color=COLORS["border"])
         card.pack(fill="both", expand=True)
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=4)
@@ -301,7 +301,7 @@ class RecorderView(BaseView):
         if parent is None:
             item.pack(fill="x")
         body = ctk.CTkFrame(item, fg_color=COLORS["bg_elevated"], height=76,
-            border_color=COLORS["accent"] if selected else COLORS["border"], border_width=2 if selected else 1,
+            border_color=COLORS["accent"] if selected else COLORS["border"], border_width=IOS_METRICS["card_border_width"],
             corner_radius=IOS_METRICS["control_radius"])
         body.pack(fill="x", padx=2, pady=2)
         body.pack_propagate(False)

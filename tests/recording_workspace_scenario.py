@@ -14,7 +14,6 @@ import pytest
 if os.environ.get("WINCRO_AI_EDITOR_UI_QA") != "1" or os.name != "nt":
     pytest.skip("Opt-in isolated Windows UI only", allow_module_level=True)
 
-from test_ai_draft_bridge_native import _pump_until
 
 
 class MCPPipelineActor:
@@ -68,7 +67,7 @@ class MCPPipelineActor:
         return asyncio.run(run())
 
 
-def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root):
+def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     import customtkinter as ctk
     import cv2
     import numpy as np

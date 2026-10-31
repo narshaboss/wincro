@@ -451,8 +451,11 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
 
 
 def test_recording_pipeline_select_consent_mcp_result_and_durable_save(tmp_path, monkeypatch, ui_root):
-    from recording_workspace_scenario import exercise_recording_pipeline
-    exercise_recording_pipeline(tmp_path, monkeypatch, ui_root)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("recording_workspace_scenario", Path(__file__).with_name("recording_workspace_scenario.py"))
+    scenario = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scenario)
+    scenario.exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until)
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])

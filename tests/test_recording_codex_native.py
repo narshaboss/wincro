@@ -100,7 +100,10 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         jobs.worker.join(65)
         assert not jobs.busy
         state = jobs.snapshot()
-        assert state["status"] == "needs_review", state
+        artifacts = Path("artifacts/recording_analysis")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "execution-state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        assert state["status"] == "needs_review", json.dumps(state, ensure_ascii=False)
         assert requests, state
         def names(value):
             if isinstance(value, dict):

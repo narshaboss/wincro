@@ -23,6 +23,7 @@ DISABLED_FEATURES = (
 )
 CRITICAL_FEATURES = {"shell_tool", "apps", "plugins", "hooks", "multi_agent", "browser_use", "computer_use"}
 MAX_EVENT_BYTES = 8_000_000
+SUPPORTED_CODEX_VERSIONS = {"codex-cli 0.130.0-alpha.5"}
 
 
 def default_runtime():
@@ -118,6 +119,9 @@ class CodexRunner:
             raise BridgeError("RUNTIME_MISSING", "Codex 실행 파일(.exe)을 연결 설정에서 선택하세요. 깨진 cmd 바로가기는 사용하지 않습니다.")
         if not python.is_file() or (os.name == "nt" and python.suffix.lower() != ".exe"):
             raise BridgeError("RUNTIME_MISSING", "MCP용 Python 실행 파일(.exe)을 선택하세요.")
+        version = subprocess.run([str(codex), "--version"], capture_output=True, timeout=10, **hidden_options())
+        if version.returncode or version.stdout.decode("utf-8", "replace").strip() not in SUPPORTED_CODEX_VERSIONS:
+            raise BridgeError("RUNTIME_UNSUPPORTED", "이 Codex 버전의 도구 격리는 아직 검수되지 않았습니다. 검수된 실행기를 지정하거나 호환성 패치를 기다리세요.")
         server = Path(__file__).resolve().parents[2] / "tools" / "wincro_mcp_server.py"
         if not server.is_file():
             raise BridgeError("RUNTIME_MISSING", "이 설치에는 GPT 연결 서버가 없습니다. 편집 도구 설치가 필요합니다.")
@@ -134,7 +138,8 @@ class CodexRunner:
         features = subprocess.run(feature_args, env=env, capture_output=True, timeout=15, **hidden_options())
         values = {line.split()[0]: line.split()[-1] for line in features.stdout.decode("utf-8", "replace").splitlines() if len(line.split()) >= 3}
         if features.returncode or any(values.get(name) != "false" for name in CRITICAL_FEATURES):
-            raise BridgeError("RUNTIME_UNSUPPORTED", "셸·앱·PC 제어 도구 비활성화를 확인하지 못해 분석을 시작하지 않았습니다.")
+            missing = ", ".join(sorted(name for name in CRITICAL_FEATURES if values.get(name) != "false"))
+            raise BridgeError("RUNTIME_UNSUPPORTED", "셸·앱·PC 제어 도구 비활성화를 확인하지 못했습니다: " + missing)
         dependency = subprocess.run([str(python), "-c", "import importlib.metadata; assert importlib.metadata.version('mcp') == '1.25.0'"],
                                     capture_output=True, timeout=15, **hidden_options())
         if dependency.returncode:

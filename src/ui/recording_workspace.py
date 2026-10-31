@@ -23,6 +23,9 @@ from .theme import COLORS, IOS_FONTS, IOS_METRICS
 DEFAULT_GOAL = "녹화에서 수행한 작업의 목적과 흐름을 분석해 같은 작업을 위한 초안을 만드세요. 반복·종료 조건이 불명확하면 추측하지 말고 확인할 질문으로 남기세요."
 JOB_LABELS = {"starting": "준비 중", "running": "GPT 분석 중", "review": "검토 가능", "needs_review": "추가 확인 필요",
               "error": "오류", "cancelled": "취소됨", "interrupted": "중단됨", "unconfirmed": "이전 실행 확인 필요"}
+COMBO_STYLE = dict(fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"],
+    button_color=COLORS["bg_elevated"], button_hover_color=COLORS["bg_card_hover"],
+    dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["bg_elevated"], dropdown_text_color=COLORS["text_primary"])
 
 
 class RecordingWorkspace(ctk.CTkFrame):
@@ -57,7 +60,10 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.badge.grid(row=0, column=1, padx=5)
         self._button(header, "연결 설정", self._settings, width=76).grid(row=0, column=2, padx=(0, 5))
         self._button(header, "사용방법", self._help, width=70).grid(row=0, column=3)
-        self.tabs = ctk.CTkTabview(self, fg_color=COLORS["bg_content"])
+        self.tabs = ctk.CTkTabview(self, fg_color=COLORS["bg_content"],
+            segmented_button_fg_color=COLORS["bg_card"], segmented_button_selected_color=COLORS["bg_elevated"],
+            segmented_button_selected_hover_color=COLORS["bg_card_hover"], segmented_button_unselected_color=COLORS["bg_content"],
+            segmented_button_unselected_hover_color=COLORS["bg_card_hover"], text_color=COLORS["accent_text"])
         self.tabs.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
         self.start_page = self.tabs.add("녹화·분석")
         self.result_page = self.tabs.add("분석 결과 편집")
@@ -77,13 +83,13 @@ class RecordingWorkspace(ctk.CTkFrame):
 
     def _button(self, parent, text, command, **kwargs):
         style = dict(height=30, fg_color=COLORS["bg_elevated"], hover_color=COLORS["bg_card_hover"],
-            text_color=COLORS["text_primary"], border_color=COLORS["button_border"], border_width=1,
+            text_color=COLORS["text_primary"], border_color=COLORS["button_border"], border_width=IOS_METRICS["card_border_width"],
             corner_radius=IOS_METRICS["control_radius"])
         style.update(kwargs)
         return ctk.CTkButton(parent, text=text, command=command, **style)
 
     def _build_analysis_controls(self):
-        panel = ctk.CTkFrame(self.start_page, fg_color=COLORS["bg_glass"], border_width=1, border_color=COLORS["border"])
+        panel = ctk.CTkFrame(self.start_page, fg_color=COLORS["bg_glass"], border_width=IOS_METRICS["card_border_width"], border_color=COLORS["border"])
         panel.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         panel.grid_columnconfigure(0, weight=1)
         self.selection_label = ctk.CTkLabel(panel, text="목록에서 분석할 녹화를 선택하세요.", anchor="w", width=1,
@@ -226,7 +232,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         for row, (key, label) in enumerate((("codex", "Codex 실행 파일 (.exe)"), ("python", "MCP용 Python (.exe)"),
                                             ("model", "모델 이름 (비우면 Codex 기본 모델)")), 1):
             ctk.CTkLabel(body, text=label, anchor="w", text_color=COLORS["text_primary"]).grid(row=row*2-1, column=0, columnspan=2, sticky="ew")
-            entry = ctk.CTkEntry(body, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
+            entry = ctk.CTkEntry(body, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
             entry.insert(0, str(self.runtime.get(key, "")))
             entry.grid(row=row*2, column=0, sticky="ew", pady=(0, 5))
             entries[key] = entry
@@ -239,7 +245,7 @@ class RecordingWorkspace(ctk.CTkFrame):
                 self._button(body, "찾기", browse, width=60).grid(row=row*2, column=1, padx=(5, 0))
         ctk.CTkLabel(body, text="참고 플랜 (읽기 전용 / 선택)", anchor="w", text_color=COLORS["text_primary"]).grid(row=7, column=0, sticky="ew")
         references = {"선택하지 않음": None}
-        reference_combo = ctk.CTkComboBox(body, values=list(references), state="readonly")
+        reference_combo = ctk.CTkComboBox(body, values=list(references), state="readonly", **COMBO_STYLE)
         reference_combo.set("선택하지 않음")
         reference_combo.grid(row=8, column=0, sticky="ew", pady=5)
         def reference_list():
@@ -336,7 +342,8 @@ class DraftResultPane(ctk.CTkFrame):
         self.results = queue.Queue(maxsize=8)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        self.jobs = ctk.CTkComboBox(self, values=["아직 분석 결과가 없습니다"], state="readonly", command=self._select)
+        self.jobs = ctk.CTkComboBox(self, values=["아직 분석 결과가 없습니다"], state="readonly", command=self._select, **COMBO_STYLE)
+        self.jobs.set("아직 분석 결과가 없습니다")
         self.jobs.grid(row=0, column=0, sticky="ew", pady=4)
         tree_host = ctk.CTkFrame(self, fg_color=COLORS["bg_dark"])
         tree_host.grid(row=1, column=0, sticky="nsew")
@@ -350,6 +357,12 @@ class DraftResultPane(ctk.CTkFrame):
         style.configure("RecordingResult.Treeview", background=COLORS["bg_dark"], foreground=COLORS["text_primary"],
             fieldbackground=COLORS["bg_dark"], rowheight=28, font=(IOS_FONTS["family"], 11))
         style.map("RecordingResult.Treeview", background=[("selected", COLORS["accent"])], foreground=[("selected", COLORS["text_on_accent"])])
+        if "RecordingResult.heading" not in style.element_names():
+            style.element_create("RecordingResult.heading", "from", "clam", "Treeheading.cell")
+        style.layout("RecordingResult.Treeview.Heading", [("RecordingResult.heading", {"sticky": "nswe", "children": [
+            ("Treeheading.padding", {"sticky": "nswe", "children": [("Treeheading.text", {"sticky": "we"})]})]})])
+        style.configure("RecordingResult.Treeview.Heading", background=COLORS["bg_elevated"], foreground=COLORS["accent_text"],
+            font=(IOS_FONTS["family"], 11, "bold"), relief="flat")
         self.tree = ttk.Treeview(tree_host, columns=("wait", "repeat"), selectmode="browse", height=4, style="RecordingResult.Treeview")
         self.tree.heading("#0", text="액션 순서 / 이름")
         self.tree.heading("wait", text="대기(초)")
@@ -358,7 +371,8 @@ class DraftResultPane(ctk.CTkFrame):
         self.tree.column("wait", width=65, minwidth=45, stretch=False)
         self.tree.column("repeat", width=55, minwidth=40, stretch=False)
         self.tree.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(tree_host, orient="vertical", command=self.tree.yview)
+        scroll = ctk.CTkScrollbar(tree_host, command=self.tree.yview, fg_color=COLORS["bg_dark"],
+            button_color=COLORS["border"], button_hover_color=COLORS["accent"])
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<<TreeviewSelect>>", self._selected)
@@ -374,7 +388,7 @@ class DraftResultPane(ctk.CTkFrame):
                 row=row*2, column=column, sticky="ew", padx=8)
             variable = tk.StringVar(master=self)
             variable.trace_add("write", self._changed)
-            entry = ctk.CTkEntry(form, textvariable=variable, height=28, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
+            entry = ctk.CTkEntry(form, textvariable=variable, height=28, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
             entry.grid(row=row*2+1, column=column, sticky="ew", padx=8, pady=(0, 3))
             self.variables[field] = variable
             self.entries[field] = entry
