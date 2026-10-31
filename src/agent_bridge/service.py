@@ -3,10 +3,11 @@
 import copy
 from datetime import datetime
 import hashlib
+import json
 from pathlib import Path
 import threading
 
-from .contracts import BridgeError, MAX_OPERATIONS, digest, encoded, validate, walk
+from .contracts import BridgeError, MAX_MESSAGE, MAX_OPERATIONS, digest, encoded, validate, walk
 from .storage import new_id, publish_bytes, read_json, within, write_json
 
 EDITABLE = {
@@ -55,6 +56,7 @@ class DraftService:
         self.closed = False
         self.instance_id = new_id("app_")
         self.selected_media = {}
+        self.frame_traces = {}
         self.granted_sources = set()
         self.change_serial = 0
 
@@ -76,6 +78,8 @@ class DraftService:
 
     def _save(self, state):
         self._check()
+        if len(json.dumps(state, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")) > MAX_MESSAGE:
+            raise BridgeError("LIMIT_REACHED", "Draft metadata exceeds the durable read limit")
         write_json(self._path(state["draft_id"]), state)
         self.change_serial += 1
 
@@ -119,7 +123,8 @@ class DraftService:
             validate(plan)
             state = {"draft_id": new_id("draft_"), "revision": 1, "plan": plan,
                      "source": {"plan_id": plan_id, "sha256": source["source_sha256"]} if source else None,
-                     "receipts": {}, "asset_files": {}, "analysis": None, "approval": None, "publication": None}
+                     "receipts": {}, "asset_files": {}, "source_assets": {}, "analysis": None, "approval": None, "publication": None}
+            self._pin_assets(state)
             self._save(state)
             return self._public(state)
 
@@ -171,6 +176,7 @@ class DraftService:
             for operation in operations:
                 self._apply(candidate["plan"], operation)
             validate(candidate["plan"])
+            self._pin_assets(candidate)
             candidate["revision"] += 1
             candidate["approval"] = None
             candidate["analysis"] = None
@@ -275,7 +281,25 @@ class DraftService:
             if hashlib.sha256(path.read_bytes()).hexdigest() != state["asset_files"][name]["sha256"]:
                 raise BridgeError("MEDIA_NOT_READY", "Draft asset content changed")
             return path
-        return within(self.templates_dir / name, self.templates_dir)
+        path = within(self.templates_dir / name, self.templates_dir)
+        expected = state.get("source_assets", {}).get(name)
+        if expected and self._file_hash(path) != expected:
+            raise BridgeError("MEDIA_NOT_READY", "Reference asset changed; review a new draft")
+        return path
+
+    @staticmethod
+    def _file_hash(path):
+        hasher = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1_000_000), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def _pin_assets(self, state):
+        for name in set(assets(state["plan"])):
+            path = self._asset_path(state, name)
+            if name not in state["asset_files"] and name not in state["source_assets"]:
+                state["source_assets"][name] = self._file_hash(path)
 
     def validate_draft(self, draft_id):
         with self.lock:
@@ -321,10 +345,15 @@ class DraftService:
                 record = self.selected_media.get(step.get("recording_id"))
                 if not record:
                     raise BridgeError("PERMISSION_REQUIRED", "Analyze a recording selected by the user")
+                trace = self.frame_traces.get(step.get("frame_trace_id"))
+                if not trace or trace["recording_id"] != step["recording_id"] or trace["source_sha256"] != record["sha256"]:
+                    raise BridgeError("ANALYSIS_REQUIRED", "Read the evidence frames with get_frames before reporting analysis")
                 from .contracts import number
                 seconds = step.get("seconds")
                 if not number(seconds, 0, 86400):
                     raise BridgeError("INVALID_ANALYSIS", "Provide the evidence time in seconds")
+                if abs(seconds - trace["requested_seconds"]) > .1:
+                    raise BridgeError("INVALID_ANALYSIS", "Analysis time does not match the evidence frame")
                 from .media import MediaTools
                 MediaTools._private(record, seconds)
             if covered != ids:

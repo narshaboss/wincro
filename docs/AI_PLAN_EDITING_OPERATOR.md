@@ -13,7 +13,7 @@
 5. `open_draft`로 새 초안 또는 저장본의 독립 사본을 만든다. 의미를 구분한 작업 단위로 상위·하위를 구성한다.
 6. 원본 크기 좌표로 `create_asset_crop`을 호출해 실제 스샷을 만든다. 미리보기 좌표를 원본 좌표로 오인하지 않는다. 이미지를 생성하거나 마스크를 자동 추가하지 않는다.
 7. `stage_edits`로 작은 거래 단위의 변경을 적용한다. 매번 최신 revision과 고유 request_id를 사용한다. 표시 번호가 아니라 rule_id로 대상 액션을 선택한다.
-8. `read_draft`로 실제 결과를 확인한다. `record_analysis`에 목표와 각 액션의 observation/purpose/expected_result, 녹화 ID와 근거 시점을 기록한다. 모르는 조건은 open_questions에 남긴다.
+8. `read_draft`로 실제 결과를 확인한다. `record_analysis`에 목표와 각 액션의 observation/purpose/expected_result, 녹화 ID와 근거 시점, `get_frames`가 반환한 `frame_trace_id`를 기록한다. 모르는 조건은 open_questions에 남긴다.
 9. `validate_draft`와 `save_draft`로 구조·자산·저장을 확인한다. 편집 후에는 기존 AI 분석과 승인이 무효가 되므로 다시 검토한다.
 10. 사용자가 WinCro에서 최신 분석을 읽고 승인한 뒤에만 새 플랜으로 등록한다. 원본 교체, 재생목록 편입과 실제 실행은 하지 않는다.
 

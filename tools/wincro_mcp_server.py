@@ -83,7 +83,7 @@ def stage_edits(draft_id: str, expected_revision: int, request_id: str, operatio
 @mcp.tool()
 def record_analysis(draft_id: str, expected_revision: int, goal: str, steps: list[dict], open_questions: list[str] | None = None) -> dict:
     """Save YOUR concise AI analysis, not hidden reasoning. Each step needs rule_id, recording_id,
-    seconds, observation, purpose, expected_result. Cover every action; ask the user about uncertain
+    frame_trace_id (from get_frames), seconds, observation, purpose, expected_result. Cover every action; ask the user about uncertain
     rules. A later edit invalidates this review. WinCro does not analyze intentions itself.
     """
     return invoke("record_analysis", locals())

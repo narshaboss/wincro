@@ -39,9 +39,9 @@ def review(service, draft, recording_id=None, questions=None):
         path = service.workspace / "evidence.png"
         path.write_bytes(cv2.imencode(".png", np.full((20, 20, 3), 100, np.uint8))[1].tobytes())
         recording_id = MediaTools(service).register(path)["recording_id"]
-    MediaTools(service).get_frames(recording_id, [0])
+    trace = MediaTools(service).get_frames(recording_id, [0])["frames"][0]["frame_trace_id"]
     service.record_analysis(draft["draft_id"], draft["revision"], "Test user goal", [
-        {"rule_id": rule["rule_id"], "recording_id": recording_id, "seconds": 0,
+        {"rule_id": rule["rule_id"], "recording_id": recording_id, "seconds": 0, "frame_trace_id": trace,
          "observation": "A confirmation control is visible", "purpose": "Confirm the user's selection",
          "expected_result": "The next screen is shown"} for rule, *_ in walk(draft["plan"])], questions)
     return service.read_draft(draft["draft_id"])
@@ -262,3 +262,22 @@ def test_unknown_schema_is_preserved_but_never_silently_published(service):
         service.validate_draft(draft["draft_id"])
     assert err.value.code == "UNSUPPORTED_SCHEMA"
     assert read_json(service.plans_dir / "plan_future.json") == source
+
+
+def test_reference_asset_replacement_invalidates_validation(service):
+    path = service.templates_dir / "asset.png"
+    path.write_bytes(cv2.imencode(".png", np.zeros((10, 10, 3), np.uint8))[1].tobytes())
+    draft = add(service, service.open_draft("asset snapshot"), target_image="asset.png")
+    path.write_bytes(b"changed source")
+    with pytest.raises(BridgeError) as err:
+        service.validate_draft(draft["draft_id"])
+    assert err.value.code == "MEDIA_NOT_READY"
+
+
+def test_oversized_state_is_rejected_before_overwriting_durable_draft(service, monkeypatch):
+    draft = service.open_draft("size limit")
+    import src.agent_bridge.service as module
+    monkeypatch.setattr(module, "MAX_MESSAGE", 100)
+    with pytest.raises(BridgeError):
+        add(service, draft)
+    assert service.read_draft(draft["draft_id"])["revision"] == 1

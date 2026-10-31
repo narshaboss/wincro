@@ -80,9 +80,10 @@ def test_real_mcp_stdio_to_live_pipe_and_durable_publication(tmp_path):
                 frames = await client.call_tool("get_frames", {"recording_id": recording, "timestamps": [0]})
                 assert not frames.isError
                 assert any(item.type == "image" for item in frames.content)
+                trace = json.loads(frames.content[0].text)["frame_trace_id"]
                 key = draft["plan"]["initial_rules"][0]["rule_id"]
                 report = await invoke("record_analysis", {"draft_id": draft["draft_id"], "expected_revision": draft["revision"],
-                    "goal": "Confirm selection", "steps": [{"rule_id": key, "recording_id": recording, "seconds": 0,
+                    "goal": "Confirm selection", "steps": [{"rule_id": key, "recording_id": recording, "seconds": 0, "frame_trace_id": trace,
                     "observation": "A confirmation control is visible", "purpose": "Confirm the current selection",
                     "expected_result": "Move to the next screen"}]})
                 # Owner-side UI authority only; there is deliberately no approval tool.

@@ -112,6 +112,8 @@ class MediaTools:
             raise BridgeError("LIMIT_REACHED", "Request 1 to 4 frames at a time")
         record = self._get(recording_id)
         result = []
+        if len(self.service.frame_traces) + len(timestamps) > 2048:
+            raise BridgeError("LIMIT_REACHED", "Frame trace budget reached; open a new editor session")
         for seconds in timestamps:
             frame, actual = self._frame(record, seconds)
             h, w = frame.shape[:2]
@@ -123,6 +125,10 @@ class MediaTools:
             result.append({"requested_seconds": seconds, "actual_seconds": actual,
                            "original_width": w, "original_height": h, "preview_scale": scale,
                            "mime_type": "image/jpeg", "base64": base64.b64encode(data).decode("ascii")})
+            trace_id = new_id("frame_")
+            self.service.frame_traces[trace_id] = {"recording_id": recording_id,
+                "requested_seconds": seconds, "source_sha256": record["sha256"]}
+            result[-1]["frame_trace_id"] = trace_id
         return {"frames": result}
 
     def get_input_events(self, recording_id, start=0, end=60, offset=0):
