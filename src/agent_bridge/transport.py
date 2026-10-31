@@ -3,6 +3,7 @@
 import ctypes
 from ctypes import wintypes as wt
 import hmac
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -116,6 +117,7 @@ class LocalHost:
         self.stop = threading.Event()
         self.ready = threading.Event()
         self.error = None
+        self.cleanup_error = None
         self.lease = ConnectionLease()
         self.token = secrets.token_hex(32)
         connection_id = new_id("app_")
@@ -245,7 +247,14 @@ class LocalHost:
 
     def close(self):
         self.stop.set()
-        self.connection_file.unlink(missing_ok=True)
+        try:
+            self.connection_file.unlink(missing_ok=True)
+        except OSError as exc:
+            self.cleanup_error = type(exc).__name__
+            logging.getLogger(__name__).warning("AI connection revoked; descriptor cleanup failed: %s", self.cleanup_error)
+            return False
+        self.cleanup_error = None
+        return True
 
     @property
     def client_connected(self):

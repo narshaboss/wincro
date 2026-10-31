@@ -681,13 +681,14 @@ class AIDraftEditor(ctk.CTkToplevel):
         if self.busy:
             return
         if self.host:
-            self.host.close()
+            cleaned = self.host.close()
             self.host = None
             self.connection_path = None
             self.plans.configure(state="readonly")
             self.connection_button.configure(text="연결 준비 켜기")
             self._update_connection_indicator()
-            self.status.set("GPT 연결 OFF · 이전 연결 정보는 폐기했습니다. 저장된 초안은 보관됩니다.")
+            self.status.set("GPT 연결 OFF · 연결 정보 파일 정리에 실패했지만 이전 연결은 무효입니다. 저장된 초안은 보관됩니다." if cleaned is False else
+                            "GPT 연결 OFF · 이전 연결 정보는 폐기했습니다. 저장된 초안은 보관됩니다.")
             return
         from ..agent_bridge.transport import LocalHost
         selected = self.plan_options.get(self.plans.get())

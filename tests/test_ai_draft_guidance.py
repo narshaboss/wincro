@@ -6,7 +6,7 @@ import pytest
 
 from src.agent_bridge.contracts import BridgeError, digest
 from src.agent_bridge.service import DraftService
-from src.agent_bridge.transport import ConnectionLease
+from src.agent_bridge.transport import ConnectionLease, LocalHost
 from src.ui.ai_draft_guidance import (HELP_TEXT, ROLE_TEXT, authoring_request, friendly_error,
                                      parse_exclusions, readable_action, readable_analysis, review_progress)
 
@@ -121,3 +121,22 @@ def test_client_sessions_are_bounded_and_disconnect_cannot_clear_another_session
         lease.heartbeat("f" * 32)
     lease.disconnect("not-the-current-session")
     assert lease.connected
+
+
+def test_descriptor_delete_failure_still_revokes_the_client_and_does_not_trap_gui_shutdown():
+    from threading import Event
+    from types import SimpleNamespace
+    host = object.__new__(LocalHost)
+    host.stop = Event()
+    host.thread = SimpleNamespace(is_alive=lambda: True)
+    host.lease = ConnectionLease()
+    host.lease.heartbeat("a" * 32)
+
+    def locked(**_):
+        raise PermissionError("simulated descriptor lock")
+
+    host.connection_file = SimpleNamespace(unlink=locked)
+    assert host.client_connected
+    assert host.close() is False
+    assert host.cleanup_error == "PermissionError"
+    assert host.stop.is_set() and not host.client_connected
