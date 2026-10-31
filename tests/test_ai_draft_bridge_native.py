@@ -176,7 +176,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
             time.sleep(.03)
         assert window.active_page == "prepare"
         assert window.connection_status.get() == "GPT 연결 OFF"
-        artifacts = Path("artifacts/window_control")
+        artifacts = Path("artifacts/ai_draft")
         artifacts.mkdir(parents=True, exist_ok=True)
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_prepare_{int(scale*100)}pct.png")
         copied = []

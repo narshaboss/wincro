@@ -37,7 +37,14 @@ jobs:
       - name: AI draft local-pipe and layout verification on isolated Windows
         env:
           WINCRO_AI_EDITOR_UI_QA: '1'
-        run: python -m pytest -q tests/test_ai_draft_bridge_native.py
+        run: python -m pytest -q tests/test_ai_draft_bridge_native.py --junitxml=artifacts/ai_draft/results.xml
+      - name: Upload GPT draft layout and native test evidence
+        if: ${{ always() && hashFiles('artifacts/ai_draft/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-draft-ui
+          path: artifacts/ai_draft/
+          retention-days: 14
       - name: Dedicated video real-clip simulations and recognition isolation
         run: python -m pytest -q tests/test_dedicated_video_sampling.py tests/test_monitoring_condition_video_regression.py tests/test_optimization_resource_regression.py
       - name: Save integrity, stop handoff and notification identity simulations

@@ -49,6 +49,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         self._connection_display = None
         self._wrapped = []
         self._wrap_sizes = {}
+        self._poll_id = None
         self.results = queue.Queue(maxsize=8)
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ai-draft-ui")
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -65,10 +66,15 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.status = tk.StringVar(value="처음이라면 사용방법을 읽고, 1번 자료 준비부터 시작하세요.")
         self.connection_status = tk.StringVar(value="GPT 연결 OFF")
         self.review_status = tk.StringVar()
-        self._build()
-        self.bind("<Configure>", self._resize_copy, add="+")
-        self._poll_id = self.after(120, self._poll)
-        self._refresh_choices()
+        try:
+            self._build()
+            self.bind("<Configure>", self._resize_copy, add="+")
+            self._poll_id = self.after(120, self._poll)
+            self._refresh_choices()
+        except Exception:
+            self._shutdown()
+            self.destroy()
+            raise
 
     def _button(self, parent, text, command, **kwargs):
         options = dict(height=32, fg_color=COLORS["bg_elevated"], text_color=COLORS["text_primary"],
@@ -257,7 +263,7 @@ class AIDraftEditor(ctk.CTkToplevel):
             return
         for label in self._wrapped:
             available = label.winfo_width() if label.winfo_width() > 1 else label.master.winfo_width() - 30
-            width = max(180, int(available / self._get_widget_scaling()) - 4)
+            width = max(180, int(available / label._get_widget_scaling()) - 4)
             if self._wrap_sizes.get(label) != width:
                 self._wrap_sizes[label] = width
                 label.configure(wraplength=width)
@@ -714,7 +720,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.service.closed = True
         self.worker.shutdown(wait=False, cancel_futures=True)
         try:
-            self.after_cancel(self._poll_id)
+            if self._poll_id is not None:
+                self.after_cancel(self._poll_id)
         except tk.TclError:
             pass
 
@@ -780,7 +787,7 @@ class MediaConsentDialog(ctk.CTkToplevel):
     def _resize(self, event=None):
         if event is not None and event.widget is not self:
             return
-        width = max(220, int(self.winfo_width() / self._get_widget_scaling()) - 65)
+        width = max(220, int(self.winfo_width() / self.exclude_entry._get_widget_scaling()) - 65)
         for label in self.labels:
             if label.cget("wraplength") != width:
                 label.configure(wraplength=width)
