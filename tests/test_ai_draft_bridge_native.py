@@ -201,6 +201,11 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         window._update_connection_indicator()
         assert window.connection_status.get() == "GPT 연결 OFF"
         help_dialog = window._show_help()
+        for _ in range(7):
+            root.update()
+            time.sleep(.05)
+        assert help_dialog.winfo_ismapped()
+        help_dialog.lift()
         root.update()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_help_{int(scale*100)}pct.png")
         help_dialog.destroy()
@@ -215,6 +220,12 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         assert consent.log is None
         assert consent.log_button.cget("state") == "disabled"
         assert consent.add_button.cget("state") == "normal"
+        assert "동의 확인됨" in consent.error_label.cget("text")
+        for _ in range(7):
+            root.update()
+            time.sleep(.05)
+        assert consent.winfo_ismapped()
+        consent.lift()
         root.update()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"ai_consent_{int(scale*100)}pct.png")
         consent._accept()

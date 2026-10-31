@@ -320,6 +320,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         if copy_action:
             self._button(dialog, "연결 설정 요청문 복사", copy_action).pack(fill="x", padx=12, pady=(0, 6))
         self._button(dialog, "닫기", dialog.destroy).pack(fill="x", padx=12, pady=(0, 12))
+        dialog.transient(self)
         return dialog
 
     def _show_help(self):
@@ -797,7 +798,7 @@ class MediaConsentDialog(ctk.CTkToplevel):
             anchor="w", justify="left", wraplength=350, text_color=COLORS["text_secondary"])
         self.error_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.labels.append(self.error_label)
-        self.consent.trace_add("write", lambda *_: self.add_button.configure(state="normal" if self.consent.get() else "disabled"))
+        self.consent.trace_add("write", self._consent_changed)
         self.exclusions.trace_add("write", self._private_changed)
         self.bind("<Configure>", self._resize, add="+")
         self.transient(parent)
@@ -818,6 +819,12 @@ class MediaConsentDialog(ctk.CTkToplevel):
         else:
             self.log_label.configure(text="추가된 키 입력 기록 없음")
         self.log_button.configure(state="disabled" if private else "normal")
+
+    def _consent_changed(self, *_):
+        agreed = self.consent.get()
+        self.add_button.configure(state="normal" if agreed else "disabled")
+        self.error_label.configure(text="동의 확인됨 · 자료 추가를 누르면 GPT에 제공할 자료로 등록합니다." if agreed else
+                                   "동의 후 자료 추가를 누르세요. 취소하면 전달하지 않습니다.")
 
     def _select_log(self):
         self.log = filedialog.askopenfilename(parent=self, title="선택한 녹화의 키 입력 기록 JSON", filetypes=[("키 입력 기록", "*.json")]) or None
