@@ -7,6 +7,7 @@ Never uses operator credentials, captures the desktop, or generates PC input.
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,6 +57,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     requests = []
+    connected_signals = []
     release_response = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
@@ -68,11 +70,23 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
                 release_response.wait(30)
             item = {"id": "msg_offline", "type": "message", "role": "assistant", "status": "completed",
                 "content": [{"type": "output_text", "text": "Offline transport-only simulation; no actual GPT analysis.", "annotations": []}]}
+            number = len(requests)
+            if not cancel_job and number <= 2:
+                namespace = next(tool["name"] for tool in requests[0]["tools"]
+                    if tool.get("name", "").startswith("mcp__wincroRecording_"))
+                recording = re.search(r"recording_id=(recording_[a-z0-9]+)", json.dumps(requests[0]))[1]
+                name = "connection_status" if number == 1 else "get_frames"
+                arguments = {} if number == 1 else {"recording_id": recording, "timestamps": [0]}
+                item = {"id": f"fc_offline_{number}", "type": "function_call", "call_id": f"call_offline_{number}",
+                    "namespace": namespace, "name": name, "arguments": json.dumps(arguments)}
+            elif not cancel_job:
+                deadline = time.monotonic() + 4
+                while not jobs.connected and time.monotonic() < deadline:
+                    time.sleep(.05)
+                connected_signals.append(jobs.connected)
             events = [
                 {"type": "response.created", "response": {"id": "resp_offline", "status": "in_progress", "output": []}},
                 {"type": "response.output_item.added", "output_index": 0, "item": dict(item, status="in_progress")},
-                {"type": "response.output_text.delta", "item_id": "msg_offline", "output_index": 0, "content_index": 0,
-                 "delta": item["content"][0]["text"]},
                 {"type": "response.output_item.done", "output_index": 0, "item": item},
                 {"type": "response.completed", "response": {"id": "resp_offline", "status": "completed", "output": [item],
                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}},
@@ -115,7 +129,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     before = original.read_bytes()
     jobs = RecordingJobs(tmp_path / "jobs", plans, tmp_path / "templates")
     try:
-        jobs.start(image, "Offline transport QA only. Return the supplied test response; do not use tools.",
+        jobs.start(image, "Offline transport QA only. Follow the deterministic fixture tool sequence; do not perform real analysis.",
                    {"codex": executable, "python": os.sys.executable, "model": "", "max_seconds": 45})
         runner = None
         if cancel_job:
@@ -157,11 +171,16 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         assert list(plans.iterdir()) == [original]
         assert config_path.read_bytes() == config_before
         assert not foreign_marker.exists(), "An unconsented global MCP process was started"
+        frames_received = not cancel_job and len(requests) >= 3 and "data:image/" in json.dumps(requests[2])
+        if not cancel_job:
+            assert frames_received, "Real Codex did not receive the fixture MCP image"
+            assert any(connected_signals), "Actual tool traffic did not confirm a live connection"
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
         filename = "cancelled-tool-surface.json" if cancel_job else "codex-tool-surface.json"
         (artifacts / filename).write_text(json.dumps({"tool_names": sorted(tools), "status": state["status"],
-            "real_model_called": False, "original_plan_unchanged": True}, indent=2), encoding="utf-8")
+            "real_model_called": False, "original_plan_unchanged": True, "actual_mcp_image_received": frames_received,
+            "actual_mcp_connected": any(connected_signals), "unselected_mcp_started": False}, indent=2), encoding="utf-8")
     finally:
         release_response.set()
         jobs.close()

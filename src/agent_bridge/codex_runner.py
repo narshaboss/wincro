@@ -178,6 +178,7 @@ class CodexRunner:
             f"mcp_servers.{self.server_name}.args": [server, "--connection-file", str(descriptor)],
             f"mcp_servers.{self.server_name}.cwd": str(Path(server).parent.parent),
             f"mcp_servers.{self.server_name}.required": True,
+            f"mcp_servers.{self.server_name}.default_tools_approval_mode": "approve",
             f"mcp_servers.{self.server_name}.enabled_tools": sorted(JOB_TOOLS | {"connection_status"}),
         }
         for key, value in configs.items():
