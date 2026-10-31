@@ -47,10 +47,15 @@ def assets(value, key=""):
 
 
 class DraftService:
-    def __init__(self, plans_dir, templates_dir, workspace):
+    def __init__(self, plans_dir, templates_dir, workspace, *, allow_publication=True):
         self.plans_dir = Path(plans_dir).resolve()
         self.templates_dir = Path(templates_dir).resolve()
         self.workspace = Path(workspace).resolve()
+        if not allow_publication and any(
+            self.workspace.is_relative_to(path) or path.is_relative_to(self.workspace)
+            for path in (self.plans_dir, self.templates_dir)
+        ):
+            raise BridgeError("PATH_DENIED", "Draft-only storage must not overlap playback data")
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.closed = False
@@ -60,6 +65,7 @@ class DraftService:
         self.frame_traces = {}
         self.granted_sources = set()
         self.change_serial = 0
+        self.allow_publication = bool(allow_publication)
 
     def _check(self):
         if self.closed:
@@ -392,7 +398,8 @@ class DraftService:
                                   + ", ".join(sorted(unknown | unknown_rules)))
             protected = bool(state["plan"].get("game_modes")) or any(r.get("action_type") == "game_mode" for r, *_ in rows)
             return {"valid": True, "revision": state["revision"], "rule_count": len(rows),
-                    "publish_allowed": not protected, "runtime_tested": False,
+                      "publish_allowed": not protected and self.allow_publication, "runtime_tested": False,
+                      "publication_enabled": self.allow_publication,
                     "ai_analysis_current": bool(state.get("analysis") and state["analysis"]["plan_digest"] == digest(state["plan"])),
                     "crosscheck_ready": self._crosscheck_ready(state),
                     "warning": "Special-mode plans cannot be published through this bridge" if protected else "Recognition and real execution require separate verification"}
@@ -485,6 +492,8 @@ class DraftService:
 
     def approve_publication(self, draft_id, expected_revision):
         """UI-only method. Never exposed through MCP dispatch."""
+        if not self.allow_publication:
+            raise BridgeError("PUBLICATION_DISABLED", "This recording workspace only saves independent drafts")
         with self.lock:
             state = self._load(draft_id)
             self._expect(state, expected_revision)
@@ -500,6 +509,8 @@ class DraftService:
             self._save(state)
 
     def publish_new_plan(self, draft_id, expected_revision):
+        if not self.allow_publication:
+            raise BridgeError("PUBLICATION_DISABLED", "This recording workspace cannot write playback plans")
         with self.lock:
             state = self._load(draft_id)
             if state.get("publication"):

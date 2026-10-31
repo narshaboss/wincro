@@ -379,59 +379,80 @@ def test_closing_during_connection_start_cannot_leave_a_listener_or_reopen_servi
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
-def test_recording_tab_gpt_entry_layout_and_launch_without_capture(ui_root, monkeypatch, scale):
+def test_recording_workspace_layout_and_selection_without_capture(ui_root, monkeypatch, tmp_path, scale):
     import customtkinter as ctk
     import tkinter as tk
     from types import SimpleNamespace
     from unittest.mock import Mock
     from PIL import ImageGrab
-    from src.ui import ai_draft_editor, main_window, recorder_view
+    from src.ui import main_window, recorder_view, recording_workspace
 
     config = SimpleNamespace(recording=SimpleNamespace(fps=30, include_cursor=True, save_input_log=True))
     session, capture, database = Mock(), Mock(), Mock()
+    database.get_all_recordings.return_value = []
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(recording_workspace, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(recorder_view, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(main_window, "get_config", lambda: config)
     monkeypatch.setattr(recorder_view, "RecordingSession", Mock(return_value=session))
     monkeypatch.setattr(recorder_view, "get_screen_recorder", Mock(return_value=capture))
     monkeypatch.setattr(recorder_view, "get_db", Mock(return_value=database))
-    monkeypatch.setattr(recorder_view, "UiCallbackDispatcher", Mock())
-    monkeypatch.setattr(recorder_view, "LatestOnlyWorker", Mock())
     monkeypatch.setattr(recorder_view.RecorderView, "_setup_hotkeys", Mock())
-    monkeypatch.setattr(recorder_view.RecorderView, "_refresh_recordings_list_async", Mock())
-    opened = Mock()
-    monkeypatch.setattr(ai_draft_editor, "open_ai_draft_editor", opened)
     ctk.set_widget_scaling(scale)
     ui_root._ai_callback_errors.clear()
     window = ctk.CTkToplevel(ui_root)
     window.overrideredirect(True)
     tk.Wm.geometry(window, "1024x768+0+0")
+    window.grid_columnconfigure(1, weight=1)
+    window.grid_rowconfigure(0, weight=1)
+    sidebar = ctk.CTkFrame(window, width=180)
+    sidebar.grid(row=0, column=0, sticky="ns")
+    sidebar.grid_propagate(False)
+    log_panel = ctk.CTkFrame(window, height=100)
+    log_panel.grid(row=1, column=0, columnspan=2, sticky="ew")
     view = None
     try:
         view = recorder_view.RecorderView(window)
-        view.pack(fill="both", expand=True)
-        for _ in range(8):
-            ui_root.update()
-            time.sleep(.04)
-        button = view._ai_draft_button
-        assert button.winfo_ismapped()
-        assert window.winfo_rootx() <= button.winfo_rootx()
-        assert button.winfo_rootx() + button.winfo_width() <= window.winfo_rootx() + window.winfo_width()
-        assert window.winfo_rooty() <= button.winfo_rooty() < window.winfo_rooty() + 90
-        assert button.winfo_rooty() < view._start_btn.winfo_rooty()
-        button.invoke()
-        opened.assert_called_once_with(view)
+        view.grid(row=0, column=1, sticky="nsew")
+        assert _pump_until(ui_root, lambda: view._workspace.analyze.winfo_ismapped() and not view._workspace.busy, 5)
+        deadline = time.monotonic() + .25
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        workspace = view._workspace
+        assert workspace.badge.cget("text") == "GPT 연결 OFF"
+        assert workspace.jobs.host is None and not workspace.jobs.busy
+        for button in (view._start_btn, view._stop_btn, workspace.analyze, workspace.cancel_button):
+            assert button.winfo_ismapped()
+            assert window.winfo_rootx() <= button.winfo_rootx()
+            assert button.winfo_rootx() + button.winfo_width() <= window.winfo_rootx() + window.winfo_width()
+            assert button.winfo_rooty() + button.winfo_height() <= window.winfo_rooty() + window.winfo_height()
+            assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4
+        assert not hasattr(view, "_fps_combo")
+        workspace.analyze.invoke()
+        assert "선택" in workspace.status.cget("text")
         session.start.assert_not_called()
         capture.start.assert_not_called()
         database.create_recording.assert_not_called()
         assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
         artifacts = Path("artifacts/ai_draft")
         artifacts.mkdir(parents=True, exist_ok=True)
-        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recorder_gpt_entry_{int(scale*100)}pct.png")
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_workspace_{int(scale*100)}pct.png")
+        workspace.tabs.set("분석 결과 편집")
+        deadline = time.monotonic() + .25
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        assert workspace.result.save.winfo_ismapped()
+        assert workspace.result.save.winfo_rooty() + workspace.result.save.winfo_height() <= window.winfo_height()
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_result_{int(scale*100)}pct.png")
     finally:
         if view is not None:
             view.cleanup()
         window.destroy()
         ui_root.update()
         ctk.set_widget_scaling(1.0)
+
+
+def test_recording_pipeline_select_consent_mcp_result_and_durable_save(tmp_path, monkeypatch, ui_root):
+    from recording_workspace_scenario import exercise_recording_pipeline
+    exercise_recording_pipeline(tmp_path, monkeypatch, ui_root)
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])

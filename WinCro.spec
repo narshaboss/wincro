@@ -59,6 +59,12 @@ datas = [
     ('src/ui/ctk_white_gold_theme.json', 'src/ui'),
     ('src/ui/assets', 'src/ui/assets'),
     ('arduino', 'arduino'),
+    ('tools/wincro_mcp_server.py', 'tools'),
+    ('src/__init__.py', 'src'),
+    ('src/agent_bridge/__init__.py', 'src/agent_bridge'),
+    ('src/agent_bridge/contracts.py', 'src/agent_bridge'),
+    ('src/agent_bridge/storage.py', 'src/agent_bridge'),
+    ('src/agent_bridge/transport.py', 'src/agent_bridge'),
 ]
 datas += collect_packaged_data()
 datas += collect_data_files('certifi', includes=['cacert.pem'])

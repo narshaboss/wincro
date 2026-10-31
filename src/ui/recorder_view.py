@@ -39,6 +39,8 @@ class TemplateMediaItem:
     media_type: str
     size_bytes: int
     modified_at: datetime
+    recording_id: Optional[int] = None
+    input_log: Optional[str] = None
 
     @property
     def id(self) -> str:
@@ -69,6 +71,8 @@ class RecorderView(BaseView):
         self._async_error = None
         self._async_result_name = None
         self._recordings_load_generation = 0
+        self._recording_ui_closed = False
+        self._catalog_scale_after = None
         self._recording_items = []
         self._media_thumbnail_cache = OrderedDict()
         self._media_thumbnail_refs = deque(maxlen=192)
@@ -84,6 +88,8 @@ class RecorderView(BaseView):
         self._setup_hotkeys()
 
     def _recorder_ui_post(self, callback):
+        if self._recording_ui_closed:
+            return
         try:
             dispatcher = getattr(self, "_ui_dispatcher", None)
             if dispatcher is not None:
@@ -106,321 +112,98 @@ class RecorderView(BaseView):
         label.configure(text_color=text_color)
 
     def _setup_ui(self):
-        # 스크롤 가능한 메인 컨테이너 (로그 패널 확장 시 축소 가능)
-        self._scroll_frame = ctk.CTkScrollableFrame(
-            self,
-            fg_color="transparent",
-        )
-        self._scroll_frame.pack(fill="both", expand=True)
+        from .recording_workspace import RecordingWorkspace
+        self._workspace = RecordingWorkspace(self)
+        self._workspace.pack(fill="both", expand=True)
 
-        self._setup_ai_draft_entry(self._scroll_frame)
+    def _set_scaling(self, new_widget_scaling, new_window_scaling):
+        super()._set_scaling(new_widget_scaling, new_window_scaling)
+        if getattr(self, "_recording_ui_closed", True) or getattr(self, "_recordings_scroll", None) is None:
+            return
+        if self._catalog_scale_after is None:
+            self._catalog_scale_after = self.after(0, self._sync_catalog_scale)
 
-        # 그리드 컨테이너
-        main_frame = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # 그리드 설정 (2행 2열, 균등 비율)
-        main_frame.grid_columnconfigure(0, weight=1, uniform="col")
-        main_frame.grid_columnconfigure(1, weight=1, uniform="col")
-        main_frame.grid_rowconfigure(0, weight=1, uniform="row")
-        main_frame.grid_rowconfigure(1, weight=1, uniform="row")
-
-        # 좌상단: 녹화 시작
-        record_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        record_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
-        self._setup_record_card(record_frame)
-
-        # 우상단: 녹화 상태
-        status_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        status_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
-        self._setup_status_card(status_frame)
-
-        # 좌하단: 녹화 설정
-        settings_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        settings_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
-        self._setup_settings_card(settings_frame)
-
-        # 우하단: 저장된 녹화
-        recordings_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        recordings_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
-        self._setup_recordings_card(recordings_frame)
-
-    def _setup_ai_draft_entry(self, parent):
-        self._ai_draft_button = self.create_button(
-            parent,
-            text="GPT로 플랜 만들기 · 사용방법 / 초안 편집",
-            command=self._open_ai_draft_editor,
-            style="secondary",
-            height=36,
-        )
-        self._ai_draft_button.pack(fill="x", padx=8, pady=(8, 0))
-
-    def _open_ai_draft_editor(self) -> None:
-        # Keep the editing bridge opt-in; opening the recording tab must not start it.
-        from .ai_draft_editor import open_ai_draft_editor
-        try:
-            open_ai_draft_editor(self)
-        except Exception as exc:
-            from tkinter import messagebox
-            messagebox.showerror("GPT 플랜 만들기", str(exc), parent=self)
+    def _sync_catalog_scale(self):
+        self._catalog_scale_after = None
+        if self._recording_ui_closed:
+            return
+        rows = self._recordings_scroll
+        height = max(1, round(self._apply_widget_scaling(82)))
+        if height != rows._item_height:
+            position = rows._canvas.yview()[0]
+            rows._item_height = height
+            rows.refresh()
+            rows._canvas.yview_moveto(position)
+            rows._schedule_render()
 
     def _setup_record_card(self, parent):
-        """녹화 컨트롤 카드"""
-        card = self.create_card(parent, title="녹화 시작")
-        card.pack(fill="both", expand=True)
-
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=20, pady=15)
-
-        # 녹화 이름 입력
-        self.create_label(content, "녹화 이름", style="body").pack(anchor="w")
-
-        self._name_entry = ctk.CTkEntry(
-            content,
-            placeholder_text="비워두면 자동 생성 (예: 녹화_20240118_143022)",
-            height=40,
-            fg_color=COLORS["bg_glass"],
-            border_color=COLORS["border"],
-            text_color=COLORS["text_primary"],
-            corner_radius=IOS_METRICS["control_radius"],
-        )
-        self._name_entry.pack(fill="x", pady=(5, 15))
-
-        # 버튼 영역
-        btn_frame = ctk.CTkFrame(content, fg_color="transparent")
-        btn_frame.pack(fill="x")
-
-        self._start_btn = self.create_button(
-            btn_frame,
-            text="⏺  녹화 시작  (F7)",
-            command=self._on_start_recording,
-            style="primary",
-            width=160,
-            height=44,
-        )
-        self._start_btn.pack(side="left", padx=(0, 10))
-
-        self._stop_btn = self.create_button(
-            btn_frame,
-            text="⏹  녹화 중지  (F7)",
-            command=self._on_stop_recording,
-            style="danger",
-            width=160,
-            height=44,
-        )
-        self._stop_btn.pack(side="left")
+        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"], border_width=1, border_color=COLORS["border"])
+        card.pack(fill="x")
+        card.grid_columnconfigure(0, weight=1)
+        self._fps_var = tk.StringVar(master=self, value=str(self._config.recording.fps))
+        self._name_entry = ctk.CTkEntry(card, placeholder_text="녹화 이름 (비우면 자동 생성)", height=30,
+            fg_color=COLORS["bg_glass"], border_color=COLORS["border"], text_color=COLORS["text_primary"])
+        self._name_entry.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
+        self._start_btn = self.create_button(card, "녹화 시작 (F7)", self._on_start_recording, width=110, height=30)
+        self._start_btn.grid(row=0, column=1, padx=(0, 5), pady=6)
+        self._stop_btn = self.create_button(card, "녹화 중지", self._on_stop_recording, style="danger", width=85, height=30)
+        self._stop_btn.grid(row=0, column=2, padx=(0, 8), pady=6)
         self._stop_btn.configure(state="disabled")
-
-    def _setup_status_card(self, parent):
-        """녹화 상태 카드"""
-        card = self.create_card(parent, title="녹화 상태")
-        card.pack(fill="both", expand=True)
-
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=20, pady=15)
-
-        # 상태 표시
-        status_row = ctk.CTkFrame(content, fg_color="transparent")
-        status_row.pack(fill="x", pady=(0, 15))
-
-        self._status_indicator = ctk.CTkLabel(
-            status_row,
-            text="●",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=32),
-            text_color=COLORS["text_muted"],
-        )
-        self._status_indicator.pack(side="left", padx=(0, 15))
-
-        status_info = ctk.CTkFrame(status_row, fg_color="transparent")
-        status_info.pack(side="left", fill="x", expand=True)
-
-        self._status_label = ctk.CTkLabel(
-            status_info,
-            text="⏸ 대기 중",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=18, weight="bold"),
-            text_color=COLORS["text_primary"],
-        )
-        self._status_label.pack(anchor="w")
-
-        self._status_hint = ctk.CTkLabel(
-            status_info,
-            text="F7 키를 눌러 녹화를 시작하세요",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
-            text_color=COLORS["text_muted"],
-        )
-        self._status_hint.pack(anchor="w")
-
-        # 통계
-        stats_frame = ctk.CTkFrame(
-            content,
-            fg_color=COLORS["bg_glass"],
-            corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=IOS_METRICS["card_border_width"],
-            border_color=COLORS["separator"],
-        )
-        stats_frame.pack(fill="x")
-
-        stats = [
-            ("녹화 시간", "duration", "00:00:00"),
-            ("프레임", "frame", "0"),
-            ("입력 이벤트", "event", "0"),
-        ]
-
-        self._stat_labels = {}
-        for i, (label, key, value) in enumerate(stats):
-            stat_col = ctk.CTkFrame(stats_frame, fg_color="transparent")
-            stat_col.pack(side="left", fill="x", expand=True, padx=15, pady=12)
-
-            ctk.CTkLabel(
-                stat_col,
-                text=label,
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=11),
-                text_color=COLORS["text_muted"],
-            ).pack()
-
-            self._stat_labels[key] = ctk.CTkLabel(
-                stat_col,
-                text=value,
-                font=ctk.CTkFont(family=IOS_FONTS["family"], size=16, weight="bold"),
-                text_color=COLORS["text_primary"],
-            )
-            self._stat_labels[key].pack()
-
-    def _setup_settings_card(self, parent):
-        """녹화 설정 카드"""
-        card = self.create_card(parent, title="녹화 설정")
-        card.pack(fill="both", expand=True)
-
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=20, pady=15)
-
-        # 설정 그리드
-        settings = ctk.CTkFrame(content, fg_color="transparent")
-        settings.pack(fill="x")
-
-        # FPS 설정
-        fps_row = ctk.CTkFrame(settings, fg_color="transparent")
-        fps_row.pack(fill="x", pady=5)
-
-        fps_label_frame = ctk.CTkFrame(fps_row, fg_color="transparent")
-        fps_label_frame.pack(side="left")
-
-        ctk.CTkLabel(
-            fps_label_frame,
-            text="녹화 FPS",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=13),
-            text_color=COLORS["text_secondary"],
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            fps_label_frame,
-            text="높을수록 부드럽지만 용량 증가",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
-            text_color=COLORS["text_muted"],
-        ).pack(anchor="w")
-
-        self._fps_var = ctk.StringVar(value=str(self._config.recording.fps))
-        self._fps_combo = ctk.CTkComboBox(
-            fps_row,
-            values=["15", "30", "60"],
-            variable=self._fps_var,
-            width=80,
-            height=32,
-            fg_color=COLORS["bg_glass"],
-            border_color=COLORS["border"],
-            button_color=COLORS["bg_elevated"],
-            button_hover_color=COLORS["bg_card_hover"],
-            dropdown_fg_color=COLORS["bg_elevated"],
-            dropdown_hover_color=COLORS["bg_card_hover"],
-            corner_radius=IOS_METRICS["control_radius_small"],
-        )
-        self._fps_combo.pack(side="right")
-
-        # 체크박스 설정
-        self._cursor_var = ctk.BooleanVar(value=self._config.recording.include_cursor)
-        self._cursor_check = ctk.CTkCheckBox(
-            settings,
-            text="마우스 커서 포함",
-            variable=self._cursor_var,
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            text_color=COLORS["text_secondary"],
-        )
-        self._cursor_check.pack(anchor="w", pady=5)
-
-        # 입력 로그 저장 (중요 표시)
-        input_log_frame = ctk.CTkFrame(settings, fg_color="transparent")
-        input_log_frame.pack(anchor="w", pady=5)
-
-        self._input_log_var = ctk.BooleanVar(value=self._config.recording.save_input_log)
-        self._input_log_check = ctk.CTkCheckBox(
-            input_log_frame,
-            text="입력 로그 저장",
-            variable=self._input_log_var,
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            text_color=COLORS["text_secondary"],
-        )
-        self._input_log_check.pack(side="left")
-
-        ctk.CTkLabel(
-            input_log_frame,
-            text="  ⚠️ 자동화 분석에 필수",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
-            text_color=COLORS["warning_text"],
-        ).pack(side="left")
+        line = ctk.CTkFrame(card, fg_color="transparent")
+        line.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8)
+        line.grid_columnconfigure(1, weight=1)
+        self._status_indicator = ctk.CTkLabel(line, text="●", width=18, text_color=COLORS["text_muted"])
+        self._status_indicator.grid(row=0, column=0)
+        self._status_label = ctk.CTkLabel(line, text="녹화 대기", anchor="w", text_color=COLORS["text_primary"])
+        self._status_label.grid(row=0, column=1, sticky="ew")
+        self._stat_labels = {"duration": ctk.CTkLabel(line, text="00:00:00", width=65, text_color=COLORS["text_secondary"])}
+        self._stat_labels["duration"].grid(row=0, column=2)
+        self._status_hint = ctk.CTkLabel(card, text="F7 시작·중지 / 녹화 후 목록에서 선택해 GPT 분석",
+            height=22, anchor="w", width=1, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
+        self._status_hint.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 3))
 
     def _setup_recordings_card(self, parent):
-        """?? ?? ??"""
-        card = self.create_card(parent, title="템플릿 미디어")
+        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_glass"],
+            corner_radius=IOS_METRICS["card_radius_compact"], border_width=1, border_color=COLORS["border"])
         card.pack(fill="both", expand=True)
-
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=15, pady=(10, 5))
-
-        self.create_button(
-            header,
-            text="새로고침",
-            command=self._refresh_recordings_list_async,
-            style="ghost",
-            width=80,
-            height=28,
-        ).pack(side="right")
-
-        ctk.CTkLabel(
-            header,
-            text="이미지/동영상 최신순",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=11, weight="bold"),
-            text_color=COLORS["text_muted"],
-        ).pack(side="left")
-
-        self._recordings_empty_label = ctk.CTkLabel(
-            card,
-            text="템플릿 폴더에 이미지/동영상이 없습니다",
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12),
-            text_color=COLORS["text_muted"],
-            justify="center",
-        )
-
-        self._recordings_scroll = VirtualScrollFrame(
-            card,
-            item_height=72,
-            buffer_count=5,
-            fg_color=COLORS["bg_glass"],
-            corner_radius=IOS_METRICS["card_radius_compact"],
-            border_width=IOS_METRICS["card_border_width"],
-            border_color=COLORS["border"],
-        )
+        header.pack(fill="x", padx=8, pady=4)
+        self.create_label(header, "녹화 목록", style="body").pack(side="left")
+        self.create_button(header, "새로고침", self._refresh_recordings_list_async, style="ghost", width=75, height=26).pack(side="right")
+        self.create_button(header, "파일 추가", self._add_recording_file, style="secondary", width=75, height=26).pack(side="right", padx=5)
+        self._recordings_empty_label = ctk.CTkLabel(card, text="저장된 녹화가 없습니다. 녹화하거나 영상 파일을 추가하세요.",
+            text_color=COLORS["text_muted"], wraplength=400)
+        self._recordings_scroll = VirtualScrollFrame(card, item_height=max(1, round(self._apply_widget_scaling(82))),
+            buffer_count=5, fg_color=COLORS["bg_glass"], corner_radius=IOS_METRICS["card_radius_compact"])
         self._recordings_scroll.set_render_callback(self._render_recording_item)
-        self._recordings_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
+        self._recordings_scroll.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         self.after(0, self._refresh_recordings_list_async)
+
+    def _add_recording_file(self):
+        from tkinter import filedialog, messagebox
+        path = filedialog.askopenfilename(parent=self, title="분석할 녹화 영상 추가",
+            filetypes=[("녹화 영상", "*.mp4 *.avi *.mkv *.webm")])
+        if not path:
+            return
+        def add():
+            existing = self._db.get_recording_by_video_path(path)
+            if existing is None:
+                key = self._db.create_recording(Recording(name=Path(path).stem, video_path=path, created_at=datetime.now()))
+                saved = self._db.get_recording(key)
+                if saved is None or Path(saved.video_path).resolve() != Path(path).resolve():
+                    raise OSError("녹화 목록 저장 재확인 실패")
+            return path
+        self._workspace._submit(add, lambda _: self._refresh_recordings_list_async())
+
 
     def _refresh_recordings_list(self, preserve_scroll: bool = True):
         """?? ?? ????"""
         self._refresh_recordings_list_async(preserve_scroll=preserve_scroll)
 
     def _refresh_recordings_list_async(self, preserve_scroll: bool = True):
+        if self._recording_ui_closed:
+            return
         self._recordings_load_generation += 1
         current_gen = self._recordings_load_generation
 
@@ -435,54 +218,21 @@ class RecorderView(BaseView):
         self._recordings_loader.submit(_load)
 
     def _load_template_media_items(self):
-        """템플릿 폴더의 이미지/동영상 파일을 최신순으로 로드."""
-        media_exts = {
-            ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
-            ".mp4", ".avi", ".mov", ".mkv", ".webm",
-        }
-        items = []
-        search_dirs = [TEMPLATES_DIR]
-
-        # 이전 버전에서 저장된 녹화도 놓치지 않도록 읽기 전용으로 같이 표시한다.
-        legacy_recordings_dir = DATA_DIR / "recordings"
-        if legacy_recordings_dir.exists():
-            search_dirs.append(legacy_recordings_dir)
-
-        for directory in search_dirs:
-            if not directory.exists():
-                continue
-            try:
-                files = list(directory.iterdir())
-            except OSError as exc:
-                logger.warning(f"미디어 목록 로드 실패: {directory} ({exc})")
-                continue
-            for path in files:
-                if not path.is_file() or path.suffix.lower() not in media_exts:
-                    continue
-                try:
-                    stat = path.stat()
-                    modified_at = datetime.fromtimestamp(stat.st_mtime)
-                    media_type = "video" if path.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".webm"} else "image"
-                    items.append(TemplateMediaItem(
-                        path=str(path),
-                        name=path.name,
-                        media_type=media_type,
-                        size_bytes=int(stat.st_size),
-                        modified_at=modified_at,
-                    ))
-                except OSError as exc:
-                    logger.warning(f"미디어 파일 정보 읽기 실패: {path} ({exc})")
-
-        items.sort(key=lambda item: (item.modified_at, item.name), reverse=True)
-        return items
+        from ..agent_bridge.recording_catalog import recording_catalog
+        return [TemplateMediaItem(**row) for row in recording_catalog(self._db, DATA_DIR / "recordings")]
 
     def _apply_recordings_list(self, recordings, generation=None, preserve_scroll: bool = True):
-        if generation is not None and generation < self._recordings_load_generation:
+        if self._recording_ui_closed or (generation is not None and generation < self._recordings_load_generation):
             return
 
         self._recording_items = list(recordings)
+        if self._workspace.selected and not self._workspace.jobs.busy:
+            self._workspace.selected = next((item for item in self._recording_items if item.path == self._workspace.selected.path), None)
+            if self._workspace.selected is None:
+                self._workspace.selection_label.configure(text="목록에서 분석할 녹화를 선택하세요.")
         self._media_thumbnail_refs.clear()
         if not self._recording_items:
+            self._recordings_scroll.set_items([], preserve_scroll=False)
             self._recordings_scroll.pack_forget()
             self._recordings_empty_label.pack(fill="both", expand=True, padx=10, pady=(0, 10))
             return
@@ -544,68 +294,38 @@ class RecorderView(BaseView):
         return item
 
     def _create_media_item(self, media: TemplateMediaItem, parent=None):
-        item = ctk.CTkFrame(
-            parent or self._recordings_scroll,
-            fg_color=COLORS["bg_elevated"],
-            corner_radius=IOS_METRICS["control_radius"],
-            height=66,
-        )
+        selected = bool(self._workspace.selected and self._workspace.selected.path == media.path)
+        item = tk.Frame(parent or self._recordings_scroll, bg=COLORS["bg_glass"],
+            height=max(1, round(self._apply_widget_scaling(82))), borderwidth=0, highlightthickness=0)
         item.pack_propagate(False)
         if parent is None:
-            item.pack(fill="x", pady=3)
-
-        content = ctk.CTkFrame(item, fg_color="transparent")
-        content.pack(fill="x", padx=12, pady=9)
-
+            item.pack(fill="x")
+        body = ctk.CTkFrame(item, fg_color=COLORS["bg_elevated"], height=76,
+            border_color=COLORS["accent"] if selected else COLORS["border"], border_width=2 if selected else 1,
+            corner_radius=IOS_METRICS["control_radius"])
+        body.pack(fill="x", padx=2, pady=2)
+        body.pack_propagate(False)
+        content = ctk.CTkFrame(body, fg_color="transparent", height=60)
+        content.pack(fill="x", padx=8, pady=8)
+        content.grid_propagate(False)
+        content.grid_columnconfigure(1, weight=1)
         thumb_host = ctk.CTkFrame(content, width=58, height=58, fg_color="transparent")
-        thumb_host.pack(side="left", padx=(0, 10))
+        thumb_host.grid(row=0, column=0, rowspan=2, padx=(0, 8))
         thumb_host.pack_propagate(False)
         self._render_media_thumbnail(thumb_host, media)
-
-        info = ctk.CTkFrame(content, fg_color="transparent")
-        info.pack(side="left", fill="x", expand=True)
-
-        ctk.CTkLabel(
-            info,
-            text=media.name,
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"),
-            text_color=COLORS["text_primary"],
-            anchor="w",
-        ).pack(fill="x")
-
-        path = Path(media.path)
-        location = "templates" if path.parent.resolve() == TEMPLATES_DIR.resolve() else path.parent.name
-        detail = (
-            f"{media.modified_at.strftime('%Y-%m-%d %H:%M:%S')}  |  "
-            f"{self._format_file_size(media.size_bytes)}  |  {location}"
-        )
-        ctk.CTkLabel(
-            info,
-            text=detail,
-            font=ctk.CTkFont(family=IOS_FONTS["family"], size=10),
-            text_color=COLORS["text_muted"],
-            anchor="w",
-        ).pack(fill="x")
-
-        self.create_button(
-            content,
-            text="편집",
-            command=lambda p=media.path: self._open_media_editor(p),
-            style="secondary",
-            width=50,
-            height=28,
-        ).pack(side="right", padx=(6, 0))
-
-        self.create_button(
-            content,
-            text="위치",
-            command=lambda p=media.path: self._open_media_location(p),
-            style="ghost",
-            width=50,
-            height=28,
-        ).pack(side="right")
-
+        from .text_overflow import truncate_ui_text
+        name = ctk.CTkLabel(content, text=truncate_ui_text(media.name, 64), width=1, anchor="w",
+            font=ctk.CTkFont(family=IOS_FONTS["family"], size=12, weight="bold"), text_color=COLORS["text_primary"])
+        name.grid(row=0, column=1, sticky="ew")
+        detail = ctk.CTkLabel(content, width=1, text=f"{media.modified_at:%Y-%m-%d %H:%M}  |  {self._format_file_size(media.size_bytes)}",
+            anchor="w", font=(IOS_FONTS["family"], 10), text_color=COLORS["text_muted"])
+        detail.grid(row=1, column=1, sticky="ew")
+        self.create_button(content, "선택됨" if selected else "선택", lambda: self._workspace.choose(media),
+            style="secondary", width=65, height=28).grid(row=0, column=2, rowspan=2, padx=(5, 0))
+        for widget in (body, content, name, detail):
+            widget.bind("<Button-1>", lambda _event, value=media: self._workspace.choose(value), add="+")
         return item
+
 
     def _media_thumbnail_cache_key(self, media: TemplateMediaItem) -> str:
         return f"{media.path}|58|{media.modified_at.timestamp():.6f}"
@@ -669,7 +389,7 @@ class RecorderView(BaseView):
             fg_color="transparent",
             hover_color=COLORS["bg_card_hover"],
             corner_radius=IOS_METRICS["control_radius_small"],
-            command=lambda p=media.path: self._open_media_editor(p),
+            command=lambda value=media: self._workspace.choose(value),
         )
         thumb_btn.pack(fill="both", expand=True)
         self._media_thumbnail_refs.append(thumbnail)
@@ -899,6 +619,9 @@ class RecorderView(BaseView):
     def _on_start_recording(self):
         """녹화 시작 - logger 사용 금지 (백그라운드 스레드와 데드락 발생)"""
         try:
+            if self._workspace.jobs.busy:
+                self._set_label_text("status_hint", self._status_hint, "GPT 분석을 끝내거나 취소한 뒤 녹화를 시작하세요.")
+                return
             # 중복 시작 방지
             if self._is_recording or self._starting:
                 return
@@ -1143,7 +866,7 @@ class RecorderView(BaseView):
         # _is_recording은 이미 락 블록에서 False로 설정됨
         self._update_ui_state()
         self._set_label_text("status", self._status_label, "✅ 녹화 완료")
-        self._set_label_text("status_hint", self._status_hint, "녹화가 저장되었습니다. 분석 탭에서 동작을 추출하세요.")
+        self._set_label_text("status_hint", self._status_hint, "녹화 저장 완료 · 목록에서 선택한 뒤 분석 시작을 누르세요.")
         self._set_label_color("status_indicator", self._status_indicator, COLORS["success"])
 
         # 창 복원 (F7 핫키로 이미 복원된 경우 스킵)
@@ -1258,12 +981,10 @@ class RecorderView(BaseView):
             self._start_btn.configure(state="disabled")
             self._stop_btn.configure(state="normal")
             self._name_entry.configure(state="disabled")
-            self._fps_combo.configure(state="disabled")
         else:
             self._start_btn.configure(state="normal")
             self._stop_btn.configure(state="disabled")
             self._name_entry.configure(state="normal")
-            self._fps_combo.configure(state="normal")
 
     def _on_trigger_captured(self, filepath: str):
         """F8 트리거 이미지 캡쳐 완료 콜백"""
@@ -1291,16 +1012,12 @@ class RecorderView(BaseView):
         try:
             # public 프로퍼티 사용 (캡슐화 준수) - 타임아웃 방지를 위해 빠르게 처리
             elapsed = self._recording_session.elapsed_time
-            frame_count = self._recording_session.frame_count
-            event_count = self._recording_session.event_count
 
             hours = int(elapsed // 3600)
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
 
             self._set_label_text("stat_duration", self._stat_labels["duration"], f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-            self._set_label_text("stat_frame", self._stat_labels["frame"], str(frame_count))
-            self._set_label_text("stat_event", self._stat_labels["event"], str(event_count))
 
             # after ID 저장하여 취소 가능하도록
             self._status_update_id = self.after(100, self._update_recording_status)
@@ -1470,6 +1187,13 @@ class RecorderView(BaseView):
 
     def cleanup(self):
         """cleanup"""
+        self._recording_ui_closed = True
+        workspace = getattr(self, "_workspace", None)
+        if workspace is not None:
+            workspace.close()
+        if self._catalog_scale_after:
+            self.after_cancel(self._catalog_scale_after)
+            self._catalog_scale_after = None
         loader = getattr(self, "_recordings_loader", None)
         if loader is not None:
             loader.close()

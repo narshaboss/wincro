@@ -802,7 +802,7 @@ class MediaConsentDialog(ctk.CTkToplevel):
         self.consent.trace_add("write", self._consent_changed)
         self.exclusions.trace_add("write", self._private_changed)
         self.bind("<Configure>", self._resize, add="+")
-        self.transient(parent)
+        self.transient(parent.winfo_toplevel())
 
     def _resize(self, event=None):
         if event is not None and event.widget is not self:

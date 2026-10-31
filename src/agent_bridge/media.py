@@ -101,10 +101,22 @@ class MediaTools:
 
     def read_recording(self, recording_id):
         record = self._get(recording_id)
-        return {"recording_id": recording_id, "name": record["path"].name,
+        result = {"recording_id": recording_id, "name": record["path"].name,
                 "sha256": record["sha256"], "input_log_selected": bool(record["input_log"]),
                 "excluded_intervals": record["excluded"],
                 "timing_status": "legacy_timing_unverified", "coordinate_origin": "user_must_confirm"}
+        if record["path"].suffix.lower() != ".png":
+            import cv2
+            cap = cv2.VideoCapture(str(record["path"]))
+            try:
+                fps, count = cap.get(cv2.CAP_PROP_FPS), cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                if not cap.isOpened() or not number(fps, .1, 1000) or not number(count, 1, 10_000_000):
+                    raise BridgeError("INVALID_MEDIA", "Recording metadata is not decodable")
+                result.update(fps=fps, total_frames=int(count), duration_seconds=count / fps,
+                    original_width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), original_height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+            finally:
+                cap.release()
+        return result
 
     def get_frames(self, recording_id, timestamps):
         import cv2

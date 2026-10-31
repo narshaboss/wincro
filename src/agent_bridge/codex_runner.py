@@ -1,0 +1,286 @@
+"""Opt-in Codex execution with only the recording MCP and read-only sandbox."""
+
+import json
+import os
+from pathlib import Path
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+from .contracts import BridgeError
+
+
+DISABLED_FEATURES = (
+    "shell_tool", "shell_snapshot", "apps", "plugins", "hooks", "plugin_hooks", "multi_agent",
+    "browser_use", "browser_use_external", "computer_use", "in_app_browser", "code_mode",
+    "code_mode_only", "image_generation", "memories", "remote_control", "tool_suggest",
+    "request_permissions_tool", "workspace_dependencies", "skill_mcp_dependency_install",
+    "tool_search", "apply_patch_freeform", "unavailable_dummy_tools",
+)
+CRITICAL_FEATURES = {"shell_tool", "apps", "plugins", "hooks", "multi_agent", "browser_use", "computer_use"}
+MAX_EVENT_BYTES = 8_000_000
+
+
+def default_runtime():
+    local = Path(os.environ.get("LOCALAPPDATA", "")) / "OpenAI" / "Codex" / "bin" / "codex.exe"
+    candidate = local if local.is_file() else Path(shutil.which("codex.exe") or "")
+    return {"codex": str(candidate) if candidate.is_file() else "", "python": sys.executable if not getattr(sys, "frozen", False) else "",
+            "model": "", "max_seconds": 1200}
+
+
+def clean_message(message):
+    text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", str(message))
+    text = re.sub(r"(?i)(bearer\s+|sk-[a-z0-9_-]*)([a-z0-9_.-]{12,})", "[redacted]", text)
+    return text[-6000:]
+
+
+def hidden_options():
+    return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+
+
+class _ProcessTree:
+    """Own only this process tree; closing the Windows job also reaps MCP children."""
+
+    def __init__(self, process):
+        self.process = process
+        self.handle = None
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class Basic(ctypes.Structure):
+            _fields_ = [("ProcessTime", ctypes.c_longlong), ("JobTime", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSet", ctypes.c_size_t),
+                ("MaximumWorkingSet", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+        class IO(ctypes.Structure):
+            _fields_ = [(field, ctypes.c_ulonglong) for field in (
+                "ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")]
+
+        class Limits(ctypes.Structure):
+            _fields_ = [("Basic", Basic), ("IO", IO), ("ProcessMemory", ctypes.c_size_t),
+                ("JobMemory", ctypes.c_size_t), ("PeakProcessMemory", ctypes.c_size_t), ("PeakJobMemory", ctypes.c_size_t)]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        kernel.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self.kernel = kernel
+        handle = kernel.CreateJobObjectW(None, None)
+        limits = Limits()
+        limits.Basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not handle or not kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            if handle:
+                kernel.CloseHandle(handle)
+            process.kill()
+            raise OSError("분석 프로세스 격리 준비에 실패했습니다.")
+        if not kernel.AssignProcessToJobObject(handle, wintypes.HANDLE(int(process._handle))):
+            kernel.CloseHandle(handle)
+            process.kill()
+            raise OSError("분석 프로세스 트리를 격리하지 못했습니다.")
+        self.handle = handle
+
+    def close(self):
+        if self.handle:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+        elif self.process.poll() is None:
+            if os.name == "nt":
+                self.process.kill()
+            else:
+                import signal
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+class CodexRunner:
+    def __init__(self, settings, folder):
+        self.settings = dict(settings)
+        self.folder = Path(folder).resolve()
+        self.process = None
+        self.tree = None
+        self.lock = threading.Lock()
+
+    def preflight(self):
+        codex = Path(self.settings.get("codex", "")).expanduser()
+        python = Path(self.settings.get("python", "")).expanduser()
+        if not codex.is_file() or (os.name == "nt" and codex.suffix.lower() != ".exe"):
+            raise BridgeError("RUNTIME_MISSING", "Codex 실행 파일(.exe)을 연결 설정에서 선택하세요. 깨진 cmd 바로가기는 사용하지 않습니다.")
+        if not python.is_file() or (os.name == "nt" and python.suffix.lower() != ".exe"):
+            raise BridgeError("RUNTIME_MISSING", "MCP용 Python 실행 파일(.exe)을 선택하세요.")
+        server = Path(__file__).resolve().parents[2] / "tools" / "wincro_mcp_server.py"
+        if not server.is_file():
+            raise BridgeError("RUNTIME_MISSING", "이 설치에는 GPT 연결 서버가 없습니다. 편집 도구 설치가 필요합니다.")
+        help_result = subprocess.run([str(codex), "exec", "--help"], capture_output=True, timeout=15, **hidden_options())
+        output = help_result.stdout.decode("utf-8", "replace")
+        if help_result.returncode or not all(flag in output for flag in ("--ignore-user-config", "--ignore-rules", "--ephemeral", "--json")):
+            raise BridgeError("RUNTIME_UNSUPPORTED", "이 Codex 실행기는 안전한 자동 분석 실행 옵션을 지원하지 않습니다.")
+        probe = self.folder / "capability-probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, CODEX_HOME=str(probe))
+        feature_args = [str(codex), "features", "list"]
+        for feature in CRITICAL_FEATURES:
+            feature_args += ["--disable", feature]
+        features = subprocess.run(feature_args, env=env, capture_output=True, timeout=15, **hidden_options())
+        values = {line.split()[0]: line.split()[-1] for line in features.stdout.decode("utf-8", "replace").splitlines() if len(line.split()) >= 3}
+        if features.returncode or any(values.get(name) != "false" for name in CRITICAL_FEATURES):
+            raise BridgeError("RUNTIME_UNSUPPORTED", "셸·앱·PC 제어 도구 비활성화를 확인하지 못해 분석을 시작하지 않았습니다.")
+        dependency = subprocess.run([str(python), "-c", "import importlib.metadata; assert importlib.metadata.version('mcp') == '1.25.0'"],
+                                    capture_output=True, timeout=15, **hidden_options())
+        if dependency.returncode:
+            raise BridgeError("MCP_MISSING", "선택한 Python에 검수한 mcp==1.25.0 설치가 필요합니다.")
+        return str(codex.resolve()), str(python.resolve()), str(server)
+
+    def arguments(self, codex, python, server, descriptor):
+        from .recording_jobs import JOB_TOOLS
+        args = [codex, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check",
+                "--sandbox", "read-only", "--cd", str(self.folder), "--color", "never", "--json"]
+        configs = {
+            "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
+            "tools.view_image": False, "agents.enabled": False, "project_doc_max_bytes": 0,
+            "mcp_servers": {}, "mcp_servers.wincroRecording.command": python,
+            "mcp_servers.wincroRecording.args": [server, "--connection-file", str(descriptor)],
+            "mcp_servers.wincroRecording.cwd": str(Path(server).parent.parent),
+            "mcp_servers.wincroRecording.required": True,
+            "mcp_servers.wincroRecording.enabled_tools": sorted(JOB_TOOLS | {"connection_status"}),
+        }
+        for key, value in configs.items():
+            args += ["-c", key + "=" + ("{}" if isinstance(value, dict) else json.dumps(value, ensure_ascii=False))]
+        for feature in DISABLED_FEATURES:
+            args += ["-c", f"features.{feature}=false"]
+        model = self.settings.get("model", "").strip()
+        if model:
+            if len(model) > 100 or not re.fullmatch(r"[a-zA-Z0-9_.:-]+", model):
+                raise BridgeError("INVALID_FIELD", "모델 이름이 올바르지 않습니다.")
+            args += ["--model", model]
+        return args + ["-"]
+
+    def run(self, descriptor, prompt, cancelled, progress):
+        codex, python, server = self.preflight()
+        if cancelled.is_set():
+            raise BridgeError("JOB_CANCELLED", "분석이 취소되었습니다.")
+        args = self.arguments(codex, python, server, descriptor)
+        timeout = self.settings.get("max_seconds", 1200)
+        if type(timeout) is not int or not 30 <= timeout <= 3600:
+            raise BridgeError("INVALID_FIELD", "분석 제한 시간은 30~3600초여야 합니다.")
+        events = queue.Queue(maxsize=4)
+        stderr = bytearray()
+        stop_reading = threading.Event()
+        process = subprocess.Popen(args, cwd=self.folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, **hidden_options())
+        with self.lock:
+            self.process = process
+            try:
+                self.tree = _ProcessTree(process)
+            except Exception:
+                process.kill()
+                process.wait(timeout=5)
+                raise
+
+        def read_events():
+            try:
+                while not stop_reading.is_set():
+                    line = process.stdout.readline(MAX_EVENT_BYTES + 1)
+                    if not line:
+                        break
+                    value = {"oversized": True} if len(line) > MAX_EVENT_BYTES else line
+                    while not stop_reading.is_set():
+                        try:
+                            events.put(value, timeout=.1)
+                            break
+                        except queue.Full:
+                            continue
+                    if isinstance(value, dict):
+                        break
+            finally:
+                while not stop_reading.is_set():
+                    try:
+                        events.put(None, timeout=.1)
+                        break
+                    except queue.Full:
+                        continue
+
+        def read_errors():
+            while True:
+                chunk = process.stderr.read(2048)
+                if not chunk:
+                    break
+                stderr.extend(chunk)
+                del stderr[:-8000]
+
+        threads = [threading.Thread(target=read_events, daemon=True), threading.Thread(target=read_errors, daemon=True)]
+        for thread in threads:
+            thread.start()
+        final = ""
+        count = 0
+        started = time.monotonic()
+        try:
+            if cancelled.is_set():
+                raise BridgeError("JOB_CANCELLED", "분석 취소")
+            process.stdin.write(prompt.encode("utf-8"))
+            process.stdin.close()
+            while True:
+                if cancelled.is_set():
+                    raise BridgeError("JOB_CANCELLED", "분석 취소")
+                if time.monotonic() - started > timeout:
+                    raise BridgeError("GPT_TIMEOUT", "분석 제한 시간이 지났습니다. 저장된 초안은 결과 탭에서 확인할 수 있습니다.")
+                try:
+                    line = events.get(timeout=.15)
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                if isinstance(line, dict):
+                    raise BridgeError("LIMIT_REACHED", "GPT 응답이 허용 크기를 초과했습니다.")
+                count += 1
+                if count > 10000:
+                    raise BridgeError("LIMIT_REACHED", "분석 이벤트 제한에 도달했습니다. 초안을 확인하세요.")
+                try:
+                    event = json.loads(line)
+                except (ValueError, UnicodeError):
+                    raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기 응답을 해석할 수 없습니다.")
+                item = event.get("item", {})
+                kind = item.get("type")
+                if kind in {"command_execution", "file_change", "web_search", "collab_tool_call"}:
+                    raise BridgeError("UNSAFE_TOOL", "허용하지 않은 실행 도구가 감지되어 분석을 중단했습니다.")
+                if event.get("type") in {"turn.failed", "error"}:
+                    raise BridgeError("GPT_EXECUTION_FAILED", clean_message(event.get("error", event.get("message", "GPT 오류"))))
+                if kind == "mcp_tool_call" and event.get("type") == "item.started":
+                    tool = item.get("tool", "")
+                    progress({"get_frames": "GPT가 실제 녹화 장면을 확인하고 있습니다.",
+                        "stage_edits": "GPT가 독립 초안의 액션을 편집하고 있습니다.",
+                        "record_analysis": "GPT가 행동 목적과 영상 근거를 정리하고 있습니다.",
+                        "record_crosscheck": "GPT가 영상과 초안을 번갈아 교차검수하고 있습니다.",
+                        "save_draft": "초안을 파일에 저장하고 다시 읽고 있습니다."}.get(tool, "GPT가 선택한 자료와 초안을 확인하고 있습니다."))
+                if kind == "agent_message" and event.get("type") == "item.completed":
+                    final = clean_message(item.get("text", ""))
+            code = process.wait(timeout=5)
+            return {"exit_code": code, "message": final if code == 0 else clean_message(stderr.decode("utf-8", "replace"))}
+        finally:
+            stop_reading.set()
+            self.cancel()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            for thread in threads:
+                thread.join(timeout=2)
+            for stream in (process.stdout, process.stderr):
+                stream.close()
+
+    def cancel(self):
+        with self.lock:
+            if self.tree:
+                self.tree.close()
+            elif self.process and self.process.poll() is None:
+                self.process.kill()
