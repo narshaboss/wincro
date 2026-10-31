@@ -13,6 +13,37 @@ from .contracts import BridgeError, MAX_MESSAGE, PROTOCOL, decode, encoded
 from .storage import new_id, read_json, write_json
 
 
+class ConnectionLease:
+    """Only authenticated external client signals may establish an ON indicator."""
+
+    timeout = 12
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.sessions = {}
+        self.lock = threading.Lock()
+
+    def heartbeat(self, session_id):
+        if not isinstance(session_id, str) or len(session_id) != 32 or not all(c in "0123456789abcdef" for c in session_id):
+            raise BridgeError("INVALID_REQUEST", "Invalid client session")
+        with self.lock:
+            now = self.clock()
+            self.sessions = {key: value for key, value in self.sessions.items() if now - value < self.timeout}
+            if session_id not in self.sessions and len(self.sessions) >= 4:
+                raise BridgeError("LIMIT_REACHED", "Too many editing clients")
+            self.sessions[session_id] = now
+
+    def disconnect(self, session_id):
+        with self.lock:
+            self.sessions.pop(session_id, None)
+
+    @property
+    def connected(self):
+        with self.lock:
+            now = self.clock()
+            return any(0 <= now - value < self.timeout for value in self.sessions.values())
+
+
 def _security():
     if os.name != "nt":
         raise BridgeError("UNSUPPORTED_PLATFORM", "The live bridge requires Windows")
@@ -85,6 +116,7 @@ class LocalHost:
         self.stop = threading.Event()
         self.ready = threading.Event()
         self.error = None
+        self.lease = ConnectionLease()
         self.token = secrets.token_hex(32)
         connection_id = new_id("app_")
         self.address = "\\\\.\\pipe\\wincro-ai-" + connection_id
@@ -183,12 +215,22 @@ class LocalHost:
             if not isinstance(token, str) or not token.isascii() or not hmac.compare_digest(token, self.token):
                 raise BridgeError("PERMISSION_REQUIRED", "Invalid session credential")
             method = request.get("method")
-            if method == "connection_status":
-                return {"ok": True, "result": {"protocol": PROTOCOL, "instance_id": self.service.instance_id,
-                    "editing_only": True, "live_execution": False, "source": "saved_files_only"}}
             arguments = request.get("arguments", {})
             if not isinstance(arguments, dict):
                 raise BridgeError("INVALID_REQUEST", "Tool arguments must be an object")
+            if method in {"client_heartbeat", "client_disconnect"}:
+                session_id = arguments.get("session_id")
+                if method == "client_heartbeat":
+                    sent_at = arguments.get("sent_at")
+                    if type(sent_at) not in (float, int) or not 0 <= time.monotonic() - sent_at <= 3:
+                        raise BridgeError("STALE_HEARTBEAT", "Client signal is missing or stale")
+                    self.lease.heartbeat(session_id)
+                elif isinstance(session_id, str):
+                    self.lease.disconnect(session_id)
+                return {"ok": True, "result": {"connected": self.client_connected}}
+            if method == "connection_status":
+                return {"ok": True, "result": {"protocol": PROTOCOL, "instance_id": self.service.instance_id,
+                    "editing_only": True, "live_execution": False, "source": "saved_files_only"}}
             with self.service.lock:
                 if self.stop.is_set():
                     raise BridgeError("APP_NOT_CONNECTED", "Connection is closed")
@@ -205,8 +247,12 @@ class LocalHost:
         self.stop.set()
         self.connection_file.unlink(missing_ok=True)
 
+    @property
+    def client_connected(self):
+        return not self.stop.is_set() and self.thread.is_alive() and self.lease.connected
 
-def call(connection_file, method, arguments):
+
+def call(connection_file, method, arguments, *, reply_timeout=45):
     from multiprocessing.connection import Client
     info = read_json(connection_file)
     if info.get("protocol") != PROTOCOL or not str(info.get("address", "")).startswith("\\\\.\\pipe\\wincro-ai-app_"):
@@ -224,6 +270,6 @@ def call(connection_file, method, arguments):
     with connection:
         connection.send_bytes(encoded({"protocol": PROTOCOL, "instance_id": info["instance_id"],
             "token": info["token"], "method": method, "arguments": arguments}))
-        if not connection.poll(45):
+        if not connection.poll(reply_timeout):
             raise BridgeError("RESULT_UNKNOWN", "Reply timed out; check the draft before retrying")
         return decode(connection.recv_bytes(MAX_MESSAGE))

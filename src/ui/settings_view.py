@@ -142,7 +142,7 @@ class SettingsView(BaseView):
 
         # Lazy opt-in editor: no bridge threads/imports during normal playback.
         ctk.CTkButton(
-            scroll_frame, text="AI 플랜 초안 편집 (연결 기본 OFF)",
+            scroll_frame, text="GPT로 플랜 만들기 · 사용방법 / 초안 편집",
             command=self._open_ai_draft_editor, height=30,
             fg_color=COLORS["bg_elevated"], text_color=COLORS["text_primary"],
             border_width=2, border_color=COLORS["button_border"],
