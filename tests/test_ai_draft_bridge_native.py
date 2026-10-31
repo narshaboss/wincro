@@ -452,6 +452,20 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
     def buttons(widget):
         return [child for child in descendants(widget) if isinstance(child, ctk.CTkButton)]
 
+    def settle_layout():
+        # Mapping a Tk window is earlier than its final geometry/paint on Windows.
+        deadline = time.monotonic() + .3
+        assert _pump_until(ui_root, lambda: time.monotonic() >= deadline, 2)
+        ui_root.update_idletasks()
+
+    def assert_controls_fit():
+        for button in buttons(view):
+            if not button.winfo_ismapped():
+                continue
+            assert view.winfo_rootx() <= button.winfo_rootx(), button.cget("text")
+            assert button.winfo_rootx() + button.winfo_width() <= view.winfo_rootx() + view.winfo_width(), button.cget("text")
+            assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4, button.cget("text")
+
     plans = tmp_path / "plans"
     plans.mkdir()
     expected = {}
@@ -487,7 +501,7 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         assert _pump_until(ui_root, lambda: len(view._plan_items) == 24
             and 0 in view._plans_scroll._visible_widgets
             and view._plans_scroll._visible_widgets[0].winfo_ismapped(), 10)
-        ui_root.update_idletasks()
+        settle_layout()
         labels = [child.cget("text") for child in descendants(view) if isinstance(child, ctk.CTkLabel)]
         assert "분석된 재생 목록" in labels
         assert not {"녹화 목록", "분석 실행", "분석 결과"} & set(labels)
@@ -500,13 +514,7 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         first_buttons = {button.cget("text"): button for button in buttons(row)}
         assert {"수정", "삭제", "잠금 해제"} <= set(first_buttons)
         assert all(button.winfo_ismapped() for button in first_buttons.values())
-        for button in buttons(view):
-            # Rows outside the viewport may be pre-rendered in the bounded buffer.
-            if not button.winfo_ismapped():
-                continue
-            assert view.winfo_rootx() <= button.winfo_rootx()
-            assert button.winfo_rootx() + button.winfo_width() <= view.winfo_rootx() + view.winfo_width(), button.cget("text")
-            assert button._text_label.winfo_reqwidth() <= button.winfo_width() - 4, button.cget("text")
+        assert_controls_fit()
         artifact_dir = Path("artifacts/ai_draft")
         artifact_dir.mkdir(parents=True, exist_ok=True)
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(
@@ -532,7 +540,7 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         view._plans_scroll.scroll_to_item(23)
         assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets
             and view._plans_scroll._visible_widgets[23].winfo_ismapped(), 5)
-        ui_root.update_idletasks()
+        settle_layout()
         last = view._plans_scroll._visible_widgets[23]
         assert viewport.winfo_rooty() <= last.winfo_rooty()
         assert last.winfo_rooty() + last.winfo_height() <= viewport.winfo_rooty() + viewport.winfo_height() + 2
@@ -544,10 +552,11 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         view._plans_scroll.scroll_to_item(23)
         assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets
             and view._plans_scroll._visible_widgets[23].winfo_ismapped(), 5)
-        ui_root.update_idletasks()
+        settle_layout()
         last = view._plans_scroll._visible_widgets[23]
         assert viewport.winfo_rooty() <= last.winfo_rooty()
         assert last.winfo_rooty() + last.winfo_height() <= viewport.winfo_rooty() + viewport.winfo_height() + 2
+        assert_controls_fit()
         assert {path.name: path.read_bytes() for path in plans.iterdir()} == expected
         forbidden_save.assert_not_called()
         database.create_recording.assert_not_called()

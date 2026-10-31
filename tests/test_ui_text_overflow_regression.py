@@ -64,7 +64,11 @@ def test_analyzer_and_monitoring_views_truncate_file_and_plan_names():
 
     assert "text=f\"📁 {truncate_ui_text(filename, 58)}\"" in analyzer_text
     assert "text=truncate_ui_text(plan.name, 38)" in analyzer_text
-    assert "text=truncate_ui_text(recording.name, 38)" in analyzer_text
+    playlist_view = analyzer_text[analyzer_text.index("class AnalyzerView"):]
+    assert "_recordings_scroll" not in playlist_view
+    assert "self._fit_playlist_name(label, name, event.width)" in playlist_view
+    assert 'content.grid_columnconfigure(1, weight=1)' in playlist_view
+    assert 'name_label.grid(row=0, column=1, sticky="ew")' in playlist_view
     assert "text=truncate_ui_text(\"  |  \".join(details), 76)" in analyzer_text
     assert "truncate_ui_text(image_name, 42)" in monitoring_text
     assert "truncate_ui_text(self._action_detail(action), 28)" in monitoring_text
