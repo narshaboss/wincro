@@ -203,8 +203,9 @@ def test_video_test_ui_uses_same_frame_bank_as_runtime_without_opening_ui(monkey
 
     editor = ui.MonitoringModeEditor
     host = SimpleNamespace(**{name: getattr(editor, name) for name in (
-        "_safe_confidence", "_normalize_search_region_value", "_region_label_text", "_condition_verify_label",
+        "_safe_confidence", "_normalize_search_region_value", "_condition_verify_label",
     )})
+    host._region_label_text = lambda region: editor._region_label_text(host, region)
     frame = read_clip()[48]
     monkeypatch.setattr(ui, "_grab_screen_bgr", lambda: frame)
     load = Mock(wraps=bank.get_dedicated_video_frames)
