@@ -386,7 +386,17 @@ class CodexRunner:
                     if idle:
                         send({"id": 20, "method": "account/read", "params": {"refreshToken": False}})
                     else:
-                        send({"id": 3, "method": "turn/start", "params": self.turn_parameters(thread_id, prompt)})
+                        progress("GPT 분석에 사용할 WinCro 자료·편집 통신을 확인하고 있습니다.")
+                        send({"id": 22, "method": "mcpServer/tool/call", "params": {
+                            "threadId": thread_id, "server": self.server_name, "tool": "connection_status", "arguments": {}}})
+                    continue
+                if not idle and event.get("id") == 22:
+                    response = event.get("result", {})
+                    contents = response.get("content", [])
+                    result = next((json.loads(part["text"]) for part in contents if part.get("type") == "text"), {})
+                    if response.get("isError") or not result.get("ok") or not result.get("result", {}).get("editing_only"):
+                        raise BridgeError("CONNECTION_FAILED", "GPT 분석용 WinCro 도구 연결을 확인하지 못했습니다.")
+                    send({"id": 3, "method": "turn/start", "params": self.turn_parameters(thread_id, prompt)})
                     continue
                 if idle and event.get("id") == 20:
                     account = event.get("result", {})

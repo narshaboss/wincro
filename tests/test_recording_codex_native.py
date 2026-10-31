@@ -221,6 +221,11 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         (artifacts / filename).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         assert state["status"] == ("cancelled" if cancel_job else "needs_review"), json.dumps(state, ensure_ascii=False)
         assert requests, state
+        (artifacts / ("cancelled-request-tools.json" if cancel_job else "request-tools.json")).write_text(json.dumps({
+            "request_keys": list(requests[0]), "tools": requests[0].get("tools"),
+            "input_types": [item.get("type") for item in requests[0].get("input", []) if isinstance(item, dict)],
+            "tool_names_in_any_request": [sorted(set(names_value.get("name", "") for names_value in request.get("tools", []) if isinstance(names_value, dict))) for request in requests]
+        }, indent=2), encoding="utf-8")
         assert all(request.get("service_tier") in (None, "default") for request in requests), "Bootstrap tier leaked into inference"
         if cancel_job:
             assert runner is not None and runner.process.poll() is not None
