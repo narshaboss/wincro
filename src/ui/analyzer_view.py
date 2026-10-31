@@ -4668,6 +4668,7 @@ class AnalyzerView(BaseView):
 
         previous_locks = self._plan_lock_cache
         previous_content = self._plan_content_cache
+        previous_ids = {plan.plan_id for plan in self._plan_items}
         self._plan_lock_cache = dict(lock_cache or {})
         self._plan_content_cache = dict(content_cache or {})
         if not plans:
@@ -4683,7 +4684,7 @@ class AnalyzerView(BaseView):
         self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)
         # Virtual rows retain callbacks; replace only rows whose disk data changed.
         for index, plan in enumerate(self._plan_items):
-            if (
+            if plan.plan_id in previous_ids and (
                 previous_locks.get(plan.plan_id) != self._plan_lock_cache.get(plan.plan_id)
                 or previous_content.get(plan.plan_id) != self._plan_content_cache.get(plan.plan_id)
             ):

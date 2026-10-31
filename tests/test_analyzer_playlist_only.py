@@ -1,7 +1,6 @@
 """Playlist-only view lifecycle and read-only loading; no desktop input."""
 
 import ast
-import json
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 from unittest.mock import Mock
@@ -85,6 +84,7 @@ def test_unchanged_rows_are_reused_but_saved_edits_and_lock_changes_refresh_only
     first = AutomationPlan(plan_id="a", name="First")
     second = AutomationPlan(plan_id="b", name="Second")
     view._apply_plans([first, second], lock_cache={"a": False}, content_cache={"a": "old", "b": "same"})
+    view._plans_scroll.refresh_item.assert_not_called()  # First render already has fresh rows.
     view._plans_scroll.reset_mock()
     view._apply_plans([first, second], lock_cache={"a": False}, content_cache={"a": "old", "b": "same"})
     view._plans_scroll.refresh_item.assert_not_called()
@@ -144,10 +144,11 @@ def test_edit_and_create_return_to_playlist_without_removed_recording_widgets(mo
 
 
 def test_lock_toggle_writes_database_and_reloads_without_touching_plan_json(tmp_path, monkeypatch):
-    from src.database import db_manager
+    import importlib
     from src.database.models import Recording
     from tkinter import messagebox
 
+    db_manager = importlib.import_module("src.database.db_manager")
     monkeypatch.setattr(db_manager, "DATA_DIR", tmp_path)
     database = object.__new__(db_manager.DatabaseManager)
     database._db_path = tmp_path / "fixture.db"
