@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -36,7 +37,8 @@ def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path
     assert b"--connection-file" in result.stdout
 
 
-def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_completion(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel_job", [False, True])
+def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_completion(tmp_path, monkeypatch, cancel_job):
     executable = os.environ["WINCRO_TEST_CODEX_EXE"]
     auth_home = tmp_path / "empty-auth-home"
     auth_home.mkdir()
@@ -44,6 +46,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     requests = []
+    release_response = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -51,6 +54,8 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         def do_POST(self):
             payload = self.rfile.read(int(self.headers["Content-Length"]))
             requests.append(json.loads(payload))
+            if cancel_job:
+                release_response.wait(30)
             item = {"id": "msg_offline", "type": "message", "role": "assistant", "status": "completed",
                 "content": [{"type": "output_text", "text": "Offline transport-only simulation; no actual GPT analysis.", "annotations": []}]}
             events = [
@@ -63,11 +68,14 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}},
             ]
             body = "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n" for event in events).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass  # The isolated owned client may have been cancelled.
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -99,14 +107,26 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     try:
         jobs.start(image, "Offline transport QA only. Return the supplied test response; do not use tools.",
                    {"codex": executable, "python": os.sys.executable, "model": "", "max_seconds": 45})
+        runner = None
+        if cancel_job:
+            deadline = time.monotonic() + 25
+            while not requests and jobs.busy and time.monotonic() < deadline:
+                time.sleep(.05)
+            runner = jobs.runner
+            jobs.cancel()
+            release_response.set()
         jobs.worker.join(65)
         assert not jobs.busy
         state = jobs.snapshot()
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
-        (artifacts / "execution-state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        assert state["status"] == "needs_review", json.dumps(state, ensure_ascii=False)
+        filename = "cancellation-state.json" if cancel_job else "execution-state.json"
+        (artifacts / filename).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        assert state["status"] == ("cancelled" if cancel_job else "needs_review"), json.dumps(state, ensure_ascii=False)
         assert requests, state
+        if cancel_job:
+            assert runner is not None and runner.process.poll() is not None
+            assert not jobs.connected
         def names(value):
             if isinstance(value, dict):
                 if isinstance(value.get("name"), str):
@@ -124,9 +144,11 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         assert list(plans.iterdir()) == [original]
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
-        (artifacts / "codex-tool-surface.json").write_text(json.dumps({"tool_names": sorted(tools), "status": state["status"],
+        filename = "cancelled-tool-surface.json" if cancel_job else "codex-tool-surface.json"
+        (artifacts / filename).write_text(json.dumps({"tool_names": sorted(tools), "status": state["status"],
             "real_model_called": False, "original_plan_unchanged": True}, indent=2), encoding="utf-8")
     finally:
+        release_response.set()
         jobs.close()
         if jobs.worker:
             jobs.worker.join(8)
