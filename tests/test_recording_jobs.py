@@ -304,6 +304,22 @@ def test_remote_model_denial_has_actionable_error_and_never_looks_completed():
     assert execution_error("ordinary failure").code == "GPT_EXECUTION_FAILED"
 
 
+def test_default_runtime_prefers_private_verified_version_without_rewriting_settings(tmp_path, monkeypatch):
+    from src.agent_bridge.codex_runner import default_runtime
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    managed = tmp_path / "WinCro/gpt_runtime/0.166.0/codex-x86_64-pc-windows-msvc.exe"
+    bundled = tmp_path / "OpenAI/Codex/bin/codex.exe"
+    for path in (managed, bundled):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    assert default_runtime()["codex"] == str(managed)
+    path = tmp_path / "runtime.json"
+    write_json(path, {"codex": "explicit-custom.exe", "model": "explicit-model"})
+    before = path.read_bytes()
+    assert load_runtime(path)["codex"] == "explicit-custom.exe"
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("value", [None, [], {"job_id": "wrong"}])
 def test_corrupt_job_record_does_not_hide_other_saved_results_or_delete_files(setup, value):
     jobs, media, original = setup
