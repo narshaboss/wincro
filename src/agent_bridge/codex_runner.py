@@ -209,6 +209,10 @@ class CodexRunner:
     def connect(self, descriptor, cancelled, ready):
         return self.run(descriptor, "", cancelled, lambda _: None, idle=True, ready=ready)
 
+    def turn_parameters(self, thread_id, prompt):
+        return {"threadId": thread_id, "serviceTier": None, "environments": [],
+            "input": [{"type": "text", "text": prompt}]}
+
     def run(self, descriptor, prompt, cancelled, progress, *, idle=False, ready=None):
         codex, python, server = self.preflight()
         if cancelled.is_set():
@@ -338,8 +342,7 @@ class CodexRunner:
                     if idle:
                         send({"id": 20, "method": "account/read", "params": {"refreshToken": False}})
                     else:
-                        send({"id": 3, "method": "turn/start", "params": {"threadId": thread_id,
-                            "environments": [], "input": [{"type": "text", "text": prompt}]}})
+                        send({"id": 3, "method": "turn/start", "params": self.turn_parameters(thread_id, prompt)})
                     continue
                 if idle and event.get("id") == 20:
                     account = event.get("result", {})
