@@ -266,13 +266,18 @@ class CodexRunner:
                     break
                 if isinstance(line, dict):
                     raise BridgeError("LIMIT_REACHED", "GPT 응답이 허용 크기를 초과했습니다.")
+                if not line.strip():
+                    continue
                 count += 1
                 if count > 10000:
                     raise BridgeError("LIMIT_REACHED", "분석 이벤트 제한에 도달했습니다. 초안을 확인하세요.")
                 try:
                     event = json.loads(line)
                 except (ValueError, UnicodeError):
-                    raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기 응답을 해석할 수 없습니다.")
+                    sample = clean_message(line.decode("utf-8", "replace"))[:300]
+                    raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기 JSON 응답을 해석할 수 없습니다: " + repr(sample))
+                if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                    raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기의 이벤트 형식이 잘못되었습니다.")
                 item = event.get("item", {})
                 kind = item.get("type")
                 if kind in {"command_execution", "file_change", "web_search", "collab_tool_call"}:
