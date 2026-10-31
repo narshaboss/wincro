@@ -1,5 +1,13 @@
 # WinCro Agent Rules
 
+## Recognition baseline
+
+Before changing recognition or investigating an update regression, read
+`docs/VIDEO_RECOGNITION_BASELINE.md`. Preserve the documented 309/310
+comparison and dedicated-video opt-in boundary. Do not change ordinary image
+thresholds, regions, color checks, or general video sampling to fix a dedicated
+video action. Reproduce both paths and report field limitations explicitly.
+
 ## Special mode
 
 Before changing special mode, read
