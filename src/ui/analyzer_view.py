@@ -4563,6 +4563,7 @@ class AnalyzerView(BaseView):
 
         self._db = get_db()
         self._closed = False
+        self._playlist_scale_after_id = None
         self._plan_lock_cache = {}
         self._plan_content_cache = {}
         self._plans_load_generation: int = 0  # async/sync plan load generation guard
@@ -4699,6 +4700,30 @@ class AnalyzerView(BaseView):
         self._scroll_frame.pack(fill="both", expand=True, padx=8, pady=8)
         self._setup_plans_card(self._scroll_frame)
 
+    def _set_scaling(self, new_widget_scaling, new_window_scaling):
+        super()._set_scaling(new_widget_scaling, new_window_scaling)
+        if getattr(self, "_closed", True) or getattr(self, "_plans_scroll", None) is None:
+            return
+        if self._playlist_scale_after_id is None:
+            # Wait until CTk has applied the scale to all child widgets.
+            self._playlist_scale_after_id = self.after(0, self._sync_playlist_scale)
+
+    def _sync_playlist_scale(self):
+        self._playlist_scale_after_id = None
+        if self._closed:
+            return
+        height = max(1, round(self._apply_widget_scaling(56)))
+        rows = self._plans_scroll
+        if rows._item_height == height:
+            return
+        position = rows._canvas.yview()[0]
+        rows._item_height = height
+        rows._scroll_unit_px = max(16, min(48, int(height * .55)))
+        rows._canvas.configure(yscrollincrement=rows._scroll_unit_px)
+        rows.refresh()
+        rows._canvas.yview_moveto(position)
+        rows._schedule_render()
+
     def _setup_plans_card(self, parent):
         """분석된 재생 목록 카드"""
         card = self.create_card(parent, title="분석된 재생 목록")
@@ -4749,7 +4774,7 @@ class AnalyzerView(BaseView):
 
         self._plans_scroll = VirtualScrollFrame(
             card,
-            item_height=56,
+            item_height=max(1, round(self._apply_widget_scaling(56))),
             buffer_count=5,
             fg_color=COLORS["bg_card"],
         )
@@ -4768,10 +4793,14 @@ class AnalyzerView(BaseView):
         # 연관된 녹화의 잠금 상태 확인 (캐시 사용 — 루프 내 DB 쿼리 방지)
         is_locked = self._plan_lock_cache.get(plan.plan_id, False)
 
-        item_wrapper = ctk.CTkFrame(
+        # The virtual canvas uses pixels. A plain Tk wrapper avoids CTk scaling
+        # placement coordinates a second time; the styled contents still scale.
+        item_wrapper = tk.Frame(
             parent or self._plans_scroll,
-            fg_color="transparent",
-            height=56,
+            bg=COLORS["bg_card"],
+            height=max(1, round(self._apply_widget_scaling(56))),
+            borderwidth=0,
+            highlightthickness=0,
         )
         item_wrapper.pack_propagate(False)
         if parent is None:
@@ -5047,12 +5076,14 @@ class AnalyzerView(BaseView):
     def cleanup(self):
         self._closed = True
         self._plans_load_generation += 1
-        if self._deferred_load_id is not None:
-            try:
-                self.after_cancel(self._deferred_load_id)
-            except (tk.TclError, RuntimeError):
-                pass
-            self._deferred_load_id = None
+        for name in ("_deferred_load_id", "_playlist_scale_after_id"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                try:
+                    self.after_cancel(pending)
+                except (tk.TclError, RuntimeError):
+                    pass
+                setattr(self, name, None)
         self._plans_loader.close()
         dispatcher = getattr(self, "_ui_dispatcher", None)
         if dispatcher is not None:

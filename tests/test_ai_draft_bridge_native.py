@@ -529,6 +529,16 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         assert viewport.winfo_rooty() <= last.winfo_rooty()
         assert last.winfo_rooty() + last.winfo_height() <= viewport.winfo_rooty() + viewport.winfo_height() + 2
         assert len(view._plans_scroll._visible_widgets) < 24
+
+        next_scale = 1.5 if scale == 1.0 else 1.0
+        ctk.set_widget_scaling(next_scale)
+        assert _pump_until(ui_root, lambda: view._plans_scroll._item_height == round(56 * next_scale), 5)
+        view._plans_scroll.scroll_to_item(23)
+        assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets, 5)
+        ui_root.update_idletasks()
+        last = view._plans_scroll._visible_widgets[23]
+        assert viewport.winfo_rooty() <= last.winfo_rooty()
+        assert last.winfo_rooty() + last.winfo_height() <= viewport.winfo_rooty() + viewport.winfo_height() + 2
         assert {path.name: path.read_bytes() for path in plans.iterdir()} == expected
         forbidden_save.assert_not_called()
         database.create_recording.assert_not_called()
@@ -540,7 +550,7 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
                 artifact_dir = Path("artifacts/ai_draft")
                 artifact_dir.mkdir(parents=True, exist_ok=True)
                 ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(
-                    artifact_dir / f"analyzer_playlist_end_{int(scale * 100)}pct.png")
+                    artifact_dir / f"analyzer_playlist_end_{int(scale * 100)}_to_{int(view._get_widget_scaling() * 100)}pct.png")
             finally:
                 view.cleanup()
         window.destroy()

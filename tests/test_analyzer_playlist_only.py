@@ -127,6 +127,24 @@ def test_close_cancels_initial_load_and_rejects_queued_refresh_results():
     assert view._closed
 
 
+def test_live_scale_update_only_rebuilds_rows_when_the_pixel_height_changes():
+    view = host()
+    view._apply_widget_scaling = lambda value: value * 1.5
+    rows = view._plans_scroll
+    rows._item_height = 56
+    rows._canvas.yview.return_value = (.25, .75)
+    AnalyzerView._sync_playlist_scale(view)
+    assert rows._item_height == 84
+    rows.refresh.assert_called_once()
+    rows._canvas.yview_moveto.assert_called_once_with(.25)
+    AnalyzerView._sync_playlist_scale(view)
+    assert rows.refresh.call_count == 1
+    view._closed = True
+    view._apply_widget_scaling = lambda value: value
+    AnalyzerView._sync_playlist_scale(view)
+    assert rows.refresh.call_count == 1
+
+
 def test_edit_and_create_return_to_playlist_without_removed_recording_widgets(monkeypatch):
     import sys
     factory = Mock(return_value="modal-placeholder")

@@ -333,7 +333,7 @@ def test_analyzer_view_uses_virtual_playlist_and_async_apply():
     assert 'self._plans_scroll.set_items(self._plan_items, preserve_scroll=True)' in text
     assert 'self._plans_scroll.refresh_item(index)' in text
     assert '_recordings_scroll' not in text[text.index('class AnalyzerView'):]
-    assert 'item_wrapper = ctk.CTkFrame(' in plan_item_method
+    assert 'item_wrapper = tk.Frame(' in plan_item_method
     assert 'height=2' in plan_item_method
     assert 'fg_color=COLORS["accent"]' in plan_item_method
     assert "return item_wrapper" in plan_item_method
