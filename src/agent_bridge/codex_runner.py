@@ -1,6 +1,7 @@
 """Opt-in Codex app-server job with MCP tools and NO local environment."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import queue
@@ -127,6 +128,7 @@ class CodexRunner:
     def __init__(self, settings, folder):
         self.settings = dict(settings)
         self.folder = Path(folder).resolve()
+        self.server_name = "wincroRecording_" + hashlib.sha256(str(self.folder).encode()).hexdigest()[:16]
         self.process = None
         self.tree = None
         self.lock = threading.Lock()
@@ -172,11 +174,11 @@ class CodexRunner:
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
             "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
             "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
-            "mcp_servers": {}, "mcp_servers.wincroRecording.command": python,
-            "mcp_servers.wincroRecording.args": [server, "--connection-file", str(descriptor)],
-            "mcp_servers.wincroRecording.cwd": str(Path(server).parent.parent),
-            "mcp_servers.wincroRecording.required": True,
-            "mcp_servers.wincroRecording.enabled_tools": sorted(JOB_TOOLS | {"connection_status"}),
+            f"mcp_servers.{self.server_name}.command": python,
+            f"mcp_servers.{self.server_name}.args": [server, "--connection-file", str(descriptor)],
+            f"mcp_servers.{self.server_name}.cwd": str(Path(server).parent.parent),
+            f"mcp_servers.{self.server_name}.required": True,
+            f"mcp_servers.{self.server_name}.enabled_tools": sorted(JOB_TOOLS | {"connection_status"}),
         }
         for key, value in configs.items():
             args += ["-c", key + "=" + ("{}" if isinstance(value, dict) else json.dumps(value, ensure_ascii=False))]
@@ -189,9 +191,10 @@ class CodexRunner:
             args += ["-c", "model=" + json.dumps(model)]
         return args
 
-    def thread_parameters(self):
+    def thread_parameters(self, servers=()):
         return {"cwd": str(self.folder), "ephemeral": True, "environments": [],
-            "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": "read-only", "serviceTier": None}
+            "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": "read-only", "serviceTier": None,
+            "config": {f"mcp_servers.{json.dumps(name)}.enabled": False for name in servers if name != self.server_name}}
 
     def run(self, descriptor, prompt, cancelled, progress):
         codex, python, server = self.preflight()
@@ -294,7 +297,13 @@ class CodexRunner:
                     raise BridgeError("GPT_EXECUTION_FAILED", clean_message(event["error"]))
                 if event.get("id") == 1:
                     send({"method": "initialized"})
-                    send({"id": 2, "method": "thread/start", "params": self.thread_parameters()})
+                    send({"id": 10, "method": "config/read", "params": {"includeLayers": False}})
+                    continue
+                if event.get("id") == 10:
+                    servers = event.get("result", {}).get("config", {}).get("mcp_servers", {})
+                    if not isinstance(servers, dict) or self.server_name not in servers or len(servers) > 128:
+                        raise BridgeError("RUNTIME_UNSUPPORTED", "작업 외 MCP 연결 차단을 위한 설정 목록을 확인하지 못했습니다.")
+                    send({"id": 2, "method": "thread/start", "params": self.thread_parameters(servers)})
                     continue
                 if event.get("id") == 2:
                     result = event.get("result", {})

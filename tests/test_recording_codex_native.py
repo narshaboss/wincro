@@ -45,9 +45,13 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
     monkeypatch.setenv("CODEX_HOME", str(auth_home))
     config_path = auth_home / "config.toml"
     bridge = str(Path(__file__).resolve().parents[1] / "tools/wincro_mcp_server.py")
+    foreign_marker = tmp_path / "foreign-started.txt"
+    foreign_wrapper = tmp_path / "foreign_mcp.py"
+    foreign_wrapper.write_text("from pathlib import Path\nimport runpy\nPath(" + repr(str(foreign_marker))
+        + ").write_text('unexpected startup')\nrunpy.run_path(" + repr(bridge) + ", run_name='__main__')\n", encoding="utf-8")
     config_path.write_text('model_reasoning_effort="ultra"\nnotify=["wincro-notify-must-not-run.exe"]\n'
         + '[mcp_servers.unselected]\ncommand=' + json.dumps(os.sys.executable) + '\nargs='
-        + json.dumps([bridge, "--connection-file", str(tmp_path / "never-consented.json")]) + '\n', encoding="utf-8")
+        + json.dumps([str(foreign_wrapper), "--connection-file", str(tmp_path / "never-consented.json")]) + '\n', encoding="utf-8")
     config_before = config_path.read_bytes()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
@@ -152,6 +156,7 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         assert original.read_bytes() == before
         assert list(plans.iterdir()) == [original]
         assert config_path.read_bytes() == config_before
+        assert not foreign_marker.exists(), "An unconsented global MCP process was started"
         artifacts = Path("artifacts/recording_analysis")
         artifacts.mkdir(parents=True, exist_ok=True)
         filename = "cancelled-tool-surface.json" if cancel_job else "codex-tool-surface.json"
