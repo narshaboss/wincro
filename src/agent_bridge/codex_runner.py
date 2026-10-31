@@ -129,6 +129,7 @@ class CodexRunner:
         self.settings = dict(settings)
         self.folder = Path(folder).resolve()
         self.server_name = "wincroRecording_" + hashlib.sha256(str(self.folder).encode()).hexdigest()[:16]
+        self.mcp_config = None
         self.process = None
         self.tree = None
         self.lock = threading.Lock()
@@ -170,17 +171,15 @@ class CodexRunner:
     def arguments(self, codex, python, server, descriptor):
         from .recording_jobs import JOB_TOOLS
         args = [codex, "app-server", "--listen", "stdio://"]
+        self.mcp_config = {"command": python, "args": [server, "--connection-file", str(descriptor)],
+            "cwd": str(Path(server).parent.parent), "required": True, "enabled": True,
+            "default_tools_approval_mode": "approve", "enabled_tools": sorted(JOB_TOOLS | {"connection_status"})}
         configs = {
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
             "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
             "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
-            f"mcp_servers.{self.server_name}.command": python,
-            f"mcp_servers.{self.server_name}.args": [server, "--connection-file", str(descriptor)],
-            f"mcp_servers.{self.server_name}.cwd": str(Path(server).parent.parent),
-            f"mcp_servers.{self.server_name}.required": True,
-            f"mcp_servers.{self.server_name}.default_tools_approval_mode": "approve",
-            f"mcp_servers.{self.server_name}.enabled_tools": sorted(JOB_TOOLS | {"connection_status"}),
         }
+        configs.update({f"mcp_servers.{self.server_name}.{key}": value for key, value in self.mcp_config.items()})
         for key, value in configs.items():
             args += ["-c", key + "=" + ("{}" if isinstance(value, dict) else json.dumps(value, ensure_ascii=False))]
         for feature in DISABLED_FEATURES:
@@ -193,9 +192,13 @@ class CodexRunner:
         return args
 
     def thread_parameters(self, servers=()):
+        if self.mcp_config is None:
+            raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 MCP 설정이 준비되지 않았습니다.")
+        connections = {name: {"enabled": False} for name in servers if name != self.server_name}
+        connections[self.server_name] = dict(self.mcp_config)
         return {"cwd": str(self.folder), "ephemeral": True, "environments": [],
             "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": "read-only", "serviceTier": None,
-            "config": {f"mcp_servers.{json.dumps(name)}.enabled": False for name in servers if name != self.server_name}}
+            "config": {"mcp_servers": connections}}
 
     def run(self, descriptor, prompt, cancelled, progress):
         codex, python, server = self.preflight()

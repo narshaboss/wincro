@@ -246,8 +246,9 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     assert "get_frames" in tools and "stage_edits" in tools
     assert "publish_new_plan" not in tools and "open_draft" not in tools
     assert "notify=[]" in args and 'model_reasoning_effort="high"' in args
-    assert runner.thread_parameters([runner.server_name, "unselected", "other.with.dots"])["config"] == {
-        'mcp_servers."unselected".enabled': False, 'mcp_servers."other.with.dots".enabled': False}
+    connections = runner.thread_parameters([runner.server_name, "unselected", "other.with.dots"])["config"]["mcp_servers"]
+    assert connections["unselected"] == connections["other.with.dots"] == {"enabled": False}
+    assert connections[runner.server_name] == runner.mcp_config
 
 
 def test_preflight_refuses_missing_executable_and_secret_errors_are_bounded(tmp_path):
