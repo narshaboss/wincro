@@ -266,6 +266,7 @@ class CodexRunner:
         thread_id = None
         last_ping = None
         pending_ping = None
+        requires_auth = None
         count = 0
         started = time.monotonic()
         try:
@@ -337,7 +338,8 @@ class CodexRunner:
                     continue
                 if idle and event.get("id") == 20:
                     account = event.get("result", {})
-                    if account.get("requiresOpenaiAuth", True) and not account.get("account"):
+                    requires_auth = account.get("requiresOpenaiAuth", True)
+                    if requires_auth and not account.get("account"):
                         raise BridgeError("LOGIN_REQUIRED", "Codex에 먼저 로그인한 뒤 연결 ON을 눌러주세요.")
                     send({"id": 21, "method": "mcpServer/tool/call", "params": {
                         "threadId": thread_id, "server": self.server_name, "tool": "connection_status", "arguments": {}}})
@@ -353,7 +355,7 @@ class CodexRunner:
                     if ready:
                         ready(result["result"])
                     continue
-                if idle and event.get("method") == "account/updated" and event.get("params", {}).get("authMode") is None:
+                if idle and requires_auth is True and event.get("method") == "account/updated" and event.get("params", {}).get("authMode") is None:
                     raise BridgeError("LOGIN_REQUIRED", "Codex 로그인이 해제되었습니다. 다시 로그인하고 연결해주세요.")
                 method = event.get("method", "")
                 params = event.get("params", {})
