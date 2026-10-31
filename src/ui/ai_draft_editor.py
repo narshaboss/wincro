@@ -291,7 +291,10 @@ class AIDraftEditor(ctk.CTkToplevel):
                     entry.insert(0, str(rule.get(field, "")))
             finally:
                 self._loading_form = False
-            safe = {k: rule.get(k) for k in ("rule_id", "action_type", "target_image", "search_region", "action_keys", "wait_random", "wait_random_range")}
+            safe = {k: rule.get(k) for k in ("rule_id", "action_type", "target_image", "target_images",
+                "search_region", "action_x", "action_y", "action_text", "action_keys", "action_key_events",
+                "wait_random", "wait_random_range", "repeat_delay_random", "repeat_delay_random_range",
+                "skip_on_not_found", "verify_image_color", "verify_image_brightness", "drag_to_x", "drag_to_y", "drag_duration")}
             self.details.configure(state="normal")
             self.details.delete("1.0", "end")
             self.details.insert("1.0", json.dumps(safe, ensure_ascii=False, indent=2))

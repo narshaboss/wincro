@@ -135,6 +135,8 @@ class MediaTools:
         if not number(start, 0, 86400) or not number(end, start, min(86400, start + 120)) or type(offset) is not int or offset < 0:
             raise BridgeError("INVALID_FIELD", "Use a valid interval up to 120 seconds")
         record = self._get(recording_id)
+        if record["excluded"]:
+            raise BridgeError("TIMING_UNVERIFIED", "Input logs are withheld when private video intervals exist: legacy clocks may differ. Select a separately sanitized recording/log instead")
         if not record["input_log"] or self._hash(record["input_log"]) != record["log_sha256"]:
             raise BridgeError("MEDIA_NOT_READY", "Select an unchanged input log in WinCro")
         from .storage import read_json

@@ -205,6 +205,18 @@ def test_media_private_intervals_and_replacement(service, tmp_path):
     assert len(service.dispatch("list_recordings", {})) == 1
 
 
+def test_unaligned_private_intervals_cannot_leak_keyboard_logs(service, tmp_path):
+    image = tmp_path / "private.png"
+    image.write_bytes(cv2.imencode(".png", np.zeros((20, 20, 3), np.uint8))[1].tobytes())
+    log = tmp_path / "private_input.json"
+    write_json(log, {"events": [{"timestamp": 50, "key": "secret", "event_type": "key_press"}]})
+    media = MediaTools(service)
+    selected = media.register(image, log, excluded=[[1, 2]])
+    with pytest.raises(BridgeError) as err:
+        media.get_input_events(selected["recording_id"], start=40, end=60)
+    assert err.value.code == "TIMING_UNVERIFIED"
+
+
 def test_actual_video_frame_crop_dispatch_without_desktop_capture(service):
     clip = Path(__file__).resolve().parents[1] / "data/templates/template_video_20260703_154056_306.mp4"
     selected = MediaTools(service).register(clip)
