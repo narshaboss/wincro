@@ -100,7 +100,7 @@ class AIDraftEditor(ctk.CTkToplevel):
             label.configure(wraplength=width)
 
     def _section(self, title, explanation):
-        card = ctk.CTkFrame(self.prepare_page, fg_color=COLORS["bg_card"], border_width=1, border_color=COLORS["border"])
+        card = ctk.CTkFrame(self.prepare_page, fg_color=COLORS["bg_card"], border_width=2, border_color=COLORS["border"])
         card.pack(fill="x", pady=(0, 10))
         card.grid_columnconfigure((0, 1), weight=1, uniform="section")
         self._label(card, title, text_color=COLORS["text_primary"], font=(IOS_FONTS["family"], 15, "bold")).grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 0))

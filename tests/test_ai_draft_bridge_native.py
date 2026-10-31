@@ -16,6 +16,18 @@ from src.agent_bridge.service import DraftService
 from src.agent_bridge.transport import LocalHost, call
 
 
+def _job_diagnostics(window):
+    import threading
+    import traceback
+    frames = sys._current_frames()
+    info = [f"closed={window.closed} queued_results={window.results.qsize()} serial={window.serial}/{window.service.change_serial}",
+            "callback_errors=" + repr(getattr(window._root(), "_ai_callback_errors", []))]
+    for thread in threading.enumerate():
+        if thread.name.startswith("ai-draft-ui") and thread.ident in frames:
+            info.append(thread.name + "\n" + "".join(traceback.format_stack(frames[thread.ident])))
+    return "\n".join(info)
+
+
 def test_real_local_pipe_auth_scope_and_shutdown(tmp_path):
     service = DraftService(tmp_path / "plans", tmp_path / "templates", tmp_path / "drafts")
     host = LocalHost(service, tmp_path / "connections")
@@ -148,6 +160,10 @@ def ui_root():
         ctk.set_window_scaling(1.0)
         root = ctk.CTk()
         root.withdraw()
+        root._ai_callback_errors = []
+        import traceback
+        root.report_callback_exception = lambda kind, value, trace: root._ai_callback_errors.append(
+            "".join(traceback.format_exception(kind, value, trace)))
         try:
             yield root
         finally:
@@ -164,6 +180,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
     import tkinter as tk
     ctk.set_widget_scaling(scale)
     root = ui_root
+    root._ai_callback_errors.clear()
     plans, templates = tmp_path / "plans", tmp_path / "templates"
     plans.mkdir()
     templates.mkdir()
@@ -289,7 +306,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
         while window.busy and time.monotonic() < deadline:
             root.update()
             time.sleep(.02)
-        assert not window.busy and not window.form_dirty
+        assert not window.busy and not window.form_dirty, _job_diagnostics(window)
         assert "수정 사항을 초안 파일에 저장" in window.status.get()
         restored = DraftService(plans, templates, window.service.workspace).read_draft(draft["draft_id"])
         assert restored["plan"] == window.current["plan"]
@@ -300,6 +317,7 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
             root.update()
             time.sleep(.02)
         assert "저장·재로딩 확인 완료" in window.status.get()
+        assert not root._ai_callback_errors, root._ai_callback_errors
         # Text/controls stay inside the window's client bounds at each scaling.
         for widget in [window.tree, window.drafts, window.publish_button, window.connection_badge, *window.entries.values()]:
             assert widget.winfo_width() > 40
