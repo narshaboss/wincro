@@ -77,8 +77,10 @@ class AIDraftEditor(ctk.CTkToplevel):
             border_color=COLORS["border"], button_color=COLORS["bg_elevated"],
             dropdown_fg_color=COLORS["bg_card"], dropdown_text_color=COLORS["text_primary"])
         self.plans = ctk.CTkComboBox(controls, values=["빈 플랜"], state="readonly", **combo_style)
+        self.plans.set("빈 플랜")
         self.plans.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         self.drafts = ctk.CTkComboBox(controls, values=["초안 선택"], state="readonly", command=self._select_draft, **combo_style)
+        self.drafts.set("초안 선택")
         self.drafts.grid(row=0, column=1, sticky="ew", padx=6, pady=6)
         self._button(controls, "참고 플랜 복사 / 새 초안", self._new_draft).grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
         self._button(controls, "녹화 자료 선택", self._select_media).grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 6))
@@ -187,6 +189,8 @@ class AIDraftEditor(ctk.CTkToplevel):
                 self.serial = self.service.change_serial
                 if self.current:
                     self._render(self.service.read_draft(self.current["draft_id"]))
+                elif self.service.active_draft_id and not self.form_dirty:
+                    self._render(self.service.read_draft(self.service.active_draft_id))
                 self._refresh_choices()
             finally:
                 self.service.lock.release()
@@ -230,6 +234,7 @@ class AIDraftEditor(ctk.CTkToplevel):
 
     def _render(self, state):
         self.current = state
+        self.drafts.set(state["plan"]["name"] + " · " + state["draft_id"][-8:])
         selected = self.tree.selection()
         rows = list(walk(state["plan"]))
         desired = [r["rule_id"] for r, *_ in rows]

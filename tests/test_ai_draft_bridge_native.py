@@ -150,7 +150,13 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, ui_root):
             {"op": "add_rule", "action_type": "hotkey", "fields": {"description": "확인 키 입력", "action_keys": ["enter"]}},
             {"op": "add_rule", "action_type": "click", "fields": {"description": "다음 화면 선택"}},
             {"op": "add_rule", "action_type": "type", "fields": {"description": "수량 입력", "action_text": "10"}}])
-        window._render(window.service.read_draft(draft["draft_id"]))
+        deadline = time.monotonic() + 4
+        while window.current is None and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.03)
+        assert window.current is not None  # MCP-created draft is visible without manual selection.
+        assert window.plans.get() == "빈 플랜"
+        assert "AI 초안 레이아웃 검수" in window.drafts.get()
         key = window.current["plan"]["initial_rules"][0]["rule_id"]
         window.tree.selection_set(key)
         for _ in range(5):

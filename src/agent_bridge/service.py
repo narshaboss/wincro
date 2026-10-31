@@ -55,6 +55,7 @@ class DraftService:
         self.lock = threading.RLock()
         self.closed = False
         self.instance_id = new_id("app_")
+        self.active_draft_id = None
         self.selected_media = {}
         self.frame_traces = {}
         self.granted_sources = set()
@@ -127,6 +128,7 @@ class DraftService:
                      "crosschecks": [], "approval": None, "publication": None}
             self._pin_assets(state)
             self._save(state)
+            self.active_draft_id = state["draft_id"]
             return self._public(state)
 
     def _public(self, state):
