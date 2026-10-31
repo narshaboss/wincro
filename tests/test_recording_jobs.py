@@ -239,6 +239,7 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
         assert f"features.{feature}=false" in args
     assert "approval_policy=\"never\"" in args
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
+    assert not any(value.startswith("agents.enabled=") for value in args)
     tools = json.loads(next(value.split("=", 1)[1] for value in args if value.startswith("mcp_servers.wincroRecording.enabled_tools=")))
     assert "get_frames" in tools and "stage_edits" in tools
     assert "publish_new_plan" not in tools and "open_draft" not in tools

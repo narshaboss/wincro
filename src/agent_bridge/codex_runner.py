@@ -171,7 +171,7 @@ class CodexRunner:
                 "--sandbox", "read-only", "--cd", str(self.folder), "--color", "never", "--json"]
         configs = {
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
-            "tools.view_image": False, "agents.enabled": False, "project_doc_max_bytes": 0,
+            "tools.view_image": False, "project_doc_max_bytes": 0,
             "mcp_servers": {}, "mcp_servers.wincroRecording.command": python,
             "mcp_servers.wincroRecording.args": [server, "--connection-file", str(descriptor)],
             "mcp_servers.wincroRecording.cwd": str(Path(server).parent.parent),
