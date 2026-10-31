@@ -216,14 +216,22 @@ class RecordingWorkspace(ctk.CTkFrame):
             self.result.set_jobs(states, select)
         self._submit(self.jobs.list_jobs, loaded)
 
+    def _dialog(self, title, width, height):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(title)
+        scale = dialog._get_window_scaling()
+        width = max(340, min(width, int(dialog.winfo_screenwidth() / scale) - 60))
+        height = max(300, min(height, int(dialog.winfo_screenheight() / scale) - 90))
+        dialog.geometry(f"{width}x{height}+20+20")
+        dialog.configure(fg_color=COLORS["bg_content"])
+        dialog.transient(self.winfo_toplevel())
+        return dialog
+
     def _settings(self):
         if self.jobs.busy or self.busy:
             self.status.configure(text="분석이 끝난 뒤 연결 설정을 변경하세요.")
             return
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("GPT 자동 분석 연결 설정")
-        dialog.geometry("650x500")
-        dialog.configure(fg_color=COLORS["bg_content"])
+        dialog = self._dialog("GPT 자동 분석 연결 설정", 650, 500)
         dialog.grid_columnconfigure(0, weight=1)
         dialog.grid_rowconfigure(0, weight=1)
         body = ctk.CTkScrollableFrame(dialog, fg_color=COLORS["bg_card"])
@@ -293,7 +301,6 @@ class RecordingWorkspace(ctk.CTkFrame):
                     note.configure(text="저장 실패: " + error)
             self._submit(persist, saved, failed)
         self._button(dialog, "설정 저장", save).grid(row=2, column=0, sticky="ew", padx=12, pady=10)
-        dialog.transient(self.winfo_toplevel())
 
     def _help(self):
         text = ("1. 녹화 시작으로 작업 과정을 녹화한 뒤 F7로 중지하세요. 기존 영상은 녹화 목록의 파일 추가로 넣을 수 있습니다.\n\n"
@@ -301,28 +308,22 @@ class RecordingWorkspace(ctk.CTkFrame):
             "3. 연결 설정의 Codex 로그인과 MCP용 Python이 준비되어 있으면 별도 GPT 작업이 자동 시작됩니다. 현재 대화를 자동으로 깨우는 기능은 아닙니다. ON은 실제 MCP 통신 확인 상태입니다.\n\n"
             "4. 분석 결과 편집에서 액션·목적·질문을 검토하고 대기·반복을 수정해 저장할 수 있습니다. 수정하면 이전 GPT 교차검수는 무효가 됩니다.\n\n"
             "기존 재생 플랜·맵·재생목록은 수정하지 않습니다. 이 화면은 초안만 저장합니다. 분석·교차검수 기록이 있어도 실제 인식·재생 성공은 별도로 검증해야 합니다. 취소·오류 시 저장된 초안은 보관됩니다.")
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("녹화·GPT 분석 사용방법")
-        dialog.geometry("640x480")
+        dialog = self._dialog("녹화·GPT 분석 사용방법", 640, 480)
         box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         box.pack(fill="both", expand=True, padx=12, pady=12)
         box.insert("1.0", text)
         box.configure(state="disabled")
         self._button(dialog, "닫기", dialog.destroy).pack(fill="x", padx=12, pady=(0, 12))
-        dialog.transient(self.winfo_toplevel())
 
     def _job_details(self):
         state = self.jobs.snapshot()
         if state:
-            dialog = ctk.CTkToplevel(self)
-            dialog.title("GPT 분석 상태 상세")
-            dialog.geometry("640x420")
+            dialog = self._dialog("GPT 분석 상태 상세", 640, 420)
             box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
             box.pack(fill="both", expand=True, padx=12, pady=12)
             box.insert("1.0", state["message"] + "\n\n" + state.get("model_message", ""))
             box.configure(state="disabled")
             self._button(dialog, "닫기", dialog.destroy).pack(fill="x", padx=12, pady=(0, 12))
-            dialog.transient(self.winfo_toplevel())
 
     def close(self):
         if self.closed:

@@ -442,12 +442,27 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert workspace.result.save.winfo_ismapped()
         assert workspace.result.save.winfo_rooty() + workspace.result.save.winfo_height() <= window.winfo_height()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_result_{int(scale*100)}pct.png")
+        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
+        ctk.set_window_scaling(scale)
+        workspace._settings()
+        settings = next(child for child in workspace.winfo_children() if isinstance(child, ctk.CTkToplevel))
+        assert _pump_until(ui_root, lambda: settings.winfo_ismapped() and not workspace.busy, 5)
+        deadline = time.monotonic() + .3
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        save_settings = next(child for child in settings.winfo_children()
+            if isinstance(child, ctk.CTkButton) and child.cget("text") == "설정 저장")
+        assert save_settings.winfo_rooty() + save_settings.winfo_height() <= settings.winfo_rooty() + settings.winfo_height()
+        assert settings.winfo_rootx() + settings.winfo_width() <= settings.winfo_screenwidth()
+        assert settings.winfo_rooty() + settings.winfo_height() <= settings.winfo_screenheight()
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_settings_{int(scale*100)}pct.png")
+        settings.destroy()
     finally:
         if view is not None:
             view.cleanup()
         window.destroy()
         ui_root.update()
         ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)
 
 
 def test_recording_pipeline_select_consent_mcp_result_and_durable_save(tmp_path, monkeypatch, ui_root):
