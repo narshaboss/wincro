@@ -156,7 +156,6 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert workspace.jobs.snapshot() is None
         artifacts = Path("artifacts/ai_draft")
         artifacts.mkdir(parents=True, exist_ok=True)
-        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_manual_connected.png")
         assert _pump_until(ui_root, lambda: 0 in view._recordings_scroll._visible_widgets, 5)
         row = view._recordings_scroll._visible_widgets[0]
         workspace.choose(view._recording_items[0])
@@ -178,6 +177,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
             return time.monotonic() > deadline
         assert _pump_until(ui_root, sample_geometry, 2)
         assert len(set(samples)) == 1, "Idle polling moved or resized recording controls"
+        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_manual_connected.png")
         view._refresh_recordings_list_async()
         assert _pump_until(ui_root, lambda: view._catalog_loaded and not workspace.busy, 5)
         deadline = time.monotonic() + .2
