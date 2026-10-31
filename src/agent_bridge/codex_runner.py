@@ -163,6 +163,14 @@ class CodexRunner:
                                     capture_output=True, timeout=15, **hidden_options())
         if dependency.returncode or b"WINCRO_MCP_READY" not in dependency.stdout:
             raise BridgeError("MCP_MISSING", "표준 입출력이 가능한 Python과 검수한 mcp==1.25.0 설치가 필요합니다.")
+        from .storage import read_json
+        catalog = read_json(Path(__file__).with_name("codex_models_recording.json"))
+        models = catalog.get("models", []) if isinstance(catalog, dict) else []
+        if not models or any(model.get("apply_patch_tool_type") is not None or model.get("experimental_supported_tools") for model in models):
+            raise BridgeError("RUNTIME_UNSUPPORTED", "분석용 모델의 파일 수정 도구 차단 설정을 확인하지 못했습니다.")
+        selected = self.settings.get("model", "").strip()
+        if selected and selected not in {model["slug"] for model in models}:
+            raise BridgeError("RUNTIME_UNSUPPORTED", "분석용으로 검수된 모델이 아닙니다. 모델 이름을 비우거나 검수된 모델을 선택하세요.")
         return str(codex.resolve()), str(python.resolve()), str(server)
 
     def arguments(self, codex, python, server, descriptor):
@@ -172,6 +180,7 @@ class CodexRunner:
         configs = {
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
             "tools.view_image": False, "project_doc_max_bytes": 0,
+            "model_catalog_json": str(Path(__file__).with_name("codex_models_recording.json").resolve()),
             "mcp_servers": {}, "mcp_servers.wincroRecording.command": python,
             "mcp_servers.wincroRecording.args": [server, "--connection-file", str(descriptor)],
             "mcp_servers.wincroRecording.cwd": str(Path(server).parent.parent),
@@ -246,6 +255,7 @@ class CodexRunner:
         for thread in threads:
             thread.start()
         final = ""
+        completed = False
         count = 0
         started = time.monotonic()
         try:
@@ -274,10 +284,16 @@ class CodexRunner:
                 try:
                     event = json.loads(line)
                 except (ValueError, UnicodeError):
+                    # Windows MCP cleanup can inherit stdout (localized taskkill text).
+                    # Only tolerate this AFTER a valid model-turn completion event.
+                    if completed:
+                        continue
                     sample = clean_message(line.decode("utf-8", "replace"))[:300]
                     raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기 JSON 응답을 해석할 수 없습니다: " + repr(sample))
                 if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                     raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기의 이벤트 형식이 잘못되었습니다.")
+                if event["type"] == "turn.completed":
+                    completed = True
                 item = event.get("item", {})
                 kind = item.get("type")
                 if kind in {"command_execution", "file_change", "web_search", "collab_tool_call"}:
@@ -294,6 +310,8 @@ class CodexRunner:
                 if kind == "agent_message" and event.get("type") == "item.completed":
                     final = clean_message(item.get("text", ""))
             code = process.wait(timeout=5)
+            if code == 0 and not completed:
+                raise BridgeError("GPT_PROTOCOL_ERROR", "GPT 실행기의 정상 턴 종료를 확인하지 못했습니다.")
             return {"exit_code": code, "message": final if code == 0 else clean_message(stderr.decode("utf-8", "replace"))}
         finally:
             stop_reading.set()

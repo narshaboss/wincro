@@ -137,6 +137,9 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
                 for item in value:
                     yield from names(item)
         tools = set(names(requests[0].get("tools", [])))
+        filename = "cancelled-tool-surface.json" if cancel_job else "codex-tool-surface.json"
+        (artifacts / filename).write_text(json.dumps({"tool_names": sorted(tools), "status": state["status"],
+            "real_model_called": False, "original_plan_unchanged": original.read_bytes() == before}, indent=2), encoding="utf-8")
         assert any("get_frames" in name for name in tools), tools
         forbidden = ("exec_command", "shell", "apply_patch", "computer", "browser", "spawn_agent", "publish_new_plan", "open_draft", "view_image")
         assert not any(any(word in name for word in forbidden) for name in tools), tools

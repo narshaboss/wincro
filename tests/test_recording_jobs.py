@@ -243,6 +243,10 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     tools = json.loads(next(value.split("=", 1)[1] for value in args if value.startswith("mcp_servers.wincroRecording.enabled_tools=")))
     assert "get_frames" in tools and "stage_edits" in tools
     assert "publish_new_plan" not in tools and "open_draft" not in tools
+    catalog_path = Path(json.loads(next(value.split("=", 1)[1] for value in args if value.startswith("model_catalog_json="))))
+    catalog = read_json(catalog_path)
+    assert catalog["models"]
+    assert all(model["apply_patch_tool_type"] is None and model["experimental_supported_tools"] == [] for model in catalog["models"])
 
 
 def test_preflight_refuses_missing_executable_and_secret_errors_are_bounded(tmp_path):
