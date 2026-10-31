@@ -24,6 +24,7 @@ DISABLED_FEATURES = (
     "view_image", "unified_exec_tty", "code_mode_host", "multi_agent_v2", "multi_agent_v2_dynamic_tools",
     "browser_use_full_cdp_access", "mcp_connection_sharing", "remote_plugin", "plugin_discovery_prefetch",
     "skill_search", "sleep_tool", "goals", "artifact", "non_prefixed_mcp_tool_names", "daemon_auto_start",
+    "code_mode_only_strict_3p_tools",
 )
 # In 0.166 unified_exec selects an always-on backend; ShellTool gates its authority.
 CRITICAL_FEATURES = {"shell_tool", "view_image", "code_mode_host", "apps", "plugins",
@@ -207,6 +208,9 @@ class CodexRunner:
             # The bootstrap parser rejects desktop `priority` before thread overrides.
             # This compatible value is cleared by serviceTier:null before any turn.
             "service_tier": "fast",
+            # Sol's code-mode-only catalog otherwise hides tools when the code host is disabled.
+            # Expose only this bounded MCP namespace, never the built-in functions namespace.
+            "code_mode.direct_only_tool_namespaces": [f"mcp__{self.server_name}"],
         }
         configs.update({f"mcp_servers.{self.server_name}.{key}": value for key, value in self.mcp_config.items()})
         for key, value in configs.items():

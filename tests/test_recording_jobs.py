@@ -248,6 +248,7 @@ def test_codex_command_is_read_only_isolated_and_only_exposes_bounded_job_tools(
     assert "notify=[]" in args and 'model_reasoning_effort="high"' in args
     assert 'service_tier="fast"' in args and "features.fast_mode=false" in args
     assert parameters["serviceTier"] is None
+    assert f'code_mode.direct_only_tool_namespaces=["mcp__{runner.server_name}"]' in args
     assert runner.turn_parameters("isolated-thread", "goal")["serviceTier"] is None
     assert runner.turn_parameters("isolated-thread", "goal")["environments"] == []
     assert not any(value.startswith(("profile=", "profiles.")) for value in args)
