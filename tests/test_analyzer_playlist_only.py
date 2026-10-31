@@ -145,6 +145,26 @@ def test_live_scale_update_only_rebuilds_rows_when_the_pixel_height_changes():
     assert rows.refresh.call_count == 1
 
 
+def test_long_playlist_name_fits_its_cell_without_allocating_a_new_font():
+    view = host()
+    current = {"text": "Initial"}
+    label = SimpleNamespace(_label=Mock(), tk=Mock(), configure=Mock())
+    label.tk.call.side_effect = lambda command, operation, font, text: len(text) * 6
+    label.cget = current.__getitem__
+    label.configure.side_effect = lambda **values: current.update(values)
+    AnalyzerView._fit_playlist_name(view, label, "a" * 100, 80)
+    assert current["text"].endswith("...")
+    assert len(current["text"]) * 6 <= 74
+    AnalyzerView._fit_playlist_name(view, label, "Short", 180)
+    assert current["text"] == "Short"
+    label.configure.reset_mock()
+    AnalyzerView._fit_playlist_name(view, label, "Short", 180)
+    label.configure.assert_not_called()
+    view._closed = True
+    AnalyzerView._fit_playlist_name(view, label, "Longer name", 80)
+    label.configure.assert_not_called()
+
+
 def test_edit_and_create_return_to_playlist_without_removed_recording_widgets(monkeypatch):
     import sys
     factory = Mock(return_value="modal-placeholder")

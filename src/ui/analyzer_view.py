@@ -4820,8 +4820,10 @@ class AnalyzerView(BaseView):
             fg_color=COLORS["accent"],
         ).pack(fill="x", padx=10, pady=(0, 2))
 
-        content = ctk.CTkFrame(item, fg_color="transparent")
+        content = ctk.CTkFrame(item, fg_color="transparent", height=30)
         content.pack(fill="x", padx=10, pady=8)
+        content.grid_propagate(False)
+        content.grid_columnconfigure(1, weight=1)
 
         # 잠금 아이콘 (잠겨있으면 표시)
         if is_locked:
@@ -4830,7 +4832,7 @@ class AnalyzerView(BaseView):
                 text="🔒",
                 font=ctk.CTkFont(size=14, weight="bold"),
                 text_color=COLORS["danger_hover"],
-            ).pack(side="left", padx=(0, 5))
+            ).grid(row=0, column=0, padx=(0, 5))
 
         # 이름
         name_label = ctk.CTkLabel(
@@ -4839,9 +4841,14 @@ class AnalyzerView(BaseView):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["text_primary"],
             anchor="w",
-            width=190,
+            width=1,
         )
-        name_label.pack(side="left", fill="x", expand=True)
+        name_label.grid(row=0, column=1, sticky="ew")
+        tk.Misc.bind(
+            name_label, "<Configure>",
+            lambda event, label=name_label, name=plan.name: self._fit_playlist_name(label, name, event.width),
+            add="+",
+        )
 
         # 동작 수
         all_rules = plan.initial_rules + plan.monitoring_rules
@@ -4851,7 +4858,7 @@ class AnalyzerView(BaseView):
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"],
         )
-        count_label.pack(side="left", padx=(10, 5))
+        count_label.grid(row=0, column=2, padx=(10, 5))
 
         # 삭제 버튼 (빨간색)
         ctk.CTkButton(
@@ -4865,7 +4872,7 @@ class AnalyzerView(BaseView):
             text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
-        ).pack(side="right")
+        ).grid(row=0, column=5)
 
         # 수정 버튼
         ctk.CTkButton(
@@ -4879,7 +4886,7 @@ class AnalyzerView(BaseView):
             text_color=COLORS["text_on_accent"],
             font=ctk.CTkFont(size=11),
             corner_radius=IOS_METRICS["pill_radius"],
-        ).pack(side="right", padx=(0, 3))
+        ).grid(row=0, column=4, padx=(0, 3))
 
         if plan.plan_id in self._plan_lock_cache:
             ctk.CTkButton(
@@ -4893,8 +4900,30 @@ class AnalyzerView(BaseView):
                 text_color=COLORS["text_secondary"],
                 font=ctk.CTkFont(size=11),
                 corner_radius=IOS_METRICS["pill_radius"],
-            ).pack(side="right", padx=(0, 3))
+            ).grid(row=0, column=3, padx=(0, 3))
         return item_wrapper
+
+    def _fit_playlist_name(self, label, name, width):
+        if self._closed or width <= 1:
+            return
+        text = truncate_ui_text(name, 200)
+        available = max(0, width - 6)
+        font = label._label.cget("font")
+
+        def measure(value):
+            return int(label.tk.call("font", "measure", font, value))
+
+        if measure(text) > available:
+            low, high = 0, len(text)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if measure(text[:middle] + "...") <= available:
+                    low = middle
+                else:
+                    high = middle - 1
+            text = text[:low] + "..." if measure("...") <= available else ""
+        if label.cget("text") != text:
+            label.configure(text=text)
 
     def _edit_plan(self, plan: AutomationPlan):
         """재생 수정"""

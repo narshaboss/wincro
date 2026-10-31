@@ -484,7 +484,10 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
     try:
         view = analyzer_view.AnalyzerView(window)
         view.grid(row=0, column=1, sticky="nsew")
-        assert _pump_until(ui_root, lambda: len(view._plan_items) == 24 and bool(view._plans_scroll._visible_widgets), 10)
+        assert _pump_until(ui_root, lambda: len(view._plan_items) == 24
+            and 0 in view._plans_scroll._visible_widgets
+            and view._plans_scroll._visible_widgets[0].winfo_ismapped(), 10)
+        ui_root.update_idletasks()
         labels = [child.cget("text") for child in descendants(view) if isinstance(child, ctk.CTkLabel)]
         assert "분석된 재생 목록" in labels
         assert not {"녹화 목록", "분석 실행", "분석 결과"} & set(labels)
@@ -496,6 +499,7 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         row = view._plans_scroll._visible_widgets[0]
         first_buttons = {button.cget("text"): button for button in buttons(row)}
         assert {"수정", "삭제", "잠금 해제"} <= set(first_buttons)
+        assert all(button.winfo_ismapped() for button in first_buttons.values())
         for button in buttons(view):
             # Rows outside the viewport may be pre-rendered in the bounded buffer.
             if not button.winfo_ismapped():
@@ -514,7 +518,9 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         first_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         expected[first_path.name] = first_path.read_bytes()
         view.refresh()
-        assert _pump_until(ui_root, lambda: view._plan_items[0].name == data["name"], 10)
+        assert _pump_until(ui_root, lambda: view._plan_items[0].name == data["name"]
+            and view._plans_scroll._visible_widgets[0].winfo_ismapped(), 10)
+        ui_root.update_idletasks()
         row = view._plans_scroll._visible_widgets[0]
         changed_labels = [child.cget("text") for child in descendants(row) if isinstance(child, ctk.CTkLabel)]
         assert data["name"] in changed_labels
@@ -524,7 +530,9 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         assert edit.call_args.args[0].name == data["name"]
 
         view._plans_scroll.scroll_to_item(23)
-        assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets, 5)
+        assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets
+            and view._plans_scroll._visible_widgets[23].winfo_ismapped(), 5)
+        ui_root.update_idletasks()
         last = view._plans_scroll._visible_widgets[23]
         assert viewport.winfo_rooty() <= last.winfo_rooty()
         assert last.winfo_rooty() + last.winfo_height() <= viewport.winfo_rooty() + viewport.winfo_height() + 2
@@ -534,7 +542,8 @@ def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_r
         ctk.set_widget_scaling(next_scale)
         assert _pump_until(ui_root, lambda: view._plans_scroll._item_height == round(56 * next_scale), 5)
         view._plans_scroll.scroll_to_item(23)
-        assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets, 5)
+        assert _pump_until(ui_root, lambda: 23 in view._plans_scroll._visible_widgets
+            and view._plans_scroll._visible_widgets[23].winfo_ismapped(), 5)
         ui_root.update_idletasks()
         last = view._plans_scroll._visible_widgets[23]
         assert viewport.winfo_rooty() <= last.winfo_rooty()
