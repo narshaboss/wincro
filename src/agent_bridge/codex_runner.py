@@ -205,18 +205,20 @@ class CodexRunner:
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
             "sandbox_mode": "read-only", "project_doc_max_bytes": 0,
             "model_reasoning_effort": "high", "notify": [], "analytics.enabled": False,
+            "agents.enabled": False,
             # The bootstrap parser rejects desktop `priority` before thread overrides.
             # This compatible value is cleared by serviceTier:null before any turn.
             "service_tier": "fast",
-            # Sol's code-mode-only catalog otherwise hides tools when the code host is disabled.
-            # Expose only this bounded MCP namespace, never the built-in functions namespace.
-            "code_mode.direct_only_tool_namespaces": [f"mcp__{self.server_name}"],
         }
         configs.update({f"mcp_servers.{self.server_name}.{key}": value for key, value in self.mcp_config.items()})
         for key, value in configs.items():
             args += ["-c", key + "=" + ("{}" if isinstance(value, dict) else json.dumps(value, ensure_ascii=False))]
         for feature in DISABLED_FEATURES:
             args += ["-c", f"features.{feature}=false"]
+        # These are feature-table settings in 0.166, not top-level code_mode keys.
+        args += ["-c", 'features.code_mode={enabled=false,direct_only_tool_namespaces=['
+            + json.dumps(f"mcp__{self.server_name}") + '],excluded_tool_namespaces=["functions","collaboration"]}',
+            "-c", "features.code_mode_host={enabled=false,disable_in_process_fallback=true}"]
         model = self.settings.get("model", "").strip()
         if model:
             if len(model) > 100 or not re.fullmatch(r"[a-zA-Z0-9_.:-]+", model):

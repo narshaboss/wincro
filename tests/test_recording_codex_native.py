@@ -254,6 +254,10 @@ def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_
         assert any("get_frames" in name for name in tools), tools
         forbidden = ("exec_command", "shell", "apply_patch", "computer", "browser", "spawn_agent", "publish_new_plan", "open_draft", "view_image", "unselected")
         assert not any(any(word in name for word in forbidden) for name in tools), tools
+        descriptions = "\n".join(part.get("description", "") for namespace in declared_tools(requests[0])
+            for part in namespace.get("tools", []) if isinstance(part, dict))
+        assert "### `apply_patch`" not in descriptions
+        assert "### `exec_command`" not in descriptions
         assert original.read_bytes() == before
         assert list(plans.iterdir()) == [original]
         assert config_path.read_bytes() == config_before
