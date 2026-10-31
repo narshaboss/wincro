@@ -33,6 +33,25 @@ def default_runtime():
             "model": "", "max_seconds": 1200}
 
 
+def load_runtime(path):
+    from .storage import read_json
+    values = default_runtime()
+    try:
+        saved = read_json(path)
+    except FileNotFoundError:
+        return values
+    if not isinstance(saved, dict):
+        raise ValueError("연결 설정은 JSON 객체여야 합니다.")
+    for key in ("codex", "python", "model", "reference"):
+        if key in saved and not (isinstance(saved[key], str) or key == "reference" and saved[key] is None):
+            raise ValueError("연결 설정 형식이 잘못되었습니다: " + key)
+    timeout = saved.get("max_seconds", 1200)
+    if type(timeout) is not int or not 30 <= timeout <= 3600:
+        raise ValueError("분석 제한 시간은 30~3600초여야 합니다.")
+    values.update({key: saved[key] for key in (*values, "reference") if key in saved})
+    return values
+
+
 def clean_message(message):
     text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", str(message))
     text = re.sub(r"(?i)(bearer\s+|sk-[a-z0-9_-]*)([a-z0-9_.-]{12,})", "[redacted]", text)

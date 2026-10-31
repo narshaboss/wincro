@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from ..agent_bridge.codex_runner import default_runtime
+from ..agent_bridge.codex_runner import default_runtime, load_runtime
 from ..agent_bridge.contracts import walk
 from ..agent_bridge.recording_jobs import RecordingJobs
 from ..agent_bridge.storage import new_id, read_json, write_json
@@ -37,10 +37,11 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.jobs = RecordingJobs(root / "jobs", DATA_DIR / "plans", DATA_DIR / "templates")
         self.settings_path = root / "runtime.json"
         self.runtime = default_runtime()
+        settings_error = None
         try:
-            self.runtime.update(read_json(self.settings_path))
-        except (OSError, ValueError):
-            pass
+            self.runtime = load_runtime(self.settings_path)
+        except (OSError, ValueError) as exc:
+            settings_error = "연결 설정을 읽지 못했습니다. 원본 파일은 보존했습니다. 연결 설정에서 확인하세요: " + str(exc)
         self.selected = None
         self.closed = False
         self.busy = False
@@ -76,6 +77,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         catalog.grid(row=1, column=0, sticky="nsew")
         owner._setup_recordings_card(catalog)
         self._build_analysis_controls()
+        if settings_error:
+            self.status.configure(text=settings_error)
         self.result = DraftResultPane(self.result_page, self)
         self.result.pack(fill="both", expand=True)
         self._refresh_jobs()
@@ -253,7 +256,8 @@ class RecordingWorkspace(ctk.CTkFrame):
             for path in sorted((DATA_DIR / "plans").glob("*.json")):
                 try:
                     state = read_json(path)
-                    rows.append((str(state.get("name", path.stem)), path.stem))
+                    if isinstance(state, dict):
+                        rows.append((str(state.get("name", path.stem)), path.stem))
                 except (OSError, ValueError):
                     continue
             return rows
@@ -283,7 +287,11 @@ class RecordingWorkspace(ctk.CTkFrame):
                 write_json(self.settings_path, values)
                 if read_json(self.settings_path) != values:
                     raise OSError("연결 설정 저장 재검증 실패")
-            self._submit(persist, saved, lambda error: note.configure(text="저장 실패: " + error))
+            def failed(error):
+                self.status.configure(text="연결 설정 저장 실패: " + error)
+                if dialog.winfo_exists():
+                    note.configure(text="저장 실패: " + error)
+            self._submit(persist, saved, failed)
         self._button(dialog, "설정 저장", save).grid(row=2, column=0, sticky="ew", padx=12, pady=10)
         dialog.transient(self.winfo_toplevel())
 
@@ -427,6 +435,9 @@ class DraftResultPane(ctk.CTkFrame):
     def _select(self, label):
         if self.dirty:
             self.workspace.status.configure(text="미저장 입력이 있습니다. 먼저 저장하거나 입력 취소를 누르세요.")
+            if self.service:
+                previous = self.service.workspace.parent.name
+                self.jobs.set(next((name for name, key in self.options.items() if key == previous), self.jobs.get()))
             return
         key = self.options.get(label)
         if key:

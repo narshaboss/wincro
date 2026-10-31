@@ -13,7 +13,7 @@ from src.agent_bridge import recording_jobs as jobs_module
 from src.agent_bridge.recording_jobs import JobScope, RecordingJobs
 from src.agent_bridge.service import DraftService
 from src.agent_bridge.storage import read_json, write_json
-from src.agent_bridge.codex_runner import CodexRunner, CRITICAL_FEATURES, DISABLED_FEATURES, clean_message
+from src.agent_bridge.codex_runner import CodexRunner, CRITICAL_FEATURES, DISABLED_FEATURES, clean_message, load_runtime
 
 
 class FakeHost:
@@ -251,3 +251,42 @@ def test_preflight_refuses_missing_executable_and_secret_errors_are_bounded(tmp_
     assert caught.value.code == "RUNTIME_MISSING"
     text = clean_message("Bearer " + "x"*80 + " sk-" + "y"*100)
     assert "x"*80 not in text and "y"*100 not in text
+
+
+@pytest.mark.parametrize("value", [None, [], {"python": None}, {"max_seconds": True}])
+def test_malformed_runtime_settings_are_not_applied_or_overwritten(tmp_path, value):
+    path = tmp_path / "runtime.json"
+    write_json(path, value)
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        load_runtime(path)
+    assert path.read_bytes() == before
+
+
+def test_runtime_reload_retains_only_supported_settings(tmp_path):
+    path = tmp_path / "runtime.json"
+    values = {"codex": "codex.exe", "python": "python.exe", "model": "", "reference": None, "max_seconds": 1200}
+    write_json(path, dict(values, unknown="not a runtime option"))
+    assert load_runtime(path) == values
+    assert load_runtime(tmp_path / "not_created.json")["max_seconds"] == 1200
+    assert not (tmp_path / "not_created.json").exists()
+
+
+@pytest.mark.parametrize("value", [None, [], {"job_id": "wrong"}])
+def test_corrupt_job_record_does_not_hide_other_saved_results_or_delete_files(setup, value):
+    jobs, media, original = setup
+    jobs.start(media, "Keep valid results", {})
+    state = finish(jobs)
+    damaged = jobs.root / "job_corrupt123"
+    damaged.mkdir()
+    path = damaged / "job.json"
+    write_json(path, value)
+    before = path.read_bytes()
+    records = jobs.list_jobs()
+    assert len(records) == 2
+    assert records[0]["job_id"] == state["job_id"]
+    assert records[1]["status"] == "error" and "보존" in records[1]["recording_name"]
+    with pytest.raises(BridgeError, match="보존"):
+        jobs.load_result(damaged.name)
+    assert jobs.load_result(state["job_id"])[1]["analysis"]
+    assert path.read_bytes() == before

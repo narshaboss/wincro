@@ -115,6 +115,15 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     MCPPipelineActor.release.clear()
     try:
         assert _pump_until(ui_root, lambda: len(view._recording_items) == 1 and not workspace.busy, 8)
+        workspace._settings()
+        settings = next(child for child in workspace.winfo_children() if isinstance(child, ctk.CTkToplevel))
+        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
+        save_settings = next(child for child in settings.winfo_children()
+            if isinstance(child, ctk.CTkButton) and child.cget("text") == "설정 저장")
+        save_settings.invoke()
+        assert _pump_until(ui_root, lambda: not settings.winfo_exists() and not workspace.busy, 5)
+        from src.agent_bridge.codex_runner import load_runtime
+        assert load_runtime(workspace.settings_path) == workspace.runtime
         workspace.choose(view._recording_items[0])
         workspace.analyze.invoke()
         consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))

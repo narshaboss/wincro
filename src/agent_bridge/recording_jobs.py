@@ -72,19 +72,36 @@ class RecordingJobs:
     def list_jobs(self):
         result = []
         for folder in sorted(self.root.glob("job_*"), reverse=True):
+            if not folder.is_dir() or not folder.name[4:].isalnum():
+                continue
             try:
-                state = read_json(within(folder / "job.json", self.root))
+                state = self._metadata(folder)
                 if state.get("status") == "review" and state.get("draft_id"):
                     draft = read_json(within(folder / "drafts" / (state["draft_id"] + ".json"), folder))
+                    if not isinstance(draft, dict) or not isinstance(draft.get("plan"), dict):
+                        raise ValueError("초안 파일 형식이 잘못되었습니다.")
                     analysis = draft.get("analysis")
-                    if not analysis or analysis.get("plan_digest") != digest(draft["plan"]):
+                    if not isinstance(analysis, dict) or analysis.get("plan_digest") != digest(draft["plan"]):
                         state = dict(state, status="needs_review", message="초안이 수정되어 GPT 분석·교차검수가 다시 필요합니다.")
                 if state.get("status") in ACTIVE_STATES and (not self.active or state["job_id"] != self.active["job_id"]):
                     state = dict(state, status="unconfirmed", message="이전 분석의 실행 상태를 확인할 수 없습니다. 저장된 초안을 읽기 전용으로 확인하세요.")
                 result.append(state)
-            except (OSError, ValueError, BridgeError):
-                continue
+            except (OSError, ValueError, BridgeError) as exc:
+                result.append({"job_id": folder.name, "recording_name": "읽기 오류 (기록 보존)", "status": "error",
+                    "updated_at": "", "message": str(exc)[:1000], "draft_id": None})
         return sorted(result, key=lambda state: state.get("updated_at", ""), reverse=True)
+
+    def _metadata(self, folder):
+        state = read_json(within(folder / "job.json", self.root))
+        if not isinstance(state, dict) or state.get("job_id") != folder.name:
+            raise BridgeError("INVALID_JOB", "분석 기록 형식이 잘못되었습니다. 원본은 보존했습니다.")
+        for key in ("recording_name", "status", "updated_at"):
+            if not isinstance(state.get(key), str):
+                raise BridgeError("INVALID_JOB", "분석 기록 필드가 잘못되었습니다: " + key)
+        draft_id = state.get("draft_id")
+        if draft_id is not None and (not isinstance(draft_id, str) or not draft_id.startswith("draft_") or not draft_id[6:].isalnum()):
+            raise BridgeError("INVALID_JOB", "분석 초안 ID가 잘못되었습니다. 원본은 보존했습니다.")
+        return state
 
     def _persist(self, **values):
         with self.lock:
@@ -255,7 +272,7 @@ class RecordingJobs:
         draft_folder = folder / "drafts"
         if draft_folder.is_symlink() or not draft_folder.resolve().is_relative_to(folder):
             raise BridgeError("PATH_DENIED", "Draft folder is outside this job")
-        metadata = read_json(within(folder / "job.json", folder))
+        metadata = self._metadata(folder)
         if not metadata.get("draft_id"):
             raise BridgeError("NOT_FOUND", metadata.get("message", "아직 저장된 초안이 없습니다."))
         service = self.service if self.active and self.active["job_id"] == job_id and self.service else DraftService(

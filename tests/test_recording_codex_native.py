@@ -38,7 +38,9 @@ def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path
 
 def test_actual_codex_has_no_pc_input_or_original_plan_writer_and_does_not_fake_completion(tmp_path, monkeypatch):
     executable = os.environ["WINCRO_TEST_CODEX_EXE"]
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty-auth-home"))
+    auth_home = tmp_path / "empty-auth-home"
+    auth_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(auth_home))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     requests = []
