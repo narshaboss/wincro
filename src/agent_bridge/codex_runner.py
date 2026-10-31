@@ -333,7 +333,7 @@ class CodexRunner:
                     thread_id = result.get("thread", {}).get("id")
                     if not isinstance(thread_id, str) or result.get("approvalPolicy") != "never" or result.get("sandbox", {}).get("type") not in {"readOnly", "read-only"}:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 읽기 제한을 확인하지 못했습니다.")
-                    if result.get("serviceTier") is not None:
+                    if "serviceTier" not in result or result["serviceTier"] is not None:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "분석 작업의 서비스 등급 초기화를 확인하지 못해 실행하지 않습니다.")
                     if idle:
                         send({"id": 20, "method": "account/read", "params": {"refreshToken": False}})
