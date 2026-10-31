@@ -19,6 +19,7 @@ if os.environ.get("WINCRO_RECORDING_CODEX_QA") != "1" or os.name != "nt":
 
 from src.agent_bridge.codex_runner import CodexRunner
 from src.agent_bridge.recording_jobs import RecordingJobs
+from src.agent_bridge.recording_connection import RecordingConnection
 
 
 def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path):
@@ -36,6 +37,65 @@ def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path
         cwd=tmp_path, capture_output=True, timeout=15, **hidden_options())
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     assert b"--connection-file" in result.stdout
+
+
+def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_model_requests(tmp_path, monkeypatch):
+    home = tmp_path / "auth"
+    home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    calls = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+        def do_POST(self):
+            calls.append(self.path)
+            self.send_error(500, "A connection toggle must not start a model request")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    original = CodexRunner.arguments
+    def arguments(self, *values):
+        args = original(self, *values)
+        extras = {"model_provider": "offline", "model": "gpt-5.4",
+            "model_providers.offline.name": "Offline connection test",
+            "model_providers.offline.base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
+            "model_providers.offline.wire_api": "responses", "model_providers.offline.requires_openai_auth": False}
+        for key, value in extras.items():
+            args += ["-c", key + "=" + json.dumps(value)]
+        return args
+    monkeypatch.setattr(CodexRunner, "arguments", arguments)
+    connection = RecordingConnection(tmp_path / "connection")
+    settings = {"codex": os.environ["WINCRO_TEST_CODEX_EXE"], "python": os.sys.executable, "model": ""}
+    try:
+        connection.enable(settings)
+        deadline = time.monotonic() + 35
+        while not connection.connected and connection.busy and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert connection.connected, connection.snapshot()
+        runner = connection.runner
+        assert runner.mcp_config["enabled_tools"] == ["connection_status"]
+        time.sleep(7)
+        assert connection.connected, connection.snapshot()
+        connection.disable()
+        assert not connection.connected
+        connection.worker.join(8)
+        assert not connection.busy and runner.process.poll() is not None
+        assert not calls
+        assert not list(connection.root.rglob("draft_*.json"))
+        artifacts = Path("artifacts/recording_analysis")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "manual-connection.json").write_text(json.dumps({"actual_connection_confirmed": True,
+            "idle_keepalive_confirmed": True, "off_revoked": True, "model_requests": len(calls),
+            "media_shared": False, "tools": runner.mcp_config["enabled_tools"]}, indent=2), encoding="utf-8")
+    finally:
+        connection.close()
+        if connection.worker:
+            connection.worker.join(8)
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
 
 
 @pytest.mark.parametrize("cancel_job", [False, True])

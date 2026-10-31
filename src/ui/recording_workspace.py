@@ -14,6 +14,8 @@ import customtkinter as ctk
 from ..agent_bridge.codex_runner import default_runtime, load_runtime
 from ..agent_bridge.contracts import walk
 from ..agent_bridge.recording_jobs import RecordingJobs
+from ..agent_bridge.recording_connection import RecordingConnection
+from ..agent_bridge.recording_catalog import RecordingVisibility
 from ..agent_bridge.storage import new_id, read_json, write_json
 from ..utils.config import DATA_DIR
 from .ai_draft_guidance import readable_action, readable_analysis
@@ -28,6 +30,12 @@ COMBO_STYLE = dict(fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"]
     dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["bg_elevated"], dropdown_text_color=COLORS["text_primary"])
 
 
+def configure_changed(widget, **values):
+    changes = {key: value for key, value in values.items() if widget.cget(key) != value}
+    if changes:
+        widget.configure(**changes)
+
+
 class RecordingWorkspace(ctk.CTkFrame):
     def __init__(self, owner):
         super().__init__(owner, fg_color="transparent")
@@ -35,6 +43,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WinCro" / "recording_analysis"
         root /= hashlib.sha256(str((DATA_DIR / "plans").resolve()).encode()).hexdigest()[:16]
         self.jobs = RecordingJobs(root / "jobs", DATA_DIR / "plans", DATA_DIR / "templates")
+        self.connection = RecordingConnection(root / "connections")
+        self.visibility = RecordingVisibility(root / "hidden_recordings.json")
         self.settings_path = root / "runtime.json"
         self.runtime = default_runtime()
         settings_error = None
@@ -47,6 +57,9 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.busy = False
         self.serial = -1
         self._was_running = False
+        self._was_connected = False
+        self._connection_status = None
+        self._status_detail = ""
         self.queue = queue.Queue(maxsize=8)
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wincro-recording-ui")
         self._after_id = None
@@ -57,7 +70,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(header, text="녹화 · GPT 분석", anchor="w", width=1,
             text_color=COLORS["accent_text"], font=(IOS_FONTS["family"], 12, "bold")).grid(row=0, column=0, sticky="ew")
-        self.badge = ctk.CTkLabel(header, text="GPT 연결 OFF", width=100, text_color=COLORS["text_muted"])
+        self.badge = self._button(header, "GPT 연결 OFF", self._toggle_connection, width=118,
+            text_color=COLORS["error"], border_color=COLORS["error"])
         self.badge.grid(row=0, column=1, padx=5)
         self._button(header, "연결 설정", self._settings, width=76).grid(row=0, column=2, padx=(0, 5))
         self._button(header, "사용방법", self._help, width=70).grid(row=0, column=3)
@@ -78,7 +92,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         owner._setup_recordings_card(catalog)
         self._build_analysis_controls()
         if settings_error:
-            self.status.configure(text=settings_error)
+            self.set_status(settings_error)
         self.result = DraftResultPane(self.result_page, self)
         self.result.pack(fill="both", expand=True)
         self._refresh_jobs()
@@ -109,33 +123,56 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.analyze.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.cancel_button = self._button(buttons, "분석 취소", self._cancel, width=86, state="disabled")
         self.cancel_button.grid(row=0, column=1)
-        self.status = ctk.CTkLabel(panel, text="분석은 GPT가 합니다. 분석 시작 시 자동 연결하며 기존 플랜은 바꾸지 않습니다.",
-            anchor="w", justify="left", wraplength=560, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
+        self.status = ctk.CTkLabel(panel, text="먼저 GPT 연결 OFF를 눌러 연결하세요. 녹화를 선택한 뒤 분석을 시작합니다.", height=44,
+            anchor="w", justify="left", width=1, wraplength=560, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
         self.status.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 5))
         self.status.bind("<Button-1>", lambda _event: self._job_details(), add="+")
-        tk.Misc.bind(self.status, "<Configure>", lambda event: self.status.configure(
+        tk.Misc.bind(self.status, "<Configure>", lambda event: configure_changed(self.status,
             wraplength=max(120, int(event.width / self.status._get_widget_scaling()) - 4)), add="+")
+
+    def set_status(self, text):
+        self._status_detail = str(text)
+        display = " ".join(self._status_detail.split())
+        configure_changed(self.status, text=display if len(display) <= 86 else display[:76] + "… (상세)")
+
+    def _toggle_connection(self):
+        if self.connection.busy:
+            self._was_connected = False
+            self.jobs.cancel()
+            self.connection.disable()
+            self.set_status("GPT 연결을 해제했습니다. 진행 중 분석은 취소하고 저장된 초안은 보관합니다.")
+        else:
+            if self.busy:
+                self.set_status("설정·목록 저장이 끝난 뒤 연결 ON을 눌러주세요.")
+                return
+            try:
+                self.connection.enable(self.runtime)
+            except Exception as exc:
+                self.set_status(str(exc))
 
     def choose(self, media):
         if self.jobs.busy or self.busy:
-            self.status.configure(text="분석 준비·실행 중에는 다른 녹화를 선택할 수 없습니다.")
+            self.set_status("분석 준비·실행 중에는 다른 녹화를 선택할 수 없습니다.")
             return
         previous = self.selected.path if self.selected else None
+        if previous == media.path:
+            return
         self.selected = media
         self.selection_label.configure(text="선택: " + media.name[:80])
-        for index, item in enumerate(self.owner._recording_items):
-            if item.path in {previous, media.path}:
-                self.owner._recordings_scroll.refresh_item(index)
+        self.owner._update_media_selection()
 
     def _analyze(self):
         if self.jobs.busy or self.busy or self.owner._is_recording or self.owner._starting or self.owner._stopping:
-            self.status.configure(text="녹화 또는 분석이 끝난 뒤 다시 시작하세요.")
+            self.set_status("녹화 또는 분석이 끝난 뒤 다시 시작하세요.")
             return
         if not self.selected:
-            self.status.configure(text="먼저 녹화 목록에서 파일을 선택하세요.")
+            self.set_status("먼저 녹화 목록에서 파일을 선택하세요.")
+            return
+        if not self.connection.connected:
+            self.set_status("먼저 GPT 연결 OFF를 눌러 ON이 된 뒤 분석을 시작하세요.")
             return
         if self.result.dirty or self.result.busy:
-            self.status.configure(text="분석 결과 탭의 미저장 입력을 먼저 저장하거나 취소하세요.")
+            self.set_status("분석 결과 탭의 미저장 입력을 먼저 저장하거나 취소하세요.")
             return
         from .ai_draft_editor import MediaConsentDialog
         MediaConsentDialog(self, self.selected.path, self._consented)
@@ -143,24 +180,27 @@ class RecordingWorkspace(ctk.CTkFrame):
     def _consented(self, path, log, excluded):
         if self.jobs.busy or self.busy or not self.selected or path != self.selected.path:
             return False
+        if not self.connection.connected:
+            self.set_status("GPT 연결이 OFF입니다. 다시 ON으로 연결한 뒤 자료 추가를 누르세요.")
+            return False
         if self.owner._is_recording or self.owner._starting or self.owner._stopping:
-            self.status.configure(text="녹화가 진행 중입니다. 녹화를 마친 뒤 자료 추가를 다시 누르세요.")
+            self.set_status("녹화가 진행 중입니다. 녹화를 마친 뒤 자료 추가를 다시 누르세요.")
             return False
         if self.result.dirty or self.result.busy:
-            self.status.configure(text="분석 결과의 미저장 입력을 먼저 저장하거나 취소하세요.")
+            self.set_status("분석 결과의 미저장 입력을 먼저 저장하거나 취소하세요.")
             return False
         try:
             self.jobs.start(path, self.goal.get().strip() or DEFAULT_GOAL, self.runtime,
                 input_log=log, excluded=excluded, reference=self.runtime.get("reference"))
         except Exception as exc:
-            self.status.configure(text=str(exc))
+            self.set_status(str(exc))
             return False
-        self.status.configure(text="GPT 연결과 녹화 자료를 준비하고 있습니다. 결과는 별도 초안으로만 보관합니다.")
+        self.set_status("GPT 연결과 녹화 자료를 준비하고 있습니다. 결과는 별도 초안으로만 보관합니다.")
         return True
 
     def _cancel(self):
         self.jobs.cancel()
-        self.status.configure(text="취소 요청 중입니다. 저장된 초안은 보관하며 새 도구 호출은 차단했습니다.")
+        self.set_status("취소 요청 중입니다. 저장된 초안은 보관하며 새 도구 호출은 차단했습니다.")
 
     def _submit(self, job, done, failed=None):
         if self.busy or self.closed:
@@ -189,21 +229,36 @@ class RecordingWorkspace(ctk.CTkFrame):
                 if failed:
                     failed(error)
                 else:
-                    self.status.configure(text=error)
+                    self.set_status(error)
             else:
                 done(value)
         busy = self.jobs.busy
-        self.analyze.configure(state="disabled" if busy or self.busy else "normal")
-        self.cancel_button.configure(state="normal" if busy else "disabled")
-        connected = self.jobs.connected
-        self.badge.configure(text="GPT 연결 ON" if connected else "GPT 연결 OFF",
-            text_color=COLORS["success_text"] if connected else COLORS["text_muted"])
+        connected = self.connection.connected
+        connection = self.connection.snapshot()
+        if self._was_connected and not connected:
+            reason = connection["message"]
+            self.jobs.cancel()
+            self.connection.disable()
+            self.set_status("GPT 연결이 끊겼습니다. 분석을 취소하고 저장된 초안은 보관합니다.\n" + reason)
+            connection = self.connection.snapshot()
+        self._was_connected = connected
+        configure_changed(self.analyze, state="disabled" if busy or self.busy or not connected else "normal")
+        configure_changed(self.cancel_button, state="normal" if busy else "disabled")
+        state = connection["state"]
+        label = "GPT 연결 ON" if connected else "연결 중 · 취소" if state == "connecting" else "GPT 연결 OFF"
+        color = COLORS["success"] if connected else COLORS["warning"] if state == "connecting" else COLORS["error"]
+        configure_changed(self.badge, text=label, text_color=color, border_color=color)
+        signature = (state, connection["message"])
+        if signature != self._connection_status:
+            self._connection_status = signature
+            if state != "off" or self.connection.busy:
+                self.set_status(connection["message"])
         if self.serial != self.jobs.serial:
             self.serial = self.jobs.serial
             state = self.jobs.snapshot()
             if state:
                 message = state["message"].replace("\n", " ")
-                self.status.configure(text=message if len(message) <= 140 else message[:120] + "… (눌러서 상세 보기)")
+                self.set_status(message)
                 if not busy:
                     self._refresh_jobs(select=state["job_id"] if state.get("draft_id") else None)
         self.result.set_running(busy)
@@ -212,9 +267,9 @@ class RecordingWorkspace(ctk.CTkFrame):
             self._refresh_jobs(select=state["job_id"] if state and state.get("draft_id") else None)
         self._was_running = busy
         if busy:
-            self.owner._start_btn.configure(state="disabled")
+            configure_changed(self.owner._start_btn, state="disabled")
         elif not (self.owner._is_recording or self.owner._starting or self.owner._stopping):
-            self.owner._start_btn.configure(state="normal")
+            configure_changed(self.owner._start_btn, state="normal")
         self._after_id = self.after(150, self._poll)
 
     def _refresh_jobs(self, select=None):
@@ -234,8 +289,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         return dialog
 
     def _settings(self):
-        if self.jobs.busy or self.busy:
-            self.status.configure(text="분석이 끝난 뒤 연결 설정을 변경하세요.")
+        if self.jobs.busy or self.busy or self.connection.busy:
+            self.set_status("GPT 연결을 OFF로 끈 뒤 연결 설정을 변경하세요.")
             return
         dialog = self._dialog("GPT 자동 분석 연결 설정", 650, 500)
         dialog.grid_columnconfigure(0, weight=1)
@@ -296,24 +351,24 @@ class RecordingWorkspace(ctk.CTkFrame):
                 self.runtime = values
                 if dialog.winfo_exists():
                     dialog.destroy()
-                self.status.configure(text="연결 설정을 파일에 저장하고 다시 읽어 확인했습니다. 분석 시작 시 GPT에 연결합니다.")
+                self.set_status("연결 설정을 저장·재확인했습니다. GPT 연결 OFF를 눌러 연결하세요.")
             def persist():
                 write_json(self.settings_path, values)
                 if read_json(self.settings_path) != values:
                     raise OSError("연결 설정 저장 재검증 실패")
             def failed(error):
-                self.status.configure(text="연결 설정 저장 실패: " + error)
+                self.set_status("연결 설정 저장 실패: " + error)
                 if dialog.winfo_exists():
                     note.configure(text="저장 실패: " + error)
             self._submit(persist, saved, failed)
         self._button(dialog, "설정 저장", save).grid(row=2, column=0, sticky="ew", padx=12, pady=10)
 
     def _help(self):
-        text = ("1. 녹화 시작으로 작업 과정을 녹화한 뒤 F7로 중지하세요. 기존 영상은 녹화 목록의 파일 추가로 넣을 수 있습니다.\n\n"
-            "2. 목록에서 녹화를 선택하고 필요하면 작업·반복·종료 조건을 적은 뒤 분석 시작을 누르세요. 자료 제공 동의와 비공개 구간을 확인합니다.\n\n"
-            "3. 연결 설정의 Codex 로그인과 MCP용 Python이 준비되어 있으면 별도 GPT 작업이 자동 시작됩니다. 현재 대화를 자동으로 깨우는 기능은 아닙니다. ON은 실제 MCP 통신 확인 상태입니다.\n\n"
+        text = ("1. 연결 설정을 저장한 뒤 빨간 GPT 연결 OFF를 누르세요. 로그인 정보와 실제 통신을 확인하면 초록 ON이 됩니다. 연결 중에는 녹화를 GPT에 보내지 않습니다. ON은 모델 응답 성공이나 분석 완료의 증명이 아닙니다.\n\n"
+            "2. 녹화 시작으로 작업을 녹화하고 F7로 중지하세요. 목록에서 녹화를 선택한 뒤 분석 시작을 누르고 자료 제공에 동의합니다. 기존 영상은 파일 추가로 넣습니다.\n\n"
+            "3. ON 버튼을 누르면 OFF가 되어 연결과 진행 중 분석을 종료합니다. 분석 취소는 분석만 중단하며 ON 연결은 유지합니다. 현재 대화를 깨우는 기능은 아닙니다.\n\n"
             "4. 분석 결과 편집에서 액션·목적·질문을 검토하고 대기·반복을 수정해 저장할 수 있습니다. 수정하면 이전 GPT 교차검수는 무효가 됩니다.\n\n"
-            "기존 재생 플랜·맵·재생목록은 수정하지 않습니다. 이 화면은 초안만 저장합니다. 분석·교차검수 기록이 있어도 실제 인식·재생 성공은 별도로 검증해야 합니다. 취소·오류 시 저장된 초안은 보관됩니다.")
+            "녹화의 삭제 버튼은 목록에서만 제거합니다. 원본 영상·키 기록·분석 결과·기존 플랜은 보존되며 파일 추가로 복원할 수 있습니다. 기존 재생 플랜·맵은 수정하지 않습니다. 이 화면은 초안만 저장하며 실제 인식·재생 성공은 별도 검증이 필요합니다.")
         dialog = self._dialog("녹화·GPT 분석 사용방법", 640, 480)
         box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         box.pack(fill="both", expand=True, padx=12, pady=12)
@@ -323,11 +378,11 @@ class RecordingWorkspace(ctk.CTkFrame):
 
     def _job_details(self):
         state = self.jobs.snapshot()
-        if state:
+        if state or self._status_detail:
             dialog = self._dialog("GPT 분석 상태 상세", 640, 420)
             box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
             box.pack(fill="both", expand=True, padx=12, pady=12)
-            box.insert("1.0", state["message"] + "\n\n" + state.get("model_message", ""))
+            box.insert("1.0", self._status_detail + "\n\n" + (state or {}).get("model_message", ""))
             box.configure(state="disabled")
             self._button(dialog, "닫기", dialog.destroy).pack(fill="x", padx=12, pady=(0, 12))
 
@@ -335,6 +390,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         if self.closed:
             return
         self.closed = True
+        self.connection.close()
         self.jobs.close()
         self.result.close()
         self.worker.shutdown(wait=False, cancel_futures=False)
@@ -422,9 +478,9 @@ class DraftResultPane(ctk.CTkFrame):
     def set_jobs(self, states, select=None):
         previous = self.options.get(self.jobs.get())
         self.options = {f"{state['recording_name']} · {JOB_LABELS.get(state['status'], state['status'])} · {state['job_id'][-6:]}": state["job_id"] for state in states}
-        self.jobs.configure(values=list(self.options) or ["아직 분석 결과가 없습니다"])
+        configure_changed(self.jobs, values=list(self.options) or ["아직 분석 결과가 없습니다"])
         selected_label = next((name for name, key in self.options.items() if key == (select or previous)), None)
-        if selected_label:
+        if selected_label and self.jobs.get() != selected_label:
             self.jobs.set(selected_label)
         elif not self.options:
             self.jobs.set("아직 분석 결과가 없습니다")
@@ -434,14 +490,14 @@ class DraftResultPane(ctk.CTkFrame):
 
     def set_running(self, running):
         self.running = running
-        self.save.configure(state="normal" if self.current and self.context and self.dirty and not self.busy and not running and not self.service.closed else "disabled")
+        configure_changed(self.save, state="normal" if self.current and self.context and self.dirty and not self.busy and not running and not self.service.closed else "disabled")
         for entry in self.entries.values():
-            entry.configure(state="disabled" if running or self.busy or not self.context or self.service.closed else "normal")
-        self.jobs.configure(state="disabled" if self.busy else "readonly")
+            configure_changed(entry, state="disabled" if running or self.busy or not self.context or self.service.closed else "normal")
+        configure_changed(self.jobs, state="disabled" if self.busy else "readonly")
 
     def _select(self, label):
         if self.dirty:
-            self.workspace.status.configure(text="미저장 입력이 있습니다. 먼저 저장하거나 입력 취소를 누르세요.")
+            self.workspace.set_status("미저장 입력이 있습니다. 먼저 저장하거나 입력 취소를 누르세요.")
             if self.service:
                 previous = self.service.workspace.parent.name
                 self.jobs.set(next((name for name, key in self.options.items() if key == previous), self.jobs.get()))
@@ -475,7 +531,7 @@ class DraftResultPane(ctk.CTkFrame):
         else:
             self.busy = False
             if error:
-                self.workspace.status.configure(text=error)
+                self.workspace.set_status(error)
             else:
                 done(value)
             self.set_running(self.running)
@@ -483,7 +539,7 @@ class DraftResultPane(ctk.CTkFrame):
 
     def _display(self, value):
         if self.dirty:
-            self.workspace.status.configure(text="미저장 입력을 보관했습니다. 저장하거나 취소한 뒤 결과를 다시 선택하세요.")
+            self.workspace.set_status("미저장 입력을 보관했습니다. 저장하거나 취소한 뒤 결과를 다시 선택하세요.")
             return
         self.service, state = value
         self.current = state
@@ -528,7 +584,7 @@ class DraftResultPane(ctk.CTkFrame):
         key = self.tree.selection()[0]
         if self.dirty and self.context and self.context[2] != key:
             self.tree.selection_set(self.context[2])
-            self.workspace.status.configure(text="선택한 액션의 입력을 먼저 저장하거나 취소하세요.")
+            self.workspace.set_status("선택한 액션의 입력을 먼저 저장하거나 취소하세요.")
             return
         if self.dirty:
             return
@@ -555,7 +611,7 @@ class DraftResultPane(ctk.CTkFrame):
             fields = {"description": self.variables["description"].get(), "wait_after": float(self.variables["wait_after"].get()),
                 "repeat_count": int(self.variables["repeat_count"].get()), "repeat_delay": float(self.variables["repeat_delay"].get())}
         except ValueError:
-            self.workspace.status.configure(text="대기는 숫자, 반복 횟수는 정수로 입력하세요.")
+            self.workspace.set_status("대기는 숫자, 반복 횟수는 정수로 입력하세요.")
             return
         key, revision, rule_id = self.context
         service = self.service
@@ -569,7 +625,7 @@ class DraftResultPane(ctk.CTkFrame):
         def saved(value):
             self.dirty = False
             self._display(value)
-            self.workspace.status.configure(text="수정 내용을 초안에 저장하고 새 연결로 다시 읽어 확인했습니다. 이전 GPT 검수는 무효입니다.")
+            self.workspace.set_status("수정 내용을 초안에 저장하고 새 연결로 다시 읽어 확인했습니다. 이전 GPT 검수는 무효입니다.")
             self.workspace._refresh_jobs()
         self._submit(save, saved)
 

@@ -74,6 +74,7 @@ class RecorderView(BaseView):
         self._recording_ui_closed = False
         self._catalog_scale_after = None
         self._recording_items = []
+        self._catalog_loaded = False
         self._media_thumbnail_cache = OrderedDict()
         self._media_thumbnail_refs = deque(maxlen=192)
         self._label_text_cache = {}
@@ -193,6 +194,7 @@ class RecorderView(BaseView):
                 saved = self._db.get_recording(key)
                 if saved is None or Path(saved.video_path).resolve() != Path(path).resolve():
                     raise OSError("녹화 목록 저장 재확인 실패")
+            self._workspace.visibility.set_hidden(path, False)
             return path
         self._workspace._submit(add, lambda _: self._refresh_recordings_list_async())
 
@@ -208,7 +210,12 @@ class RecorderView(BaseView):
         current_gen = self._recordings_load_generation
 
         def _load():
-            media_items = self._load_template_media_items()
+            try:
+                media_items = self._load_template_media_items()
+            except Exception as exc:
+                message = "녹화 목록을 읽지 못했습니다. 기존 자료는 보존했습니다: " + str(exc)
+                self._recorder_ui_post(lambda: self._workspace.set_status(message))
+                return
             self._recorder_ui_post(lambda: self._apply_recordings_list(
                 media_items,
                 current_gen,
@@ -219,13 +226,19 @@ class RecorderView(BaseView):
 
     def _load_template_media_items(self):
         from ..agent_bridge.recording_catalog import recording_catalog
-        return [TemplateMediaItem(**row) for row in recording_catalog(self._db, DATA_DIR / "recordings")]
+        hidden = self._workspace.visibility.hidden()
+        return [TemplateMediaItem(**row) for row in recording_catalog(self._db, DATA_DIR / "recordings")
+                if str(Path(row["path"]).resolve()).casefold() not in hidden]
 
     def _apply_recordings_list(self, recordings, generation=None, preserve_scroll: bool = True):
         if self._recording_ui_closed or (generation is not None and generation < self._recordings_load_generation):
             return
 
-        self._recording_items = list(recordings)
+        recordings = list(recordings)
+        if self._catalog_loaded and preserve_scroll and recordings == self._recording_items:
+            return
+        self._catalog_loaded = True
+        self._recording_items = recordings
         if self._workspace.selected and not self._workspace.jobs.busy:
             self._workspace.selected = next((item for item in self._recording_items if item.path == self._workspace.selected.path), None)
             if self._workspace.selected is None:
@@ -320,11 +333,43 @@ class RecorderView(BaseView):
         detail = ctk.CTkLabel(content, width=1, text=f"{media.modified_at:%Y-%m-%d %H:%M}  |  {self._format_file_size(media.size_bytes)}",
             anchor="w", font=(IOS_FONTS["family"], 10), text_color=COLORS["text_muted"])
         detail.grid(row=1, column=1, sticky="ew")
-        self.create_button(content, "선택됨" if selected else "선택", lambda: self._workspace.choose(media),
-            style="secondary", width=65, height=28).grid(row=0, column=2, rowspan=2, padx=(5, 0))
+        choose = self.create_button(content, "선택됨" if selected else "선택", lambda: self._workspace.choose(media),
+            style="secondary", width=58, height=28)
+        choose.grid(row=0, column=2, rowspan=2, padx=(5, 0))
+        remove = self.create_button(content, "삭제", lambda: self._remove_media_item(media), style="ghost", width=48, height=28)
+        remove.grid(row=0, column=3, rowspan=2, padx=(4, 0))
+        item._media_path, item._media_body, item._media_choose = media.path, body, choose
         for widget in (body, content, name, detail):
             widget.bind("<Button-1>", lambda _event, value=media: self._workspace.choose(value), add="+")
         return item
+
+    def _update_media_selection(self):
+        from .recording_workspace import configure_changed
+        selected = self._workspace.selected.path if self._workspace.selected else None
+        for row in self._recordings_scroll._visible_widgets.values():
+            if hasattr(row, "_media_path"):
+                active = row._media_path == selected
+                configure_changed(row._media_body, border_color=COLORS["accent"] if active else COLORS["border"])
+                configure_changed(row._media_choose, text="선택됨" if active else "선택")
+
+    def _remove_media_item(self, media):
+        from tkinter import messagebox
+        workspace = self._workspace
+        if workspace.jobs.busy or workspace.busy or self._is_recording or self._starting or self._stopping:
+            workspace.set_status("녹화·분석·저장이 끝난 뒤 목록에서 삭제하세요.")
+            return
+        if not messagebox.askyesno("녹화 목록 삭제", f"'{media.name}'을 녹화 목록에서 삭제할까요?\n\n"
+                "원본 영상·키 입력 기록·분석 초안·재생 플랜은 삭제하지 않습니다.\n파일 추가로 다시 목록에 넣을 수 있습니다.", parent=self):
+            return
+        def remove():
+            workspace.visibility.set_hidden(media.path, True)
+        def removed(_):
+            if workspace.selected and workspace.selected.path == media.path:
+                workspace.selected = None
+                workspace.selection_label.configure(text="목록에서 분석할 녹화를 선택하세요.")
+            workspace.set_status("녹화 목록에서 삭제하고 저장을 재확인했습니다. 원본 영상과 기존 플랜은 보존했습니다.")
+            self._refresh_recordings_list_async()
+        workspace._submit(remove, removed)
 
 
     def _media_thumbnail_cache_key(self, media: TemplateMediaItem) -> str:

@@ -67,6 +67,30 @@ class MCPPipelineActor:
         return asyncio.run(run())
 
 
+class MCPIdleActor:
+    """Real idle MCP transport, without a model or any media access."""
+    def __init__(self, *_):
+        pass
+    def cancel(self):
+        pass
+    def connect(self, descriptor, cancelled, ready):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        async def run():
+            server = Path(__file__).resolve().parents[1] / "tools" / "wincro_mcp_server.py"
+            params = StdioServerParameters(command=sys.executable, args=[str(server), "--connection-file", str(descriptor)])
+            async with stdio_client(params) as streams:
+                async with ClientSession(*streams) as client:
+                    await client.initialize()
+                    response = await client.call_tool("connection_status", {})
+                    value = json.loads(response.content[0].text)
+                    assert value["ok"]
+                    ready(value["result"])
+                    while not cancelled.is_set():
+                        await asyncio.sleep(.03)
+        return asyncio.run(run())
+
+
 def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     import customtkinter as ctk
     import cv2
@@ -112,6 +136,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     view.pack(fill="both", expand=True)
     workspace = view._workspace
     workspace.jobs.runner_factory = MCPPipelineActor
+    workspace.connection.runner_factory = MCPIdleActor
     MCPPipelineActor.release.clear()
     try:
         assert _pump_until(ui_root, lambda: len(view._recording_items) == 1 and not workspace.busy, 8)
@@ -124,7 +149,22 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: not settings.winfo_exists() and not workspace.busy, 5)
         from src.agent_bridge.codex_runner import load_runtime
         assert load_runtime(workspace.settings_path) == workspace.runtime
+        assert workspace.badge.cget("text_color") == recording_workspace.COLORS["error"]
+        workspace.badge.invoke()
+        assert _pump_until(ui_root, lambda: workspace.connection.connected and workspace.badge.cget("text") == "GPT 연결 ON", 12)
+        assert workspace.badge.cget("text_color") == recording_workspace.COLORS["success"]
+        assert workspace.jobs.snapshot() is None
+        assert _pump_until(ui_root, lambda: 0 in view._recordings_scroll._visible_widgets, 5)
+        row = view._recordings_scroll._visible_widgets[0]
         workspace.choose(view._recording_items[0])
+        assert view._recordings_scroll._visible_widgets[0] is row
+        workspace.choose(view._recording_items[0])
+        assert view._recordings_scroll._visible_widgets[0] is row
+        badge_update = Mock(wraps=workspace.badge.configure)
+        monkeypatch.setattr(workspace.badge, "configure", badge_update)
+        deadline = time.monotonic() + .7
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        badge_update.assert_not_called()
         workspace.analyze.invoke()
         consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
         consent.consent.set(True)
@@ -137,6 +177,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         MCPPipelineActor.release.set()
         assert _pump_until(ui_root, lambda: workspace.result.current is not None and not workspace.result.busy and not workspace.jobs.busy, 15)
         assert workspace.jobs.snapshot()["status"] == "review"
+        assert workspace.connection.connected  # Analysis completion must not turn OFF.
         workspace.tabs.set("분석 결과 편집")
         pane = workspace.result
         assert _pump_until(ui_root, lambda: pane.context is not None, 5)
@@ -152,6 +193,25 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert restored["analysis"] is None
         assert workspace.jobs.list_jobs()[0]["status"] == "needs_review"
         assert _pump_until(ui_root, lambda: "추가 확인 필요" in pane.jobs.get(), 5)
+        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
+        from tkinter import messagebox, filedialog
+        monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
+        video_before = video.read_bytes()
+        view._remove_media_item(view._recording_items[0])
+        assert _pump_until(ui_root, lambda: not view._recording_items and not workspace.busy, 5)
+        from src.agent_bridge.recording_catalog import RecordingVisibility
+        assert str(video.resolve()).casefold() in RecordingVisibility(workspace.visibility.path).hidden()
+        assert not view._load_template_media_items()
+        assert video.read_bytes() == video_before
+        database.delete_recording.assert_not_called()
+        monkeypatch.setattr(filedialog, "askopenfilename", lambda **kwargs: str(video))
+        view._add_recording_file()
+        assert _pump_until(ui_root, lambda: len(view._recording_items) == 1 and not workspace.busy, 5)
+        assert not RecordingVisibility(workspace.visibility.path).hidden()
+        workspace.badge.invoke()
+        assert _pump_until(ui_root, lambda: not workspace.connection.busy and workspace.badge.cget("text") == "GPT 연결 OFF", 8)
+        assert workspace.badge.cget("text_color") == recording_workspace.COLORS["error"]
+        assert not workspace.jobs.busy
         assert original.read_bytes() == before
         assert list((data / "plans").iterdir()) == [original]
         session.start.assert_not_called()

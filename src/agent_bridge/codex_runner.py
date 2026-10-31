@@ -125,11 +125,12 @@ class _ProcessTree:
 
 
 class CodexRunner:
-    def __init__(self, settings, folder):
+    def __init__(self, settings, folder, *, tools=None):
         self.settings = dict(settings)
         self.folder = Path(folder).resolve()
         self.server_name = "wincroRecording_" + hashlib.sha256(str(self.folder).encode()).hexdigest()[:16]
         self.mcp_config = None
+        self.allowed_tools = tools
         self.process = None
         self.tree = None
         self.lock = threading.Lock()
@@ -173,7 +174,8 @@ class CodexRunner:
         args = [codex, "app-server", "--listen", "stdio://"]
         self.mcp_config = {"command": python, "args": [server, "--connection-file", str(descriptor)],
             "cwd": str(Path(server).parent.parent), "required": True, "enabled": True,
-            "default_tools_approval_mode": "approve", "enabled_tools": sorted(JOB_TOOLS | {"connection_status"})}
+            "default_tools_approval_mode": "approve", "enabled_tools": sorted(
+                JOB_TOOLS | {"connection_status"} if self.allowed_tools is None else self.allowed_tools)}
         configs = {
             "profile": self.server_name, f"profiles.{self.server_name}": {},
             "approval_policy": "never", "approvals_reviewer": "user", "web_search": "disabled",
@@ -201,7 +203,10 @@ class CodexRunner:
             "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": "read-only", "serviceTier": None,
             "config": {"mcp_servers": connections}}
 
-    def run(self, descriptor, prompt, cancelled, progress):
+    def connect(self, descriptor, cancelled, ready):
+        return self.run(descriptor, "", cancelled, lambda _: None, idle=True, ready=ready)
+
+    def run(self, descriptor, prompt, cancelled, progress, *, idle=False, ready=None):
         codex, python, server = self.preflight()
         if cancelled.is_set():
             raise BridgeError("JOB_CANCELLED", "분석이 취소되었습니다.")
@@ -259,6 +264,8 @@ class CodexRunner:
             thread.start()
         final = ""
         thread_id = None
+        last_ping = None
+        pending_ping = None
         count = 0
         started = time.monotonic()
         try:
@@ -273,7 +280,14 @@ class CodexRunner:
             while True:
                 if cancelled.is_set():
                     raise BridgeError("JOB_CANCELLED", "분석 취소")
-                if time.monotonic() - started > timeout:
+                now = time.monotonic()
+                if idle and pending_ping is not None and now - pending_ping > 12:
+                    raise BridgeError("CONNECTION_LOST", "GPT 연결 확인 응답이 끊겼습니다.")
+                if idle and last_ping is not None and pending_ping is None and now - last_ping >= 3:
+                    send({"id": 21, "method": "mcpServer/tool/call", "params": {
+                        "threadId": thread_id, "server": self.server_name, "tool": "connection_status", "arguments": {}}})
+                    pending_ping = now
+                if (not idle and now - started > timeout) or (idle and last_ping is None and now - started > 60):
                     raise BridgeError("GPT_TIMEOUT", "분석 제한 시간이 지났습니다. 저장된 초안은 결과 탭에서 확인할 수 있습니다.")
                 try:
                     line = events.get(timeout=.15)
@@ -286,7 +300,7 @@ class CodexRunner:
                 if not line.strip():
                     continue
                 count += 1
-                if count > 10000:
+                if count > 10000 and not idle:
                     raise BridgeError("LIMIT_REACHED", "분석 이벤트 제한에 도달했습니다. 초안을 확인하세요.")
                 try:
                     event = json.loads(line)
@@ -315,9 +329,32 @@ class CodexRunner:
                     thread_id = result.get("thread", {}).get("id")
                     if not isinstance(thread_id, str) or result.get("approvalPolicy") != "never" or result.get("sandbox", {}).get("type") not in {"readOnly", "read-only"}:
                         raise BridgeError("RUNTIME_UNSUPPORTED", "작업 전용 읽기 제한을 확인하지 못했습니다.")
-                    send({"id": 3, "method": "turn/start", "params": {"threadId": thread_id,
-                        "environments": [], "input": [{"type": "text", "text": prompt}]}})
+                    if idle:
+                        send({"id": 20, "method": "account/read", "params": {"refreshToken": False}})
+                    else:
+                        send({"id": 3, "method": "turn/start", "params": {"threadId": thread_id,
+                            "environments": [], "input": [{"type": "text", "text": prompt}]}})
                     continue
+                if idle and event.get("id") == 20:
+                    account = event.get("result", {})
+                    if account.get("requiresOpenaiAuth", True) and not account.get("account"):
+                        raise BridgeError("LOGIN_REQUIRED", "Codex에 먼저 로그인한 뒤 연결 ON을 눌러주세요.")
+                    send({"id": 21, "method": "mcpServer/tool/call", "params": {
+                        "threadId": thread_id, "server": self.server_name, "tool": "connection_status", "arguments": {}}})
+                    pending_ping = time.monotonic()
+                    continue
+                if idle and event.get("id") == 21:
+                    response = event.get("result", {})
+                    contents = response.get("content", [])
+                    result = next((json.loads(part["text"]) for part in contents if part.get("type") == "text"), {})
+                    if response.get("isError") or not result.get("ok") or not result.get("result", {}).get("editing_only"):
+                        raise BridgeError("CONNECTION_FAILED", "WinCro 연결 확인 응답이 올바르지 않습니다.")
+                    last_ping, pending_ping = time.monotonic(), None
+                    if ready:
+                        ready(result["result"])
+                    continue
+                if idle and event.get("method") == "account/updated" and event.get("params", {}).get("authMode") is None:
+                    raise BridgeError("LOGIN_REQUIRED", "Codex 로그인이 해제되었습니다. 다시 로그인하고 연결해주세요.")
                 method = event.get("method", "")
                 params = event.get("params", {})
                 if method == "turn/completed" and params.get("threadId") == thread_id:
