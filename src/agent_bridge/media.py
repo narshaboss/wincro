@@ -72,6 +72,10 @@ class MediaTools:
             if seconds != 0:
                 raise BridgeError("INVALID_FIELD", "Image timestamp must be zero")
             import numpy as np
+            from PIL import Image
+            with Image.open(record["path"]) as header:
+                if header.width * header.height > 16_000_000:
+                    raise BridgeError("LIMIT_REACHED", "Image exceeds 16 megapixels")
             frame = cv2.imdecode(np.frombuffer(record["path"].read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
             actual = 0.0
         else:
@@ -164,6 +168,7 @@ class MediaTools:
                 "source_sha256": record["sha256"], "seconds": actual, "region": region}
             state["revision"] += 1
             state["approval"] = None
+            state["analysis"] = None
             self.service._save(state)
             return {"asset_name": name, "revision": state["revision"], "region": region,
                     "source_seconds": actual, "saved_and_reloaded": True}

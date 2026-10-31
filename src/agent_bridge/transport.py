@@ -29,11 +29,19 @@ def _security():
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         size = wt.DWORD()
-        adv.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        # TokenLogonSid, not TokenUser: deny other logons of the same account.
+        adv.GetTokenInformation(token, 28, None, 0, ctypes.byref(size))
         buffer = ctypes.create_string_buffer(size.value)
-        if not adv.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
+        if not adv.GetTokenInformation(token, 28, buffer, size, ctypes.byref(size)):
             raise ctypes.WinError(ctypes.get_last_error())
-        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        class SidAttributes(ctypes.Structure):
+            _fields_ = [("sid", ctypes.c_void_p), ("attributes", wt.DWORD)]
+        class TokenGroups(ctypes.Structure):
+            _fields_ = [("count", wt.DWORD), ("groups", SidAttributes * 1)]
+        groups = ctypes.cast(buffer, ctypes.POINTER(TokenGroups)).contents
+        if groups.count != 1:
+            raise BridgeError("PERMISSION_REQUIRED", "A local logon identity is required")
+        sid = groups.groups[0].sid
         text = wt.LPWSTR()
         if not adv.ConvertSidToStringSidW(sid, ctypes.byref(text)):
             raise ctypes.WinError(ctypes.get_last_error())

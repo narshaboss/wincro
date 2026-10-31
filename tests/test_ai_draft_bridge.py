@@ -32,6 +32,21 @@ def add(service, draft, kind="click", **fields):
     return service.read_draft(draft["draft_id"])
 
 
+def review(service, draft, recording_id=None, questions=None):
+    """Simulate an agent's explicit evidence report, NOT automatic log extraction."""
+    from src.agent_bridge.contracts import walk
+    if recording_id is None:
+        path = service.workspace / "evidence.png"
+        path.write_bytes(cv2.imencode(".png", np.full((20, 20, 3), 100, np.uint8))[1].tobytes())
+        recording_id = MediaTools(service).register(path)["recording_id"]
+    MediaTools(service).get_frames(recording_id, [0])
+    service.record_analysis(draft["draft_id"], draft["revision"], "Test user goal", [
+        {"rule_id": rule["rule_id"], "recording_id": recording_id, "seconds": 0,
+         "observation": "A confirmation control is visible", "purpose": "Confirm the user's selection",
+         "expected_result": "The next screen is shown"} for rule, *_ in walk(draft["plan"])], questions)
+    return service.read_draft(draft["draft_id"])
+
+
 def test_complete_durable_pipeline_with_original_crop_and_new_plan_only(service, tmp_path):
     image = np.random.default_rng(4).integers(0, 255, (80, 100, 3), dtype=np.uint8)
     original = tmp_path / "recording.png"
@@ -49,6 +64,7 @@ def test_complete_durable_pipeline_with_original_crop_and_new_plan_only(service,
     assert service.save_draft(draft["draft_id"], draft["revision"])["saved_and_reloaded"]
     with pytest.raises(BridgeError, match="Approve"):
         service.publish_new_plan(draft["draft_id"], draft["revision"])
+    draft = review(service, draft, selected["recording_id"])
     service.approve_publication(draft["draft_id"], draft["revision"])
     result = service.publish_new_plan(draft["draft_id"], draft["revision"])
     assert result == service.publish_new_plan(draft["draft_id"], draft["revision"])
@@ -91,16 +107,18 @@ def test_stale_edit_approval_and_reference_source_change_are_rejected(service):
         service.stage_edits(draft["draft_id"], 0, "stale", [{"op": "rename_plan", "name": "bad"}])
     assert err.value.code == "REVISION_CONFLICT"
     assert path.read_bytes() == original
-    service.approve_publication(draft["draft_id"], 1)
-    updated = service.stage_edits(draft["draft_id"], 1, "new", [{"op": "rename_plan", "name": "next"}])
+    draft = review(service, draft)
+    service.approve_publication(draft["draft_id"], draft["revision"])
+    updated = service.stage_edits(draft["draft_id"], draft["revision"], "new", [{"op": "rename_plan", "name": "next"}])
     with pytest.raises(BridgeError) as err:
         service.publish_new_plan(draft["draft_id"], updated["revision"])
     assert err.value.code == "PERMISSION_REQUIRED"
-    service.approve_publication(draft["draft_id"], updated["revision"])
+    draft = review(service, service.read_draft(draft["draft_id"]))
+    service.approve_publication(draft["draft_id"], draft["revision"])
     source["name"] = "user changed source"
     write_json(path, source)
     with pytest.raises(BridgeError) as err:
-        service.publish_new_plan(draft["draft_id"], updated["revision"])
+        service.publish_new_plan(draft["draft_id"], draft["revision"])
     assert err.value.code == "REVISION_CONFLICT"
 
 
@@ -214,7 +232,23 @@ def test_mcp_registry_excludes_approval_and_input(monkeypatch):
     import asyncio
     tools = asyncio.run(server.mcp.list_tools())
     names = {tool.name for tool in tools}
-    assert {"stage_edits", "get_frames", "publish_new_plan"} <= names
+    assert {"stage_edits", "get_frames", "record_analysis", "publish_new_plan"} <= names
     assert not ({"approve_publication", "run_test", "exec", "click"} & names)
     monkeypatch.setattr(server, "invoke", lambda method, arguments: {"ok": True, "result": arguments})
     assert server.stage_edits("draft_abc", 3, "r", [{"op": "rename_plan", "name": "n"}])["result"]["expected_revision"] == 3
+
+
+def test_ai_analysis_is_required_and_edits_invalidate_it(service):
+    draft = add(service, service.open_draft("AI interpretation required"))
+    with pytest.raises(BridgeError) as err:
+        service.approve_publication(draft["draft_id"], draft["revision"])
+    assert err.value.code == "ANALYSIS_REQUIRED"
+    draft = review(service, draft, questions=["Should this repeat until the image disappears?"])
+    with pytest.raises(BridgeError) as err:
+        service.approve_publication(draft["draft_id"], draft["revision"])
+    assert err.value.code == "ANALYSIS_REQUIRED"
+    draft = review(service, draft)
+    assert service.validate_draft(draft["draft_id"])["ai_analysis_current"]
+    draft = add(service, draft, "hotkey", action_keys=["enter"])
+    assert service.read_draft(draft["draft_id"])["analysis"] is None
+    assert not service.validate_draft(draft["draft_id"])["ai_analysis_current"]

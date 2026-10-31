@@ -105,7 +105,7 @@ class DraftService:
             validate(plan)
             state = {"draft_id": new_id("draft_"), "revision": 1, "plan": plan,
                      "source": {"plan_id": plan_id, "sha256": source["source_sha256"]} if source else None,
-                     "receipts": {}, "asset_files": {}, "approval": None, "publication": None}
+                     "receipts": {}, "asset_files": {}, "analysis": None, "approval": None, "publication": None}
             self._save(state)
             return self._public(state)
 
@@ -159,6 +159,7 @@ class DraftService:
             validate(candidate["plan"])
             candidate["revision"] += 1
             candidate["approval"] = None
+            candidate["analysis"] = None
             receipt = {"request_id": request_id, "digest": fingerprint, "revision": candidate["revision"]}
             candidate["receipts"][request_id] = receipt
             self._save(candidate)
@@ -272,7 +273,48 @@ class DraftService:
             protected = bool(state["plan"].get("game_modes")) or any(r.get("action_type") == "game_mode" for r, *_ in rows)
             return {"valid": True, "revision": state["revision"], "rule_count": len(rows),
                     "publish_allowed": not protected, "runtime_tested": False,
+                    "ai_analysis_current": bool(state.get("analysis") and state["analysis"]["plan_digest"] == digest(state["plan"])),
                     "warning": "Special-mode plans cannot be published through this bridge" if protected else "Recognition and real execution require separate verification"}
+
+    def record_analysis(self, draft_id, expected_revision, goal, steps, open_questions=None):
+        """Store the agent's evidence summary. This does NOT infer behavior locally."""
+        with self.lock:
+            state = self._load(draft_id)
+            self._expect(state, expected_revision)
+            if not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 2000 or not isinstance(steps, list):
+                raise BridgeError("INVALID_ANALYSIS", "Provide a goal and evidence-backed action summaries")
+            ids = {r["rule_id"] for r, *_ in walk(state["plan"])}
+            covered = set()
+            for step in steps:
+                if not isinstance(step, dict) or step.get("rule_id") not in ids:
+                    raise BridgeError("INVALID_ANALYSIS", "Analysis must reference this draft's stable action IDs")
+                if step["rule_id"] in covered:
+                    raise BridgeError("INVALID_ANALYSIS", "Duplicate analysis action")
+                covered.add(step["rule_id"])
+                for field in ("observation", "purpose", "expected_result"):
+                    if not isinstance(step.get(field), str) or not 1 <= len(step[field].strip()) <= 2000:
+                        raise BridgeError("INVALID_ANALYSIS", "Summarize observation, purpose and expected result")
+                record = self.selected_media.get(step.get("recording_id"))
+                if not record:
+                    raise BridgeError("PERMISSION_REQUIRED", "Analyze a recording selected by the user")
+                from .contracts import number
+                seconds = step.get("seconds")
+                if not number(seconds, 0, 86400):
+                    raise BridgeError("INVALID_ANALYSIS", "Provide the evidence time in seconds")
+                from .media import MediaTools
+                MediaTools._private(record, seconds)
+            if covered != ids:
+                raise BridgeError("INVALID_ANALYSIS", "Every action requires an AI purpose/evidence summary")
+            questions = open_questions or []
+            if not isinstance(questions, list) or not all(isinstance(q, str) and len(q) <= 2000 for q in questions):
+                raise BridgeError("INVALID_ANALYSIS", "Open questions must be a list of text")
+            state["analysis"] = {"goal": goal, "steps": copy.deepcopy(steps), "open_questions": questions,
+                                 "plan_digest": digest(state["plan"]), "understanding_not_proven": True}
+            state["revision"] += 1
+            state["approval"] = None
+            self._save(state)
+            return {"revision": state["revision"], "actions_covered": len(covered), "open_questions": questions,
+                    "saved_and_reloaded": True}
 
     def approve_publication(self, draft_id, expected_revision):
         """UI-only method. Never exposed through MCP dispatch."""
@@ -282,6 +324,8 @@ class DraftService:
             result = self.validate_draft(draft_id)
             if not result["publish_allowed"]:
                 raise BridgeError("PROTECTED_ACTION", result["warning"])
+            if not result["ai_analysis_current"] or state["analysis"]["open_questions"]:
+                raise BridgeError("ANALYSIS_REQUIRED", "The AI must review this revision and resolve open questions before approval")
             state["approval"] = {"instance_id": self.instance_id, "revision": expected_revision,
                                  "digest": digest(state["plan"])}
             self._save(state)
@@ -344,7 +388,7 @@ class DraftService:
     def dispatch(self, method, arguments):
         allowed = {"list_plans", "read_plan", "open_draft", "read_draft", "list_drafts",
                    "stage_edits", "validate_draft", "save_draft", "publish_new_plan",
-                   "list_recordings", "read_recording", "get_frames", "get_input_events", "create_asset_crop"}
+                   "record_analysis", "list_recordings", "read_recording", "get_frames", "get_input_events", "create_asset_crop"}
         if method not in allowed:
             raise BridgeError("TOOL_DENIED", "Tool not available in the initial bridge")
         with self.lock:

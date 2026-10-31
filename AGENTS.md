@@ -1,5 +1,16 @@
 # WinCro Agent Rules
 
+## AI draft authoring
+
+Read `docs/AI_PLAN_EDITING_OPERATOR.md` before using the draft bridge.
+The connected AI agent must analyze recording frames and input context and
+interpret the user's goal, actions, rules, and expected results. WinCro only
+provides media, applies bounded edits, and checks mechanical integrity.
+Never substitute input-log replay or automatic action extraction for AI analysis.
+Record concise evidence-backed observations and purposes, not hidden reasoning.
+Unknown intentions require clarification. An analysis record is traceability,
+not proof of understanding or successful recognition/playback.
+
 ## Recognition baseline
 
 Before changing recognition or investigating an update regression, read

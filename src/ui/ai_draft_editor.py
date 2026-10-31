@@ -33,6 +33,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         self.serial = -1
         self.busy = False
         self.form_dirty = False
+        self.form_error = None
         self.form_context = None
         self.results = queue.Queue(maxsize=8)
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ai-draft-ui")
@@ -114,6 +115,11 @@ class AIDraftEditor(ctk.CTkToplevel):
         ctk.CTkLabel(detail, text="이미지·키·범위·상하위 구성은 MCP로 편집합니다.\n구조 검사는 실제 인식/재생 성공을 의미하지 않습니다.",
                      wraplength=280, justify="left", text_color=COLORS["text_muted"]).grid(row=10, column=0, sticky="ew", padx=6)
         self._button(detail, "미적용 입력 취소 / 최신값 읽기", self._reload_form).grid(row=11, column=0, sticky="ew", padx=6, pady=6)
+        self._button(detail, "AI 행동 분석 요약 보기", self._show_analysis).grid(row=12, column=0, sticky="ew", padx=6, pady=6)
+        self._button(detail, "대상 이미지 미리보기", self._preview_asset).grid(row=13, column=0, sticky="ew", padx=6, pady=6)
+        self.preview = ctk.CTkLabel(detail, text="등록된 PNG 이미지를 확인할 수 있습니다.", wraplength=270)
+        self.preview.grid(row=14, column=0, sticky="ew", padx=6, pady=6)
+        self.preview_image = None
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 12))
         for column in range(3):
@@ -147,6 +153,8 @@ class AIDraftEditor(ctk.CTkToplevel):
         else:
             self.busy = False
             if error:
+                if self.form_dirty:
+                    self.form_error = error
                 self.status.set(error)
             elif done:
                 done(result)
@@ -232,7 +240,7 @@ class AIDraftEditor(ctk.CTkToplevel):
         if not self.current or not self.tree.selection():
             return
         if self.form_dirty:
-            self.status.set("미적용 입력 보관 중 · 적용 시 편집 당시 버전으로 충돌 검사합니다.")
+            self.status.set(self.form_error or "미적용 입력 보관 중 · 적용 시 편집 당시 버전으로 충돌 검사합니다.")
             return
         key = self.tree.selection()[0]
         rule = next((r for r, *_ in walk(self.current["plan"]) if r["rule_id"] == key), None)
@@ -264,14 +272,44 @@ class AIDraftEditor(ctk.CTkToplevel):
         draft_id, revision, key = self.form_context
         def applied(_):
             self.form_dirty = False
+            self.form_error = None
         self._submit(lambda: self.service.stage_edits(draft_id, revision, new_id("ui_"), [{"op": "update_rule", "rule_id": key, "fields": fields}]), applied)
 
     def _dirty(self, _event=None):
         self.form_dirty = True
+        self.form_error = None
 
     def _reload_form(self):
         self.form_dirty = False
+        self.form_error = None
         self._selected_rule()
+
+    def _preview_asset(self):
+        if not self.current or not self.tree.selection():
+            return
+        key = self.tree.selection()[0]
+        state = copy.deepcopy(self.current)
+        rule = next(r for r, *_ in walk(state["plan"]) if r["rule_id"] == key)
+        name = rule.get("target_image")
+        if not name or not name.lower().endswith(".png"):
+            self.status.set("이 미리보기는 PNG 대상 이미지용입니다. 영상 장면은 MCP get_frames로 확인하세요.")
+            return
+
+        def load():
+            from PIL import Image
+            path = self.service._asset_path(state, name)
+            with Image.open(path) as image:
+                if image.width * image.height > 16_000_000:
+                    raise ValueError("이미지가 너무 큽니다.")
+                result = image.convert("RGB")
+                result.thumbnail((280, 160))
+                return result
+
+        def show(image):
+            if self.tree.selection() and self.tree.selection()[0] == key:
+                self.preview_image = ctk.CTkImage(light_image=image, dark_image=image, size=image.size)
+                self.preview.configure(image=self.preview_image, text="")
+        self._submit(load, show)
 
     def _save(self):
         if self.form_dirty:
@@ -285,6 +323,17 @@ class AIDraftEditor(ctk.CTkToplevel):
         if self.current:
             draft_id = self.current["draft_id"]
             self._submit(lambda: self.service.validate_draft(draft_id), lambda result: messagebox.showinfo("구조 검사", json.dumps(result, ensure_ascii=False, indent=2), parent=self))
+
+    def _show_analysis(self):
+        if not self.current:
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("AI 행동 분석 요약")
+        dialog.geometry("700x500")
+        text = ctk.CTkTextbox(dialog, wrap="word")
+        text.pack(fill="both", expand=True, padx=12, pady=12)
+        text.insert("1.0", json.dumps(self.current.get("analysis") or {"status": "AI 분석 미등록"}, ensure_ascii=False, indent=2))
+        text.configure(state="disabled")
 
     def _publish(self):
         if not self.current or self.busy or self.form_dirty:
