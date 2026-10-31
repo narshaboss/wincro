@@ -39,7 +39,8 @@ def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path
     assert b"--connection-file" in result.stdout
 
 
-def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_model_requests(tmp_path, monkeypatch):
+@pytest.mark.parametrize("requires_credentials", [False, True])
+def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_model_requests(tmp_path, monkeypatch, requires_credentials):
     home = tmp_path / "auth"
     home.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(home))
@@ -61,7 +62,7 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
         extras = {"model_provider": "offline", "model": "gpt-5.4",
             "model_providers.offline.name": "Offline connection test",
             "model_providers.offline.base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
-            "model_providers.offline.wire_api": "responses", "model_providers.offline.requires_openai_auth": False}
+            "model_providers.offline.wire_api": "responses", "model_providers.offline.requires_openai_auth": requires_credentials}
         for key, value in extras.items():
             args += ["-c", key + "=" + json.dumps(value)]
         return args
@@ -73,6 +74,12 @@ def test_actual_manual_connection_precedes_media_and_stays_on_until_off_without_
         deadline = time.monotonic() + 35
         while not connection.connected and connection.busy and time.monotonic() < deadline:
             time.sleep(.05)
+        if requires_credentials:
+            assert not connection.connected and not connection.busy, connection.snapshot()
+            assert connection.snapshot()["state"] == "error"
+            assert "LOGIN_REQUIRED" in connection.snapshot()["message"]
+            assert not calls
+            return
         assert connection.connected, connection.snapshot()
         runner = connection.runner
         assert runner.mcp_config["enabled_tools"] == ["connection_status"]
