@@ -139,6 +139,7 @@ class PlayJobs:
         self.session = self.worker = self.runner = self.host = None
         self.cancel = threading.Event()
         self.monitor_stop = threading.Event()
+        self.preparing = threading.Event()
         self.closed = False
         self._owns_input = False
         self._cleanup_lock = threading.Lock()
@@ -177,10 +178,12 @@ class PlayJobs:
             self.runtime = copy.deepcopy(runtime)
             self.cancel = threading.Event()
             self.monitor_stop = threading.Event()
+            self.preparing.set()
             self.worker = threading.Thread(target=self._run, args=(True,), daemon=True, name="gpt-play-model")
             self.worker.start()
             threading.Thread(target=self._watch, args=(self.session, self.monitor_stop), daemon=True, name="gpt-play-watchdog").start()
         except Exception:
+            self.preparing.clear()
             ownership.release(self)
             self._owns_input = False
             raise
@@ -195,7 +198,7 @@ class PlayJobs:
                 if getattr(session.backend, "emergency_pressed", lambda: False)():
                     self.stop()
                     return
-                if session.state not in {"paused", "question", "ready"}:
+                if session.state not in {"paused", "question", "ready"} and not self.preparing.is_set():
                     session.check()
                     session.backend.validate()
             except Exception as exc:
@@ -212,6 +215,7 @@ class PlayJobs:
             if initial:
                 s.start()
             s.check()
+            self.preparing.clear()
             folder = s.folder / new_id("turn_")
             protect_directory(folder)
             host = PlayHost(PlayScope(s), folder / "pipe")
@@ -227,6 +231,7 @@ class PlayJobs:
             if not s.stop_event.is_set() and s.state not in {"question", "paused"}:
                 s.pause(str(exc)[:2000])
         finally:
+            self.preparing.clear()
             if host:
                 host.close()
             if runner:
@@ -290,7 +295,13 @@ class PlayJobs:
     def resume(self, answer=None):
         if self.closed or self.busy or not self.session:
             raise BridgeError("PLAY_BUSY", "이전 GPT 실행 종료를 기다려 주세요.")
-        self.session.resume(answer)
+        # Do not let the focus watchdog race the user-authorized refocus on resume.
+        self.preparing.set()
+        try:
+            self.session.resume(answer)
+        except Exception:
+            self.preparing.clear()
+            raise
         self.cancel = threading.Event()
         self.worker = threading.Thread(target=self._run, args=(False,), daemon=True, name="gpt-play-model")
         self.worker.start()

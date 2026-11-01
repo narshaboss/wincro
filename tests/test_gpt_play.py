@@ -532,6 +532,11 @@ def test_jobs_off_gate_and_question_resume_roundtrip(tmp_path, monkeypatch):
     connected = [False]
     manager = PlayJobs(tmp_path, tmp_path / "plans", tmp_path / "templates", lambda: connected[0], runner_factory=Actor)
     backend = Backend()
+    original_prepare = backend.prepare
+    def prepare():
+        assert manager.preparing.is_set()
+        original_prepare()
+    backend.prepare = prepare
     with pytest.raises(BridgeError):
         manager.start(None, "clear", ["enter"], {}, test_environment=True, backend=backend)
     assert backend.prepared == 0
@@ -545,6 +550,7 @@ def test_jobs_off_gate_and_question_resume_roundtrip(tmp_path, monkeypatch):
         assert calls == ["question", "Use free revive"]
         assert backend.sent == [{"kind": "key", "key": "enter"}]
         assert manager.session.state == "paused"
+        assert not manager.preparing.is_set()
     finally:
         manager.stop()
         if manager.worker:
