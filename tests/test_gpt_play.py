@@ -582,3 +582,36 @@ def test_atomic_arduino_tap_never_falls_back_or_sends_split_edges(monkeypatch):
     device.is_connected = False
     assert controller.play_lab_tap("up") is False
     assert len(commands) == 1
+
+
+def test_native_start_rearms_stopped_input_only_after_cleanup(monkeypatch):
+    from src.ai_play.windows import WindowIO
+    from src.utils import input_controller as ic
+    pending = {object()}
+    blocked = threading.Event()
+    blocked.set()
+    monkeypatch.setattr(ic, "_cleanup_tokens", pending)
+    monkeypatch.setattr(ic, "_cleanup_release_failed", False)
+    monkeypatch.setattr(ic, "_input_block_event", blocked)
+    monkeypatch.setattr(ic, "_input_block_reason", "fixture previous stop")
+    monkeypatch.setattr(ic, "is_arduino_enabled", lambda: False)
+    monkeypatch.setattr(ic, "is_arduino_strict_enabled", lambda: False)
+    backend = object.__new__(WindowIO)
+    backend.target = object()
+    focuses = []
+    backend.windows = SimpleNamespace(set_foreground_window=lambda _: focuses.append(True) or True)
+    backend.validate = lambda: [0, 0, 100, 100]
+    with pytest.raises(BridgeError) as err:
+        backend.prepare()
+    assert err.value.code == "INPUT_CLEANUP_PENDING"
+    assert not focuses and blocked.is_set()
+    pending.clear()
+    monkeypatch.setattr(ic, "_cleanup_release_failed", True)
+    with pytest.raises(BridgeError):
+        backend.prepare()
+    assert blocked.is_set()
+    monkeypatch.setattr(ic, "_cleanup_release_failed", False)
+    backend.prepare()
+    assert not blocked.is_set()
+    backend.user = SimpleNamespace(GetAsyncKeyState=lambda key: 1)
+    assert backend.emergency_pressed()
