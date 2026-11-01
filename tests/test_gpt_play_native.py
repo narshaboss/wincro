@@ -103,6 +103,87 @@ def test_live_pipe_uses_separate_authenticated_authority(tmp_path):
         host.thread.join(3)
 
 
+def test_window_io_captures_and_sends_only_to_owned_ci_game(tmp_path, monkeypatch):
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        pytest.skip("Real input is only permitted on an isolated CI desktop")
+    import json
+    import subprocess
+    import sys
+    import time
+    import uuid
+    from src.ai_play.windows import WindowIO
+    from src.utils import input_controller as ic
+    from src.utils.window_control import _WindowsBackend
+    from src.agent_bridge.contracts import BridgeError
+    title = "WinCroOwnedPlayQA_" + uuid.uuid4().hex
+    events = tmp_path / "events.txt"
+    script = '''
+import sys
+import tkinter as tk
+root = tk.Tk()
+root.title(sys.argv[1])
+root.geometry("320x200+80+80")
+root.configure(bg="#195b37")
+def record(value):
+    with open(sys.argv[2], "a", encoding="utf-8") as output:
+        output.write(value + "\\n")
+root.bind("<KeyPress>", lambda e: record("key:" + e.keysym))
+root.bind("<Button-1>", lambda e: record("left"))
+root.after(200, root.focus_force)
+root.after(45000, root.destroy)
+root.mainloop()
+'''
+    child = subprocess.Popen([sys.executable, "-c", script, title, str(events)],
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    backend = None
+    try:
+        api = _WindowsBackend()
+        target = None
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and target is None:
+            target = next((w for w in api.list_windows() if w.title == title and w.process_id == child.pid), None)
+            time.sleep(.05)
+        assert target is not None
+        controller = ic.InputController()
+        monkeypatch.setattr(ic, "get_input_controller", lambda: controller)
+        monkeypatch.setattr(ic, "is_arduino_enabled", lambda: False)
+        monkeypatch.setattr(ic, "is_arduino_strict_enabled", lambda: False)
+        monkeypatch.setattr(ic, "is_automation_input_blocked", lambda: False)
+        monkeypatch.setattr(controller, "_use_arduino", lambda: False)
+        backend = WindowIO(target)
+        backend.prepare()
+        image, region = backend.capture()
+        assert image.size == (region[2] - region[0], region[3] - region[1])
+        assert backend.send({"kind": "click", "x": 100, "y": 100}, region, backend.validate)
+        assert backend.send({"kind": "key", "key": "enter"}, region, backend.validate)
+        deadline = time.monotonic() + 4
+        recorded = []
+        while time.monotonic() < deadline:
+            recorded = events.read_text(encoding="utf-8").splitlines() if events.exists() else []
+            if "left" in recorded and "key:Return" in recorded:
+                break
+            time.sleep(.05)
+        assert "left" in recorded and "key:Return" in recorded
+        assert backend.release()
+        child.terminate()
+        child.wait(5)
+        with pytest.raises(BridgeError) as error:
+            backend.validate()
+        assert error.value.code == "TARGET_CLOSED"
+        artifacts = Path("artifacts/gpt_play")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        image.save(artifacts / "owned_game.png")
+        (artifacts / "owned-game-input.json").write_text(json.dumps({"isolated_CI": True,
+            "owned_window_only": True, "software_input": recorded, "closed_target_rejected": True,
+            "Arduino_verified": False}), encoding="utf-8")
+    finally:
+        if backend:
+            backend.release()
+        if child.poll() is None:
+            child.terminate()
+            child.wait(5)
+
+
 def test_real_play_mcp_schema_images_actions_questions_and_denied_recording_tools(tmp_path):
     import asyncio
     import json
