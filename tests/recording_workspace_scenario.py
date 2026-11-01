@@ -241,6 +241,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
         pane._register_plan()
         assert "최신 분석" in workspace._status_detail
+        assert "검수 필요" in pane.registration_status.cget("text")
         assert list((data / "plans").iterdir()) == [original]
 
         # A new scripted GPT result has current evidence; the edited result stays unregistered.
@@ -257,11 +258,21 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         pane.plan_title.set("")
         pane.register_button.invoke()
         assert "제목" in workspace._status_detail and not pane.busy
+        assert "제목" in pane.registration_status.cget("text")
+        assert pane.registration_status.cget("text_color") == recording_workspace.COLORS["error"]
         pane.plan_title.set("새로 등록한 제작 플랜")
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: False)
         pane.register_button.invoke()
         assert list((data / "plans").iterdir()) == [original]
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
+        register_plan = workspace.jobs.register_plan
+        monkeypatch.setattr(workspace.jobs, "register_plan", Mock(side_effect=OSError("Synthetic registration write failure")))
+        pane.register_button.invoke()
+        assert _pump_until(ui_root, lambda: not pane.busy and "작업 실패" in pane.registration_status.cget("text"), 5)
+        assert "Synthetic registration write failure" in workspace._status_detail
+        assert pane.registration_status.cget("text_color") == recording_workspace.COLORS["error"]
+        assert list((data / "plans").iterdir()) == [original]
+        monkeypatch.setattr(workspace.jobs, "register_plan", register_plan)
         pane.register_button.invoke()
         pane._register_plan()  # In-flight duplicate invocation must not enqueue a second publication.
         assert _pump_until(ui_root, lambda: not pane.busy and bool(pane.current.get("publication")), 8), workspace._status_detail

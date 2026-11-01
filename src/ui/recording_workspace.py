@@ -583,6 +583,7 @@ class DraftResultPane(ctk.CTkFrame):
         self.registration_status = ctk.CTkLabel(registration, text="최신 GPT 검수 완료 후 새 플랜으로 등록합니다.",
             anchor="w", text_color=COLORS["text_secondary"], height=20, font=ctk.CTkFont(size=11))
         self.registration_status.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 4))
+        self.registration_status.bind("<Button-1>", lambda _event: self.workspace._job_details(), add="+")
         self._after_id = self.after(120, self._poll)
 
     def set_jobs(self, states, select=None):
@@ -649,7 +650,7 @@ class DraftResultPane(ctk.CTkFrame):
         else:
             self.busy = False
             if error:
-                self.workspace.set_status(error)
+                self._result_error(error)
             else:
                 done(value)
             self.set_running(self.running)
@@ -671,7 +672,8 @@ class DraftResultPane(ctk.CTkFrame):
             self.plan_title.set(publication["name"] if publication else state["plan"]["name"])
         _, ready = review_progress(state)
         configure_changed(self.registration_status, text="등록 완료 · 동작분석 목록에서 확인하세요." if publication else
-            "최신 GPT 검수 완료 · 제목 입력 후 등록하세요." if ready else "추가 GPT 분석·양방향 검수 필요 · 등록할 수 없습니다.")
+            "최신 GPT 검수 완료 · 제목 입력 후 등록하세요." if ready else "추가 GPT 분석·양방향 검수 필요 · 등록할 수 없습니다.",
+            text_color=COLORS["text_secondary"])
         self.context = None
         self.rows = {rule["rule_id"]: rule for rule, *_ in walk(state["plan"])}
         existing = set()
@@ -767,25 +769,27 @@ class DraftResultPane(ctk.CTkFrame):
 
     def _register_plan(self):
         if self.dirty:
-            self.workspace.set_status("먼저 수정 내용을 초안에 저장하세요. 수정 후에는 GPT 재검수가 필요합니다.")
+            self._result_error("먼저 수정 내용을 초안에 저장하세요. 수정 후에는 GPT 재검수가 필요합니다.", "미저장 수정이 있습니다. 먼저 저장하세요.")
             return
         if not self.current or self.busy or self.running or self.service.closed or self.current.get("publication"):
             return
         try:
             title = DraftService.publication_title(self.plan_title.get())
         except ValueError as exc:
-            self.workspace.set_status(str(exc))
+            self._result_error(str(exc), "플랜 제목을 1~200자로 입력하세요.")
             return
         state = self.current
         message, ready = review_progress(state)
         if not ready:
-            self.workspace.set_status(message)
+            self._result_error(message, "최신 GPT 분석·양방향 검수 필요 · 상세 보기")
             return
+        configure_changed(self.registration_status, text="최신 GPT 검수 완료 · 제목 입력 후 등록하세요.", text_color=COLORS["text_secondary"])
         if not messagebox.askyesno("새 플랜 등록 승인", f"제목: {title}\n\n현재 분석 결과를 검토했으며 새 플랜 등록을 승인하시겠습니까?\n"
                 "기존 플랜·재생목록은 변경하지 않습니다. 실제 인식·재생은 별도로 확인해야 합니다.", parent=self):
             return
         job_id = self.service.workspace.parent.name
         key, revision = state["draft_id"], state["revision"]
+        configure_changed(self.registration_status, text="등록 중 · 파일 저장·재읽기 확인 중", text_color=COLORS["text_secondary"])
         def registered(value):
             publication, result = value
             self._display(result)
@@ -797,6 +801,10 @@ class DraftResultPane(ctk.CTkFrame):
             if analyzer is not None:
                 analyzer.refresh()
         self._submit(lambda: self.workspace.jobs.register_plan(job_id, key, revision, title), registered)
+
+    def _result_error(self, detail, summary="작업 실패 · 여기를 눌러 상세 확인"):
+        self.workspace.set_status(detail)
+        configure_changed(self.registration_status, text=summary, text_color=COLORS["error"])
 
     def close(self):
         self.closed = True
