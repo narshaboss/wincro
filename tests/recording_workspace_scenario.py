@@ -288,7 +288,9 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         player.refresh.assert_not_called()
         assert pane.service.allow_publication is False
         assert len(list((data / "plans").glob("*.json"))) == 2
-        assert _pump_until(ui_root, lambda: "플랜 등록 완료" in pane.jobs.get() and not workspace.busy, 5)
+        assert _pump_until(ui_root, lambda: "플랜 등록 완료" in pane.jobs.get() and not workspace.busy, 5), {
+            "label": pane.jobs.get(), "options": pane.options, "published_jobs": sorted(pane.published_jobs),
+            "workspace_busy": workspace.busy, "callback_errors": ui_root._ai_callback_errors}
         stale = workspace.jobs._metadata(pane.service.workspace.parent)
         assert stale["status"] == "review"  # Durable job metadata predates owner publication.
         pane.set_jobs([stale])

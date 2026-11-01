@@ -588,6 +588,8 @@ class DraftResultPane(ctk.CTkFrame):
 
     def set_jobs(self, states, select=None):
         previous = self.options.get(self.jobs.get())
+        if previous is None and self.current and self.service:
+            previous = self.service.workspace.parent.name
         self.job_states = list(states)
         def label(state):
             status = "published" if state["job_id"] in self.published_jobs else state["status"]
@@ -596,12 +598,23 @@ class DraftResultPane(ctk.CTkFrame):
         configure_changed(self.jobs, values=list(self.options) or ["아직 분석 결과가 없습니다"])
         selected_label = next((name for name, key in self.options.items() if key == (select or previous)), None)
         if selected_label and self.jobs.get() != selected_label:
-            self.jobs.set(selected_label)
+            self._set_job_selection(selected_label)
         elif not self.options:
-            self.jobs.set("아직 분석 결과가 없습니다")
+            self._set_job_selection("아직 분석 결과가 없습니다")
         if select and not self.dirty and not self.busy:
             if selected_label:
                 self._select(selected_label)
+
+    def _set_job_selection(self, label):
+        # CTkComboBox.set() silently ignores writes to its disabled Entry.
+        state = self.jobs.cget("state")
+        if state == "disabled":
+            self.jobs.configure(state="readonly")
+        try:
+            self.jobs.set(label)
+        finally:
+            if state == "disabled":
+                self.jobs.configure(state=state)
 
     def set_running(self, running):
         self.running = running

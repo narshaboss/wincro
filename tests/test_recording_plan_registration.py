@@ -37,21 +37,30 @@ def test_registration_does_not_shadow_tk_callback_registry():
     assert DraftResultPane.register is tk.Misc.register
 
 
-def test_late_job_list_cannot_downgrade_a_verified_publication_label():
-    from types import SimpleNamespace
+@pytest.mark.parametrize("disabled", [False, True])
+def test_late_job_list_cannot_downgrade_a_verified_publication_label(disabled):
+    from types import MethodType, SimpleNamespace
     from unittest.mock import Mock
     from src.ui.recording_workspace import DraftResultPane
     combo = Mock()
     old_label = "Recording · 검토 가능 · abcdef"
-    combo.get.return_value = old_label
-    combo.set.side_effect = lambda value: setattr(combo.get, "return_value", value)
+    widget = {"text": old_label, "state": "disabled" if disabled else "readonly", "values": []}
+    combo.get.side_effect = lambda: widget["text"]
+    combo.cget.side_effect = lambda key: widget[key]
+    combo.configure.side_effect = lambda **values: widget.update(values)
+    def set_value(value):
+        if widget["state"] != "disabled":
+            widget["text"] = value
+    combo.set.side_effect = set_value
     pane = SimpleNamespace(jobs=combo, options={old_label: "job_abcdef"},
-        published_jobs={"job_abcdef"}, job_states=[], dirty=False, busy=False)
+        published_jobs={"job_abcdef"}, job_states=[], dirty=False, busy=False, current=None, service=None)
+    pane._set_job_selection = MethodType(DraftResultPane._set_job_selection, pane)
     stale = {"job_id": "job_abcdef", "recording_name": "Recording", "status": "review"}
     DraftResultPane.set_jobs(pane, [stale])
     assert "플랜 등록 완료" in combo.get()
     assert pane.options[combo.get()] == "job_abcdef"
     assert stale["status"] == "review"
+    assert widget["state"] == ("disabled" if disabled else "readonly")
 
 
 def test_owner_title_export_is_durable_visible_to_plan_loader_and_does_not_mutate_review(ready):
