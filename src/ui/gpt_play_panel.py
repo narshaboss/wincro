@@ -164,7 +164,7 @@ class GPTPlayPanel(ctk.CTkFrame):
 
     def _refresh_controls(self):
         from .recording_workspace import configure_changed
-        state = self.jobs.snapshot() or {}
+        state = self.jobs.ui_snapshot() or {}
         connected = self.workspace.connection.connected
         active = self.jobs.active or self.jobs.busy
         enabled = connected and not active and self.test_environment.get()
@@ -183,7 +183,7 @@ class GPTPlayPanel(ctk.CTkFrame):
             return
         from .recording_workspace import configure_changed
         self._refresh_controls()
-        state = self.jobs.snapshot()
+        state = self.jobs.ui_snapshot()
         if state:
             configure_changed(self.status, text=f'{STATE_LABELS.get(state["state"], state["state"])} | 입력 {state["action_count"]}/{state["max_actions"]}',
                 text_color=COLORS["success"] if self.workspace.connection.connected else COLORS["error"])
@@ -218,7 +218,7 @@ class GPTPlayPanel(ctk.CTkFrame):
                     self._published.add(publication["plan_id"])
                     self.workspace._notify_publication(publication)
             elif state.get("candidate"):
-                configure_changed(self.result, text=f'후보 v{state["candidate"]["revision"]} · 재생 검수 {len(state["trials"])}회\n미완료 결과는 기존 플랜과 분리 보관합니다.')
+                configure_changed(self.result, text=f'후보 v{state["candidate"]["revision"]} · 재생 검수 {state["trial_count"]}회\n미완료 결과는 기존 플랜과 분리 보관합니다.')
         else:
             configure_changed(self.status, text="GPT 연결 ON · 시작 대기" if self.workspace.connection.connected else "GPT 연결 OFF · 시작할 수 없습니다.",
                 text_color=COLORS["success"] if self.workspace.connection.connected else COLORS["error"])

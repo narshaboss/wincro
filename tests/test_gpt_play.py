@@ -232,6 +232,22 @@ def test_candidates_are_real_native_roundtrips_and_edits_invalidate_tests(sessio
     assert session.trials == []
 
 
+def test_ui_polling_does_not_copy_large_model_evidence(session):
+    authored(session)
+    class DoNotCopy:
+        def __deepcopy__(self, memo):
+            pytest.fail("UI copied native rules or historical evidence")
+    original = session.candidate["plan"]
+    session.candidate["plan"] = DoNotCopy()
+    try:
+        state = session.ui_snapshot()
+        assert state["candidate"] == {"revision": 1}
+        assert state["trial_count"] == 0
+        assert "notes" not in state and "frames" not in state
+    finally:
+        session.candidate["plan"] = original
+
+
 @pytest.mark.parametrize("bad", ["game_mode", "window_control", "type", "hold", "branch"])
 def test_unsupported_plan_behavior_never_silently_compiled(session, bad):
     with pytest.raises(BridgeError):

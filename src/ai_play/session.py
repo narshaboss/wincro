@@ -89,6 +89,14 @@ class PlaySession:
                     for rule in current["plan"]["initial_rules"]]
             return value
 
+    def ui_snapshot(self):
+        # UI polling must not repeatedly copy all evidence and native rule fields.
+        with self.state_lock:
+            return {"state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
+                "action_count": self.action_count, "max_actions": self.max_actions,
+                "publication": copy.deepcopy(self.publication), "trial_count": len(self.trials),
+                "candidate": {"revision": self.candidate["revision"]} if self.candidate else None}
+
     def check(self, *, input_allowed=False, playback=False):
         if not self.connected():
             self.pause("GPT 연결 OFF: 다시 연결한 뒤 계속하세요.")

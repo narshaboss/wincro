@@ -154,6 +154,9 @@ class PlayJobs:
     def snapshot(self):
         return self.session.snapshot() if self.session else None
 
+    def ui_snapshot(self):
+        return self.session.ui_snapshot() if self.session else None
+
     def start(self, target, goal, keys, runtime, *, test_environment=False, max_seconds=900, backend=None):
         if self.closed or self.busy or self.active:
             raise BridgeError("PLAY_BUSY", "기존 GPT 플레이를 먼저 중지하세요.")
