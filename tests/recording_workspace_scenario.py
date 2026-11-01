@@ -144,7 +144,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     ctk.set_widget_scaling(1)
     ui_root._ai_callback_errors.clear()
     window = ctk.CTkToplevel(ui_root)
-    window.geometry("1024x740+0+0")
+    window.geometry("1024x680+0+0")
     view = recorder_view.RecorderView(window)
     view.pack(fill="both", expand=True)
     analyzer = analyzer_view.AnalyzerView(window)
@@ -278,6 +278,10 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert pane.service.allow_publication is False
         assert len(list((data / "plans").glob("*.json"))) == 2
         assert _pump_until(ui_root, lambda: "플랜 등록 완료" in pane.jobs.get() and not workspace.busy, 5)
+        for widget in (pane.title_entry, pane.register_button, pane.registration_status):
+            assert widget.winfo_ismapped()
+            assert widget.winfo_rooty() + widget.winfo_height() <= window.winfo_rooty() + window.winfo_height()
+            assert widget.winfo_rooty() + widget.winfo_height() < 720, "Use an on-screen owned QA window"
         ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_plan_registered.png")
         analyzer.pack(fill="both", expand=True)
         view.pack_forget()

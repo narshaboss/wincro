@@ -486,6 +486,10 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         for entry in pane.entries.values():
             assert entry.winfo_width() >= round(50 * scale)
             assert entry.winfo_rootx() + entry.winfo_width() <= pane.winfo_rootx() + pane.winfo_width()
+        for label in pane.entries["description"].master.winfo_children():
+            if isinstance(label, ctk.CTkLabel):
+                assert label._label.winfo_reqwidth() <= label.winfo_width()
+                assert label.winfo_rootx() + label.winfo_width() <= pane.winfo_rootx() + pane.winfo_width()
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         ctk.set_window_scaling(scale)
         workspace._settings()

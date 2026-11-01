@@ -30,6 +30,13 @@ def register(fixture, title="내 새 플랜"):
     return jobs.register_plan(job_id, state["draft_id"], state["revision"], title)
 
 
+def test_registration_does_not_shadow_tk_callback_registry():
+    import tkinter as tk
+    from src.ui.recording_workspace import DraftResultPane
+    assert DraftResultPane._register is tk.Misc._register
+    assert DraftResultPane.register is tk.Misc.register
+
+
 def test_owner_title_export_is_durable_visible_to_plan_loader_and_does_not_mutate_review(ready):
     from src.analyzer.automation_models import AutomationPlan
     jobs, service, state, job_id, original = ready
