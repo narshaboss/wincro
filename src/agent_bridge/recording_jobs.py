@@ -83,6 +83,8 @@ class RecordingJobs:
                     analysis = draft.get("analysis")
                     if not isinstance(analysis, dict) or analysis.get("plan_digest") != digest(draft["plan"]):
                         state = dict(state, status="needs_review", message="초안이 수정되어 GPT 분석·교차검수가 다시 필요합니다.")
+                    elif draft.get("publication"):
+                        state = dict(state, status="published")
                 if state.get("status") in ACTIVE_STATES and (not self.active or state["job_id"] != self.active["job_id"]):
                     state = dict(state, status="unconfirmed", message="이전 분석의 실행 상태를 확인할 수 없습니다. 저장된 초안을 읽기 전용으로 확인하세요.")
                 result.append(state)
@@ -281,3 +283,26 @@ class RecordingJobs:
         if metadata.get("status") in ACTIVE_STATES and not (self.active and self.active["job_id"] == job_id):
             service.closed = True
         return service, state
+
+    def register_plan(self, job_id, draft_id, expected_revision, name):
+        """Owner UI only. The AI's draft-only service and MCP capability stay unchanged."""
+        name = DraftService.publication_title(name)
+        with self.lock:
+            if self.closed or self.busy:
+                raise BridgeError("JOB_BUSY", "분석 실행 중이거나 화면이 닫혔습니다. 분석을 마친 뒤 등록하세요.")
+            service, state = self.load_result(job_id)
+            metadata = self._metadata(service.workspace.parent)
+            if service.closed or state["draft_id"] != draft_id or metadata["status"] not in {"review", "needs_review"}:
+                raise BridgeError("PERMISSION_REQUIRED", "실행 상태를 확인할 수 없는 분석 결과는 등록할 수 없습니다.")
+            with service.lock:
+                publisher = DraftService(self.plans_dir, self.templates_dir, service.workspace)
+                publisher.lock = service.lock
+                if not state.get("publication"):
+                    if not publisher.validate_draft(draft_id)["rule_count"]:
+                        raise BridgeError("ANALYSIS_REQUIRED", "액션이 없는 초안은 플랜으로 등록할 수 없습니다.")
+                    publisher.approve_publication(draft_id, expected_revision, name=name)
+                publication = publisher.publish_new_plan(draft_id, expected_revision, name=name)
+                restored = service.read_draft(draft_id)
+                if restored.get("publication") != publication:
+                    raise BridgeError("SAVE_STATE_UNKNOWN", "등록 기록 재읽기가 일치하지 않습니다. 플랜 파일을 확인하세요.")
+                return publication, (service, restored)

@@ -490,7 +490,13 @@ class DraftService:
             return {"revision": state["revision"], "passed": entry["passed"],
                     "crosscheck_ready": self._crosscheck_ready(state), "saved_and_reloaded": True}
 
-    def approve_publication(self, draft_id, expected_revision):
+    @staticmethod
+    def publication_title(name):
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            raise BridgeError("INVALID_TITLE", "플랜 제목을 줄바꿈 없이 1~200자로 입력하세요.")
+        return name.strip()
+
+    def approve_publication(self, draft_id, expected_revision, name=None):
         """UI-only method. Never exposed through MCP dispatch."""
         if not self.allow_publication:
             raise BridgeError("PUBLICATION_DISABLED", "This recording workspace only saves independent drafts")
@@ -504,21 +510,29 @@ class DraftService:
                 raise BridgeError("ANALYSIS_REQUIRED", "The AI must review this revision and resolve open questions before approval")
             if not result["crosscheck_ready"]:
                 raise BridgeError("CROSSCHECK_REQUIRED", "AI must complete clean video-to-plan AND plan-to-video reviews after the last edit")
+            title = self.publication_title(state["plan"]["name"] if name is None else name)
             state["approval"] = {"instance_id": self.instance_id, "revision": expected_revision,
-                                 "digest": digest(state["plan"])}
+                                 "digest": digest(state["plan"]), "name": title}
             self._save(state)
 
-    def publish_new_plan(self, draft_id, expected_revision):
+    def publish_new_plan(self, draft_id, expected_revision, name=None):
         if not self.allow_publication:
             raise BridgeError("PUBLICATION_DISABLED", "This recording workspace cannot write playback plans")
         with self.lock:
             state = self._load(draft_id)
+            title = self.publication_title(state["plan"]["name"] if name is None else name)
             if state.get("publication"):
-                return copy.deepcopy(state["publication"])
+                publication = state["publication"]
+                if expected_revision != publication["revision"] or title != publication["name"]:
+                    raise BridgeError("ALREADY_PUBLISHED", "이미 등록한 결과입니다. 기존 플랜을 덮어쓰거나 다른 제목으로 중복 등록하지 않습니다.")
+                target = self.plans_dir / (publication["plan_id"] + ".json")
+                if not target.exists() or self._file_hash(within(target, self.plans_dir)) != publication["sha256"]:
+                    raise BridgeError("SAVE_STATE_UNKNOWN", "등록된 플랜이 삭제되었거나 변경되었습니다. 기존 파일을 확인하세요.")
+                return copy.deepcopy(publication)
             self._expect(state, expected_revision)
             approval = state.get("approval") or {}
             if approval != {"instance_id": self.instance_id, "revision": expected_revision,
-                            "digest": digest(state["plan"])}:
+                            "digest": digest(state["plan"]), "name": title}:
                 raise BridgeError("PERMISSION_REQUIRED", "Approve this exact draft in WinCro first")
             source = state.get("source")
             if source and self.read_plan(source["plan_id"])["source_sha256"] != source["sha256"]:
@@ -533,16 +547,21 @@ class DraftService:
                 else:
                     publish_bytes(self.templates_dir, name, path.read_bytes())
             plan = copy.deepcopy(state["plan"])
+            # A user-selected export title does not invalidate the reviewed actions.
+            plan["name"] = title
             plan["user_verified"] = True
             plan["modified"] = True
             filename = plan["plan_id"] + ".json"
             payload = encoded(plan)
             # Persist intent before filesystem publication so uncertain replies are recoverable.
             intent = self.workspace / (draft_id + ".publish-intent.json")
-            write_json(intent, {"filename": filename, "sha256": hashlib.sha256(payload).hexdigest()})
+            expected_intent = {"filename": filename, "sha256": hashlib.sha256(payload).hexdigest()}
+            if intent.exists() and read_json(within(intent, self.workspace)) != expected_intent:
+                raise BridgeError("SAVE_STATE_UNKNOWN", "이전 등록의 저장 결과를 먼저 확인해야 합니다. 제목이나 내용을 바꾸어 재시도하지 마세요.")
+            write_json(intent, expected_intent)
             target = self.plans_dir / filename
             if target.exists():
-                if target.read_bytes() != payload:
+                if within(target, self.plans_dir).read_bytes() != payload:
                     raise BridgeError("SAVE_STATE_UNKNOWN", "Publication target differs; do not retry blindly")
             else:
                 publish_bytes(self.plans_dir, filename, payload)

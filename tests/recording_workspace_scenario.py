@@ -108,7 +108,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     from types import SimpleNamespace
     from unittest.mock import Mock
     from PIL import ImageGrab
-    from src.ui import recorder_view, recording_workspace, main_window
+    from src.ui import recorder_view, recording_workspace, main_window, analyzer_view
     from src.ui.ai_draft_editor import MediaConsentDialog
     from src.database.models import Recording
     from src.agent_bridge.recording_jobs import RecordingJobs
@@ -138,12 +138,18 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     monkeypatch.setattr(recorder_view, "RecordingSession", lambda: session)
     monkeypatch.setattr(recorder_view, "get_screen_recorder", lambda: capture)
     monkeypatch.setattr(recorder_view.RecorderView, "_setup_hotkeys", Mock())
+    monkeypatch.setattr(analyzer_view, "get_db", lambda: database)
+    monkeypatch.setattr(analyzer_view, "DATA_DIR", data)
+    monkeypatch.setattr(analyzer_view, "PLANS_DIR", data / "plans")
     ctk.set_widget_scaling(1)
     ui_root._ai_callback_errors.clear()
     window = ctk.CTkToplevel(ui_root)
     window.geometry("1024x740+0+0")
     view = recorder_view.RecorderView(window)
     view.pack(fill="both", expand=True)
+    analyzer = analyzer_view.AnalyzerView(window)
+    player = Mock()
+    window._views = {"analyzer": analyzer, "player": player}
     workspace = view._workspace
     workspace.jobs.runner_factory = MCPPipelineActor
     workspace.connection.runner_factory = MCPIdleActor
@@ -233,6 +239,55 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         from tkinter import messagebox, filedialog
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
+        pane._register()
+        assert "최신 분석" in workspace._status_detail
+        assert list((data / "plans").iterdir()) == [original]
+
+        # A new scripted GPT result has current evidence; the edited result stays unregistered.
+        old_draft = pane.current["draft_id"]
+        workspace.tabs.set("녹화·분석")
+        workspace.analyze.invoke()
+        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
+        consent.consent.set(True)
+        consent.add_button.invoke()
+        assert _pump_until(ui_root, lambda: pane.current and pane.current["draft_id"] != old_draft
+            and not pane.busy and not workspace.jobs.busy, 15)
+        workspace.tabs.set("분석 결과 편집")
+        assert _pump_until(ui_root, lambda: pane.context is not None and pane.register.cget("state") == "normal", 5)
+        pane.plan_title.set("")
+        pane.register.invoke()
+        assert "제목" in workspace._status_detail and not pane.busy
+        pane.plan_title.set("새로 등록한 제작 플랜")
+        monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: False)
+        pane.register.invoke()
+        assert list((data / "plans").iterdir()) == [original]
+        monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
+        pane.register.invoke()
+        pane._register()  # In-flight duplicate invocation must not enqueue a second publication.
+        assert _pump_until(ui_root, lambda: not pane.busy and bool(pane.current.get("publication")), 8), workspace._status_detail
+        publication = pane.current["publication"]
+        exported_path = data / "plans" / (publication["plan_id"] + ".json")
+        exported_bytes = exported_path.read_bytes()
+        assert json.loads(exported_bytes)["name"] == "새로 등록한 제작 플랜"
+        assert pane.plan_title.get() == "새로 등록한 제작 플랜"
+        assert pane.register.cget("state") == pane.title_entry.cget("state") == "disabled"
+        assert all(entry.cget("state") == "disabled" for entry in pane.entries.values())
+        assert _pump_until(ui_root, lambda: any(plan.plan_id == publication["plan_id"]
+            and plan.name == "새로 등록한 제작 플랜" for plan in analyzer._plan_items), 8)
+        player.refresh.assert_not_called()
+        assert pane.service.allow_publication is False
+        assert len(list((data / "plans").glob("*.json"))) == 2
+        assert _pump_until(ui_root, lambda: "플랜 등록 완료" in pane.jobs.get() and not workspace.busy, 5)
+        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_plan_registered.png")
+        analyzer.pack(fill="both", expand=True)
+        view.pack_forget()
+        assert _pump_until(ui_root, lambda: analyzer._plans_scroll.winfo_ismapped(), 5)
+        deadline = time.monotonic() + .3
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_plan_analyzer_list.png")
+        analyzer.pack_forget()
+        view.pack(fill="both", expand=True)
+        workspace.tabs.set("녹화·분석")
         video_before = video.read_bytes()
         view._remove_media_item(view._recording_items[0])
         assert _pump_until(ui_root, lambda: not view._recording_items and not workspace.busy, 5)
@@ -287,7 +342,8 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_model_error.png")
         error_window.destroy()
         assert original.read_bytes() == before
-        assert list((data / "plans").iterdir()) == [original]
+        assert set((data / "plans").iterdir()) == {original, exported_path}
+        assert exported_path.read_bytes() == exported_bytes
         session.start.assert_not_called()
         capture.start.assert_not_called()
         database.create_recording.assert_not_called()
@@ -299,6 +355,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_pipeline_result.png")
     finally:
         MCPPipelineActor.release.set()
+        analyzer.cleanup()
         view.cleanup()
         window.destroy()
         ui_root.update()

@@ -33,7 +33,7 @@ jobs:
       - name: Notification delivery simulations (no network)
         run: python -m pytest -q tests/test_discord_notifier.py tests/test_discord_delivery_regression.py
       - name: AI draft save, media, permissions and contract simulations (no input)
-        run: python -m pytest -q tests/test_ai_draft_bridge.py tests/test_ai_draft_guidance.py tests/test_recording_jobs.py tests/test_recording_connection.py tests/test_analyzer_playlist_only.py tests/test_analyzer_playlist_perf_regression.py tests/test_ui_virtualization_regression.py tests/test_ios_design_theme_regression.py tests/test_ui_text_overflow_regression.py tests/test_video_thumbnail.py tests/test_action_coordinate_labels.py tests/test_analysis_progress.py --junitxml=artifacts/ai_draft/core.xml
+        run: python -m pytest -q tests/test_ai_draft_bridge.py tests/test_ai_draft_guidance.py tests/test_recording_jobs.py tests/test_recording_plan_registration.py tests/test_recording_connection.py tests/test_analyzer_playlist_only.py tests/test_analyzer_playlist_perf_regression.py tests/test_ui_virtualization_regression.py tests/test_ios_design_theme_regression.py tests/test_ui_text_overflow_regression.py tests/test_video_thumbnail.py tests/test_action_coordinate_labels.py tests/test_analysis_progress.py --junitxml=artifacts/ai_draft/core.xml
       - name: AI draft local-pipe and layout verification on isolated Windows
         if: ${{ !cancelled() }}
         env:

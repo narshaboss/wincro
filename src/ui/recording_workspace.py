@@ -17,14 +17,15 @@ from ..agent_bridge.recording_jobs import RecordingJobs
 from ..agent_bridge.recording_connection import RecordingConnection
 from ..agent_bridge.recording_catalog import RecordingVisibility
 from ..agent_bridge.storage import new_id, read_json, write_json
+from ..agent_bridge.service import DraftService
 from ..utils.config import DATA_DIR
-from .ai_draft_guidance import readable_action, readable_analysis
+from .ai_draft_guidance import readable_action, readable_analysis, review_progress
 from .analysis_progress import AnalysisProgress
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
 DEFAULT_GOAL = "녹화에서 수행한 작업의 목적과 흐름을 분석해 같은 작업을 위한 초안을 만드세요. 반복·종료 조건이 불명확하면 추측하지 말고 확인할 질문으로 남기세요."
-JOB_LABELS = {"starting": "준비 중", "running": "GPT 분석 중", "review": "검토 가능", "needs_review": "추가 확인 필요",
+JOB_LABELS = {"starting": "준비 중", "running": "GPT 분석 중", "review": "검토 가능", "published": "플랜 등록 완료", "needs_review": "추가 확인 필요",
               "error": "오류", "cancelled": "취소됨", "interrupted": "중단됨", "unconfirmed": "이전 실행 확인 필요"}
 COMBO_STYLE = dict(fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"],
     button_color=COLORS["bg_elevated"], button_hover_color=COLORS["bg_card_hover"],
@@ -447,7 +448,8 @@ class RecordingWorkspace(ctk.CTkFrame):
             "3. ON 버튼을 누르면 OFF가 되어 연결과 진행 중 분석을 종료합니다. 분석 취소는 분석만 중단하며 ON 연결은 유지합니다. 현재 대화를 깨우는 기능은 아닙니다.\n\n"
             "4. 분석 결과 편집에서 액션·목적·질문을 검토하고 대기·반복을 수정해 저장할 수 있습니다. 수정하면 이전 GPT 교차검수는 무효가 됩니다.\n\n"
             "진행 바는 정확한 작업량이 아닌 예상 진행률입니다. 분석 중에는 100%가 되지 않으며, 분석·교차검수 기록과 초안 저장을 확인한 뒤에만 100%로 표시합니다. 실제 인식·재생 성공을 보장하지 않습니다.\n\n"
-            "녹화의 삭제 버튼은 목록에서만 제거합니다. 원본 영상·키 기록·분석 결과·기존 플랜은 보존되며 파일 추가로 복원할 수 있습니다. 기존 재생 플랜·맵은 수정하지 않습니다. 이 화면은 초안만 저장하며 실제 인식·재생 성공은 별도 검증이 필요합니다.")
+            "5. 최신 GPT 분석·양방향 검수가 완료된 결과에 플랜 제목을 입력하고 동작분석에 등록을 누르세요. 승인하면 새 플랜 파일을 저장·재읽기 확인하며 동작분석 목록에 표시합니다. 기존 플랜·재생목록은 바꾸지 않고 자동 실행하지 않습니다. 수정으로 검수가 무효가 된 초안은 다시 GPT 분석·검수가 필요합니다.\n\n"
+            "녹화의 삭제 버튼은 목록에서만 제거합니다. 원본 영상·키 기록·분석 결과·기존 플랜은 보존되며 파일 추가로 복원할 수 있습니다. 기존 재생 플랜·맵은 수정하지 않습니다. 실제 인식·재생 성공은 별도 검증이 필요합니다.")
         dialog = self._dialog("녹화·GPT 분석 사용방법", 640, 480)
         box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         box.pack(fill="both", expand=True, padx=12, pady=12)
@@ -564,6 +566,21 @@ class DraftResultPane(ctk.CTkFrame):
         self.summary.grid(row=3, column=0, sticky="ew", pady=(0, 4))
         self.summary.insert("1.0", "GPT 분석 결과·행동 목적·남은 질문이 여기에 표시됩니다. 기존 재생 플랜은 바뀌지 않습니다.")
         self.summary.configure(state="disabled")
+        registration = ctk.CTkFrame(self, fg_color=COLORS["bg_glass"])
+        registration.grid(row=4, column=0, sticky="ew", pady=(0, 4))
+        registration.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(registration, text="플랜 제목", text_color=COLORS["text_primary"], width=60).grid(
+            row=0, column=0, padx=(8, 4), pady=7)
+        self.plan_title = tk.StringVar(master=self)
+        self.title_entry = ctk.CTkEntry(registration, textvariable=self.plan_title, height=28,
+            placeholder_text="동작분석에 표시할 제목", fg_color=COLORS["bg_dark"],
+            text_color=COLORS["text_primary"], border_color=COLORS["border"])
+        self.title_entry.grid(row=0, column=1, sticky="ew", pady=7)
+        self.register = workspace._button(registration, "동작분석에 등록", self._register, width=130, state="disabled")
+        self.register.grid(row=0, column=2, padx=8, pady=7)
+        self.registration_status = ctk.CTkLabel(registration, text="최신 GPT 검수 완료 후 새 플랜으로 등록합니다.",
+            anchor="w", text_color=COLORS["text_secondary"], height=20, font=ctk.CTkFont(size=11))
+        self.registration_status.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 4))
         self._after_id = self.after(120, self._poll)
 
     def set_jobs(self, states, select=None):
@@ -581,10 +598,14 @@ class DraftResultPane(ctk.CTkFrame):
 
     def set_running(self, running):
         self.running = running
-        configure_changed(self.save, state="normal" if self.current and self.context and self.dirty and not self.busy and not running and not self.service.closed else "disabled")
+        published = bool(self.current and self.current.get("publication"))
+        available = bool(self.current and not self.busy and not running and not self.service.closed and not published)
+        configure_changed(self.save, state="normal" if available and self.context and self.dirty else "disabled")
         for entry in self.entries.values():
-            configure_changed(entry, state="disabled" if running or self.busy or not self.context or self.service.closed else "normal")
+            configure_changed(entry, state="normal" if available and self.context else "disabled")
         configure_changed(self.jobs, state="disabled" if self.busy else "readonly")
+        configure_changed(self.title_entry, state="normal" if available else "disabled")
+        configure_changed(self.register, state="normal" if available and not self.dirty else "disabled")
 
     def _select(self, label):
         if self.dirty:
@@ -632,8 +653,15 @@ class DraftResultPane(ctk.CTkFrame):
         if self.dirty:
             self.workspace.set_status("미저장 입력을 보관했습니다. 저장하거나 취소한 뒤 결과를 다시 선택하세요.")
             return
+        previous_id = self.current and self.current["draft_id"]
         self.service, state = value
         self.current = state
+        publication = state.get("publication")
+        if previous_id != state["draft_id"] or publication:
+            self.plan_title.set(publication["name"] if publication else state["plan"]["name"])
+        _, ready = review_progress(state)
+        configure_changed(self.registration_status, text="등록 완료 · 동작분석 목록에서 확인하세요." if publication else
+            "최신 GPT 검수 완료 · 제목 입력 후 등록하세요." if ready else "추가 GPT 분석·양방향 검수 필요 · 등록할 수 없습니다.")
         self.context = None
         self.rows = {rule["rule_id"]: rule for rule, *_ in walk(state["plan"])}
         existing = set()
@@ -726,6 +754,39 @@ class DraftResultPane(ctk.CTkFrame):
         self.dirty = False
         service, key = self.service, self.current["draft_id"]
         self._submit(lambda: (service, service.read_draft(key)), self._display)
+
+    def _register(self):
+        if self.dirty:
+            self.workspace.set_status("먼저 수정 내용을 초안에 저장하세요. 수정 후에는 GPT 재검수가 필요합니다.")
+            return
+        if not self.current or self.busy or self.running or self.service.closed or self.current.get("publication"):
+            return
+        try:
+            title = DraftService.publication_title(self.plan_title.get())
+        except ValueError as exc:
+            self.workspace.set_status(str(exc))
+            return
+        state = self.current
+        message, ready = review_progress(state)
+        if not ready:
+            self.workspace.set_status(message)
+            return
+        if not messagebox.askyesno("새 플랜 등록 승인", f"제목: {title}\n\n현재 분석 결과를 검토했으며 새 플랜 등록을 승인하시겠습니까?\n"
+                "기존 플랜·재생목록은 변경하지 않습니다. 실제 인식·재생은 별도로 확인해야 합니다.", parent=self):
+            return
+        job_id = self.service.workspace.parent.name
+        key, revision = state["draft_id"], state["revision"]
+        def registered(value):
+            publication, result = value
+            self._display(result)
+            self.workspace.set_status(f"‘{publication['name']}’ 플랜 파일을 저장·재읽기 확인했습니다. 동작분석에서 확인하세요. 자동 실행하지 않습니다.")
+            self.workspace._refresh_jobs()
+            # Refresh only the analyzed-plan list; never reset a running playlist.
+            main_window = self.workspace.owner.winfo_toplevel()
+            analyzer = getattr(main_window, "_views", {}).get("analyzer")
+            if analyzer is not None:
+                analyzer.refresh()
+        self._submit(lambda: self.workspace.jobs.register_plan(job_id, key, revision, title), registered)
 
     def close(self):
         self.closed = True
