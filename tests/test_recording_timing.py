@@ -9,6 +9,7 @@ import pytest
 from src.agent_bridge.contracts import BridgeError
 from src.agent_bridge.media import MediaTools
 from src.agent_bridge.recording_jobs import JobScope, RecordingJobs
+from src.agent_bridge.service import DraftService
 from src.agent_bridge.storage import read_json
 from src.analyzer.automation_models import AutomationPlan
 from src.player import rule_executor
@@ -54,6 +55,17 @@ def test_pause_reanchors_instead_of_compressing_remaining_characters():
     assert typing_timeline.replay_typing_timeline("abc", [0, .3, .8],
         lambda char: events.append((char, clock())) or True, wait, clock)
     assert [t for _, t in events] == pytest.approx([0, 20.3, 20.8])
+
+
+def test_pause_inside_device_send_does_not_merge_next_character():
+    clock, events = Clock(), []
+    def send(char):
+        if not events:
+            clock.now += 20
+        events.append((char, clock()))
+        return True
+    assert typing_timeline.replay_typing_timeline("abc", [0, .3, .8], send, clock.wait, clock)
+    assert [t for _, t in events] == pytest.approx([20, 20.3, 20.8])
 
 
 @pytest.mark.parametrize("offsets", [[1], [0, -.1], [0, .5, .3], [0, True], [0, float('nan')], [0, float('inf')], None, "0,1"])
@@ -139,7 +151,8 @@ def test_timing_wait_math_and_type_schedule_are_durable(clip):
             frame_trace_id=step["frame_trace_id"], result="match", note="Synthetic timing check")])
         state = service.read_draft(key)
     service.save_draft(key, state["revision"])
-    assert read_json(service._path(key)) == state
+    reloaded = DraftService(service.plans_dir, service.templates_dir, service.workspace).read_draft(key)
+    assert reloaded == state
     service.approve_publication(key, state["revision"], name="Measured greeting")
     receipt = service.publish_new_plan(key, state["revision"], "Measured greeting")
     saved = read_json(service.plans_dir / (receipt["plan_id"] + ".json"))

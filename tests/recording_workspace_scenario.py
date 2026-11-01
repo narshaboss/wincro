@@ -60,7 +60,8 @@ class MCPPipelineActor:
                     await invoke("record_analysis", dict(draft_id=draft_id, expected_revision=state["revision"], goal="Synthetic test",
                         steps=[dict(rule_id=key, recording_id=recording_id, seconds=0, frame_trace_id=trace,
                             observation="Synthetic rectangle", purpose="Confirm test", expected_result="Synthetic next step",
-                            timing=dict(start_seconds=0, end_seconds=0, next_start_seconds=.5,
+                            timing=dict(start_seconds=0, end_seconds=0,
+                                next_start_seconds=state["plan"]["initial_rules"][0]["wait_after"],
                                 precision_seconds=.2, start_frame_trace_id=trace, end_frame_trace_id=trace,
                                 text_mode="not_text"))], open_questions=[]))
                     if type(self).pending_passes:

@@ -2819,9 +2819,6 @@ class RuleExecutor:
             elif rule_type == RuleType.TYPE_TEXT.value:
                 # 텍스트 입력 (한글 지원 - 클립보드 사용)
                 if rule.action_text:
-                    typing_random = getattr(rule, 'typing_random', False)
-                    typing_delay = getattr(rule, 'typing_delay', 0.1)
-                    typing_delay_range = getattr(rule, 'typing_delay_range', 0.05)
                     typed = self._type_rule_text(rule)
                     if typed is False:
                         message = "실행 중지됨" if self._stop_event.is_set() else "텍스트 입력 실패"
@@ -3119,9 +3116,6 @@ class RuleExecutor:
 
             elif action_type == "type":
                 if rule.action_text:
-                    typing_random = getattr(rule, 'typing_random', False)
-                    typing_delay = getattr(rule, 'typing_delay', 0.1)
-                    typing_delay_range = getattr(rule, 'typing_delay_range', 0.05)
                     typed = self._type_rule_text(rule)
                     if typed is False:
                         message = "실행 중지됨" if self._stop_event.is_set() else "텍스트 입력 실패"

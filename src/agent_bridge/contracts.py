@@ -94,6 +94,8 @@ def validate(plan):
             raise BridgeError("INVALID_REFERENCE", "Dangling action reference")
     for rule, *_ in rows:
         if rule.get("typing_timestamps"):
+            if rule.get("action_type") != "type" and rule.get("rule_type") != "type_text":
+                raise BridgeError("INVALID_FIELD", "typing_timestamps applies only to text input")
             from ..utils.typing_timeline import validate_typing_timestamps
             try:
                 validate_typing_timestamps(rule.get("action_text") or "", rule["typing_timestamps"])

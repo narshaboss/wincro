@@ -570,6 +570,67 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         ctk.set_window_scaling(1.0)
 
 
+def test_recorded_character_timing_visible_in_owned_text_widget(monkeypatch, ui_root):
+    """Actual Tk clipboard/paste states on CI; no global mouse/keyboard injection."""
+    import queue
+    import threading
+    import tkinter as tk
+    from types import SimpleNamespace
+    from PIL import ImageGrab
+    from src.player import rule_executor
+    from src.player.rule_executor import RuleExecutor
+
+    text = tk.Text(ui_root, font=("Malgun Gothic", 28), width=20, height=3)
+    text.pack()
+    Path("artifacts/ai_draft").mkdir(parents=True, exist_ok=True)
+    pending = queue.Queue()
+    snapshots = []
+    finished = threading.Event()
+    result = []
+    executor = object.__new__(RuleExecutor)
+    executor._stop_event = threading.Event()
+    executor._wait_for_resume = lambda: False
+    executor._auto_list_wait = lambda seconds: not executor._stop_event.wait(seconds)
+    def paste(*keys):
+        assert keys == ('ctrl', 'v')
+        ack = threading.Event()
+        pending.put(ack)
+        return ack.wait(3)
+    monkeypatch.setattr(rule_executor, "get_input_controller", lambda: SimpleNamespace(hotkey=paste))
+    def play():
+        try:
+            result.append(executor._type_rule_text(SimpleNamespace(action_text="안녕하세요",
+                typing_timestamps=[0, .25, .6, 1.1, 1.5], typing_random=False)))
+        finally:
+            finished.set()
+    def pump_paste():
+        try:
+            ack = pending.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            text.event_generate("<<Paste>>")
+            snapshots.append(text.get("1.0", "end-1c"))
+            if snapshots[-1] == "안녕":
+                ui_root.update_idletasks()
+                ImageGrab.grab().save(Path("artifacts/ai_draft/typing_greeting_in_progress.png"))
+            ack.set()
+        return finished.is_set()
+    worker = threading.Thread(target=play, daemon=True)
+    try:
+        ui_root.update()
+        worker.start()
+        assert _pump_until(ui_root, pump_paste, 8)
+        worker.join(2)
+        assert result == [True]
+        assert snapshots == ["안", "안녕", "안녕하", "안녕하세", "안녕하세요"]
+        ImageGrab.grab().save(Path("artifacts/ai_draft/typing_greeting_complete.png"))
+    finally:
+        executor._stop_event.set()
+        worker.join(4)
+        text.destroy()
+
+
 def test_recording_pipeline_autonomous_without_consent_or_question_dialogs(tmp_path, monkeypatch, ui_root):
     import importlib.util
     spec = importlib.util.spec_from_file_location("recording_workspace_scenario", Path(__file__).with_name("recording_workspace_scenario.py"))
