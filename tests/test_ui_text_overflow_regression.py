@@ -55,7 +55,8 @@ def test_player_view_truncates_playlist_selection_and_current_action_labels():
     assert "text=truncate_ui_text(sequence.name, 38)" in text
     assert "truncate_ui_text(self._sequence.name, 42)" in text
     assert "self._current_action_label.configure(text=truncate_ui_text(message, 90))" in text
-    assert "text=f\" - {truncate_ui_text(action.description, 42)}\"" in text
+    assert "description = _display_action_description(action)" in text
+    assert "text=f\" - {truncate_ui_text(description, 42)}\"" in text
 
 
 def test_analyzer_and_monitoring_views_truncate_file_and_plan_names():

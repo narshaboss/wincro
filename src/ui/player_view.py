@@ -340,6 +340,19 @@ def _safe_int(value, default: int = -1) -> int:
         return default
 
 
+def _display_action_description(action) -> str:
+    description = getattr(action, "description", "") or ""
+    if getattr(action, "action_type", None) in {"click", "double_click", "right_click"}:
+        x = getattr(action, "action_x", getattr(action, "x", None))
+        y = getattr(action, "action_y", getattr(action, "y", None))
+        # Recorded default names duplicate live coordinates; keep stored names intact.
+        if x is not None and y is not None and re.fullmatch(
+            r"(?:클릭|더블클릭|우클릭)\s+\(\s*-?\d+\s*,\s*-?\d+\s*\)", description.strip()
+        ):
+            return ""
+    return description
+
+
 def get_cached_thumbnail(image_path: str, size: tuple):
     """캐시된 썸네일 가져오기 (파일 수정 시간 확인)"""
     mtime = _get_file_mtime(image_path)
@@ -1480,7 +1493,7 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         return COLORS["bg_glass"] if is_enabled else COLORS["bg_card"]
 
     def _rule_display_text(self, rule: AutomationRule) -> str:
-        name = rule.description or ACTION_NAMES.get(rule.action_type, rule.action_type or "동작")
+        name = _display_action_description(rule) or ACTION_NAMES.get(rule.action_type, rule.action_type or "동작")
         return str(name).strip() or "동작"
 
     @staticmethod
@@ -2332,8 +2345,9 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
                 text=ACTION_NAMES.get(rule.action_type, rule.action_type or "동작"),
                 text_color=action_color if is_enabled else COLORS["text_muted"],
             )
+            description = _display_action_description(rule)
             name_label.configure(
-                text=f" - {self._truncate_ui_text(rule.description, 42)}" if rule.description else "",
+                text=f" - {self._truncate_ui_text(description, 42)}" if description else "",
                 text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
             )
             detail_label.configure(
@@ -2410,8 +2424,9 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         if not _rule_is_enabled(rule):
             action_name = f"[비활성] {action_name}"
         label_text = action_name
-        if rule.description:
-            label_text += f" - {self._truncate_ui_text(rule.description, 42)}"
+        description = _display_action_description(rule)
+        if description:
+            label_text += f" - {self._truncate_ui_text(description, 42)}"
         if rule.children:
             label_text += f"  ({len(rule.children)}개 하위)"
         details = []
@@ -3026,9 +3041,10 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         self._rule_widgets[rule.rule_id]["type_label"] = type_lbl
 
         # 이름(설명) 표시
+        description = _display_action_description(rule)
         name_lbl = ctk.CTkLabel(
             row1,
-            text=f" - {self._truncate_ui_text(rule.description, 42)}" if rule.description else "",
+            text=f" - {self._truncate_ui_text(description, 42)}" if description else "",
             font=self._font(12),
             text_color=primary_text_color,
             width=1,
@@ -28521,8 +28537,9 @@ class SequenceDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         if not getattr(action, "enabled", True):
             action_name = f"[비활성] {action_name}"
         label_text = action_name
-        if action.description:
-            label_text += f" - {truncate_ui_text(action.description, 42)}"
+        description = _display_action_description(action)
+        if description:
+            label_text += f" - {truncate_ui_text(description, 42)}"
         if action.children:
             label_text += f"  ({len(action.children)}개 하위)"
         details = []
@@ -28640,8 +28657,9 @@ class SequenceDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
                 if not is_enabled:
                     type_text = f"[비활성] {type_text}"
                 type_label.configure(text=type_text, text_color=type_color)
+                description = _display_action_description(action)
                 name_label.configure(
-                    text=f" - {truncate_ui_text(action.description, 42)}" if action.description else "",
+                    text=f" - {truncate_ui_text(description, 42)}" if description else "",
                     text_color=COLORS["text_primary"] if is_enabled else COLORS["text_muted"],
                 )
                 detail_label.configure(
@@ -29154,9 +29172,10 @@ class SequenceDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
         self._action_widgets[action.action_id]["type_label"] = type_lbl
 
         # 이름(설명) 표시
+        description = _display_action_description(action)
         name_lbl = ctk.CTkLabel(
             row1,
-            text=f" - {truncate_ui_text(action.description, 42)}" if action.description else "",
+            text=f" - {truncate_ui_text(description, 42)}" if description else "",
             font=self._font(12, "bold"),
             text_color=primary_text_color,
             width=1,

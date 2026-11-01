@@ -599,6 +599,117 @@ def test_plan_video_thumbnail_opens_current_video_before_load_and_from_cache(tmp
 
 
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
+@pytest.mark.parametrize("compact", [False, True])
+def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, monkeypatch, tmp_path, scale, compact):
+    from collections import deque
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import customtkinter as ctk
+    from PIL import ImageGrab
+    from src.analyzer.automation_models import AutomationPlan, AutomationRule
+    from src.ui import analyzer_view, player_view
+    from src.ui.ui_batcher import UiCallbackDispatcher
+
+    root = Path(__file__).resolve().parents[1]
+    plan_file = root / "data/plans/plan_20260118_174859.json"
+    original_bytes = plan_file.read_bytes()
+    raw_rules = json.loads(original_bytes)["initial_rules"][12]["children"][:2]
+    rules = [AutomationRule.from_dict(raw, root / "data/templates") for raw in raw_rules]
+    rules[0].target_image = str(root / "data/templates/template_video_20260703_154056_306.mp4")
+    original_name = rules[1].description
+    assert "1301" in original_name and "530" in original_name
+    monkeypatch.setattr(player_view, "setup_window_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(analyzer_view, "setup_window_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(player_view, "PLANS_DIR", tmp_path / "plans")
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(1)
+    owner = player_view.PlanDetailDialog.__new__(player_view.PlanDetailDialog)
+    ctk.CTkToplevel.__init__(owner, ui_root)
+    owner.title("Action coordinate display QA")
+    owner.geometry("1024x380+0+0")
+    owner._plan = AutomationPlan(name="Coordinate display QA", initial_rules=rules)
+    owner._name_entry = SimpleNamespace(get=lambda: "")
+    owner._font_cache = {}
+    owner._rule_widgets = {}
+    owner._collapsed_items = set()
+    owner._selected_rule = None
+    owner._active_partial_rule_id = None
+    owner._running_rule_id = None
+    owner._compact_rule_rows = compact
+    owner._thumbnail_closed = False
+    owner._thumbnail_refs = deque(maxlen=32)
+    owner._image_rule_cache = None
+    owner._ui_dispatcher = UiCallbackDispatcher(owner)
+    owner._refresh_action_list = Mock(side_effect=AssertionError("Unexpected full-list refresh"))
+    owner._refresh_rule_row = Mock(side_effect=AssertionError("Unexpected row recreation"))
+    try:
+        for index, rule in enumerate(rules, 1):
+            if compact:
+                wrapper = owner._create_compact_rule_item(owner, rule, index_str=f"13-{index}")
+            else:
+                wrapper = owner._create_action_item(owner, rule, index_str=f"13-{index}", use_pack=False)
+            wrapper.pack(fill="x")
+        widget_data = owner._rule_widgets[rules[1].rule_id]
+        row_before, label_before = widget_data["widget"], widget_data["name_label"]
+        assert "1301" not in label_before.cget("text")
+        applied = []
+
+        def edit_region_and_close():
+            dialogs = [child for child in owner.winfo_children() if isinstance(child, analyzer_view.ImageCropDialog)]
+            assert len(dialogs) == 1
+            editor = dialogs[0]
+            try:
+                applied.append(editor._apply_search_region_to_rule([600, 401, 800, 601]))
+                assert editor._current_search_region() == [600, 401, 800, 601]
+                assert "200x200" in editor._search_radius_btn.cget("text")
+            finally:
+                editor.destroy()
+
+        ui_root.after(200, edit_region_and_close)
+        owner._open_image_editor(rules[1].target_image, rules[1])
+        assert applied == [True]
+        assert widget_data["widget"] is row_before and widget_data["name_label"] is label_before
+        label_text = label_before.cget("text")
+        if compact:
+            assert "(700, 501)" in label_text
+        else:
+            assert label_text == ""
+            label_text = widget_data["detail_label"].cget("text")
+            assert "(700, 501)" in label_text
+        assert "1301" not in label_text and "530" not in label_text
+        assert rules[1].description == original_name
+        owner._refresh_action_list.assert_not_called()
+        owner._refresh_rule_row.assert_not_called()
+        assert owner._save_plan(show_message=False)
+        saved = json.loads((player_view.PLANS_DIR / f"{owner._plan.plan_id}.json").read_text(encoding="utf-8"))
+        reloaded = AutomationPlan.from_dict(saved, root / "data/templates")
+        assert reloaded.to_dict() == owner._plan.to_dict()
+        assert reloaded.initial_rules[1].description == original_name
+        assert reloaded.initial_rules[1].search_region == [600, 401, 800, 601]
+        assert owner._compact_rule_label_text(reloaded.initial_rules[1]) == owner._compact_rule_label_text(rules[1])
+        assert plan_file.read_bytes() == original_bytes
+        owner.lift()
+        settled = time.monotonic() + .35
+        assert _pump_until(ui_root, lambda: time.monotonic() >= settled and label_before.winfo_ismapped(), 3)
+        coordinate_label = label_before if compact else widget_data["detail_label"]
+        assert coordinate_label._label.winfo_reqwidth() <= coordinate_label.winfo_width()
+        artifacts = Path("artifacts/ai_draft")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        left, top = owner.winfo_rootx(), owner.winfo_rooty()
+        mode = "compact" if compact else "detail"
+        ImageGrab.grab(bbox=(left, top, left+min(owner.winfo_width(), ui_root.winfo_screenwidth()),
+            top+owner.winfo_height()), all_screens=True).save(
+                artifacts / f"action_coordinates_{mode}_{int(scale*100)}pct.png")
+        assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
+    finally:
+        owner._thumbnail_closed = True
+        owner._ui_dispatcher.close()
+        owner.destroy()
+        ctk.set_widget_scaling(1)
+        ctk.set_window_scaling(1)
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
 def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_root, monkeypatch, tmp_path, scale):
     import customtkinter as ctk
     import tkinter as tk
