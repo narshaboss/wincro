@@ -747,14 +747,14 @@ class AIDraftEditor(ctk.CTkToplevel):
 
 
 class MediaConsentDialog(ctk.CTkToplevel):
-    """One explicit consent screen; no registration until the user accepts."""
+    """Legacy manual media chooser; no separate data-consent checkbox."""
 
     def __init__(self, parent, path, accept, *, action_text="자료 추가"):
         super().__init__(parent)
         self.path = path
         self.accept = accept
         self.log = None
-        self.title("GPT에 제공할 자료 확인")
+        self.title("GPT 분석 자료 선택")
         scale = self._get_window_scaling()
         width = max(420, min(650, int(self.winfo_screenwidth() / scale) - 40))
         height = max(350, min(550, int(self.winfo_screenheight() / scale) - 90))
@@ -783,19 +783,14 @@ class MediaConsentDialog(ctk.CTkToplevel):
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure((0, 1), weight=1, uniform="actions")
-        self.consent = tk.BooleanVar(master=self, value=False)
-        self.consent_check = ctk.CTkCheckBox(footer, text="GPT 자료 제공에 동의", variable=self.consent,
-            text_color=COLORS["text_primary"], fg_color=COLORS["accent"], checkmark_color=COLORS["text_on_accent"])
-        self.consent_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.action_text = action_text
-        self.add_button = parent._button(footer, action_text, self._accept, state="disabled")
+        self.add_button = parent._button(footer, action_text, self._accept)
         self.add_button.grid(row=1, column=0, sticky="ew", padx=(0, 4))
         parent._button(footer, "취소", self.destroy).grid(row=1, column=1, sticky="ew", padx=(4, 0))
-        self.error_label = ctk.CTkLabel(footer, text=f"동의 체크 후 '{action_text}'을 누르세요. 취소하면 전달하지 않습니다.",
+        self.error_label = ctk.CTkLabel(footer, text=f"'{action_text}'을 누르면 선택한 자료만 등록합니다.",
             anchor="w", justify="left", wraplength=350, text_color=COLORS["text_secondary"])
         self.error_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.labels.append(self.error_label)
-        self.consent.trace_add("write", self._consent_changed)
         self.bind("<Configure>", self._resize, add="+")
         self.transient(parent.winfo_toplevel())
 
@@ -807,20 +802,11 @@ class MediaConsentDialog(ctk.CTkToplevel):
             if label.cget("wraplength") != width:
                 label.configure(wraplength=width)
 
-    def _consent_changed(self, *_):
-        agreed = self.consent.get()
-        self.add_button.configure(state="normal" if agreed else "disabled")
-        self.error_label.configure(text=f"동의 확인됨 · '{self.action_text}' 버튼을 누르세요." if agreed else
-                                   f"동의 체크 후 '{self.action_text}'을 누르세요. 취소하면 전달하지 않습니다.")
-
     def _select_log(self):
         self.log = filedialog.askopenfilename(parent=self, title="선택한 녹화의 키 입력 기록 JSON", filetypes=[("키 입력 기록", "*.json")]) or None
         self.log_label.configure(text=Path(self.log).name if self.log else "추가된 키 입력 기록 없음")
 
     def _accept(self):
-        if not self.consent.get():
-            self.error_label.configure(text="자료를 확인하고 GPT 자료 제공에 동의해주세요.")
-            return
         try:
             accepted = self.accept(self.path, self.log, ())
         except Exception as exc:

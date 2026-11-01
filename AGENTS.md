@@ -11,8 +11,14 @@ Record concise evidence-backed observations and purposes, not hidden reasoning.
 After editing, the agent must repeatedly alternate video-to-plan and plan-to-video
 cross-checks. Correct findings and redo both reviews after any edit. Recording
 two clean passes is a minimum traceability gate, never proof of perfection.
-Unknown intentions require clarification. An analysis record is traceability,
-not proof of understanding or successful recognition/playback.
+Recording authoring is autonomous: do not interrupt with clarification or data
+consent dialogs. Use the observed order, timing and end of the selected recording
+unless the user specified otherwise. Unobservable essential behavior must remain
+an explicitly incomplete result, not a guessed successful plan. Analyze authorizes
+only the selected recording and its explicitly associated input log; never scan
+for unrelated files or remove existing private intervals. Plan publication still
+requires user approval. An analysis record is traceability, not proof of
+understanding or successful recognition/playback.
 
 ## Recognition baseline
 

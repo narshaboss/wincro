@@ -78,8 +78,7 @@ def test_answer_continues_same_draft_after_restart_and_persists_everything(waiti
         recovered.close()
 
 
-@pytest.mark.parametrize("answer,code", [("", "ANSWER_REQUIRED"), ("  ", "ANSWER_REQUIRED"),
-    (None, "INVALID_FIELD"), (3, "INVALID_FIELD"), ("x" * 4001, "INVALID_FIELD")])
+@pytest.mark.parametrize("answer,code", [(None, "INVALID_FIELD"), (3, "INVALID_FIELD"), ("x" * 4001, "INVALID_FIELD")])
 def test_answer_validation_does_not_mutate_draft_or_job(waiting, answer, code):
     jobs, _, _, service, state, _ = waiting
     metadata = copy.deepcopy(jobs.snapshot())
@@ -218,9 +217,9 @@ def test_missing_crosschecks_get_bounded_ai_followups_not_fake_completion(jobs_s
     assert list(original.parent.glob("*.json")) == [original]
 
 
-def test_question_does_not_trigger_automatic_guessing_or_extra_model_turns(waiting):
+def test_legacy_question_cannot_fake_completion_and_retries_are_bounded(waiting):
     jobs, _, _, _, _, _ = waiting
-    assert jobs.snapshot()["review_pass"] == 1
+    assert jobs.snapshot()["review_pass"] == 3
     assert jobs.snapshot()["status"] == "needs_review"
 
 

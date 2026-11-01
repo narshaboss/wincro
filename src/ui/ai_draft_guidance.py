@@ -21,11 +21,11 @@ HELP_TEXT = """처음 사용하는 순서
 
 3. GPT에 요청
 원하는 작업, 반복·종료 조건을 적고 'GPT 요청문 복사'를 누르세요. 연결된 GPT 대화에 붙여넣어 보내면 GPT가 장면을 보고 판단합니다. 이 버튼은 대화에 자동 전송하지 않습니다.
-예: 제작 화면에서 재료가 떨어질 때까지 반복하고, 끝나면 종료해 줘. 확실하지 않은 동작은 먼저 질문해 줘.
+예: 녹화에 보이는 순서와 입력 간격을 기준으로 같은 작업을 한 번 수행하고 종료해 줘. 질문 없이 분석하고 구현할 수 없는 내용은 미완료 사유로 남겨줘.
 
 4. 초안 확인·저장
 '초안 검토'에서 액션 순서·대기·반복과 GPT 분석·검수 요약을 읽으세요. 수정하면 이전 검수는 다시 받아야 합니다. '초안 저장'은 작업 파일 보관이고, '새 플랜 등록'은 일반 플랜 목록에 사본을 추가하는 별도 단계입니다.
-등록에는 GPT의 최신 분석과 양방향 영상 대조, 사용자 승인이 필요합니다. 원본·재생목록은 자동으로 바뀌지 않습니다. 실제 인식·재생은 별도로 테스트해야 합니다.
+등록에는 GPT의 최신 분석과 양방향 영상 대조, 사용자 승인이 필요합니다. 분석 자료 제공을 따로 승인하는 체크박스는 없습니다. 원본·재생목록은 자동으로 바뀌지 않습니다. 실제 인식·재생은 별도로 테스트해야 합니다.
 
 알아두세요
 이 창에 GPT 모델이 내장된 것은 아닙니다. 로컬 MCP 연결을 지원하는 외부 도구와 별도 실행 환경이 필요합니다. 현재 개발판은 일반 액션 편집 중심이며 모니터링·자동목록 편집 및 특화모드 플랜 등록은 지원하지 않습니다.
@@ -63,7 +63,7 @@ def review_progress(state, dirty=False):
     if analysis.get("plan_digest") != current:
         return "GPT의 최신 분석이 필요합니다. 영상 분석과 초안 검수를 요청하세요.", False
     if analysis.get("open_questions"):
-        return "GPT가 확인을 요청한 질문이 있습니다. 분석 요약을 읽고 답해주세요.", False
+        return "이전 분석에 미해결 기록이 있습니다. 녹화 기준의 자동 재검수가 필요합니다.", False
     checks = state.get("crosschecks", [])[-2:]
     ready = (len(checks) == 2 and [r.get("direction") for r in checks] == ["video_to_plan", "plan_to_video"]
              and all(r.get("passed") and r.get("plan_digest") == current for r in checks))
@@ -108,7 +108,7 @@ def readable_analysis(state):
         else:
             lines.append("GPT의 행동 분석 기록이 없습니다.")
     if analysis.get("open_questions"):
-        lines.extend(["", "사용자 확인이 필요한 질문", *["• " + q for q in analysis["open_questions"]]])
+        lines.extend(["", f"이전 분석 미해결 기록 {len(analysis['open_questions'])}개 · 자동 재검수 필요"])
     lines.extend(["", "교차검수 기록"])
     for check in state.get("crosschecks", []):
         direction = "영상 → 플랜" if check["direction"] == "video_to_plan" else "플랜 → 영상"
@@ -146,7 +146,7 @@ def authoring_request(goal, reference=None, draft_id=None, has_media=False):
         "작업 초안 ID: " + (draft_id or "없음. 필요하면 독립 초안을 새로 만들어 줘."),
         ("선택한 녹화는 list_recordings로 확인해 줘." if has_media else "녹화 없음. 참고 플랜 분석만 가능하며 영상 검수를 완료한 것처럼 보고하지 마."),
         "영상 분석·행동 목적·규칙 판단은 GPT인 네가 직접 해 줘. WinCro의 입력 로그 자동 변환으로 대체하지 마.",
-        "상위·하위 묶음, 창별 검색 범위, 키별 반복·대기를 확인하고 불명확한 의도는 질문해 줘.",
+        "중간 질문 없이 녹화에 보이는 순서·입력 간격·마지막 상태를 기준으로 판단해 줘. 별도 반복 지시가 없으면 녹화 작업 한 번만 수행해 줘. 핵심 정보가 없어 구현할 수 없는 내용은 미완료 사유로 남겨 줘.",
         "편집 후 영상 → 플랜, 플랜 → 영상을 번갈아 반복 대조하고 문제를 고치면 다시 분석·검수해 줘.",
         "원본·재생목록·특화모드·인식 기준은 바꾸지 말고, 실제 입력이나 자동 실행 없이 초안만 편집해 줘.",
         "검수 결과와 미확인 사항을 설명하고 사용자 승인 전에는 정식 등록하지 마.",

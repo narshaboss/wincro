@@ -19,7 +19,7 @@ if os.environ.get("WINCRO_AI_EDITOR_UI_QA") != "1" or os.name != "nt":
 class MCPPipelineActor:
     """A deterministic client, not a model; validates the job's real MCP boundary."""
     release = threading.Event()
-    question = None
+    pending_passes = 0
     def __init__(self, settings, folder):
         pass
     def cancel(self):
@@ -59,9 +59,13 @@ class MCPPipelineActor:
                     trace = await frame()
                     await invoke("record_analysis", dict(draft_id=draft_id, expected_revision=state["revision"], goal="Synthetic test",
                         steps=[dict(rule_id=key, recording_id=recording_id, seconds=0, frame_trace_id=trace,
-                            observation="Synthetic rectangle", purpose="Confirm test", expected_result="Synthetic next step")],
-                        open_questions=[self.question] if self.question else []))
-                    for direction in ("video_to_plan", "plan_to_video"):
+                            observation="Synthetic rectangle", purpose="Confirm test", expected_result="Synthetic next step")], open_questions=[]))
+                    if type(self).pending_passes:
+                        type(self).pending_passes -= 1
+                        directions = ()
+                    else:
+                        directions = ("video_to_plan", "plan_to_video")
+                    for direction in directions:
                         state = await invoke("read_draft", {"draft_id": draft_id})
                         trace = await frame()
                         await invoke("record_crosscheck", dict(draft_id=draft_id, expected_revision=state["revision"], direction=direction,
@@ -202,18 +206,12 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         deadline = time.monotonic() + .2
         _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
         assert view._recordings_scroll._visible_widgets[0] is row
-        workspace.analyze.invoke()
-        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
-        assert consent.add_button.cget("text") == "동의하고 분석 시작"
-        workspace._analyze()
-        assert len([child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog)]) == 1
-        consent.consent.set(True)
         view._is_recording = True
-        consent.add_button.invoke()
-        assert consent.winfo_exists() and not workspace.jobs.busy and workspace.jobs.snapshot() is None
-        assert "녹화가 진행 중" in consent.error_label.cget("text")
+        workspace.analyze.invoke()
+        assert not workspace.jobs.busy and workspace.jobs.snapshot() is None
         view._is_recording = False
-        consent.add_button.invoke()
+        workspace.analyze.invoke()
+        assert not any(isinstance(child, MediaConsentDialog) for child in workspace.winfo_children())
         assert _pump_until(ui_root, lambda: workspace.badge.cget("text") == "GPT 연결 ON", 12), workspace.jobs.snapshot()
         assert workspace.progress_bar.winfo_ismapped()
         assert 0 < workspace.progress_bar.get() < 1
@@ -249,38 +247,25 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
 
         # A new scripted GPT result has current evidence; the edited result stays unregistered.
         old_draft = pane.current["draft_id"]
-        MCPPipelineActor.question = "녹화 속도를 그대로 유지할까요?"
+        MCPPipelineActor.pending_passes = 1
         workspace.tabs.set("녹화·분석")
         workspace.analyze.invoke()
-        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
-        consent.consent.set(True)
-        consent.add_button.invoke()
         assert _pump_until(ui_root, lambda: pane.current and pane.current["draft_id"] != old_draft
             and not pane.busy and not workspace.jobs.busy, 15)
         workspace.tabs.set("분석 결과 편집")
-        assert workspace.jobs.snapshot()["status"] == "needs_review"
-        assert workspace.progress_percent.cget("text") == "대기"
+        assert workspace.jobs.snapshot()["status"] == "review"
+        assert workspace.jobs.snapshot()["review_pass"] == 2
         question_job = workspace.jobs.snapshot()["job_id"]
         question_draft = pane.current["draft_id"]
+        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         pane.continue_button.invoke()
-        assert _pump_until(ui_root, lambda: pane._followup_dialog is not None and pane._followup_dialog.winfo_exists() and not pane.busy, 5)
-        followup = pane._followup_dialog
-        assert "녹화 속도" in followup.questions.get("1.0", "end")
-        followup.continue_button.invoke()
-        assert "답변" in followup.error.cget("text") and not workspace.jobs.busy
-        followup.answer.insert("1.0", "녹화와 같은 속도로 만들어주세요.")
-        followup.continue_button.invoke()
-        continuation_consent = followup.consent_dialog
-        assert continuation_consent.winfo_exists() and not workspace.jobs.busy
-        MCPPipelineActor.question = None
-        continuation_consent.consent.set(True)
-        continuation_consent.add_button.invoke()
+        assert not any(isinstance(child, ctk.CTkToplevel) for child in workspace.winfo_children())
         assert _pump_until(ui_root, lambda: not workspace.jobs.busy and not pane.busy
             and pane.current["draft_id"] == question_draft and pane.current.get("analysis")
             and not pane.current["analysis"]["open_questions"] and workspace.jobs.snapshot()["status"] == "review", 15), workspace._status_detail
         assert workspace.jobs.snapshot()["job_id"] == question_job
         assert workspace.jobs.snapshot()["attempt"] == 2
-        assert workspace.jobs.snapshot()["answers"][-1]["answer"] == "녹화와 같은 속도로 만들어주세요."
+        assert workspace.jobs.snapshot()["answers"][-1]["answer"] == ""
         assert len(pane.current["plan"]["initial_rules"]) == 1
         assert _pump_until(ui_root, lambda: workspace.progress_percent.cget("text") == "100%", 3)
         assert _pump_until(ui_root, lambda: pane.context is not None and pane.register_button.cget("state") == "normal", 5)
@@ -356,9 +341,6 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         workspace.choose(view._recording_items[0])
         MCPPipelineActor.release.clear()
         workspace.analyze.invoke()
-        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
-        consent.consent.set(True)
-        consent.add_button.invoke()
         assert _pump_until(ui_root, lambda: workspace.jobs.busy and workspace.jobs.runner is not None, 8)
         workspace.badge.invoke()
         assert _pump_until(ui_root, lambda: not workspace.connection.busy and workspace.badge.cget("text") == "GPT 연결 OFF", 8)
@@ -373,9 +355,6 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: workspace.connection.connected and workspace.badge.cget("text") == "GPT 연결 ON"
             and workspace.analyze.cget("state") == "normal", 12)
         workspace.analyze.invoke()
-        consent = next(child for child in workspace.winfo_children() if isinstance(child, MediaConsentDialog))
-        consent.consent.set(True)
-        consent.add_button.invoke()
         def error_windows():
             return [child for child in workspace.winfo_children() if isinstance(child, ctk.CTkToplevel)
                 and child.winfo_exists() and child.title() == "GPT 분석 실패 · 원인 확인"]
@@ -406,7 +385,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         artifacts.mkdir(parents=True, exist_ok=True)
         ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_pipeline_result.png")
     finally:
-        MCPPipelineActor.question = None
+        MCPPipelineActor.pending_passes = 0
         MCPPipelineActor.release.set()
         analyzer.cleanup()
         view.cleanup()

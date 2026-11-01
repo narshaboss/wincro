@@ -252,15 +252,14 @@ def test_draft_ui_layout_manual_conflict_and_close(tmp_path, scale, cycle, ui_ro
         accepted = []
         consent = MediaConsentDialog(window, "민감정보를제거한작업녹화_긴파일이름.mp4", lambda *args: accepted.append(args) or True)
         root.update()
-        consent._accept()
         assert not accepted
-        consent.consent.set(True)
+        assert not hasattr(consent, "consent") and not hasattr(consent, "consent_check")
         consent.log = "selected-input.json"
         assert not hasattr(consent, "exclusions")
         assert not hasattr(consent, "exclude_entry")
         assert consent.log_button.cget("state") == "normal"
         assert consent.add_button.cget("state") == "normal"
-        assert "동의 확인됨" in consent.error_label.cget("text")
+        assert "선택한 자료만" in consent.error_label.cget("text")
         for _ in range(7):
             root.update()
             time.sleep(.05)
@@ -505,24 +504,6 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert settings.winfo_rooty() + settings.winfo_height() <= settings.winfo_screenheight()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_settings_{int(scale*100)}pct.png")
         settings.destroy()
-        from src.ui.recording_followup import RecordingFollowupDialog
-        followup = RecordingFollowupDialog(workspace, {"goal": "메모장에 입력하고 종료", "questions": ["녹화와 같은 속도로 진행할까요?"],
-            "message": "질문에 답변하면 분석·양방향 검수를 이어갑니다.", "media": {"path": str(tmp_path / "sample.mp4")}}, lambda *args: False)
-        assert _pump_until(ui_root, lambda: followup.continue_button.winfo_ismapped(), 5)
-        deadline = time.monotonic() + .3
-        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
-        for control in (followup.questions, followup.answer, followup.continue_button, followup.choose_button, followup.error):
-            assert control.winfo_ismapped()
-            assert control.winfo_rootx() >= followup.winfo_rootx()
-            assert control.winfo_rootx() + control.winfo_width() <= followup.winfo_rootx() + followup.winfo_width()
-            assert control.winfo_rooty() >= followup.winfo_rooty()
-            assert control.winfo_rooty() + control.winfo_height() <= followup.winfo_rooty() + followup.winfo_height()
-        assert followup.winfo_rooty() + followup.winfo_height() <= followup.winfo_screenheight()
-        assert followup.continue_button._text_label.winfo_reqwidth() <= followup.continue_button.winfo_width() - 4
-        followup.continue_button.invoke()
-        assert "답변" in followup.error.cget("text")
-        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_followup_{int(scale*100)}pct.png")
-        followup.destroy()
         ctk.set_window_scaling(1)
         tk.Wm.geometry(window, "1024x768+0+0")
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
@@ -589,7 +570,7 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         ctk.set_window_scaling(1.0)
 
 
-def test_recording_pipeline_select_consent_mcp_result_and_durable_save(tmp_path, monkeypatch, ui_root):
+def test_recording_pipeline_autonomous_without_consent_or_question_dialogs(tmp_path, monkeypatch, ui_root):
     import importlib.util
     spec = importlib.util.spec_from_file_location("recording_workspace_scenario", Path(__file__).with_name("recording_workspace_scenario.py"))
     scenario = importlib.util.module_from_spec(spec)

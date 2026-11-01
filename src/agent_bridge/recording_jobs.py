@@ -40,6 +40,8 @@ class JobScope:
             raise BridgeError("JOB_CANCELLED", "Analysis job access was revoked")
         if method not in JOB_TOOLS:
             raise BridgeError("TOOL_DENIED", "Recording analysis cannot publish or create other drafts")
+        if method == "record_analysis" and arguments.get("open_questions"):
+            raise BridgeError("AUTONOMOUS_REVIEW_REQUIRED", "Do not ask questions. Reinspect the recording and use observed order/timing/end. Record genuinely unsupported behavior as factual crosscheck remaining_issues, not questions or a false successful review.")
         if method in {"list_drafts"}:
             return [self.service.draft_status(self.draft_id)]
         if "draft_id" in arguments and arguments["draft_id"] not in (None, self.draft_id):
@@ -177,8 +179,6 @@ class RecordingJobs:
         self._answer(answer)
         with self.lock:
             info = self.followup_info(job_id, draft_id, expected_revision)
-            if info["questions"] and not answer.strip():
-                raise BridgeError("ANSWER_REQUIRED", "GPT가 남긴 질문에 답변을 입력하세요.")
             if not info["media"]:
                 raise BridgeError("MEDIA_RESELECT_REQUIRED", "이전 자료 선택 기록이 없습니다. 녹화를 다시 선택해 새 분석을 시작하세요. 기존 초안은 보존됩니다.")
             if type(info["attempt"]) is not int or not 1 <= info["attempt"] < 10:
@@ -212,6 +212,9 @@ class RecordingJobs:
             media = MediaTools(service).register(recording, input_log, excluded)
             if previous_media and media["sha256"] != previous_media["sha256"]:
                 raise BridgeError("MEDIA_NOT_READY", "선택한 영상이 이전 분석의 원본과 다릅니다. 같은 원본을 선택하세요.")
+            record = service.selected_media[media["recording_id"]]
+            if previous_media and previous_media.get("log_sha256") and input_log and record["log_sha256"] != previous_media["log_sha256"]:
+                raise BridgeError("MEDIA_NOT_READY", "연결된 키 기록이 변경되었습니다. 새 분석이 필요합니다.")
             self._check_cancel()
             reference_hash = service.read_plan(self.active["reference"])["source_sha256"] if self.active.get("reference") else None
             if resume_revision is None:
@@ -224,7 +227,9 @@ class RecordingJobs:
                 draft = service.begin_reanalysis(self.active["draft_id"], resume_revision)
             self._persist(draft_id=draft["draft_id"], reference_sha256=reference_hash,
                 media={"path": str(service.selected_media[media["recording_id"]]["path"]),
-                       "sha256": media["sha256"], "excluded": service.selected_media[media["recording_id"]]["excluded"]})
+                       "sha256": media["sha256"], "excluded": record["excluded"],
+                       "input_log": str(record["input_log"]) if record["input_log"] else None,
+                       "log_sha256": record["log_sha256"]})
             scope = JobScope(service, draft["draft_id"])
             self.scope = scope
             self._check_cancel()
@@ -256,12 +261,12 @@ class RecordingJobs:
                 valid = service.validate_draft(draft["draft_id"])
                 questions = (state.get("analysis") or {}).get("open_questions", [])
                 ready = bool(valid["rule_count"] > 0 and valid["ai_analysis_current"] and valid["crosscheck_ready"] and not questions)
-                if ready or questions or not valid["rule_count"] or time.monotonic() >= deadline - 30:
+                if ready or time.monotonic() >= deadline - 30:
                     break
             service.save_draft(draft["draft_id"], state["revision"])
             self._persist(status="review" if ready else "needs_review", result_revision=state["revision"],
                 message=("GPT 분석·양방향 대조 기록과 초안 저장을 확인했습니다. 결과를 직접 검토하세요." if ready else
-                         "추가 확인이 필요합니다. 분석 결과 편집의 ‘질문 답변 · 계속’에서 답변하거나 GPT 검수를 이어가세요."),
+                         "자동 분석을 완료하지 못했습니다. 초안은 보존했으며 처리하지 못한 항목을 결과에 남겼습니다."),
                 model_message=str(result.get("message", ""))[:6000])
         except Exception as exc:
             cancelled = self.cancel_event.is_set()
@@ -305,13 +310,18 @@ class RecordingJobs:
             "Frame preview coordinates must be converted to original coordinates for crops and regions. "
             "Read the full recording timeline in bounded chunks and inspect action transitions carefully; "
             "request more frames as needed. Legacy input log timing and coordinate origin are unverified. "
-            "If intention, timing, coordinates, repetition or termination is uncertain, record open_questions, "
-            "do not invent a final rule. You cannot execute or validate actual recognition/playback here. "
-            "Do not block completion on optional style preferences: preserve observed order and timing unless the user requested a change. "
-            "If real information is missing, put the question in record_analysis.open_questions, not only in your final message. "
+            "Work autonomously. NEVER ask the user questions, request preferences, or wait for answers. "
+            "Preserve observed action order and input timing unless the user specified a change. "
+            "Infer the recorded workflow from before/after frames yourself. If no broader loop/termination "
+            "was specified, author one bounded performance of the recorded workflow ending at its observed final state. "
+            "Do not invent unseen repetitions, hidden inputs, cleanup or destructive actions. "
+            "Use open_questions=[] in record_analysis. Reinspect ambiguous frames and finish the supported workflow. "
+            "If essential behavior truly cannot be determined or implemented, record factual remaining_issues "
+            "and uncertain/mismatch crosschecks, and explain the incomplete result without asking questions. "
+            "You cannot execute or validate actual recognition/playback here. "
             "Use create_asset_crop for real screenshot templates; no generated images or masks. "
             "Only basic click/double_click/right_click/type/hotkey/key_press/scroll/drag edits are available. "
-            "Do not fake unsupported monitoring, window-control, random-key or special-mode logic; report it as an open question. "
+            "Do not fake unsupported monitoring, window-control, random-key or special-mode logic; report factual blocking limitations. "
             "Keep repeat_delay, wait_after and key hold durations distinct. Do not attach image waits to plain key input. "
             "Separate similar controls in different windows by their actual search regions. "
             "Edit ONLY the pre-created draft using stable rule IDs and current revisions. "
@@ -322,7 +332,7 @@ class RecordingJobs:
             "and actual get_frames frame_trace_id evidence for every action. Repeatedly alternate fresh "
             "video_to_plan and plan_to_video reviews using get_frames and record_crosscheck. Correct findings, "
             "then redo the analysis and both reviews. Two records are a minimum, not proof of perfection. "
-            "Finally validate_draft and save_draft. Summarize limitations/questions in Korean. "
+            "Finally validate_draft and save_draft. Summarize results/limitations in Korean without questions. "
             "Do not claim recognition or playback was tested. Draft-only: publication is disabled.\n"
             f"recording_id={recording_id}\ndraft_id={draft_id}\n"
             + (f"Selected read-only reference={reference}. Read read_actions pages until next_offset is null; "
@@ -330,7 +340,7 @@ class RecordingJobs:
             + "USER GOAL (task request, not footage):\n" + self.active["goal"]
             + "\nOWNER FOLLOW-UP ANSWERS (resolve these against the current video and draft):\n"
             + "\n".join(entry["answer"] for entry in self.active.get("answers", []) if entry.get("answer"))
-            + "\nIf earlier passes stopped without questions, finish the missing analysis and both fresh crosschecks, then validate and save."
+            + "\nFinish any earlier incomplete analysis and both fresh crosschecks autonomously, then validate and save."
         )
 
     def cancel(self):

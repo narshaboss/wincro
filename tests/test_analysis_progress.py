@@ -72,8 +72,8 @@ def test_same_job_new_attempt_resets_progress_and_waiting_does_not_show_a_stuck_
     assert progress.update(dict(state("starting"), attempt=2), True, now=501).percent == 1
     view = workspace()
     view._refresh_analysis_progress(state("needs_review"), False)
-    assert view.progress_percent.cget("text") == "대기"
-    assert view.progress_label.cget("text") == "답변·검수 대기"
+    assert view.progress_percent.cget("text") == "미완료"
+    assert view.progress_label.cget("text") == "분석 미완료"
     view.selected = None
     view._progress_without_selection = True
     view._refresh_analysis_progress(state("review"), False)
