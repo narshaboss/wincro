@@ -30,6 +30,9 @@ def _job_diagnostics(window):
 
 def _pump_until(root, predicate, timeout):
     """Use production's mainloop, including Tk's cross-thread event dispatch."""
+    # CTk 5's first mainloop flushes events before entering Tk.mainloop. Finish
+    # that startup before scheduling quit, or quit can be consumed too early.
+    root.update()
     deadline = time.monotonic() + timeout
     passed = False
     pending = None
