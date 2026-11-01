@@ -199,6 +199,18 @@ def test_published_list_checks_disk_not_just_old_success_receipt(jobs_setup, mut
     else:
         write_json(target, dict(read_json(target), name="Edited elsewhere"))
     assert jobs.list_jobs()[0]["status"] == "error"
+    with pytest.raises(BridgeError, match="삭제되었거나 변경"):
+        jobs.load_result(final["job_id"])
+
+
+def test_missing_publication_receipt_is_not_listed_as_completed(jobs_setup):
+    jobs, media, _ = jobs_setup
+    job = start(jobs, media)
+    assert finish(jobs)["status"] == "published"
+    service, draft = jobs.load_result(job["job_id"])
+    draft["publication"] = None
+    write_json(service._path(draft["draft_id"]), draft)
+    assert jobs.list_jobs()[0]["status"] == "error"
 
 
 def test_automatic_publication_is_not_an_ai_tool(jobs_setup):

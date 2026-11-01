@@ -89,6 +89,8 @@ class RecordingJobs:
                         receipt = draft["publication"]
                         publisher.publish_new_plan(draft["draft_id"], receipt["revision"], receipt["name"])
                         state = dict(state, status="published", publication=receipt)
+                    elif state["status"] == "published":
+                        raise BridgeError("SAVE_STATE_UNKNOWN", "완료 상태에 해당하는 플랜 등록 영수증이 없습니다. 파일은 보존했습니다.")
                     elif state["status"] == "registering" and not (self.busy and self.active and state["job_id"] == self.active["job_id"]):
                         state = dict(state, status="registration_failed", message="중단된 등록의 저장 결과를 확인하고 같은 초안을 다시 등록하세요. 재분석은 필요하지 않습니다.")
                     elif not isinstance(analysis, dict) or analysis.get("plan_digest") != digest(draft["plan"]):
@@ -96,7 +98,7 @@ class RecordingJobs:
                 if state.get("status") in ACTIVE_STATES and (not self.active or state["job_id"] != self.active["job_id"]):
                     state = dict(state, status="unconfirmed", message="이전 분석의 실행 상태를 확인할 수 없습니다. 저장된 초안을 읽기 전용으로 확인하세요.")
                 result.append(state)
-            except (OSError, ValueError, BridgeError) as exc:
+            except (OSError, ValueError, KeyError, TypeError) as exc:
                 result.append({"job_id": folder.name, "recording_name": "읽기 오류 (기록 보존)", "status": "error",
                     "updated_at": "", "message": str(exc)[:1000], "draft_id": None})
         return sorted(result, key=lambda state: state.get("updated_at", ""), reverse=True)
@@ -451,6 +453,13 @@ class RecordingJobs:
         service = self.service if self.active and self.active["job_id"] == job_id and self.service else DraftService(
             self.plans_dir, self.templates_dir, folder / "drafts", allow_publication=False)
         state = service.read_draft(metadata["draft_id"])
+        if state.get("publication"):
+            receipt = state["publication"]
+            try:
+                publisher = DraftService(self.plans_dir, self.templates_dir, service.workspace)
+                publisher.publish_new_plan(state["draft_id"], receipt["revision"], receipt["name"])
+            except (KeyError, TypeError) as exc:
+                raise BridgeError("INVALID_JOB", "등록 영수증이 손상되었습니다. 원본 파일은 보존했습니다.") from exc
         if metadata.get("status") in ACTIVE_STATES - {"registering"} and not (self.active and self.active["job_id"] == job_id):
             service.closed = True
         return service, state

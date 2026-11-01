@@ -631,7 +631,7 @@ class DraftResultPane(ctk.CTkFrame):
             previous = self.service.workspace.parent.name
         self.job_states = list(states)
         def label(state):
-            status = "published" if state["job_id"] in self.published_jobs else state["status"]
+            status = "published" if state["job_id"] in self.published_jobs and state["status"] in {"review", "needs_review"} else state["status"]
             return f"{state['recording_name']} · {JOB_LABELS.get(status, status)} · {state['job_id'][-6:]}"
         self.options = {label(state): state["job_id"] for state in self.job_states}
         configure_changed(self.jobs, values=list(self.options) or ["아직 분석 결과가 없습니다"])

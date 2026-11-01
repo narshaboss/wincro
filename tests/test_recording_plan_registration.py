@@ -61,6 +61,8 @@ def test_late_job_list_cannot_downgrade_a_verified_publication_label(disabled):
     assert pane.options[combo.get()] == "job_abcdef"
     assert stale["status"] == "review"
     assert widget["state"] == ("disabled" if disabled else "readonly")
+    DraftResultPane.set_jobs(pane, [dict(stale, status="error")])
+    assert "오류" in combo.get(), "Cached completion must not hide a later missing or modified plan"
 
 
 def test_owner_title_export_is_durable_visible_to_plan_loader_and_does_not_mutate_review(ready):
