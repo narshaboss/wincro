@@ -865,7 +865,7 @@ class DraftResultPane(ctk.CTkFrame):
             workspace.set_status(str(exc))
             return False
         workspace._analysis_progress.reset()
-        workspace._progress_without_selection = True
+        workspace._progress_without_selection = workspace.selected is None
         workspace._progress_job_id = started["job_id"]
         workspace._refresh_analysis_progress(started, True)
         self.set_running(True)
