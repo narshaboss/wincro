@@ -196,11 +196,15 @@ class GPTPlayPanel(ctk.CTkFrame):
                     self.question_text.configure(text=question["context"] + "\n\n" + question["question"])
                     self.question_card.grid()
                     path = self.jobs.session.folder / "frames" / (question["observation_id"] + ".png")
-                    with Image.open(path) as raw:
-                        image = raw.copy()
-                    image.thumbnail((360, 180))
-                    self._preview_image = ctk.CTkImage(image, image, size=image.size)
-                    self.preview.configure(image=self._preview_image)
+                    try:
+                        with Image.open(path) as raw:
+                            image = raw.copy()
+                        image.thumbnail((360, 180))
+                        self._preview_image = ctk.CTkImage(image, image, size=image.size)
+                        self.preview.configure(image=self._preview_image, text="")
+                    except (OSError, ValueError):
+                        self.preview.configure(image=None, text="관찰 화면을 읽지 못했습니다. 상황을 확인한 뒤 답변하세요.")
+                    self.workspace.tabs.set("GPT 플레이")
                     self.body.update_idletasks()
                     self.body._parent_canvas.yview_moveto(1.0)
                     self.winfo_toplevel().deiconify()

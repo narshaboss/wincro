@@ -3,6 +3,7 @@
 import copy
 import threading
 import time
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,14 @@ from src.ai_play.playback import CandidatePlayback
 from src.ai_play.session import PlaySession, SAFE_KEYS, TOOLS
 from src.agent_bridge.contracts import BridgeError
 from src.agent_bridge.storage import read_json
+
+
+@pytest.fixture(autouse=True)
+def isolated_admission_registry(monkeypatch):
+    # Other modules deliberately leave mocked players in a running state.
+    # This suite owns its fake player lifecycle; production admission stays strict.
+    monkeypatch.setattr(ownership, "_players", weakref.WeakKeyDictionary())
+    monkeypatch.setattr(ownership, "_owner", None)
 
 
 class Backend:

@@ -33,7 +33,9 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
     root.geometry(f"{width}x{height}+0+0")
     root.title("GPT Play isolated UI QA")
     connection = SimpleNamespace(connected=False)
-    workspace = SimpleNamespace(connection=connection, _button=None, _notify_publication=lambda _: None)
+    selected_tabs = []
+    workspace = SimpleNamespace(connection=connection, _button=None, _notify_publication=lambda _: None,
+        tabs=SimpleNamespace(set=selected_tabs.append))
     workspace._button = lambda parent, text, command, **kwargs: RecordingWorkspace._button(workspace, parent, text, command, **kwargs)
     panel = GPTPlayPanel(root, workspace, tmp_path, tmp_path / "plans", tmp_path / "templates")
     panel.pack(fill="both", expand=True)
@@ -64,6 +66,7 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
         assert panel.question_card.winfo_manager() == "grid"
         assert panel.answer_button.cget("state") == "normal"
         assert panel.answer.winfo_exists()
+        assert selected_tabs[-1] == "GPT 플레이"
         root.update_idletasks()
         ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"question_{scale}.png")
         connection.connected = False
