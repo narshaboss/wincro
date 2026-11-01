@@ -564,11 +564,19 @@ def test_plan_video_thumbnail_opens_current_video_before_load_and_from_cache(tmp
         assert _pump_until(ui_root, lambda: not placeholder.winfo_exists() and bool(frame.winfo_children()), 8)
         button = frame.winfo_children()[0]
         assert button.cget("image") is not None and button.cget("text") == ""
+        owner.lift()
+        settled = time.monotonic() + .35
+        assert _pump_until(ui_root, lambda: time.monotonic() >= settled and button.winfo_ismapped(), 3)
+        owner.update_idletasks()
         assert button.winfo_width() <= frame.winfo_width()
         assert button.winfo_height() <= frame.winfo_height()
         artifacts = Path("artifacts/ai_draft")
         artifacts.mkdir(parents=True, exist_ok=True)
-        ImageGrab.grab(bbox=(0, 0, 500, 350), all_screens=True).save(artifacts / f"action_video_thumbnail_{int(scale*100)}pct.png")
+        left, top = frame.winfo_rootx(), frame.winfo_rooty()
+        screenshot = ImageGrab.grab(bbox=(left, top, left+frame.winfo_width(), top+frame.winfo_height()), all_screens=True)
+        screenshot.save(artifacts / f"action_video_thumbnail_{int(scale*100)}pct.png")
+        assert sum(1 for pixel in screenshot.convert("RGB").getdata()
+            if all(abs(a-b) <= 5 for a, b in zip(pixel, (96, 165, 250)))) > 20, "Video frame/play badge was not painted"
         cached_frame = ctk.CTkFrame(owner, width=size+8, height=size+8)
         cached_frame.pack()
         cached_frame.pack_propagate(False)

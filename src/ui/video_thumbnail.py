@@ -3,6 +3,8 @@
 import cv2
 from PIL import Image, ImageDraw
 
+from .theme import COLORS
+
 
 def load_video_thumbnail(path, size):
     capture = cv2.VideoCapture(str(path))
@@ -27,8 +29,8 @@ def load_video_thumbnail(path, size):
     cx, cy = width * factor / 2, height * factor / 2
     radius = min(width, height) * .22 * factor
     draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius),
-        fill="#60a5fa", outline="black", width=max(2, round(radius * .06)))
+        fill=COLORS["accent_blue"], outline=COLORS["button_border"], width=max(2, round(radius * .06)))
     draw.polygon(((cx - radius * .25, cy - radius * .5),
-        (cx - radius * .25, cy + radius * .5), (cx + radius * .55, cy)), fill="black")
+        (cx - radius * .25, cy + radius * .5), (cx + radius * .55, cy)), fill=COLORS["button_border"])
     overlay = overlay.resize((width, height), Image.Resampling.LANCZOS)
     return Image.alpha_composite(preview.convert("RGBA"), overlay).convert("RGB")
