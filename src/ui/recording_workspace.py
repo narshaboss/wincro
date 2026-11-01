@@ -24,7 +24,7 @@ from .analysis_progress import AnalysisProgress
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
-DEFAULT_GOAL = "중간 질문 없이 영상에서 실제로 수행한 작업의 순서·대략적인 속도·완료 결과를 재현하세요. 녹화 시작·종료를 위한 화면 조작은 작업과 구분하고, 일반 글자 입력은 중간 한글 조합이 아니라 최종 입력 내용을 기준으로 만드세요. 별도 반복 지시가 없으면 작업을 한 번 수행하고 끝내세요. 실제로 확인·구현할 수 없는 핵심 내용은 지어내지 말고 미완료 사유로 정리하세요."
+DEFAULT_GOAL = "중간 질문 없이 영상에서 실제로 수행한 작업의 순서·완료 결과를 재현하세요. 동작 시작·끝·다음 동작 시각과 글자가 나타나는 시점을 측정해 대기시간·글자별 입력 간격을 계산하세요. 녹화 시작·종료 조작은 작업과 구분하고, 중간 한글 조합을 역추정하지 않되 최종 문장을 한꺼번에 붙여넣지 말고 관찰한 타이핑 속도를 보존하세요. 별도 반복 지시가 없으면 한 번 수행하고 끝내세요. 영상 프레임 정밀도와 구현할 수 없는 핵심 내용을 사실대로 기록하세요."
 JOB_LABELS = {"starting": "준비 중", "running": "GPT 분석 중", "review": "검토 가능", "published": "플랜 등록 완료", "needs_review": "추가 확인 필요",
               "registering": "동작분석 등록 중", "registration_failed": "등록 재시도 필요",
               "error": "오류", "cancelled": "취소됨", "interrupted": "중단됨", "unconfirmed": "이전 실행 확인 필요"}

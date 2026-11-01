@@ -580,7 +580,10 @@ def test_recorded_character_timing_visible_in_owned_text_widget(monkeypatch, ui_
     from src.player import rule_executor
     from src.player.rule_executor import RuleExecutor
 
-    text = tk.Text(ui_root, font=("Malgun Gothic", 28), width=20, height=3)
+    window = tk.Toplevel(ui_root)
+    window.title("Recorded typing QA")
+    window.geometry("600x220+0+0")
+    text = tk.Text(window, font=("Malgun Gothic", 28), width=20, height=3)
     text.pack()
     Path("artifacts/ai_draft").mkdir(parents=True, exist_ok=True)
     pending = queue.Queue()
@@ -613,7 +616,7 @@ def test_recorded_character_timing_visible_in_owned_text_widget(monkeypatch, ui_
             snapshots.append(text.get("1.0", "end-1c"))
             if snapshots[-1] == "안녕":
                 ui_root.update_idletasks()
-                ImageGrab.grab().save(Path("artifacts/ai_draft/typing_greeting_in_progress.png"))
+                ImageGrab.grab(bbox=(0, 0, 620, 250)).save(Path("artifacts/ai_draft/typing_greeting_in_progress.png"))
             ack.set()
         return finished.is_set()
     worker = threading.Thread(target=play, daemon=True)
@@ -624,11 +627,11 @@ def test_recorded_character_timing_visible_in_owned_text_widget(monkeypatch, ui_
         worker.join(2)
         assert result == [True]
         assert snapshots == ["안", "안녕", "안녕하", "안녕하세", "안녕하세요"]
-        ImageGrab.grab().save(Path("artifacts/ai_draft/typing_greeting_complete.png"))
+        ImageGrab.grab(bbox=(0, 0, 620, 250)).save(Path("artifacts/ai_draft/typing_greeting_complete.png"))
     finally:
         executor._stop_event.set()
         worker.join(4)
-        text.destroy()
+        window.destroy()
 
 
 def test_recording_pipeline_autonomous_without_consent_or_question_dialogs(tmp_path, monkeypatch, ui_root):
