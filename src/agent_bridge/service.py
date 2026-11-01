@@ -296,8 +296,12 @@ class DraftService:
 
     @staticmethod
     def _fields(rule, fields):
-        if not isinstance(fields, dict) or set(fields) - EDITABLE:
-            raise BridgeError("INVALID_FIELD", "Field is not editable")
+        if not isinstance(fields, dict):
+            raise BridgeError("INVALID_FIELD", "fields must be an object of editable settings")
+        unsupported = set(fields) - EDITABLE
+        if unsupported:
+            raise BridgeError("INVALID_FIELD", "Unsupported fields: " + ", ".join(sorted(map(str, unsupported)))
+                + ". Editable fields: " + ", ".join(sorted(EDITABLE)))
         for key, value in fields.items():
             if key in {"enabled", "wait_random", "repeat_delay_random", "skip_on_not_found",
                        "verify_image_color", "verify_image_brightness", "typing_random"} and type(value) is not bool:

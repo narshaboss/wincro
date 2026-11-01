@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 
-from src.agent_bridge.contracts import BridgeError, digest, encoded
+from src.agent_bridge.contracts import BridgeError, encoded
 from src.agent_bridge.media import MediaTools
 from src.agent_bridge.recording_jobs import RecordingJobs
 from src.agent_bridge.service import DraftService, EDITABLE
@@ -138,8 +138,18 @@ def test_type_pacing_and_compact_actions_survive_publish_and_reload(service):
     ("typing_delay_range", "fast"), ("typing_delay_range", True), ("typing_random", 1)])
 def test_invalid_pacing_is_atomic(service, field, value):
     draft = service.open_draft("No unsafe pacing")
-    with pytest.raises(BridgeError):
+    # Non-finite JSON is rejected before field validation (BridgeError is also ValueError).
+    with pytest.raises(ValueError):
         add(service, draft, "type", action_text="x", **{field: value})
+    assert service.read_draft(draft["draft_id"]) == draft
+
+
+def test_bad_edit_reports_field_name_and_supported_alternative(service):
+    draft = service.open_draft("Action schema")
+    with pytest.raises(BridgeError) as error:
+        add(service, draft, "click", image="incorrect-field.png")
+    assert "Unsupported fields: image" in str(error.value)
+    assert "target_image" in str(error.value)
     assert service.read_draft(draft["draft_id"]) == draft
 
 
@@ -199,3 +209,20 @@ def test_prompt_requires_semantic_task_boundary_detail_review_and_no_false_succe
                    "never silently omit a real task action", "full-detail frames", "typing_delay",
                    "actual unsupported task steps", "not remaining_issues", "both reviews", "Do not claim recognition"):
         assert phrase in prompt
+
+
+def test_failed_model_run_preserves_non_sensitive_timing_and_tool_error_counts(jobs_setup):
+    jobs, media, _ = jobs_setup
+    class Actor(ReviewingActor):
+        def run(self, descriptor, *_):
+            scope = FakeHost.scopes[descriptor]
+            with pytest.raises(BridgeError):
+                scope.dispatch("get_frames", {"recording_id": "not-selected-private-path", "timestamps": [0]})
+            raise BridgeError("GPT_TIMEOUT", "Simulated timeout")
+    jobs.runner_factory = Actor
+    jobs.start(media, "Time a failure", {})
+    result = finish(jobs)
+    assert result["status"] == "error"
+    assert result["performance"]["tools"]["get_frames"]["errors"] == 1
+    assert len(result["performance"]["passes"]) == 1
+    assert "not-selected-private-path" not in str(result["performance"])

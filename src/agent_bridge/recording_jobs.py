@@ -292,10 +292,12 @@ class RecordingJobs:
                     message="GPT가 녹화 장면과 초안을 분석하고 있습니다." if review_pass == 1 else
                             f"GPT가 누락된 분석·양방향 검수를 보완합니다 ({review_pass - 1}/2).")
                 started = time.monotonic()
-                result = self.runner.run(descriptor, self._prompt(media["recording_id"], draft["draft_id"]),
-                                         self.cancel_event, self._progress)
-                pass_metrics.append({"pass": review_pass, "seconds": round(time.monotonic() - started, 3)})
-                self._persist(performance={"passes": pass_metrics, "tools": scope.metrics()})
+                try:
+                    result = self.runner.run(descriptor, self._prompt(media["recording_id"], draft["draft_id"]),
+                                             self.cancel_event, self._progress)
+                finally:
+                    pass_metrics.append({"pass": review_pass, "seconds": round(time.monotonic() - started, 3)})
+                    self._persist(performance={"passes": pass_metrics, "tools": scope.metrics()})
                 self._check_cancel()
                 if result.get("exit_code") != 0:
                     raise BridgeError("GPT_EXECUTION_FAILED", result.get("message", "GPT 실행에 실패했습니다."))
