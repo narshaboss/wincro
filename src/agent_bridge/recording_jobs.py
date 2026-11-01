@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import threading
+import time
 
 from .contracts import BridgeError, digest
 from .media import MediaTools
@@ -126,12 +127,13 @@ class RecordingJobs:
     def busy(self):
         return bool(self.worker and self.worker.is_alive())
 
-    def start(self, recording, goal, runtime, *, input_log=None, excluded=(), reference=None):
+    def start(self, recording, goal, runtime, *, input_log=None, excluded=(), reference=None, answer=""):
         with self.lock:
             if self.closed or self.busy:
                 raise BridgeError("JOB_BUSY", "Another analysis is active or this view is closed")
             if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000:
                 raise BridgeError("INVALID_FIELD", "분석할 작업과 종료 조건을 4,000자 이내로 적어주세요.")
+            self._answer(answer)
             if len(self.list_jobs()) >= 100:
                 raise BridgeError("LIMIT_REACHED", "분석 기록이 100개입니다. 작업 폴더를 보관·정리한 뒤 다시 시도하세요.")
             key = new_id("job_")
@@ -141,24 +143,88 @@ class RecordingJobs:
             self._last_progress = None
             self.active = {"job_id": key, "status": "starting", "recording_name": Path(recording).name,
                 "goal": goal.strip(), "draft_id": None, "created_at": now(), "updated_at": now(),
-                "message": "선택한 녹화와 실행기를 확인하고 있습니다.", "reference": reference}
+                "message": "선택한 녹화와 실행기를 확인하고 있습니다.", "reference": reference, "attempt": 1,
+                "answers": [{"answer": answer.strip(), "at": now()}] if answer.strip() else []}
             self._persist()
             self.worker = threading.Thread(target=self._run, args=(str(recording), input_log, excluded, dict(runtime)),
                                            name="wincro-recording-gpt", daemon=True)
             self.worker.start()
             return dict(self.active)
 
-    def _run(self, recording, input_log, excluded, runtime):
+    @staticmethod
+    def _answer(answer):
+        if not isinstance(answer, str) or len(answer) > 4000:
+            raise BridgeError("INVALID_FIELD", "추가 답변은 4,000자 이내로 입력하세요.")
+
+    def followup_info(self, job_id, draft_id, expected_revision):
+        with self.lock:
+            if self.closed or self.busy:
+                raise BridgeError("JOB_BUSY", "진행 중인 분석이 끝난 뒤 계속하세요.")
+            service, state = self.load_result(job_id)
+            metadata = self._metadata(service.workspace.parent)
+            if service.closed or metadata["status"] in ACTIVE_STATES or state["draft_id"] != draft_id:
+                raise BridgeError("PERMISSION_REQUIRED", "실행 상태를 확인할 수 없는 초안은 이어 분석할 수 없습니다.")
+            service._expect(state, expected_revision)
+            if (service.workspace / (draft_id + ".publish-intent.json")).exists():
+                raise BridgeError("SAVE_STATE_UNKNOWN", "진행했던 플랜 등록의 저장 결과부터 확인하세요.")
+            return {"job_id": job_id, "draft_id": draft_id, "revision": expected_revision,
+                "goal": metadata["goal"], "questions": (state.get("analysis") or {}).get("open_questions", []),
+                "message": metadata.get("model_message", ""), "media": metadata.get("media"),
+                "reference": metadata.get("reference"), "attempt": metadata.get("attempt", 1)}
+
+    def resume(self, job_id, draft_id, expected_revision, answer, recording, runtime, *, input_log=None, excluded=()):
+        """Explicit owner answer + renewed media consent; never exposed to the AI tools."""
+        self._answer(answer)
+        with self.lock:
+            info = self.followup_info(job_id, draft_id, expected_revision)
+            if info["questions"] and not answer.strip():
+                raise BridgeError("ANSWER_REQUIRED", "GPT가 남긴 질문에 답변을 입력하세요.")
+            if not info["media"]:
+                raise BridgeError("MEDIA_RESELECT_REQUIRED", "이전 자료 선택 기록이 없습니다. 녹화를 다시 선택해 새 분석을 시작하세요. 기존 초안은 보존됩니다.")
+            if type(info["attempt"]) is not int or not 1 <= info["attempt"] < 10:
+                raise BridgeError("LIMIT_REACHED", "이어 분석은 9회까지 가능합니다. 새 분석을 시작하세요.")
+            service, _ = self.load_result(job_id)
+            metadata = self._metadata(service.workspace.parent)
+            next_state = dict(metadata, attempt=info["attempt"] + 1, status="starting", updated_at=now(),
+                answers=metadata.get("answers", []) + [{"answer": answer.strip(), "questions": info["questions"],
+                    "revision": expected_revision, "at": now()}], message="답변을 보관하고 같은 초안의 GPT 분석·검수를 이어갑니다.")
+            write_json(service.workspace.parent / "job.json", next_state)
+            self.active = next_state
+            self.cancel_event = threading.Event()
+            self._last_progress = None
+            self.serial += 1
+            self.worker = threading.Thread(target=self._run,
+                args=(str(recording), input_log, excluded, dict(runtime), expected_revision),
+                name="wincro-recording-gpt", daemon=True)
+            self.worker.start()
+            return dict(self.active)
+
+    def _run(self, recording, input_log, excluded, runtime, resume_revision=None):
         service = host = scope = None
         try:
             folder = self.root / self.active["job_id"]
             service = DraftService(self.plans_dir, self.templates_dir, folder / "drafts", allow_publication=False)
             self.service = service
             service.granted_sources = {self.active["reference"]} if self.active.get("reference") else set()
+            previous_media = self.active.get("media") if resume_revision is not None else None
+            if previous_media:
+                excluded = list(previous_media.get("excluded", [])) + list(excluded)
             media = MediaTools(service).register(recording, input_log, excluded)
+            if previous_media and media["sha256"] != previous_media["sha256"]:
+                raise BridgeError("MEDIA_NOT_READY", "선택한 영상이 이전 분석의 원본과 다릅니다. 같은 원본을 선택하세요.")
             self._check_cancel()
-            draft = service.open_draft(Path(recording).stem + " · GPT 초안")
-            self._persist(draft_id=draft["draft_id"])
+            reference_hash = service.read_plan(self.active["reference"])["source_sha256"] if self.active.get("reference") else None
+            if resume_revision is None:
+                draft = service.open_draft(Path(recording).stem + " · GPT 초안")
+            else:
+                if reference_hash != self.active.get("reference_sha256"):
+                    raise BridgeError("REVISION_CONFLICT", "참고 플랜이 변경되었습니다. 새 분석이 필요합니다.")
+                write_json(folder / f"review_before_attempt_{self.active['attempt']}.json",
+                    service.read_draft(self.active["draft_id"]))
+                draft = service.begin_reanalysis(self.active["draft_id"], resume_revision)
+            self._persist(draft_id=draft["draft_id"], reference_sha256=reference_hash,
+                media={"path": str(service.selected_media[media["recording_id"]]["path"]),
+                       "sha256": media["sha256"], "excluded": service.selected_media[media["recording_id"]]["excluded"]})
             scope = JobScope(service, draft["draft_id"])
             self.scope = scope
             self._check_cancel()
@@ -171,21 +237,31 @@ class RecordingJobs:
                 factory = CodexRunner
             else:
                 factory = self.runner_factory
-            self.runner = factory(runtime, folder)
-            self._persist(status="running", message="GPT가 녹화 장면을 읽고 독립 초안을 편집하고 있습니다.")
-            result = self.runner.run(descriptor, self._prompt(media["recording_id"], draft["draft_id"]),
-                                     self.cancel_event, self._progress)
-            self._check_cancel()
-            if result.get("exit_code") != 0:
-                raise BridgeError("GPT_EXECUTION_FAILED", result.get("message", "GPT 실행에 실패했습니다."))
-            state = service.read_draft(draft["draft_id"])
-            valid = service.validate_draft(draft["draft_id"])
+            budget = runtime.get("max_seconds", 1200)
+            if type(budget) is not int or not 30 <= budget <= 3600:
+                raise BridgeError("INVALID_FIELD", "분석 제한 시간은 30~3600초여야 합니다.")
+            deadline = time.monotonic() + budget
+            for review_pass in range(1, 4):
+                remaining = int(deadline - time.monotonic())
+                self.runner = factory(dict(runtime, max_seconds=max(30, remaining)), folder)
+                self._persist(status="running", review_pass=review_pass,
+                    message="GPT가 녹화 장면과 초안을 분석하고 있습니다." if review_pass == 1 else
+                            f"GPT가 누락된 분석·양방향 검수를 보완합니다 ({review_pass - 1}/2).")
+                result = self.runner.run(descriptor, self._prompt(media["recording_id"], draft["draft_id"]),
+                                         self.cancel_event, self._progress)
+                self._check_cancel()
+                if result.get("exit_code") != 0:
+                    raise BridgeError("GPT_EXECUTION_FAILED", result.get("message", "GPT 실행에 실패했습니다."))
+                state = service.read_draft(draft["draft_id"])
+                valid = service.validate_draft(draft["draft_id"])
+                questions = (state.get("analysis") or {}).get("open_questions", [])
+                ready = bool(valid["rule_count"] > 0 and valid["ai_analysis_current"] and valid["crosscheck_ready"] and not questions)
+                if ready or questions or not valid["rule_count"] or time.monotonic() >= deadline - 30:
+                    break
             service.save_draft(draft["draft_id"], state["revision"])
-            questions = (state.get("analysis") or {}).get("open_questions", [])
-            ready = bool(valid.get("rule_count", 0) > 0 and valid.get("ai_analysis_current") and valid.get("crosscheck_ready") and not questions)
             self._persist(status="review" if ready else "needs_review", result_revision=state["revision"],
                 message=("GPT 분석·양방향 대조 기록과 초안 저장을 확인했습니다. 결과를 직접 검토하세요." if ready else
-                         "초안을 보관했습니다. GPT 분석·교차검수가 미완료이거나 확인할 질문이 남아 있습니다."),
+                         "추가 확인이 필요합니다. 분석 결과 편집의 ‘질문 답변 · 계속’에서 답변하거나 GPT 검수를 이어가세요."),
                 model_message=str(result.get("message", ""))[:6000])
         except Exception as exc:
             cancelled = self.cancel_event.is_set()
@@ -231,6 +307,8 @@ class RecordingJobs:
             "request more frames as needed. Legacy input log timing and coordinate origin are unverified. "
             "If intention, timing, coordinates, repetition or termination is uncertain, record open_questions, "
             "do not invent a final rule. You cannot execute or validate actual recognition/playback here. "
+            "Do not block completion on optional style preferences: preserve observed order and timing unless the user requested a change. "
+            "If real information is missing, put the question in record_analysis.open_questions, not only in your final message. "
             "Use create_asset_crop for real screenshot templates; no generated images or masks. "
             "Only basic click/double_click/right_click/type/hotkey/key_press/scroll/drag edits are available. "
             "Do not fake unsupported monitoring, window-control, random-key or special-mode logic; report it as an open question. "
@@ -238,6 +316,8 @@ class RecordingJobs:
             "Separate similar controls in different windows by their actual search regions. "
             "Edit ONLY the pre-created draft using stable rule IDs and current revisions. "
             "Use small stage_edits batches with unique request IDs. Inspect saved actions after editing. "
+            "This may be an existing draft: read its current actions first and do not add duplicate actions. "
+            f"Use request IDs prefixed attempt-{self.active.get('attempt', 1)}-pass-{self.active.get('review_pass', 1)}-. "
             "After the edit is ready, record_analysis with concise observation/purpose/expected_result "
             "and actual get_frames frame_trace_id evidence for every action. Repeatedly alternate fresh "
             "video_to_plan and plan_to_video reviews using get_frames and record_crosscheck. Correct findings, "
@@ -248,6 +328,9 @@ class RecordingJobs:
             + (f"Selected read-only reference={reference}. Read read_actions pages until next_offset is null; "
                "use inspect_action for details. Do not edit or clone the original.\n" if reference else "No reference plan selected.\n")
             + "USER GOAL (task request, not footage):\n" + self.active["goal"]
+            + "\nOWNER FOLLOW-UP ANSWERS (resolve these against the current video and draft):\n"
+            + "\n".join(entry["answer"] for entry in self.active.get("answers", []) if entry.get("answer"))
+            + "\nIf earlier passes stopped without questions, finish the missing analysis and both fresh crosschecks, then validate and save."
         )
 
     def cancel(self):

@@ -496,6 +496,19 @@ class DraftService:
             raise BridgeError("INVALID_TITLE", "플랜 제목을 줄바꿈 없이 1~200자로 입력하세요.")
         return name.strip()
 
+    def begin_reanalysis(self, draft_id, expected_revision):
+        """Owner-only continuation gate; old evidence/approval cannot complete a new attempt."""
+        with self.lock:
+            state = self._load(draft_id)
+            self._expect(state, expected_revision)
+            if (self.workspace / (draft_id + ".publish-intent.json")).exists():
+                raise BridgeError("SAVE_STATE_UNKNOWN", "플랜 등록의 저장 결과부터 확인하세요.")
+            state["analysis"] = state["approval"] = None
+            state["crosschecks"] = []
+            state["revision"] += 1
+            self._save(state)
+            return self._public(state)
+
     def approve_publication(self, draft_id, expected_revision, name=None):
         """UI-only method. Never exposed through MCP dispatch."""
         if not self.allow_publication:

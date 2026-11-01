@@ -65,6 +65,21 @@ def test_idle_and_clock_rollback_do_not_advance_progress():
     assert progress.update(state("running"), False, now=500).phase == "unconfirmed"
 
 
+def test_same_job_new_attempt_resets_progress_and_waiting_does_not_show_a_stuck_percentage():
+    progress = AnalysisProgress()
+    progress.update(dict(state("running"), attempt=1), True, now=0)
+    assert progress.update(dict(state("review"), attempt=1), False, now=500).percent == 100
+    assert progress.update(dict(state("starting"), attempt=2), True, now=501).percent == 1
+    view = workspace()
+    view._refresh_analysis_progress(state("needs_review"), False)
+    assert view.progress_percent.cget("text") == "대기"
+    assert view.progress_label.cget("text") == "답변·검수 대기"
+    view.selected = None
+    view._progress_without_selection = True
+    view._refresh_analysis_progress(state("review"), False)
+    assert view.progress_percent.cget("text") == "100%"
+
+
 class Widget:
     def __init__(self, **values):
         self.values = values

@@ -30,8 +30,9 @@ class AnalysisProgress:
             self.reset()
             return ProgressState(0.0, "idle")
         now = self._clock() if now is None else now
-        if state["job_id"] != self._job_id:
-            self._job_id = state["job_id"]
+        identity = (state["job_id"], state.get("attempt", 1))
+        if identity != self._job_id:
+            self._job_id = identity
             self._value = .01
             self._started = self._last = now
             self._running_since = None

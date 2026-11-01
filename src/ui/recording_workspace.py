@@ -152,12 +152,12 @@ class RecordingWorkspace(ctk.CTkFrame):
         tk.Misc.bind(self.status, "<Configure>", lambda event: self._refresh_status_text(event.width), add="+")
 
     def _refresh_analysis_progress(self, state, busy):
-        if not state or state.get("job_id") != self._progress_job_id or (not busy and self.selected is None):
+        if not state or state.get("job_id") != self._progress_job_id or (not busy and self.selected is None and not getattr(self, "_progress_without_selection", False)):
             state = None
         progress = self._analysis_progress.update(state, busy,
             cancelling=self.jobs.cancel_event.is_set())
         captions = {"idle": "분석 대기", "starting": "예상 진행률", "running": "예상 진행률",
-            "finishing": "저장 마무리", "complete": "분석 완료", "needs_review": "추가 확인 필요",
+            "finishing": "저장 마무리", "complete": "분석 완료", "needs_review": "답변·검수 대기",
             "cancelling": "분석 취소 중", "cancelled": "분석 취소됨", "error": "분석 오류",
             "unconfirmed": "진행 확인 필요"}
         if progress.phase == "complete":
@@ -169,7 +169,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         else:
             color = COLORS["text_muted"] if progress.phase == "idle" else COLORS["accent"]
         configure_changed(self.progress_label, text=captions[progress.phase], text_color=color)
-        configure_changed(self.progress_percent, text=f"{progress.percent}%", text_color=color)
+        configure_changed(self.progress_percent, text="대기" if progress.phase == "needs_review" else f"{progress.percent}%", text_color=color)
         configure_changed(self.progress_bar, progress_color=color)
         if progress.value != self._progress_bar_value:
             self.progress_bar.set(progress.value)
@@ -218,6 +218,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         if previous == media.path:
             return
         self.selected = media
+        self._progress_without_selection = False
         self._progress_job_id = None
         self._refresh_analysis_progress(None, False)
         self.selection_label.configure(text="선택: " + media.name[:80])
@@ -447,6 +448,7 @@ class RecordingWorkspace(ctk.CTkFrame):
             "2. 녹화 시작으로 작업을 녹화하고 F7로 중지하세요. 목록에서 녹화를 선택한 뒤 분석 시작을 누르고 자료 제공에 동의합니다. 기존 영상은 파일 추가로 넣습니다.\n\n"
             "3. ON 버튼을 누르면 OFF가 되어 연결과 진행 중 분석을 종료합니다. 분석 취소는 분석만 중단하며 ON 연결은 유지합니다. 현재 대화를 깨우는 기능은 아닙니다.\n\n"
             "4. 분석 결과 편집에서 액션·목적·질문을 검토하고 대기·반복을 수정해 저장할 수 있습니다. 수정하면 이전 GPT 교차검수는 무효가 됩니다.\n\n"
+            "질문이나 검수가 남으면 질문 답변 · 계속을 누르세요. 질문에 답하고 자료 확인·동의 후 같은 초안의 분석을 이어갑니다. 예전 기록에 자료 정보가 없으면 녹화를 다시 선택해 새 분석을 시작하며 기존 초안은 보존합니다. 질문 없이 검수만 빠졌을 때는 최대 두 번 추가 GPT 검수를 요청합니다.\n\n"
             "진행 바는 정확한 작업량이 아닌 예상 진행률입니다. 분석 중에는 100%가 되지 않으며, 분석·교차검수 기록과 초안 저장을 확인한 뒤에만 100%로 표시합니다. 실제 인식·재생 성공을 보장하지 않습니다.\n\n"
             "5. 최신 GPT 분석·양방향 검수가 완료된 결과에 플랜 제목을 입력하고 동작분석에 등록을 누르세요. 승인하면 새 플랜 파일을 저장·재읽기 확인하며 동작분석 목록에 표시합니다. 기존 플랜·재생목록은 바꾸지 않고 자동 실행하지 않습니다. 수정으로 검수가 무효가 된 초안은 다시 GPT 분석·검수가 필요합니다.\n\n"
             "녹화의 삭제 버튼은 목록에서만 제거합니다. 원본 영상·키 기록·분석 결과·기존 플랜은 보존되며 파일 추가로 복원할 수 있습니다. 기존 재생 플랜·맵은 수정하지 않습니다. 실제 인식·재생 성공은 별도 검증이 필요합니다.")
@@ -560,10 +562,13 @@ class DraftResultPane(ctk.CTkFrame):
             self.entries[field] = entry
         buttons = ctk.CTkFrame(form, fg_color="transparent")
         buttons.grid(row=2, column=0, columnspan=4, sticky="ew", padx=8, pady=3)
-        buttons.grid_columnconfigure((0, 1), weight=1)
+        buttons.grid_columnconfigure((0, 1, 2), weight=1)
         self.save = workspace._button(buttons, "이 수정 저장", self._save, state="disabled")
         self.save.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        workspace._button(buttons, "입력 취소 · 다시 읽기", self._reload).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        workspace._button(buttons, "입력 취소 · 다시 읽기", self._reload).grid(row=0, column=1, sticky="ew", padx=4)
+        self.continue_button = workspace._button(buttons, "질문 답변 · 계속", self._continue_analysis, state="disabled")
+        self.continue_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        self._followup_dialog = None
         self.summary = ctk.CTkTextbox(self, height=65, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         self.summary.grid(row=3, column=0, sticky="ew", pady=(0, 4))
         self.summary.insert("1.0", "GPT 분석 결과·행동 목적·남은 질문이 여기에 표시됩니다. 기존 재생 플랜은 바뀌지 않습니다.")
@@ -626,6 +631,7 @@ class DraftResultPane(ctk.CTkFrame):
         configure_changed(self.jobs, state="disabled" if self.busy else "readonly")
         configure_changed(self.title_entry, state="normal" if available else "disabled")
         configure_changed(self.register_button, state="normal" if available and not self.dirty else "disabled")
+        configure_changed(self.continue_button, state="normal" if available and not self.dirty else "disabled")
 
     def _select(self, label):
         if self.dirty:
@@ -716,7 +722,7 @@ class DraftResultPane(ctk.CTkFrame):
         self.row_cache = {key: self.row_cache[key] for key in self.rows}
         self.summary.configure(state="normal")
         self.summary.delete("1.0", "end")
-        self.summary.insert("1.0", readable_analysis(state))
+        self.summary.insert("1.0", readable_analysis(state) + "\n\n질문 답변이나 GPT 재검수는 ‘질문 답변 · 계속’을 누르세요.")
         self.summary.configure(state="disabled")
         if not self.tree.selection() and self.rows:
             self.tree.selection_set(next(iter(self.rows)))
@@ -819,8 +825,59 @@ class DraftResultPane(ctk.CTkFrame):
         self.workspace.set_status(detail)
         configure_changed(self.registration_status, text=summary, text_color=COLORS["error"])
 
+    def _continue_analysis(self):
+        if self.dirty or self.busy or self.running or not self.current or self.service.closed or self.current.get("publication"):
+            return
+        if not self.workspace.connection.connected:
+            self._result_error("먼저 GPT 연결을 ON으로 켠 뒤 분석을 계속하세요.", "GPT 연결 ON이 필요합니다.")
+            return
+        if self._followup_dialog is not None and self._followup_dialog.winfo_exists():
+            self._followup_dialog.lift()
+            return
+        service, state = self.service, self.current
+        def show(info):
+            from .recording_followup import RecordingFollowupDialog
+            self._followup_dialog = RecordingFollowupDialog(self.workspace, info,
+                lambda path, log, excluded, answer: self._continue_consented(info, path, log, excluded, answer))
+        self._submit(lambda: self.workspace.jobs.followup_info(service.workspace.parent.name, state["draft_id"], state["revision"]), show)
+
+    def _continue_consented(self, info, path, log, excluded, answer):
+        workspace = self.workspace
+        if self.closed or workspace.closed or workspace.busy or self.busy or self.dirty or workspace.jobs.busy or not workspace.connection.connected:
+            workspace.set_status("다른 작업·미저장 입력·GPT 연결 상태를 확인한 뒤 다시 계속하세요.")
+            return False
+        if workspace.owner._is_recording or workspace.owner._starting or workspace.owner._stopping:
+            workspace.set_status("녹화를 마친 뒤 분석을 계속하세요.")
+            return False
+        if not self.current or (self.current["draft_id"], self.current["revision"]) != (info["draft_id"], info["revision"]):
+            workspace.set_status("선택한 초안이 바뀌었습니다. 질문 창을 닫고 최신 결과에서 다시 계속하세요.")
+            return False
+        try:
+            if info["media"]:
+                started = workspace.jobs.resume(info["job_id"], info["draft_id"], info["revision"], answer, path,
+                    workspace.runtime, input_log=log, excluded=excluded)
+            else:
+                # Legacy jobs did not persist consent scope. Do not reopen their assets/media implicitly.
+                workspace.jobs.followup_info(info["job_id"], info["draft_id"], info["revision"])
+                started = workspace.jobs.start(path, info["goal"], workspace.runtime,
+                    input_log=log, excluded=excluded, reference=info["reference"], answer=answer)
+        except Exception as exc:
+            workspace.set_status(str(exc))
+            return False
+        workspace._analysis_progress.reset()
+        workspace._progress_without_selection = True
+        workspace._progress_job_id = started["job_id"]
+        workspace._refresh_analysis_progress(started, True)
+        self.set_running(True)
+        configure_changed(self.registration_status, text="답변 전달 완료 · GPT가 분석·교차검수를 이어갑니다.", text_color=COLORS["text_secondary"])
+        return True
+
     def close(self):
         self.closed = True
+        if self._followup_dialog is not None and self._followup_dialog.winfo_exists():
+            if self._followup_dialog.consent_dialog is not None and self._followup_dialog.consent_dialog.winfo_exists():
+                self._followup_dialog.consent_dialog.destroy()
+            self._followup_dialog.destroy()
         self.worker.shutdown(wait=False, cancel_futures=False)
         if self._after_id:
             self.after_cancel(self._after_id)

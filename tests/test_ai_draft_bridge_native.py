@@ -473,13 +473,14 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert workspace.result.save.winfo_rooty() + workspace.result.save.winfo_height() <= window.winfo_height()
         pane = workspace.result
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_result_{int(scale*100)}pct.png")
-        for widget in (pane.title_entry, pane.register_button, pane.registration_status, pane.summary, pane.tree):
+        for widget in (pane.title_entry, pane.register_button, pane.continue_button, pane.registration_status, pane.summary, pane.tree):
             assert widget.winfo_ismapped()
             assert widget.winfo_rootx() >= pane.winfo_rootx()
             assert widget.winfo_rootx() + widget.winfo_width() <= pane.winfo_rootx() + pane.winfo_width()
             assert widget.winfo_rooty() >= pane.winfo_rooty()
             assert widget.winfo_rooty() + widget.winfo_height() <= pane.winfo_rooty() + pane.winfo_height()
         assert pane.register_button._text_label.winfo_reqwidth() <= pane.register_button.winfo_width() - 4
+        assert pane.continue_button._text_label.winfo_reqwidth() <= pane.continue_button.winfo_width() - 4
         assert pane.registration_status._label.winfo_reqwidth() <= pane.registration_status.winfo_width()
         assert pane.tree.winfo_height() >= 50, "Registration controls must not hide the action list"
         assert pane.title_entry.winfo_rootx() + pane.title_entry.winfo_width() <= pane.register_button.winfo_rootx()
@@ -504,6 +505,24 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert settings.winfo_rooty() + settings.winfo_height() <= settings.winfo_screenheight()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_settings_{int(scale*100)}pct.png")
         settings.destroy()
+        from src.ui.recording_followup import RecordingFollowupDialog
+        followup = RecordingFollowupDialog(workspace, {"goal": "메모장에 입력하고 종료", "questions": ["녹화와 같은 속도로 진행할까요?"],
+            "message": "질문에 답변하면 분석·양방향 검수를 이어갑니다.", "media": {"path": str(tmp_path / "sample.mp4")}}, lambda *args: False)
+        assert _pump_until(ui_root, lambda: followup.continue_button.winfo_ismapped(), 5)
+        deadline = time.monotonic() + .3
+        _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        for control in (followup.questions, followup.answer, followup.continue_button, followup.choose_button, followup.error):
+            assert control.winfo_ismapped()
+            assert control.winfo_rootx() >= followup.winfo_rootx()
+            assert control.winfo_rootx() + control.winfo_width() <= followup.winfo_rootx() + followup.winfo_width()
+            assert control.winfo_rooty() >= followup.winfo_rooty()
+            assert control.winfo_rooty() + control.winfo_height() <= followup.winfo_rooty() + followup.winfo_height()
+        assert followup.winfo_rooty() + followup.winfo_height() <= followup.winfo_screenheight()
+        assert followup.continue_button._text_label.winfo_reqwidth() <= followup.continue_button.winfo_width() - 4
+        followup.continue_button.invoke()
+        assert "답변" in followup.error.cget("text")
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_followup_{int(scale*100)}pct.png")
+        followup.destroy()
         ctk.set_window_scaling(1)
         tk.Wm.geometry(window, "1024x768+0+0")
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
