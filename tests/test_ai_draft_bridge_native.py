@@ -636,7 +636,8 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
     owner = player_view.PlanDetailDialog.__new__(player_view.PlanDetailDialog)
     ctk.CTkToplevel.__init__(owner, ui_root)
     owner.title("Action coordinate display QA")
-    owner.geometry("1024x380+0+0")
+    owner.geometry("1080x760+0+0")
+    owner.minsize(980, 700)
     owner._plan = AutomationPlan(name="Coordinate display QA", initial_rules=rules)
     owner._name_entry = SimpleNamespace(get=lambda: "")
     owner._font_cache = {}
@@ -732,7 +733,7 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
         left, top = owner.winfo_rootx(), owner.winfo_rooty()
         mode = "compact" if compact else "detail"
         ImageGrab.grab(bbox=(left, top, left+min(owner.winfo_width(), ui_root.winfo_screenwidth()),
-            top+owner.winfo_height()), all_screens=True).save(
+            top+min(owner.winfo_height(), ui_root.winfo_screenheight())), all_screens=True).save(
                 artifacts / f"action_coordinates_{mode}_{int(scale*100)}pct.png")
         assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
     finally:
