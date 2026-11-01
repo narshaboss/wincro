@@ -58,7 +58,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.confirm = ctk.CTkCheckBox(body, text="테스트 PC·격리 환경에서 실행", variable=self.test_environment,
             text_color=COLORS["text_primary"], command=self._refresh_controls)
         self.confirm.grid(row=6, column=0, sticky="w", padx=10, pady=8)
-        self.warning = ctk.CTkLabel(body, text="선택한 창에만 실제 입력합니다. 메인 PC에서는 시작하지 마세요.\n질문·일시정지 중에도 게임은 계속될 수 있습니다.\n초기 버전은 짧은 단일 키·왼쪽 클릭만 지원합니다. 긴 누르기·동시 키는 차단합니다.",
+        self.warning = ctk.CTkLabel(body, text="선택한 창에만 실제 입력합니다. 메인 PC에서는 시작하지 마세요.\n긴급 중지: F12 · 질문 대기 중에도 게임은 계속될 수 있습니다.\n짧은 단일 키·왼쪽 클릭만 지원합니다. 긴 누르기·동시 키·F1~F12 입력은 차단합니다.",
             justify="left", anchor="w", text_color=COLORS["warning"], wraplength=510)
         self.warning.grid(row=7, column=0, sticky="ew", padx=10, pady=5)
         self.actions = ctk.CTkFrame(body, fg_color="transparent")

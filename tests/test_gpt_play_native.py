@@ -19,7 +19,7 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, scale, width, heigh
     from src.ui.gpt_play_panel import GPTPlayPanel
     from src.ui.recording_workspace import RecordingWorkspace
     from src.ai_play.session import PlaySession
-    from test_gpt_play import Backend
+    from tests.test_gpt_play import Backend
     ctk.set_widget_scaling(scale)
     root = ctk.CTk()
     root.geometry(f"{width}x{height}+0+0")
@@ -68,7 +68,7 @@ def test_live_pipe_uses_separate_authenticated_authority(tmp_path):
     from src.ai_play.jobs import PlayHost, PlayScope
     from src.ai_play.session import PlaySession
     from src.agent_bridge.transport import call
-    from test_gpt_play import Backend
+    from tests.test_gpt_play import Backend
     session = PlaySession(tmp_path / "session", "Clear", ["enter"], Backend(), lambda: True)
     session.start()
     host = PlayHost(PlayScope(session), tmp_path / "pipe")
@@ -82,6 +82,49 @@ def test_live_pipe_uses_separate_authenticated_authority(tmp_path):
         assert call(descriptor, "play_observe", {})["ok"]
         session.pause()
         assert call(descriptor, "play_observe", {})["code"] == "WAITING_FOR_USER"
+    finally:
+        session.stop()
+        host.close()
+        host.thread.join(3)
+
+
+def test_real_play_mcp_schema_images_actions_questions_and_denied_recording_tools(tmp_path):
+    import asyncio
+    import json
+    import sys
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from src.ai_play.jobs import PlayHost, PlayScope
+    from src.ai_play.session import PlaySession, TOOLS
+    from tests.test_gpt_play import Backend
+    session = PlaySession(tmp_path / "session", "Clear", ["enter"], Backend(), lambda: True)
+    session.start()
+    host = PlayHost(PlayScope(session), tmp_path / "pipe")
+    descriptor = host.start()
+    async def scenario():
+        script = Path(__file__).resolve().parents[1] / "tools/wincro_play_mcp_server.py"
+        params = StdioServerParameters(command=sys.executable, args=[str(script), "--connection-file", descriptor])
+        async with stdio_client(params) as streams:
+            async with ClientSession(*streams) as client:
+                await client.initialize()
+                assert {t.name for t in (await client.list_tools()).tools} == TOOLS
+                status = await client.call_tool("connection_status", {})
+                assert json.loads(status.content[0].text)["result"]["live_execution"]
+                response = await client.call_tool("play_observe", {})
+                assert any(c.type == "image" for c in response.content)
+                metadata = json.loads(next(c.text for c in response.content if c.type == "text"))
+                action = await client.call_tool("play_act", {"observation_id": metadata["frame_id"],
+                    "request_id": "one", "action": {"kind": "key", "key": "enter"}, "purpose": "join"})
+                assert json.loads(action.content[0].text)["ok"]
+                response = await client.call_tool("play_observe", {})
+                metadata = json.loads(next(c.text for c in response.content if c.type == "text"))
+                question = await client.call_tool("play_question", {"observation_id": metadata["frame_id"],
+                    "question": "Which NPC?", "context": "Two candidates visible"})
+                assert json.loads(question.content[0].text)["result"]["waiting_for_user"]
+                assert session.state == "question"
+    try:
+        asyncio.run(scenario())
+        assert session.backend.sent == [{"kind": "key", "key": "enter"}]
     finally:
         session.stop()
         host.close()

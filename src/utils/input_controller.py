@@ -716,6 +716,25 @@ class InputController:
             return device._send_command("KQ," + str(device._get_keycode(key)))
         return self.press(key)
 
+    def play_lab_release(self, keys) -> bool:
+        """Release lab inputs without reconnecting or refreshing device firmware."""
+        if self._use_arduino() or self._strict_mode():
+            from .arduino_hid import get_arduino_hid
+            device = get_arduino_hid()
+            return bool(device.is_connected and device.release_all())
+        ok = True
+        for key in keys:
+            try:
+                pyautogui.keyUp(key, _pause=False)
+            except Exception:
+                ok = False
+        if 'left' in _get_pressed_mouse_buttons():
+            try:
+                pyautogui.mouseUp(button='left', _pause=False)
+            except Exception:
+                ok = False
+        return ok
+
     def tap_combo_once(self, *keys) -> bool:
         """Press modifiers, tap the final key once, then release modifiers immediately."""
         normalized_keys = [str(key).strip().lower() for key in keys if str(key).strip()]

@@ -666,6 +666,10 @@ class RecorderView(BaseView):
     def _on_start_recording(self):
         """녹화 시작 - logger 사용 금지 (백그라운드 스레드와 데드락 발생)"""
         try:
+            from ..ai_play.ownership import lab_active
+            if lab_active():
+                self._set_label_text("status_hint", self._status_hint, "GPT 플레이를 중지한 뒤 녹화를 시작하세요.")
+                return
             if self._workspace.jobs.busy:
                 self._set_label_text("status_hint", self._status_hint, "GPT 분석을 끝내거나 취소한 뒤 녹화를 시작하세요.")
                 return

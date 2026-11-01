@@ -51,12 +51,17 @@ class CandidatePlayback:
             ok = bool(self.executor.run(s.candidate["plan"], s.folder / "assets"))
             if s.state != "verifying":
                 ok = False
-            trial.update(state="executed" if ok else "failed", execution_ok=ok, ended_at=s.clock())
+            trial.update(state="executed" if ok else "failed", execution_ok=ok, ended_at=s.clock(), end_action_count=s.action_count)
         except Exception as exc:
-            trial.update(state="failed", execution_ok=False, ended_at=s.clock(), error=str(exc)[:1000])
+            trial.update(state="failed", execution_ok=False, ended_at=s.clock(), end_action_count=s.action_count, error=str(exc)[:1000])
         finally:
-            with s.io_lock:
-                s.backend.release()
+            try:
+                with s.io_lock:
+                    released = s.backend.release()
+            except Exception:
+                released = False
+            if not released:
+                trial.update(state="failed", execution_ok=False, error="input release unconfirmed")
             if s.state == "verifying":
                 s.state, s.message = "reviewing_trial", "재생 종료: GPT가 실제 클리어·보상 결과를 확인합니다."
             s.latest = None
@@ -75,7 +80,8 @@ class CandidatePlayback:
         frame = s._frame(end_frame_id, fresh=True)
         if type(success) is not bool or frame["time"] < trial["ended_at"]:
             raise BridgeError("INVALID_TRIAL", "검수 종료 후 새 관찰이 필요합니다.")
-        if success and (not trial["execution_ok"] or frame["sha256"] == trial["start_sha256"]
+        if success and (not trial["execution_ok"] or trial.get("interrupted")
+                        or s.action_count != trial["end_action_count"] or frame["sha256"] == trial["start_sha256"]
                         or s.action_count <= trial["start_action_count"]):
             raise BridgeError("INVALID_SUCCESS", "입력·화면 변화·재생 완료를 확인하지 못했습니다.")
         record = {**trial, "success": success, "end_frame_id": end_frame_id,
@@ -139,7 +145,11 @@ def native_executor(session):
         def _find_rule_image_click_target(self, rule, valid_images):
             self.check()
             session.backend.validate(rule.search_region)
-            return super()._find_rule_image_click_target(rule, valid_images)
+            result = super()._find_rule_image_click_target(rule, valid_images)
+            if result and len(result["locations"]) != 1:
+                self._stop_event.set()
+                raise BridgeError("AMBIGUOUS_TARGET", "후보 이미지가 여러 곳과 일치합니다. 더 구체적인 이미지를 작성하세요.")
+            return result
 
         def _send(self, action, region):
             with session.io_lock:
@@ -148,8 +158,22 @@ def native_executor(session):
                     raise BridgeError("BUDGET_EXHAUSTED", "입력 한도 도달")
                 session.action_count += 1
                 session.latest = None
+                request_id = new_id("trial_input_")
+                receipt = {"request_id": request_id, "state": "unknown", "action": action,
+                    "trial_id": session.trial["trial_id"], "candidate_digest": session.candidate["digest"]}
+                session.receipts[request_id] = receipt
                 session._persist()
-                return session.backend.send(action, region, self.check)
+                try:
+                    ok = session.backend.send(action, region, self.check)
+                    if not ok:
+                        raise BridgeError("DELIVERY_UNKNOWN", "후보 입력 전송 결과가 불확실합니다.")
+                    receipt["state"] = "sent_not_game_success"
+                    return True
+                except Exception:
+                    self._stop_event.set()
+                    raise
+                finally:
+                    session._persist()
 
         def _execute_click_at(self, rule, action_type, click_x, click_y, start_time, *, image_click=False):
             self.check()

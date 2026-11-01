@@ -319,6 +319,22 @@ def test_trial_failure_cannot_be_reported_as_success(session):
         playback.result(trial["trial_id"], frame(session), True, "attempted lie")
 
 
+def test_gpt_cannot_rescue_after_executor_finishes_before_outcome_review(session):
+    reviewed(session)
+    playback = CandidatePlayback(session, SimulatedExecutor)
+    session.playback = playback
+    trial = playback.start(session.candidate["revision"], frame(session), "new round")
+    playback.worker.join(2)
+    assert session.state == "reviewing_trial"
+    with pytest.raises(BridgeError) as err:
+        session.act(frame(session), "late-rescue", {"kind": "key", "key": "enter"}, "claim the missed reward")
+    assert err.value.code == "OBSERVER_ONLY"
+    session.pause()
+    session.resume()
+    with pytest.raises(BridgeError):
+        playback.result(trial["trial_id"], frame(session), True, "interrupted is not success")
+
+
 def test_input_ownership_reserves_startup_and_excludes_competing_players():
     entered, unblock = threading.Event(), threading.Event()
     class Player:
@@ -372,6 +388,13 @@ def test_runner_keeps_sandbox_and_uses_separate_server(tmp_path):
     assert runner.thread_parameters()["environments"] == []
     assert "features.computer_use=false" in args
     assert "features.shell_tool=false" in args
+    from src.agent_bridge.codex_runner import CodexRunner
+    draft = {"editing_only": True, "live_execution": False}
+    live = {"editing_only": False, "live_execution": True, "authority": "bounded_gpt_play_only", "recording_authority": False}
+    assert not runner.accepts_connection(draft)
+    assert runner.accepts_connection(live)
+    assert CodexRunner({}, tmp_path).accepts_connection(draft)
+    assert not CodexRunner({}, tmp_path).accepts_connection(live)
 
 
 class FakeHost:
@@ -437,6 +460,7 @@ def test_native_candidate_uses_existing_key_rule_loop_no_desktop(session, monkey
     monkeypatch.setattr(rule_executor.pyautogui, "position", lambda: (0, 0))
     reviewed(session)
     session.state = "verifying"
+    session.trial = {"trial_id": "native-test"}
     executor = native_executor(session)
     executor._auto_list_wait = lambda _: True
     assert executor.run(session.candidate["plan"], session.folder / "assets")

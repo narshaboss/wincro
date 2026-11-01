@@ -18,6 +18,7 @@ from tests.test_recording_jobs import setup as jobs_setup, finish
 def test_analyze_is_direct_and_only_uses_selected_recording_and_associated_log():
     view = object.__new__(RecordingWorkspace)
     view.jobs = SimpleNamespace(busy=False)
+    view.play_panel = SimpleNamespace(jobs=SimpleNamespace(active=False, busy=False))
     view.busy = False
     view.owner = SimpleNamespace(_is_recording=False, _starting=False, _stopping=False)
     view.result = SimpleNamespace(dirty=False, busy=False)

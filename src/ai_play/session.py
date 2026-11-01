@@ -11,11 +11,11 @@ import threading
 import time
 
 from ..agent_bridge.contracts import BridgeError, digest, number
-from ..agent_bridge.storage import new_id, publish_bytes, write_json
+from ..agent_bridge.storage import new_id, publish_bytes, write_json, within
 
 
-SAFE_KEYS = frozenset("up down left right enter esc space tab pageup pagedown home end insert delete backspace".split()) | frozenset("abcdefghijklmnopqrstuvwxyz0123456789") | frozenset(f"f{i}" for i in range(1, 13))
-TOOLS = {"connection_status", "play_observe", "play_act", "play_status", "play_question",
+SAFE_KEYS = frozenset("up down left right enter esc space tab pageup pagedown home end insert delete backspace".split()) | frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
+TOOLS = {"connection_status", "play_observe", "play_frame", "play_act", "play_status", "play_question",
          "play_note", "play_candidate", "play_review", "play_verify", "play_trial_result", "play_finish"}
 
 
@@ -75,7 +75,8 @@ class PlaySession:
                 "reviews": copy.deepcopy(self.reviews), "trials": copy.deepcopy(self.trials),
                 "trial": copy.deepcopy(self.trial), "publication": self.publication,
                 "remaining_seconds": max(0, int(self.deadline - self.clock())),
-                "game_paused": False, "independent_playback_verified": False}
+                "game_paused": False, "full_playlist_replay_verified": False,
+                "candidate_replay_successes": sum(bool(t.get("success")) for t in self.trials)}
             if internal:
                 value.update(frames=copy.deepcopy(self.frames), receipts=copy.deepcopy(self.receipts))
             elif value["candidate"]:
@@ -94,7 +95,7 @@ class PlaySession:
             raise BridgeError("BUDGET_EXHAUSTED", self.message)
         if self.state in {"paused", "question"}:
             raise BridgeError("WAITING_FOR_USER", self.message)
-        if input_allowed and self.state == "verifying" and not playback:
+        if input_allowed and self.state in {"verifying", "reviewing_trial"} and not playback:
             raise BridgeError("OBSERVER_ONLY", "후보 재생 중 GPT는 관찰만 할 수 있습니다.")
 
     def start(self):
@@ -108,6 +109,8 @@ class PlaySession:
         with self.state_lock:
             if self.state in {"stopped", "complete"}:
                 return
+            if self.trial and self.trial.get("state") in {"running", "executed"}:
+                self.trial.update(execution_ok=False, interrupted=True)
             if self.state != "question":
                 self.state = "paused"
             self.message = reason
@@ -198,6 +201,15 @@ class PlaySession:
             raise BridgeError("STALE_OBSERVATION", "화면이 오래됐습니다. 다시 관찰하고 판단하세요.")
         return frame
 
+    def read_frame(self, frame_id):
+        self.check()
+        metadata = self._frame(frame_id)
+        path = within(self.folder / "frames" / (frame_id + ".png"), self.folder / "frames")
+        data = path.read_bytes()
+        if __import__("hashlib").sha256(data).hexdigest() != metadata["sha256"]:
+            raise BridgeError("EVIDENCE_CHANGED", "저장된 관찰 장면이 변경되었습니다.")
+        return {**metadata, "historical_not_current": True, "png_base64": base64.b64encode(data).decode()}
+
     def act(self, observation_id, request_id, action, purpose):
         self.check(input_allowed=True)
         request_id = text(request_id, "요청 ID", 100)
@@ -262,7 +274,7 @@ class PlaySession:
     def ask(self, observation_id, question, context):
         self.check()
         self._frame(observation_id, fresh=True)
-        if self.state == "verifying":
+        if self.state in {"verifying", "reviewing_trial"}:
             raise BridgeError("OBSERVER_ONLY", "검수 중 개입하면 해당 검수는 중단해야 합니다.")
         if len(self.answers) >= 40:
             raise BridgeError("LIMIT_REACHED", "질문 한도에 도달했습니다.")
@@ -283,7 +295,7 @@ class PlaySession:
         return {"saved_and_reloaded": True}
 
     def dispatch(self, method, arguments):
-        methods = {"play_observe": self.observe, "play_act": self.act, "play_status": self.snapshot,
+        methods = {"play_observe": self.observe, "play_frame": self.read_frame, "play_act": self.act, "play_status": self.snapshot,
             "play_question": self.ask, "play_note": self.note}
         if method not in methods:
             raise BridgeError("TOOL_DENIED", "허용되지 않은 GPT 플레이 도구입니다.")

@@ -37,6 +37,7 @@ jobs:
       - name: Measured recording timing and device-isolated typing simulations
         run: python -m pytest -q tests/test_recording_timing.py --junitxml=artifacts/ai_draft/timing.xml
       - name: GPT play isolation, input admission and candidate simulations
+        if: ${{ !cancelled() }}
         run: python -m pytest -q tests/test_gpt_play.py --junitxml=artifacts/gpt_play/simulations.xml
       - name: GPT play UI and authenticated pipe on isolated Windows
         if: ${{ !cancelled() }}

@@ -13,6 +13,11 @@ _owner = None
 _authorized = ContextVar("wincro_play_owner", default=None)
 
 
+def lab_active():
+    with _lock:
+        return _owner is not None
+
+
 def _active(player):
     for name in ("_execution_thread", "_play_thread", "_thread"):
         thread = getattr(player, name, None)

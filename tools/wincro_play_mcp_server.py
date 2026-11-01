@@ -88,6 +88,17 @@ def play_observe() -> list:
 
 
 @mcp.tool()
+def play_frame(frame_id: str) -> list:
+    """Reopen a previously observed evidence frame for plan cross-checking. Not a fresh scene."""
+    response = invoke("play_frame", {"frame_id": frame_id})
+    if not response.get("ok"):
+        return [json.dumps(response, ensure_ascii=False)]
+    result = response["result"]
+    data = base64.b64decode(result.pop("png_base64"))
+    return [json.dumps(result, ensure_ascii=False), Image(data=data, format="png")]
+
+
+@mcp.tool()
 def play_act(observation_id: str, request_id: str, action: dict, purpose: str) -> dict:
     """One key {kind:key,key:up}, click {kind:click,x:10,y:20} or wait {kind:wait,seconds:1}."""
     return invoke("play_act", locals())

@@ -18,6 +18,10 @@ class PlayRunner(CodexRunner):
     def __init__(self, settings, folder):
         super().__init__(settings, folder, tools=TOOLS)
 
+    def accepts_connection(self, status):
+        return (status.get("editing_only") is False and status.get("live_execution") is True
+                and status.get("authority") == "bounded_gpt_play_only" and status.get("recording_authority") is False)
+
     def preflight(self):
         codex, python, _ = super().preflight()
         server = Path(__file__).resolve().parents[2] / "tools" / "wincro_play_mcp_server.py"
@@ -106,6 +110,8 @@ essential, mark UNREPRESENTABLE in remaining_issues; do not fake a static succes
 play_review(revision,direction,checks,remaining_issues) must cover every rule_id once with
 frame_id,result(match/mismatch/uncertain),note. Alternate experience_to_plan then
 plan_to_experience after EVERY edit. Two passes are traceability, not proof.
+Reopen historical evidence with play_frame(frame_id) while cross-checking, never
+mistake a historical frame for the current input observation.
 For independent replay return to a genuine fresh initial round first, then
 play_verify(revision,start_frame_id,fresh_round_evidence). GPT input is forbidden while
 verifying. You may observe (max once per 2 seconds) and read status. After execution ends,
@@ -131,6 +137,8 @@ class PlayJobs:
         self.cancel = threading.Event()
         self.monitor_stop = threading.Event()
         self.closed = False
+        self._owns_input = False
+        self._cleanup_lock = threading.Lock()
 
     @property
     def busy(self):
@@ -138,7 +146,7 @@ class PlayJobs:
 
     @property
     def active(self):
-        return bool(self.session and self.session.state not in {"complete", "needs_review", "stopped", "error"})
+        return self._owns_input
 
     def snapshot(self):
         return self.session.snapshot() if self.session else None
@@ -151,6 +159,7 @@ class PlayJobs:
         if not test_environment:
             raise BridgeError("TEST_ENV_REQUIRED", "실제 입력은 테스트 PC·격리 환경에서만 허용합니다.")
         ownership.acquire(self)
+        self._owns_input = True
         try:
             if backend is None:
                 from .windows import WindowIO
@@ -167,6 +176,7 @@ class PlayJobs:
             threading.Thread(target=self._watch, args=(self.session, self.monitor_stop), daemon=True, name="gpt-play-watchdog").start()
         except Exception:
             ownership.release(self)
+            self._owns_input = False
             raise
 
     def _watch(self, session, stop):
@@ -176,6 +186,9 @@ class PlayJobs:
             try:
                 if not self.connected():
                     raise BridgeError("CONNECTION_OFF", "GPT 연결이 해제되었습니다.")
+                if getattr(session.backend, "emergency_pressed", lambda: False)():
+                    self.stop()
+                    return
                 if session.state not in {"paused", "question", "ready"}:
                     session.check()
                     session.backend.validate()
@@ -224,6 +237,12 @@ class PlayJobs:
                 self._release_owner(s)
 
     def _release_owner(self, session):
+        with self._cleanup_lock:
+            if not self._owns_input:
+                return
+            self._finish_cleanup(session)
+
+    def _finish_cleanup(self, session):
         # Keep the admission lock until an interrupted candidate/input actually stops.
         if session.playback and session.playback.busy:
             session.playback.stop()
@@ -236,6 +255,7 @@ class PlayJobs:
                 session._persist()
                 return
         ownership.release(self)
+        self._owns_input = False
 
     def _progress(self, message):
         s = self.session
@@ -251,7 +271,7 @@ class PlayJobs:
             self.runner.cancel()
 
     def pause(self):
-        if self.session:
+        if self.session and self._owns_input:
             self.session.pause()
         self._cancel_runner()
 
@@ -264,11 +284,11 @@ class PlayJobs:
         self.worker.start()
 
     def stop(self):
-        if self.session:
+        if self.session and self._owns_input:
             self.session.stop()
         self._cancel_runner()
         self.monitor_stop.set()
-        if self.session and not self.busy:
+        if self.session and self._owns_input and not self.busy:
             threading.Thread(target=self._release_owner, args=(self.session,), daemon=True).start()
 
     def close(self):

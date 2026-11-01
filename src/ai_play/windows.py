@@ -19,6 +19,7 @@ class WindowIO:
         self.target = target
         self.windows = _WindowsBackend()
         self.controller = get_input_controller()
+        self.used_keys = set()
         self.user = ctypes.WinDLL("user32", use_last_error=True)
         self.user.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         self.user.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
@@ -71,6 +72,7 @@ class WindowIO:
         check()
         self.validate(region)
         if action["kind"] == "key":
+            self.used_keys.add(action["key"])
             return self.controller.play_lab_tap(action["key"])
         x, y = region[0] + action["x"], region[1] + action["y"]
         if not self.controller.move_to(x, y, duration=.2):
@@ -83,4 +85,7 @@ class WindowIO:
         return self.controller.click()
 
     def release(self):
-        return self.controller.release_all()
+        return self.controller.play_lab_release(tuple(self.used_keys))
+
+    def emergency_pressed(self):
+        return bool(self.user.GetAsyncKeyState(0x7B) & 0x8000)  # F12, never a model-allowed key.

@@ -244,6 +244,10 @@ class CodexRunner:
         return {"threadId": thread_id, "serviceTier": None, "environments": [],
             "input": [{"type": "text", "text": prompt}]}
 
+    def accepts_connection(self, status):
+        """Default remains draft-only; a live runner must opt in explicitly."""
+        return status.get("editing_only") is True and status.get("live_execution") is not True
+
     def run(self, descriptor, prompt, cancelled, progress, *, idle=False, ready=None):
         codex, python, server = self.preflight()
         if cancelled.is_set():
@@ -402,7 +406,7 @@ class CodexRunner:
                     response = event.get("result", {})
                     contents = response.get("content", [])
                     result = next((json.loads(part["text"]) for part in contents if part.get("type") == "text"), {})
-                    if response.get("isError") or not result.get("ok") or not result.get("result", {}).get("editing_only"):
+                    if response.get("isError") or not result.get("ok") or not self.accepts_connection(result.get("result", {})):
                         raise BridgeError("CONNECTION_FAILED", "GPT 분석용 WinCro 도구 연결을 확인하지 못했습니다.")
                     send({"id": 3, "method": "turn/start", "params": self.turn_parameters(thread_id, prompt)})
                     continue
@@ -419,7 +423,7 @@ class CodexRunner:
                     response = event.get("result", {})
                     contents = response.get("content", [])
                     result = next((json.loads(part["text"]) for part in contents if part.get("type") == "text"), {})
-                    if response.get("isError") or not result.get("ok") or not result.get("result", {}).get("editing_only"):
+                    if response.get("isError") or not result.get("ok") or not self.accepts_connection(result.get("result", {})):
                         raise BridgeError("CONNECTION_FAILED", "WinCro 연결 확인 응답이 올바르지 않습니다.")
                     last_ping, pending_ping = time.monotonic(), None
                     if ready:
