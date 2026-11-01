@@ -246,11 +246,12 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert restored["analysis"] is None
         assert workspace.jobs.list_jobs()[0]["status"] == "needs_review"
         assert _pump_until(ui_root, lambda: "추가 확인 필요" in pane.jobs.get(), 5)
-        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
+        assert _pump_until(ui_root, lambda: not workspace.busy and not pane.busy
+            and pane.register_button.cget("state") == "normal", 5)
         from tkinter import messagebox, filedialog
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
         pane._register_plan()
-        assert "최신 분석" in workspace._status_detail
+        assert "최신 분석" in workspace._status_detail, workspace._status_detail
         assert "검수 필요" in pane.registration_status.cget("text")
         assert list((data / "plans").iterdir()) == [original]
 
@@ -350,7 +351,8 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         automatic_bytes = automatic_path.read_bytes()
         assert workspace.jobs.snapshot()["status"] == "published"
         assert workspace.jobs.snapshot()["review_pass"] == 2
-        assert json.loads(automatic_bytes)["user_verified"] is False
+        assert json.loads(automatic_bytes)["user_verified"] is True
+        assert automatic["user_reviewed"] is False
         assert _pump_until(ui_root, lambda: workspace.progress_percent.cget("text") == "100%"
             and any(plan.plan_id == automatic["plan_id"] for plan in analyzer._plan_items), 8)
         assert not any(isinstance(child, ctk.CTkToplevel) for child in workspace.winfo_children())

@@ -30,7 +30,8 @@ def test_analyze_finishes_with_one_durable_new_plan_and_no_human_review_claim(jo
     exported = read_json(jobs.plans_dir / (receipt["plan_id"] + ".json"))
     assert exported["name"] == "synthetic · 분석 플랜"
     assert exported["initial_rules"] == draft["plan"]["initial_rules"]
-    assert exported["user_verified"] is False
+    assert exported["user_verified"] is True  # Legacy player listing permission.
+    assert receipt["user_reviewed"] is False
     assert AutomationPlan.from_dict(exported, jobs.templates_dir).initial_rules[0].action_keys == ["enter"]
     assert receipt["saved_and_reloaded"] and not receipt["playlist_changed"]
     assert original.read_bytes() == before
@@ -106,7 +107,8 @@ def test_registration_failure_retries_only_save_not_gpt_and_can_resume_without_d
         monkeypatch.setattr(service_module, "publish_bytes", publish)
         receipt, _ = jobs.register_plan(final["job_id"], draft["draft_id"], draft["revision"], final["registration_name"])
         assert jobs.snapshot()["status"] == "published"
-        assert read_json(jobs.plans_dir / (receipt["plan_id"] + ".json"))["user_verified"] is False
+        assert read_json(jobs.plans_dir / (receipt["plan_id"] + ".json"))["user_verified"] is True
+        assert receipt["user_reviewed"] is False
     assert len(list(jobs.plans_dir.glob("*.json"))) == 2
 
 

@@ -569,7 +569,9 @@ class DraftService:
             plan = copy.deepcopy(state["plan"])
             # A user-selected export title does not invalidate the reviewed actions.
             plan["name"] = title
-            plan["user_verified"] = approval.get("user_reviewed", True)
+            # Legacy player uses this as listing permission, not a quality verdict.
+            # Analyze authorizes registration; retain actual review provenance below.
+            plan["user_verified"] = True
             plan["modified"] = True
             filename = plan["plan_id"] + ".json"
             payload = encoded(plan)
@@ -589,7 +591,8 @@ class DraftService:
                 raise BridgeError("SAVE_STATE_UNKNOWN", "Published plan verification failed")
             state["publication"] = {"plan_id": plan["plan_id"], "name": plan["name"],
                                     "revision": state["revision"], "sha256": hashlib.sha256(payload).hexdigest(),
-                                    "saved_and_reloaded": True, "playlist_changed": False}
+                                    "saved_and_reloaded": True, "playlist_changed": False,
+                                    "user_reviewed": approval.get("user_reviewed", True)}
             self._save(state)
             return copy.deepcopy(state["publication"])
 

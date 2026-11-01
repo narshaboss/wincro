@@ -20,7 +20,9 @@ for unrelated files or remove existing private intervals. In the recording tab,
 Analyze authorizes automatic registration of one NEW plan after current analysis,
 crosschecks and durable save verification. Only the app owner publishes; AI tools
 remain draft-only. Never change existing plans/playlists or auto-execute the result.
-Do not mark automatically registered plans as human-reviewed. Manual bridge
+Record automatic publication user_reviewed=false. The legacy plan field
+user_verified=true is required for player listing and means registration permission,
+not human review or successful playback. Do not change the player filter. Manual bridge
 publication still requires explicit owner approval. An analysis record is traceability, not proof of
 understanding or successful recognition/playback.
 
