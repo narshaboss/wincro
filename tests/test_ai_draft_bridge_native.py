@@ -622,7 +622,8 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
     monkeypatch.setattr(analyzer_view, "setup_window_position", lambda *args, **kwargs: None)
     monkeypatch.setattr(player_view, "PLANS_DIR", tmp_path / "plans")
     ctk.set_widget_scaling(scale)
-    ctk.set_window_scaling(1)
+    # DPI scales both the window and its controls, not controls alone.
+    ctk.set_window_scaling(scale)
     owner = player_view.PlanDetailDialog.__new__(player_view.PlanDetailDialog)
     ctk.CTkToplevel.__init__(owner, ui_root)
     owner.title("Action coordinate display QA")

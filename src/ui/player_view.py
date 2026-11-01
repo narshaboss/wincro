@@ -3177,7 +3177,6 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
             height=26,
             corner_radius=IOS_METRICS["control_radius_small"],
             command=lambda r=rule: self._test_run_rule(r),
-            state="normal" if is_enabled else "disabled",
         )
         run_btn.pack(side="right", padx=(4, 0))
 
