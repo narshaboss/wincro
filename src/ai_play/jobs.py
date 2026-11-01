@@ -247,10 +247,16 @@ class PlayJobs:
         if session.playback and session.playback.busy:
             session.playback.stop()
             session.playback.worker.join()
-        for worker in list(session.release_workers):
+        with session.state_lock:
+            workers = list(session.release_workers)
+        for worker in workers:
             worker.join()
         with session.io_lock:
-            if not session.backend.release():
+            try:
+                released = session.backend.release()
+            except Exception:
+                released = False
+            if not released:
                 session.message = "입력 해제 확인 실패: 장치 연결을 확인하고 중지를 다시 누르세요. 새 재생은 차단됩니다."
                 session._persist()
                 return

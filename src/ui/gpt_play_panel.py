@@ -44,6 +44,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.target = ctk.CTkComboBox(selection, values=["새로고침 후 선택"], state="readonly",
             fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
         self.target.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.target.set("새로고침 후 선택")
         self.refresh = self._button(selection, "새로고침", self._refresh, width=90)
         self.refresh.grid(row=0, column=1)
         self._label("2. GPT에게 맡길 목표", 2)
@@ -200,6 +201,10 @@ class GPTPlayPanel(ctk.CTkFrame):
                     image.thumbnail((360, 180))
                     self._preview_image = ctk.CTkImage(image, image, size=image.size)
                     self.preview.configure(image=self._preview_image)
+                    self.body.update_idletasks()
+                    self.body._parent_canvas.yview_moveto(1.0)
+                    self.winfo_toplevel().deiconify()
+                    self.winfo_toplevel().lift()
                 else:
                     self.question_card.grid_remove()
             publication = state.get("publication")

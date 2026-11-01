@@ -14,14 +14,22 @@ import customtkinter as ctk
 from PIL import ImageGrab
 
 
+@pytest.fixture(scope="module")
+def ui_root():
+    root = ctk.CTk()
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
 @pytest.mark.parametrize("scale,width,height", [(1, 640, 680), (1.25, 800, 720), (1.5, 960, 780)])
-def test_panel_on_off_question_controls_and_layout(tmp_path, scale, width, height):
+def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, width, height):
     from src.ui.gpt_play_panel import GPTPlayPanel
     from src.ui.recording_workspace import RecordingWorkspace
     from src.ai_play.session import PlaySession
     from tests.test_gpt_play import Backend
     ctk.set_widget_scaling(scale)
-    root = ctk.CTk()
+    root = ctk.CTkToplevel(ui_root)
     root.geometry(f"{width}x{height}+0+0")
     root.title("GPT Play isolated UI QA")
     connection = SimpleNamespace(connected=False)
@@ -36,6 +44,8 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, scale, width, heigh
         assert panel.start_button.cget("state") == "disabled"
         connection.connected = True
         panel._refresh_controls()
+        panel.status.configure(text="GPT 연결 ON · 시작 대기", text_color="#22c55e")
+        root.update_idletasks()
         assert panel.start_button.cget("state") == "normal"
         for widget in (panel.target, panel.goal, panel.keys, panel.start_button, panel.stop_button):
             assert widget.winfo_width() > 30
@@ -54,6 +64,8 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, scale, width, heigh
         assert panel.question_card.winfo_manager() == "grid"
         assert panel.answer_button.cget("state") == "normal"
         assert panel.answer.winfo_exists()
+        root.update_idletasks()
+        ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"question_{scale}.png")
         connection.connected = False
         panel._refresh_controls()
         assert panel.answer_button.cget("state") == "disabled"

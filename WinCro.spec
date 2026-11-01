@@ -60,6 +60,7 @@ datas = [
     ('src/ui/assets', 'src/ui/assets'),
     ('arduino', 'arduino'),
     ('tools/wincro_mcp_server.py', 'tools'),
+    ('tools/wincro_play_mcp_server.py', 'tools'),
     ('src/__init__.py', 'src'),
     ('src/agent_bridge/__init__.py', 'src/agent_bridge'),
     ('src/agent_bridge/contracts.py', 'src/agent_bridge'),

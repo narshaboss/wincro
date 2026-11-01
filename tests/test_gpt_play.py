@@ -237,6 +237,42 @@ def test_no_publication_without_independent_trials(session, tmp_path):
     assert not (tmp_path / "plans").exists()
 
 
+def test_changed_candidate_image_cannot_start_verification(session):
+    state = authored(session, click=True)
+    for direction in ("experience_to_plan", "plan_to_experience"):
+        candidate.review(session, state["revision"], direction,
+            [{"rule_id": e["rule_id"], "frame_id": e["frame_id"], "result": "match", "note": "fixture"}
+             for e in state["evidence"]], [])
+    asset = next(iter(session.candidate["assets"]))
+    (session.folder / "assets" / asset).write_bytes(b"changed")
+    playback = CandidatePlayback(session, SimulatedExecutor)
+    with pytest.raises(BridgeError) as error:
+        playback.start(state["revision"], frame(session), "fresh round")
+    assert error.value.code == "ASSET_CHANGED"
+    assert not playback.busy and not session.backend.sent
+
+
+def test_failed_release_keeps_ownership_and_can_be_retried(session, tmp_path):
+    manager = PlayJobs(tmp_path, tmp_path / "plans", tmp_path / "templates", lambda: True)
+    manager.session = session
+    ownership.acquire(manager)
+    manager._owns_input = True
+    original = session.backend.release
+    def fail():
+        raise OSError("device gone")
+    session.backend.release = fail
+    try:
+        manager._release_owner(session)
+        assert manager.active and ownership.lab_active()
+        assert "입력 해제 확인 실패" in session.message
+        session.backend.release = original
+        manager._release_owner(session)
+        assert not manager.active and not ownership.lab_active()
+    finally:
+        session.backend.release = original
+        ownership.release(manager)
+
+
 class SimulatedExecutor:
     """No input log conversion; deterministic game outcome for lifecycle tests."""
     def __init__(self, session):
@@ -377,6 +413,27 @@ def test_old_recording_tools_never_get_live_authority():
         with pytest.raises(BridgeError):
             ConnectionScope().dispatch(method, {})
     assert "win" not in SAFE_KEYS and "ctrl" not in SAFE_KEYS and "alt" not in SAFE_KEYS
+    assert not any(f"f{i}" in SAFE_KEYS for i in range(1, 13))
+
+
+def test_historical_frames_are_readable_but_do_not_refresh_input_authority(session):
+    old = frame(session)
+    session.act(old, "one", {"kind": "key", "key": "enter"}, "join")
+    assert session.read_frame(old)["historical_not_current"]
+    assert session.latest is None
+    with pytest.raises(BridgeError):
+        session.act(old, "two", {"kind": "key", "key": "enter"}, "join")
+
+
+def test_closing_unowned_finished_session_never_releases_someone_elses_input(session, tmp_path):
+    manager = PlayJobs(tmp_path, tmp_path / "plans", tmp_path / "templates", lambda: True)
+    manager.session = session
+    session.state = "needs_review"
+    previous = session.backend.releases
+    manager.pause()
+    manager.stop()
+    manager.close()
+    assert session.backend.releases == previous
 
 
 def test_runner_keeps_sandbox_and_uses_separate_server(tmp_path):

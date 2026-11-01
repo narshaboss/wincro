@@ -136,7 +136,7 @@ class PlaySession:
         with self.state_lock:
             self.release_workers = [w for w in self.release_workers if w.is_alive()]
             self.release_workers.append(worker)
-        worker.start()
+            worker.start()
 
     def stop(self):
         self.stop_event.set()

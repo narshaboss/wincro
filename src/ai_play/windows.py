@@ -53,6 +53,10 @@ class WindowIO:
         region = [point.x, point.y, point.x + rect.right, point.y + rect.bottom]
         if rect.right <= 0 or rect.bottom <= 0 or rect.right * rect.bottom > 8_000_000:
             raise BridgeError("TARGET_UNAVAILABLE", "게임 창 크기가 유효하지 않습니다.")
+        if (self.user.GetSystemMetrics(76) != 0 or self.user.GetSystemMetrics(77) != 0
+                or region[0] < 0 or region[1] < 0 or region[2] > self.user.GetSystemMetrics(0)
+                or region[3] > self.user.GetSystemMetrics(1)):
+            raise BridgeError("DISPLAY_LAYOUT_UNSUPPORTED", "초기 GPT 플레이는 원점 (0,0)인 주 모니터 안의 게임 창만 지원합니다. 테스트 화면 배치를 확인하세요.")
         if expected_region is not None and list(expected_region) != region:
             raise BridgeError("TARGET_MOVED", "관찰 후 창 위치·크기가 바뀌었습니다. 다시 관찰하세요.")
         return region

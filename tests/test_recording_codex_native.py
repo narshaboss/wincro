@@ -30,21 +30,109 @@ def declared_tools(request):
     return tools
 
 
-def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path):
+@pytest.mark.parametrize("script", ["wincro_mcp_server.py", "wincro_play_mcp_server.py"])
+def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path, script):
     import shutil
     import subprocess
     from src.agent_bridge.codex_runner import hidden_options
     root = Path(__file__).resolve().parents[1]
     files = ["src/__init__.py", "src/agent_bridge/__init__.py", "src/agent_bridge/contracts.py",
-             "src/agent_bridge/storage.py", "src/agent_bridge/transport.py", "tools/wincro_mcp_server.py"]
+             "src/agent_bridge/storage.py", "src/agent_bridge/transport.py", "tools/" + script]
     for name in files:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / name, target)
-    result = subprocess.run([os.sys.executable, str(tmp_path / "tools/wincro_mcp_server.py"), "--help"],
+    result = subprocess.run([os.sys.executable, str(tmp_path / "tools" / script), "--help"],
         cwd=tmp_path, capture_output=True, timeout=15, **hidden_options())
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     assert b"--connection-file" in result.stdout
+
+
+def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tmp_path, monkeypatch):
+    from src.ai_play.jobs import PlayJobs, PlayRunner
+    from src.ai_play.session import TOOLS
+    from tests.test_gpt_play import Backend
+    home = tmp_path / "auth"
+    home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+        def do_POST(self):
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            namespace = next(t["name"] for t in declared_tools(requests[0]) if t.get("name", "").startswith("mcp__wincroRecording_"))
+            count = len(requests)
+            if count <= 4:
+                name, arguments = "play_observe", {}
+                if count == 2:
+                    name, arguments = "play_act", {"observation_id": jobs.session.latest, "request_id": "native-one",
+                        "action": {"kind": "key", "key": "enter"}, "purpose": "join fixture arena"}
+                elif count == 4:
+                    name, arguments = "play_question", {"observation_id": jobs.session.latest,
+                        "question": "Which revive button?", "context": "Fixture death observed"}
+                item = {"id": f"fc_{count}", "type": "function_call", "call_id": f"call_{count}",
+                    "namespace": namespace, "name": name, "arguments": json.dumps(arguments)}
+            else:
+                item = {"id": "msg_done", "type": "message", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": "Waiting for user; transport simulation only.", "annotations": []}]}
+            events = [
+                {"type": "response.created", "response": {"id": "resp_play", "status": "in_progress", "output": []}},
+                {"type": "response.output_item.added", "output_index": 0, "item": dict(item, status="in_progress")},
+                {"type": "response.output_item.done", "output_index": 0, "item": item},
+                {"type": "response.completed", "response": {"id": "resp_play", "status": "completed", "output": [item],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}},
+            ]
+            data = "".join("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n" for e in events).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    original = PlayRunner.arguments
+    def arguments(self, *values):
+        args = original(self, *values)
+        extras = {"model_provider": "offline_play", "model": "gpt-6.1-sol", "features.enable_request_compression": False,
+            "model_providers.offline_play.name": "Offline play test",
+            "model_providers.offline_play.base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
+            "model_providers.offline_play.wire_api": "responses", "model_providers.offline_play.requires_openai_auth": False}
+        for key, value in extras.items():
+            args += ["-c", key + "=" + json.dumps(value)]
+        return args
+    monkeypatch.setattr(PlayRunner, "arguments", arguments)
+    jobs = PlayJobs(tmp_path / "jobs", tmp_path / "plans", tmp_path / "templates", lambda: True)
+    backend = Backend()
+    try:
+        jobs.start(None, "Offline fake game only", ["enter"], {"codex": os.environ["WINCRO_TEST_CODEX_EXE"],
+            "python": os.sys.executable, "model": "", "max_seconds": 60}, test_environment=True, backend=backend)
+        jobs.worker.join(80)
+        assert not jobs.busy, jobs.snapshot()
+        assert jobs.session.state == "question", jobs.snapshot()
+        assert len(requests) == 5
+        assert backend.sent == [{"kind": "key", "key": "enter"}]
+        namespaces = [t for t in declared_tools(requests[0]) if t.get("name", "").startswith("mcp__wincroRecording_")]
+        assert len(namespaces) == 1
+        assert not list((tmp_path / "plans").glob("*.json"))
+        artifacts = Path("artifacts/recording_analysis")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "gpt-play-transport.json").write_text(json.dumps({"real_codex_binary": True,
+            "real_mcp_server": True, "model": "offline_fixture_not_real_GPT", "desktop_inputs": 0,
+            "fake_backend_inputs": backend.sent, "question_ui_state": jobs.session.state,
+            "tools": sorted(TOOLS)}, indent=2), encoding="utf-8")
+    finally:
+        jobs.stop()
+        if jobs.worker:
+            jobs.worker.join(8)
+        if jobs.session:
+            jobs._release_owner(jobs.session)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(2)
 
 
 @pytest.mark.parametrize("requires_credentials", [False, True])

@@ -29,6 +29,7 @@ class CandidatePlayback:
             raise BridgeError("PLAYBACK_BUSY", "이미 후보 재생 중입니다.")
         if not candidate.ready(s) or revision != s.candidate["revision"]:
             raise BridgeError("REVIEW_REQUIRED", "현재 후보의 미해결 항목과 양방향 대조부터 끝내세요.")
+        candidate.verify_assets(s)
         frame = s._frame(start_frame_id, fresh=True)
         if any(t["start_sha256"] == frame["sha256"] for t in s.trials if t["success"]):
             raise BridgeError("FRESH_ROUND_REQUIRED", "동일한 시작 화면을 재사용할 수 없습니다. 새 시도인지 확인하세요.")
@@ -144,6 +145,7 @@ def native_executor(session):
 
         def _find_rule_image_click_target(self, rule, valid_images):
             self.check()
+            candidate.verify_assets(session)
             session.backend.validate(rule.search_region)
             result = super()._find_rule_image_click_target(rule, valid_images)
             if result and len(result["locations"]) != 1:

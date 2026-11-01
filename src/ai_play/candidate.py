@@ -118,10 +118,21 @@ def ready(session):
         == {"experience_to_plan", "plan_to_experience"})
 
 
+def verify_assets(session):
+    current = session.candidate
+    if not current or digest(current["plan"]) != current["digest"]:
+        raise BridgeError("CANDIDATE_CHANGED", "Candidate content changed after review.")
+    for name, expected in current["assets"].items():
+        path = within(session.folder / "assets" / name, session.folder / "assets")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise BridgeError("ASSET_CHANGED", "Candidate image changed after review.")
+
+
 def publish(session, plans_dir, templates_dir):
     """App-owner-only: agent cannot invoke filesystem publication."""
     if session.state != "complete" or not ready(session) or len(session.trials) < 3 or any(not t["success"] for t in session.trials[-3:]):
         raise BridgeError("VERIFICATION_REQUIRED", "현재 후보의 독립 재생 3회와 양방향 대조가 필요합니다.")
+    verify_assets(session)
     plan = copy.deepcopy(session.candidate["plan"])
     plan["user_verified"] = True  # Listing permission only, not human review.
     payload = encoded(plan)
