@@ -500,6 +500,8 @@ class DraftResultPane(ctk.CTkFrame):
         self.loading = False
         self.running = False
         self.options = {}
+        self.job_states = []
+        self.published_jobs = set()
         self.rows = {}
         self.row_cache = {}
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wincro-result-save")
@@ -585,7 +587,11 @@ class DraftResultPane(ctk.CTkFrame):
 
     def set_jobs(self, states, select=None):
         previous = self.options.get(self.jobs.get())
-        self.options = {f"{state['recording_name']} · {JOB_LABELS.get(state['status'], state['status'])} · {state['job_id'][-6:]}": state["job_id"] for state in states}
+        self.job_states = list(states)
+        def label(state):
+            status = "published" if state["job_id"] in self.published_jobs else state["status"]
+            return f"{state['recording_name']} · {JOB_LABELS.get(status, status)} · {state['job_id'][-6:]}"
+        self.options = {label(state): state["job_id"] for state in self.job_states}
         configure_changed(self.jobs, values=list(self.options) or ["아직 분석 결과가 없습니다"])
         selected_label = next((name for name, key in self.options.items() if key == (select or previous)), None)
         if selected_label and self.jobs.get() != selected_label:
@@ -657,6 +663,10 @@ class DraftResultPane(ctk.CTkFrame):
         self.service, state = value
         self.current = state
         publication = state.get("publication")
+        if publication:
+            # A late pre-publication job-list response must not downgrade a verified receipt.
+            self.published_jobs.add(self.service.workspace.parent.name)
+            self.set_jobs(self.job_states)
         if previous_id != state["draft_id"] or publication:
             self.plan_title.set(publication["name"] if publication else state["plan"]["name"])
         _, ready = review_progress(state)

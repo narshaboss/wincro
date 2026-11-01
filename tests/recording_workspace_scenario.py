@@ -278,6 +278,12 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert pane.service.allow_publication is False
         assert len(list((data / "plans").glob("*.json"))) == 2
         assert _pump_until(ui_root, lambda: "플랜 등록 완료" in pane.jobs.get() and not workspace.busy, 5)
+        stale = workspace.jobs._metadata(pane.service.workspace.parent)
+        assert stale["status"] == "review"  # Durable job metadata predates owner publication.
+        pane.set_jobs([stale])
+        deadline = time.monotonic() + .3
+        assert _pump_until(ui_root, lambda: time.monotonic() > deadline, 2)
+        assert "플랜 등록 완료" in pane.jobs.get(), "Late async lists must not undo a verified status"
         for widget in (pane.title_entry, pane.register_button, pane.registration_status):
             assert widget.winfo_ismapped()
             assert widget.winfo_rooty() + widget.winfo_height() <= window.winfo_rooty() + window.winfo_height()

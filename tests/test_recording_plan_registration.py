@@ -37,6 +37,23 @@ def test_registration_does_not_shadow_tk_callback_registry():
     assert DraftResultPane.register is tk.Misc.register
 
 
+def test_late_job_list_cannot_downgrade_a_verified_publication_label():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from src.ui.recording_workspace import DraftResultPane
+    combo = Mock()
+    old_label = "Recording · 검토 가능 · abcdef"
+    combo.get.return_value = old_label
+    combo.set.side_effect = lambda value: setattr(combo.get, "return_value", value)
+    pane = SimpleNamespace(jobs=combo, options={old_label: "job_abcdef"},
+        published_jobs={"job_abcdef"}, job_states=[], dirty=False, busy=False)
+    stale = {"job_id": "job_abcdef", "recording_name": "Recording", "status": "review"}
+    DraftResultPane.set_jobs(pane, [stale])
+    assert "플랜 등록 완료" in combo.get()
+    assert pane.options[combo.get()] == "job_abcdef"
+    assert stale["status"] == "review"
+
+
 def test_owner_title_export_is_durable_visible_to_plan_loader_and_does_not_mutate_review(ready):
     from src.analyzer.automation_models import AutomationPlan
     jobs, service, state, job_id, original = ready
@@ -244,4 +261,3 @@ def test_previous_receipt_is_not_success_if_plan_was_deleted_or_changed(ready, c
     with pytest.raises(BridgeError) as error:
         register(ready)
     assert error.value.code == "SAVE_STATE_UNKNOWN"
-
