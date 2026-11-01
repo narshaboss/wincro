@@ -272,8 +272,12 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         question_job = workspace.jobs.snapshot()["job_id"]
         question_draft = pane.current["draft_id"]
         before_recheck_revision = pane.current["revision"]
-        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
+        assert _pump_until(ui_root, lambda: not workspace.busy and not pane.busy
+            and not workspace.jobs.busy and pane.continue_button.cget("state") == "normal", 5)
+        continue_command = Mock(wraps=pane._continue_analysis)
+        pane.continue_button.configure(command=continue_command)
         pane.continue_button.invoke()
+        continue_command.assert_called_once_with()
         assert not any(isinstance(child, ctk.CTkToplevel) for child in workspace.winfo_children())
         assert _pump_until(ui_root, lambda: not workspace.jobs.busy and not pane.busy
             and pane.current["draft_id"] == question_draft and pane.current["revision"] > before_recheck_revision and pane.current.get("analysis")
