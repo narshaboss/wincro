@@ -610,6 +610,7 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
     from src.ui import analyzer_view, player_view
     from src.ui.ui_batcher import UiCallbackDispatcher
 
+    ui_root._ai_callback_errors.clear()
     root = Path(__file__).resolve().parents[1]
     plan_file = root / "data/plans/plan_20260118_174859.json"
     original_bytes = plan_file.read_bytes()
@@ -655,10 +656,14 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
         assert "1301" not in label_before.cget("text")
         applied = []
         timeout_state = []
+        poll_after = [None]
 
         def edit_region_and_close():
+            poll_after[0] = None
             dialogs = [child for child in owner.winfo_children() if isinstance(child, analyzer_view.ImageCropDialog)]
-            assert len(dialogs) == 1
+            if len(dialogs) != 1 or "_search_radius_btn" not in dialogs[0].__dict__:
+                poll_after[0] = ui_root.after(25, edit_region_and_close)
+                return
             editor = dialogs[0]
             try:
                 applied.append(editor._apply_search_region_to_rule([600, 401, 800, 601]))
@@ -679,12 +684,14 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
                 if isinstance(child, analyzer_view.ImageCropDialog):
                     child.destroy()
 
-        ui_root.after(200, edit_region_and_close)
+        poll_after[0] = ui_root.after(25, edit_region_and_close)
         watchdog = ui_root.after(8000, abort_editor_wait)
         try:
             owner._open_image_editor(rules[1].target_image, rules[1])
         finally:
             ui_root.after_cancel(watchdog)
+            if poll_after[0] is not None:
+                ui_root.after_cancel(poll_after[0])
         assert not timeout_state, timeout_state
         assert applied == [True]
         assert widget_data["widget"] is row_before and widget_data["name_label"] is label_before
