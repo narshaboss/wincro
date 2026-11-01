@@ -106,9 +106,11 @@ class PlaySession:
     def start(self):
         self.check()
         self.backend.validate()
-        self.state = "exploring"
-        self.message = "GPT가 선택한 게임 화면을 관찰합니다."
-        self._persist()
+        with self.state_lock:
+            self.check()
+            self.state = "exploring"
+            self.message = "GPT가 선택한 게임 화면을 관찰합니다."
+            self._persist()
 
     def pause(self, reason="사용자 일시정지"):
         with self.state_lock:

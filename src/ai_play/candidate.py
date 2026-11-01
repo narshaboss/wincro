@@ -74,14 +74,16 @@ def build(session, title, steps, remaining_issues):
     plan["user_verified"] = False
     candidate = {"plan": plan, "revision": (session.candidate or {}).get("revision", 0) + 1,
         "evidence": evidence, "assets": assets, "remaining_issues": remaining_issues, "digest": digest(plan)}
-    write_json(session.folder / "candidate.json", candidate)
-    # Round-trip the actual player model, not just JSON serialization.
-    restored = AutomationPlan.from_dict(read_json(session.folder / "candidate.json")["plan"], session.folder / "assets").to_dict()
-    if restored != plan:
-        raise BridgeError("SAVE_STATE_UNKNOWN", "후보 플랜을 실제 모델로 다시 읽은 결과가 다릅니다.")
-    session.candidate, session.reviews, session.trials, session.trial = candidate, [], [], None
-    session.state, session.message = "exploring", "후보 저장 완료: 양방향 대조와 독립 재생 검수가 필요합니다."
-    session._persist()
+    with session.state_lock:
+        session.check(input_allowed=True)
+        write_json(session.folder / "candidate.json", candidate)
+        # Round-trip the actual player model, not just JSON serialization.
+        restored = AutomationPlan.from_dict(read_json(session.folder / "candidate.json")["plan"], session.folder / "assets").to_dict()
+        if restored != plan:
+            raise BridgeError("SAVE_STATE_UNKNOWN", "후보 플랜을 실제 모델로 다시 읽은 결과가 다릅니다.")
+        session.candidate, session.reviews, session.trials, session.trial = candidate, [], [], None
+        session.state, session.message = "exploring", "후보 저장 완료: 양방향 대조와 독립 재생 검수가 필요합니다."
+        session._persist()
     return session.snapshot()["candidate"]
 
 

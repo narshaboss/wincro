@@ -37,11 +37,13 @@ class CandidatePlayback:
             "start_frame_id": start_frame_id, "start_sha256": frame["sha256"],
             "fresh_round_evidence": text(fresh_round_evidence, "새 시도 근거"), "state": "running",
             "started_at": s.clock(), "start_action_count": s.action_count, "success": False}
-        s.trial = trial
-        s.state, s.message = "verifying", "후보 플랜 독립 재생 중: GPT 입력은 차단됩니다."
-        s.latest = None
         self.executor = self.executor_factory(s)
-        s._persist()
+        with s.state_lock:
+            s.check(input_allowed=True)
+            s.trial = trial
+            s.state, s.message = "verifying", "후보 플랜 독립 재생 중: GPT 입력은 차단됩니다."
+            s.latest = None
+            s._persist()
         self.worker = threading.Thread(target=self._run, daemon=True, name="gpt-play-candidate")
         self.worker.start()
         return trial.copy()
@@ -50,23 +52,26 @@ class CandidatePlayback:
         s, trial = self.session, self.session.trial
         try:
             ok = bool(self.executor.run(s.candidate["plan"], s.folder / "assets"))
-            if s.state != "verifying":
-                ok = False
-            trial.update(state="executed" if ok else "failed", execution_ok=ok, ended_at=s.clock(), end_action_count=s.action_count)
+            with s.state_lock:
+                if s.state != "verifying":
+                    ok = False
+                trial.update(state="executed" if ok else "failed", execution_ok=ok, ended_at=s.clock(), end_action_count=s.action_count)
         except Exception as exc:
-            trial.update(state="failed", execution_ok=False, ended_at=s.clock(), end_action_count=s.action_count, error=str(exc)[:1000])
+            with s.state_lock:
+                trial.update(state="failed", execution_ok=False, ended_at=s.clock(), end_action_count=s.action_count, error=str(exc)[:1000])
         finally:
             try:
                 with s.io_lock:
                     released = s.backend.release()
             except Exception:
                 released = False
-            if not released:
-                trial.update(state="failed", execution_ok=False, error="input release unconfirmed")
-            if s.state == "verifying":
-                s.state, s.message = "reviewing_trial", "재생 종료: GPT가 실제 클리어·보상 결과를 확인합니다."
-            s.latest = None
-            s._persist()
+            with s.state_lock:
+                if not released:
+                    trial.update(state="failed", execution_ok=False, error="input release unconfirmed")
+                if s.state == "verifying":
+                    s.state, s.message = "reviewing_trial", "재생 종료: GPT가 실제 클리어·보상 결과를 확인합니다."
+                s.latest = None
+                s._persist()
 
     def stop(self):
         if self.executor:
@@ -88,10 +93,14 @@ class CandidatePlayback:
         record = {**trial, "success": success, "end_frame_id": end_frame_id,
             "observation": text(observation, "실제 결과 근거"), "state": "reviewed", "human_verified": False,
             "reviewed_at": s.clock()}
-        s.trials.append(record)
-        s.trial = record
-        s.state, s.message = "exploring", "검수 결과 보관: " + ("성공 관찰" if success else "실패·후보 보완 필요")
-        s._persist()
+        with s.state_lock:
+            s.check()
+            if trial.get("interrupted") and success:
+                raise BridgeError("INVALID_SUCCESS", "Interrupted replay cannot be successful.")
+            s.trials.append(record)
+            s.trial = record
+            s.state, s.message = "exploring", "검수 결과 보관: " + ("성공 관찰" if success else "실패·후보 보완 필요")
+            s._persist()
         return record
 
 
@@ -159,12 +168,13 @@ def native_executor(session):
                 self.check()
                 if session.action_count >= session.max_actions:
                     raise BridgeError("BUDGET_EXHAUSTED", "입력 한도 도달")
-                session.action_count += 1
-                session.latest = None
                 request_id = new_id("trial_input_")
                 receipt = {"request_id": request_id, "state": "unknown", "action": action,
                     "trial_id": session.trial["trial_id"], "candidate_digest": session.candidate["digest"]}
-                session.receipts[request_id] = receipt
+                with session.state_lock:
+                    session.action_count += 1
+                    session.latest = None
+                    session.receipts[request_id] = receipt
                 session._persist()
                 try:
                     ok = session.backend.send(action, region, self.check)

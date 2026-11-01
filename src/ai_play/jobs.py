@@ -79,11 +79,13 @@ class PlayScope:
         verified = candidate.ready(s) and len(s.trials) >= 3 and all(t["success"] for t in s.trials[-3:])
         if not verified and not remaining_issues:
             raise BridgeError("VERIFICATION_REQUIRED", "현재 후보의 독립 재생 성공 3회가 필요합니다.")
-        s.state = "needs_review" if remaining_issues else "complete"
-        s.message = summary
-        s.notes.append({"final": summary, "remaining_issues": remaining_issues, "recovery": recovery_observations})
-        s._release_async()
-        s._persist()
+        with s.state_lock:
+            s.check()
+            s.state = "needs_review" if remaining_issues else "complete"
+            s.message = summary
+            s.notes.append({"final": summary, "remaining_issues": remaining_issues, "recovery": recovery_observations})
+            s._release_async()
+            s._persist()
         return {"state": s.state, "publication": "owner will register only a complete result"}
 
 
