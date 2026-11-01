@@ -335,6 +335,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         if self._was_running and not busy:
             state = self.jobs.snapshot()
             self._refresh_jobs(select=state["job_id"] if state and state.get("draft_id") else None)
+        if not busy and not self.busy and not self.result.busy and self.result._awaiting_current_result():
+            self._refresh_jobs(select=self.jobs.snapshot()["job_id"])
         self._was_running = busy
         state = self.jobs.snapshot()
         self._refresh_analysis_progress(state, busy)
@@ -618,7 +620,7 @@ class DraftResultPane(ctk.CTkFrame):
     def set_running(self, running):
         self.running = running
         published = bool(self.current and self.current.get("publication"))
-        available = bool(self.current and not self.busy and not running and not self.service.closed and not published)
+        available = bool(self.current and not self.busy and not running and not self.service.closed and not published and not self._awaiting_current_result())
         configure_changed(self.save, state="normal" if available and self.context and self.dirty else "disabled")
         for entry in self.entries.values():
             configure_changed(entry, state="normal" if available and self.context else "disabled")
@@ -626,6 +628,14 @@ class DraftResultPane(ctk.CTkFrame):
         configure_changed(self.title_entry, state="normal" if available else "disabled")
         configure_changed(self.register_button, state="normal" if available and not self.dirty else "disabled")
         configure_changed(self.continue_button, state="normal" if available and not self.dirty else "disabled")
+
+    def _awaiting_current_result(self):
+        if not self.current or not self.service:
+            return False
+        state = self.workspace.jobs.snapshot()
+        expected = state.get("result_revision") if state else None
+        return bool(state and state["job_id"] == self.service.workspace.parent.name
+            and type(expected) is int and self.current["revision"] < expected)
 
     def _select(self, label):
         if self.dirty:
@@ -786,6 +796,9 @@ class DraftResultPane(ctk.CTkFrame):
             return
         if not self.current or self.busy or self.running or self.service.closed or self.current.get("publication"):
             return
+        if self._awaiting_current_result():
+            self._result_error("최신 GPT 분석 결과를 불러오는 중입니다. 불러온 뒤 등록하세요.", "최신 분석 결과 불러오는 중")
+            return
         try:
             title = DraftService.publication_title(self.plan_title.get())
         except ValueError as exc:
@@ -821,6 +834,9 @@ class DraftResultPane(ctk.CTkFrame):
 
     def _continue_analysis(self):
         if self.dirty or self.busy or self.running or not self.current or self.service.closed or self.current.get("publication"):
+            return
+        if self._awaiting_current_result():
+            self._result_error("최신 GPT 분석 결과를 불러온 뒤 자동 재검수를 진행하세요.", "최신 분석 결과 불러오는 중")
             return
         if not self.workspace.connection.connected:
             self._result_error("먼저 GPT 연결을 ON으로 켠 뒤 분석을 계속하세요.", "GPT 연결 ON이 필요합니다.")

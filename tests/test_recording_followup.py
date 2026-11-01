@@ -14,7 +14,9 @@ from tests.test_recording_jobs import setup as jobs_setup, finish, FakeHost, Rev
 
 class QuestionActor(ReviewingActor):
     def run(self, descriptor, prompt, cancelled, progress):
-        super().run(descriptor, prompt, cancelled, progress)
+        self.scope = FakeHost.scopes[descriptor]
+        if not self.scope.service.read_draft(self.scope.draft_id)["plan"]["initial_rules"]:
+            super().run(descriptor, prompt, cancelled, progress)
         service = self.scope.service
         state = service.read_draft(self.scope.draft_id)
         review(service, state, next(iter(service.selected_media)), ["녹화와 같은 속도로 진행할까요?"])
@@ -39,7 +41,7 @@ def waiting(jobs_setup):
     jobs, media, original = jobs_setup
     jobs.runner_factory = QuestionActor
     job = jobs.start(media, "Synthetic complete task", {})
-    assert finish(jobs)["status"] == "needs_review"
+    assert finish(jobs)["status"] == "needs_review", jobs.snapshot()
     service, state = jobs.load_result(job["job_id"])
     return jobs, media, original, service, state, job["job_id"]
 

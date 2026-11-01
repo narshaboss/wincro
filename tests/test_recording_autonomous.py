@@ -10,6 +10,7 @@ from src.agent_bridge.contracts import BridgeError
 from src.agent_bridge.recording_jobs import JobScope
 from src.agent_bridge.storage import read_json, write_json
 from src.ui.recording_workspace import RecordingWorkspace
+from src.ui.recording_workspace import DraftResultPane
 from tests.test_recording_followup import waiting, resume, ContinueActor
 from tests.test_recording_jobs import setup as jobs_setup, finish
 
@@ -85,3 +86,17 @@ def test_recording_workspace_contains_no_consent_or_question_dialog_entrypoint()
     assert "질문 답변 · 계속" not in source
     assert "동의하고 분석" not in source
     assert not (Path(workspace.__file__).parent / "recording_followup.py").exists()
+
+
+def test_newer_result_revision_blocks_a_stale_ui_but_manual_edits_do_not():
+    snapshot = {"job_id": "job_one", "result_revision": 9}
+    pane = SimpleNamespace(current={"revision": 8}, service=SimpleNamespace(workspace=Path("jobs/job_one/drafts")),
+        workspace=SimpleNamespace(jobs=SimpleNamespace(snapshot=lambda: snapshot)))
+    assert DraftResultPane._awaiting_current_result(pane)
+    pane.current["revision"] = 9
+    assert not DraftResultPane._awaiting_current_result(pane)
+    pane.current["revision"] = 10
+    assert not DraftResultPane._awaiting_current_result(pane)
+    snapshot["job_id"] = "job_other"
+    pane.current["revision"] = 1
+    assert not DraftResultPane._awaiting_current_result(pane)

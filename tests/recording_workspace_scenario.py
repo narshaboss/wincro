@@ -257,11 +257,12 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert workspace.jobs.snapshot()["review_pass"] == 2
         question_job = workspace.jobs.snapshot()["job_id"]
         question_draft = pane.current["draft_id"]
+        before_recheck_revision = pane.current["revision"]
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         pane.continue_button.invoke()
         assert not any(isinstance(child, ctk.CTkToplevel) for child in workspace.winfo_children())
         assert _pump_until(ui_root, lambda: not workspace.jobs.busy and not pane.busy
-            and pane.current["draft_id"] == question_draft and pane.current.get("analysis")
+            and pane.current["draft_id"] == question_draft and pane.current["revision"] > before_recheck_revision and pane.current.get("analysis")
             and not pane.current["analysis"]["open_questions"] and workspace.jobs.snapshot()["status"] == "review", 15), workspace._status_detail
         assert workspace.jobs.snapshot()["job_id"] == question_job
         assert workspace.jobs.snapshot()["attempt"] == 2
