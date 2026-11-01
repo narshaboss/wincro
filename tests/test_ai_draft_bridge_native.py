@@ -453,6 +453,10 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
             canvas = view._recordings_scroll._canvas
             assert button.winfo_rooty() >= canvas.winfo_rooty()
             assert button.winfo_rooty() + button.winfo_height() <= canvas.winfo_rooty() + canvas.winfo_height()
+            for sibling in button.master.winfo_children():
+                if isinstance(sibling, ctk.CTkFrame) and sibling.cget("width") == 40 and sibling.cget("height") == 40:
+                    assert sibling.winfo_rooty() >= canvas.winfo_rooty()
+                    assert sibling.winfo_rooty() + sibling.winfo_height() <= canvas.winfo_rooty() + canvas.winfo_height()
         workspace.analyze.invoke()
         assert "선택" in workspace.status.cget("text")
         session.start.assert_not_called()
@@ -489,6 +493,8 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         workspace._after_id = None
         from src.ui.analysis_progress import AnalysisProgress
         workspace.choose(sample)
+        long_status = "GPT가 녹화 장면을 확인하고 초안을 편집하고 있습니다. " * 5
+        workspace.set_status(long_status)
         clock = [0.0]
         workspace._analysis_progress = AnalysisProgress(clock=lambda: clock[0])
         workspace._progress_job_id = "job_progress"
@@ -508,6 +514,9 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert workspace.progress_percent.cget("text") != "100%"
         assert workspace.progress_percent._label.winfo_reqwidth() <= workspace.progress_percent.winfo_width()
         assert workspace.progress_label._label.winfo_reqwidth() <= workspace.progress_label.winfo_width()
+        assert workspace._status_detail == long_status
+        assert workspace.status._label.winfo_reqwidth() <= workspace.status.winfo_width()
+        assert workspace.status._label.winfo_reqheight() <= workspace.status.winfo_height()
         deadline = time.monotonic() + .3
         assert _pump_until(ui_root, lambda: time.monotonic() >= deadline, 2)
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_progress_{int(scale*100)}pct.png")

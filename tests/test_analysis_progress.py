@@ -152,3 +152,21 @@ def test_ui_estimate_does_not_write_job_or_plan_files():
     source = (root / "src/ui/analysis_progress.py").read_text(encoding="utf-8")
     for forbidden in ("write_json", "_persist", "save_draft", "to_dict", "get_frames"):
         assert forbidden not in source
+
+
+def test_status_fits_one_line_and_keeps_the_full_detail_for_the_dialog():
+    view = object.__new__(RecordingWorkspace)
+    view.status = Widget()
+    view.status.winfo_width = lambda: 180
+    view.status._get_widget_scaling = lambda: 1.5
+    view._status_font = SimpleNamespace(measure=lambda text: len(text) * 8)
+    message = "Analysis activity and full diagnostic details " * 50
+    view.set_status(message)
+    short = view.status.cget("text")
+    assert view._status_font.measure(short) <= 112
+    assert view._status_detail == message
+    view._refresh_status_text(width=600)
+    assert len(view.status.cget("text")) > len(short)
+    assert view._status_detail == message
+    view.set_status("Ready")
+    assert view.status.cget("text") == "Ready"
