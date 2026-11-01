@@ -89,11 +89,11 @@ def test_recorder_survives_play_init_failure_and_supports_ctk5(tmp_path, ui_root
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             ui_root.update()
-            if workspace.analyze.winfo_ismapped() and not workspace.busy:
+            if workspace.analyze.winfo_ismapped() and not workspace.busy and view._catalog_loaded:
                 break
             time.sleep(.02)
         for widget in (workspace.badge, view._start_btn, view._stop_btn, workspace.play_button,
-                       workspace.analyze, view._recordings_scroll):
+                       workspace.analyze, view._recordings_empty_label):
             assert widget.winfo_ismapped(), type(widget).__name__
         assert workspace.badge.cget("text") == "GPT 연결 OFF"
         assert workspace.play_button.cget("state") == "disabled"
