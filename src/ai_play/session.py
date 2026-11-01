@@ -80,8 +80,13 @@ class PlaySession:
             if internal:
                 value.update(frames=copy.deepcopy(self.frames), receipts=copy.deepcopy(self.receipts))
             elif value["candidate"]:
-                value["candidate"] = {k: value["candidate"][k] for k in
+                current = value["candidate"]
+                value["candidate"] = {k: current[k] for k in
                     ("revision", "digest", "evidence", "remaining_issues")}
+                value["candidate"]["compiled_steps"] = [
+                    {key: rule.get(key) for key in ("rule_id", "action_type", "description", "action_keys",
+                        "target_image", "search_region", "confidence", "wait_after", "repeat_count", "repeat_delay")}
+                    for rule in current["plan"]["initial_rules"]]
             return value
 
     def check(self, *, input_allowed=False, playback=False):

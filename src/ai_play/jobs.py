@@ -100,6 +100,7 @@ failure/death, automatic vs manual exit, resurrection and return to NPC from evi
 If uncertain or authorization is needed use play_question with a recent screenshot and
 concise context. End the turn immediately after asking. WinCro supplies the answer on resume.
 Record concise observations/purpose/expected_result through play_note, not hidden reasoning.
+play_status.candidate.compiled_steps shows the actual saved native fields for cross-checking.
 After actual success, author a PURPOSE-BASED native candidate, not a transcript/replay of inputs.
 play_candidate accepts title, steps, remaining_issues. Each step has kind=click or key,
 frame_id, purpose, expected_result, wait_after, repeat_count, repeat_delay. Key needs key.

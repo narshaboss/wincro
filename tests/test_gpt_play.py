@@ -221,6 +221,8 @@ def test_candidates_are_real_native_roundtrips_and_edits_invalidate_tests(sessio
     from src.analyzer.automation_models import AutomationPlan
     assert AutomationPlan.from_dict(stored["plan"], session.folder / "assets").to_dict() == stored["plan"]
     assert len(stored["assets"]) == 1
+    assert state["compiled_steps"][0]["target_image"] == stored["plan"]["initial_rules"][0]["target_image"]
+    assert state["compiled_steps"][1]["action_keys"] == ["space"]
     assert not stored["plan"].get("game_modes")
     reviewed(session)
     assert candidate.ready(session)
