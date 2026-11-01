@@ -486,6 +486,8 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert settings.winfo_rooty() + settings.winfo_height() <= settings.winfo_screenheight()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_settings_{int(scale*100)}pct.png")
         settings.destroy()
+        ctk.set_window_scaling(1)
+        tk.Wm.geometry(window, "1024x768+0+0")
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         workspace.tabs.set("녹화·분석")
         # Isolate animation rendering; the separate pipeline test uses real job events.
@@ -522,8 +524,17 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_progress_{int(scale*100)}pct.png")
         progress_row = workspace.progress_bar.master
         left, top = progress_row.winfo_rootx(), progress_row.winfo_rooty()
+        assert left >= 0 and top >= 0
+        assert left + progress_row.winfo_width() <= min(window.winfo_rootx() + window.winfo_width(), window.winfo_screenwidth())
+        assert top + progress_row.winfo_height() <= min(window.winfo_rooty() + window.winfo_height(), window.winfo_screenheight())
         ImageGrab.grab(bbox=(left, top, left+progress_row.winfo_width(), top+progress_row.winfo_height()),
             all_screens=True).save(artifacts / f"recording_progress_bar_{int(scale*100)}pct.png")
+        from PIL import ImageColor
+        bar = workspace.progress_bar
+        x, y = bar.winfo_rootx(), bar.winfo_rooty()
+        pixels = ImageGrab.grab(bbox=(x, y, x+bar.winfo_width(), y+bar.winfo_height()), all_screens=True).convert("RGB")
+        gold = ImageColor.getrgb(recording_workspace.COLORS["accent"])
+        assert sum(1 for pixel in pixels.getdata() if max(abs(a-b) for a, b in zip(pixel, gold)) <= 5) > pixels.width * pixels.height * .1
         progress_state["status"] = "review"
         workspace._refresh_analysis_progress(progress_state, False)
         assert workspace.progress_percent.cget("text") == "100%"
