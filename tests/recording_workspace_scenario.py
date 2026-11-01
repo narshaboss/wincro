@@ -239,7 +239,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         from tkinter import messagebox, filedialog
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
-        pane._register()
+        pane._register_plan()
         assert "최신 분석" in workspace._status_detail
         assert list((data / "plans").iterdir()) == [original]
 
@@ -253,24 +253,24 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: pane.current and pane.current["draft_id"] != old_draft
             and not pane.busy and not workspace.jobs.busy, 15)
         workspace.tabs.set("분석 결과 편집")
-        assert _pump_until(ui_root, lambda: pane.context is not None and pane.register.cget("state") == "normal", 5)
+        assert _pump_until(ui_root, lambda: pane.context is not None and pane.register_button.cget("state") == "normal", 5)
         pane.plan_title.set("")
-        pane.register.invoke()
+        pane.register_button.invoke()
         assert "제목" in workspace._status_detail and not pane.busy
         pane.plan_title.set("새로 등록한 제작 플랜")
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: False)
-        pane.register.invoke()
+        pane.register_button.invoke()
         assert list((data / "plans").iterdir()) == [original]
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
-        pane.register.invoke()
-        pane._register()  # In-flight duplicate invocation must not enqueue a second publication.
+        pane.register_button.invoke()
+        pane._register_plan()  # In-flight duplicate invocation must not enqueue a second publication.
         assert _pump_until(ui_root, lambda: not pane.busy and bool(pane.current.get("publication")), 8), workspace._status_detail
         publication = pane.current["publication"]
         exported_path = data / "plans" / (publication["plan_id"] + ".json")
         exported_bytes = exported_path.read_bytes()
         assert json.loads(exported_bytes)["name"] == "새로 등록한 제작 플랜"
         assert pane.plan_title.get() == "새로 등록한 제작 플랜"
-        assert pane.register.cget("state") == pane.title_entry.cget("state") == "disabled"
+        assert pane.register_button.cget("state") == pane.title_entry.cget("state") == "disabled"
         assert all(entry.cget("state") == "disabled" for entry in pane.entries.values())
         assert _pump_until(ui_root, lambda: any(plan.plan_id == publication["plan_id"]
             and plan.name == "새로 등록한 제작 플랜" for plan in analyzer._plan_items), 8)

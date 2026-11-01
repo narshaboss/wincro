@@ -576,8 +576,8 @@ class DraftResultPane(ctk.CTkFrame):
             placeholder_text="동작분석에 표시할 제목", fg_color=COLORS["bg_dark"],
             text_color=COLORS["text_primary"], border_color=COLORS["border"])
         self.title_entry.grid(row=0, column=1, sticky="ew", pady=7)
-        self.register = workspace._button(registration, "동작분석에 등록", self._register, width=130, state="disabled")
-        self.register.grid(row=0, column=2, padx=8, pady=7)
+        self.register_button = workspace._button(registration, "동작분석에 등록", self._register_plan, width=130, state="disabled")
+        self.register_button.grid(row=0, column=2, padx=8, pady=7)
         self.registration_status = ctk.CTkLabel(registration, text="최신 GPT 검수 완료 후 새 플랜으로 등록합니다.",
             anchor="w", text_color=COLORS["text_secondary"], height=20, font=ctk.CTkFont(size=11))
         self.registration_status.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 4))
@@ -605,7 +605,7 @@ class DraftResultPane(ctk.CTkFrame):
             configure_changed(entry, state="normal" if available and self.context else "disabled")
         configure_changed(self.jobs, state="disabled" if self.busy else "readonly")
         configure_changed(self.title_entry, state="normal" if available else "disabled")
-        configure_changed(self.register, state="normal" if available and not self.dirty else "disabled")
+        configure_changed(self.register_button, state="normal" if available and not self.dirty else "disabled")
 
     def _select(self, label):
         if self.dirty:
@@ -755,7 +755,7 @@ class DraftResultPane(ctk.CTkFrame):
         service, key = self.service, self.current["draft_id"]
         self._submit(lambda: (service, service.read_draft(key)), self._display)
 
-    def _register(self):
+    def _register_plan(self):
         if self.dirty:
             self.workspace.set_status("먼저 수정 내용을 초안에 저장하세요. 수정 후에는 GPT 재검수가 필요합니다.")
             return
