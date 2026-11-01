@@ -151,7 +151,7 @@ class RecordingWorkspace(ctk.CTkFrame):
             wraplength=max(120, int(event.width / self.status._get_widget_scaling()) - 4)), add="+")
 
     def _refresh_analysis_progress(self, state, busy):
-        if not state or state.get("job_id") != self._progress_job_id:
+        if not state or state.get("job_id") != self._progress_job_id or (not busy and self.selected is None):
             state = None
         progress = self._analysis_progress.update(state, busy,
             cancelling=self.jobs.cancel_event.is_set())

@@ -488,6 +488,7 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         workspace.after_cancel(workspace._after_id)
         workspace._after_id = None
         from src.ui.analysis_progress import AnalysisProgress
+        workspace.choose(sample)
         clock = [0.0]
         workspace._analysis_progress = AnalysisProgress(clock=lambda: clock[0])
         workspace._progress_job_id = "job_progress"

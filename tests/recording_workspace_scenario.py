@@ -236,6 +236,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         video_before = video.read_bytes()
         view._remove_media_item(view._recording_items[0])
         assert _pump_until(ui_root, lambda: not view._recording_items and not workspace.busy, 5)
+        assert _pump_until(ui_root, lambda: workspace.progress_percent.cget("text") == "0%", 3)
         from src.agent_bridge.recording_catalog import RecordingVisibility
         assert str(video.resolve()).casefold() in RecordingVisibility(workspace.visibility.path).hidden()
         assert not view._load_template_media_items()

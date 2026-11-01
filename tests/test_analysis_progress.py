@@ -87,6 +87,7 @@ def workspace():
     view._analysis_progress = AnalysisProgress()
     view._progress_job_id = "job_one"
     view._progress_bar_value = 0.0
+    view.selected = SimpleNamespace(path="recording.mp4")
     view.jobs = SimpleNamespace(cancel_event=threading.Event())
     view.progress_label = Widget()
     view.progress_percent = Widget()
@@ -133,6 +134,17 @@ def test_cancel_and_error_do_not_turn_green_or_finish_the_bar():
     view._refresh_analysis_progress(state("error"), False)
     assert view.progress_percent.cget("text") != "100%"
     assert view.progress_bar.cget("progress_color") == COLORS["error"]
+
+
+def test_removing_selected_recording_clears_old_completion_but_does_not_hide_active_work():
+    view = workspace()
+    view._refresh_analysis_progress(state("review"), False)
+    assert view.progress_percent.cget("text") == "100%"
+    view.selected = None
+    view._refresh_analysis_progress(state("review"), False)
+    assert view.progress_percent.cget("text") == "0%"
+    view._refresh_analysis_progress(state("running"), True)
+    assert view.progress_percent.cget("text") == "1%"
 
 
 def test_ui_estimate_does_not_write_job_or_plan_files():
