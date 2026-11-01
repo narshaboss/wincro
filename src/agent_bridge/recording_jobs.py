@@ -6,14 +6,14 @@ from pathlib import Path
 import threading
 import time
 
-from .contracts import BridgeError, digest
+from .contracts import BridgeError, digest, walk
 from .media import MediaTools
 from .service import DraftService
 from .storage import new_id, read_json, within, write_json
 from .transport import LocalHost, protect_directory
 
 
-ACTIVE_STATES = {"starting", "running", "cancelling"}
+ACTIVE_STATES = {"starting", "running", "cancelling", "registering"}
 JOB_TOOLS = {
     "list_plans", "read_plan", "read_draft", "list_drafts", "read_actions", "inspect_action",
     "stage_edits", "draft_status", "record_analysis", "record_crosscheck", "validate_draft",
@@ -79,15 +79,20 @@ class RecordingJobs:
                 continue
             try:
                 state = self._metadata(folder)
-                if state.get("status") == "review" and state.get("draft_id"):
+                if state.get("status") in {"review", "published", "registering", "registration_failed"} and state.get("draft_id"):
                     draft = read_json(within(folder / "drafts" / (state["draft_id"] + ".json"), folder))
                     if not isinstance(draft, dict) or not isinstance(draft.get("plan"), dict):
                         raise ValueError("초안 파일 형식이 잘못되었습니다.")
                     analysis = draft.get("analysis")
-                    if not isinstance(analysis, dict) or analysis.get("plan_digest") != digest(draft["plan"]):
+                    if draft.get("publication"):
+                        publisher = DraftService(self.plans_dir, self.templates_dir, folder / "drafts")
+                        receipt = draft["publication"]
+                        publisher.publish_new_plan(draft["draft_id"], receipt["revision"], receipt["name"])
+                        state = dict(state, status="published", publication=receipt)
+                    elif state["status"] == "registering" and not (self.busy and self.active and state["job_id"] == self.active["job_id"]):
+                        state = dict(state, status="registration_failed", message="중단된 등록의 저장 결과를 확인하고 같은 초안을 다시 등록하세요. 재분석은 필요하지 않습니다.")
+                    elif not isinstance(analysis, dict) or analysis.get("plan_digest") != digest(draft["plan"]):
                         state = dict(state, status="needs_review", message="초안이 수정되어 GPT 분석·교차검수가 다시 필요합니다.")
-                    elif draft.get("publication"):
-                        state = dict(state, status="published")
                 if state.get("status") in ACTIVE_STATES and (not self.active or state["job_id"] != self.active["job_id"]):
                     state = dict(state, status="unconfirmed", message="이전 분석의 실행 상태를 확인할 수 없습니다. 저장된 초안을 읽기 전용으로 확인하세요.")
                 result.append(state)
@@ -129,13 +134,15 @@ class RecordingJobs:
     def busy(self):
         return bool(self.worker and self.worker.is_alive())
 
-    def start(self, recording, goal, runtime, *, input_log=None, excluded=(), reference=None, answer=""):
+    def start(self, recording, goal, runtime, *, input_log=None, excluded=(), reference=None, answer="", auto_register=False):
         with self.lock:
             if self.closed or self.busy:
                 raise BridgeError("JOB_BUSY", "Another analysis is active or this view is closed")
             if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000:
                 raise BridgeError("INVALID_FIELD", "분석할 작업과 종료 조건을 4,000자 이내로 적어주세요.")
             self._answer(answer)
+            if type(auto_register) is not bool:
+                raise BridgeError("INVALID_FIELD", "auto_register must be a boolean")
             if len(self.list_jobs()) >= 100:
                 raise BridgeError("LIMIT_REACHED", "분석 기록이 100개입니다. 작업 폴더를 보관·정리한 뒤 다시 시도하세요.")
             key = new_id("job_")
@@ -146,7 +153,9 @@ class RecordingJobs:
             self.active = {"job_id": key, "status": "starting", "recording_name": Path(recording).name,
                 "goal": goal.strip(), "draft_id": None, "created_at": now(), "updated_at": now(),
                 "message": "선택한 녹화와 실행기를 확인하고 있습니다.", "reference": reference, "attempt": 1,
-                "answers": [{"answer": answer.strip(), "at": now()}] if answer.strip() else []}
+                "answers": [{"answer": answer.strip(), "at": now()}] if answer.strip() else [],
+                "auto_register": auto_register,
+                "registration_name": DraftService.publication_title(Path(recording).stem[:180] + " · 분석 플랜")}
             self._persist()
             self.worker = threading.Thread(target=self._run, args=(str(recording), input_log, excluded, dict(runtime)),
                                            name="wincro-recording-gpt", daemon=True)
@@ -174,8 +183,8 @@ class RecordingJobs:
                 "message": metadata.get("model_message", ""), "media": metadata.get("media"),
                 "reference": metadata.get("reference"), "attempt": metadata.get("attempt", 1)}
 
-    def resume(self, job_id, draft_id, expected_revision, answer, recording, runtime, *, input_log=None, excluded=()):
-        """Explicit owner answer + renewed media consent; never exposed to the AI tools."""
+    def resume(self, job_id, draft_id, expected_revision, answer, recording, runtime, *, input_log=None, excluded=(), auto_register=None):
+        """Owner-only reanalysis of the selected source; never exposed to AI tools."""
         self._answer(answer)
         with self.lock:
             info = self.followup_info(job_id, draft_id, expected_revision)
@@ -183,11 +192,16 @@ class RecordingJobs:
                 raise BridgeError("MEDIA_RESELECT_REQUIRED", "이전 자료 선택 기록이 없습니다. 녹화를 다시 선택해 새 분석을 시작하세요. 기존 초안은 보존됩니다.")
             if type(info["attempt"]) is not int or not 1 <= info["attempt"] < 10:
                 raise BridgeError("LIMIT_REACHED", "이어 분석은 9회까지 가능합니다. 새 분석을 시작하세요.")
-            service, _ = self.load_result(job_id)
+            service, state = self.load_result(job_id)
             metadata = self._metadata(service.workspace.parent)
+            if auto_register is not None and type(auto_register) is not bool:
+                raise BridgeError("INVALID_FIELD", "auto_register must be a boolean")
             next_state = dict(metadata, attempt=info["attempt"] + 1, status="starting", updated_at=now(),
                 answers=metadata.get("answers", []) + [{"answer": answer.strip(), "questions": info["questions"],
-                    "revision": expected_revision, "at": now()}], message="답변을 보관하고 같은 초안의 GPT 분석·검수를 이어갑니다.")
+                    "revision": expected_revision, "at": now()}], message="같은 초안을 녹화 기준으로 자동 분석·검수합니다.",
+                auto_register=metadata.get("auto_register", False) if auto_register is None else auto_register,
+                registration_name=metadata.get("registration_name") or DraftService.publication_title(state["plan"]["name"]),
+                completion_issues=[])
             write_json(service.workspace.parent / "job.json", next_state)
             self.active = next_state
             self.cancel_event = threading.Event()
@@ -246,7 +260,10 @@ class RecordingJobs:
             if type(budget) is not int or not 30 <= budget <= 3600:
                 raise BridgeError("INVALID_FIELD", "분석 제한 시간은 30~3600초여야 합니다.")
             deadline = time.monotonic() + budget
+            ready = False
+            issues = []
             for review_pass in range(1, 4):
+                self._check_cancel()
                 remaining = int(deadline - time.monotonic())
                 self.runner = factory(dict(runtime, max_seconds=max(30, remaining)), folder)
                 self._persist(status="running", review_pass=review_pass,
@@ -258,21 +275,40 @@ class RecordingJobs:
                 if result.get("exit_code") != 0:
                     raise BridgeError("GPT_EXECUTION_FAILED", result.get("message", "GPT 실행에 실패했습니다."))
                 state = service.read_draft(draft["draft_id"])
-                valid = service.validate_draft(draft["draft_id"])
-                questions = (state.get("analysis") or {}).get("open_questions", [])
-                ready = bool(valid["rule_count"] > 0 and valid["ai_analysis_current"] and valid["crosscheck_ready"] and not questions)
+                try:
+                    valid = service.validate_draft(draft["draft_id"])
+                    issues = self._completion_issues(state, valid)
+                except BridgeError as exc:
+                    if exc.code not in {"INVALID_FIELD", "INVALID_REFERENCE", "UNSUPPORTED_SCHEMA", "INVALID_PLAN", "INVALID_TREE"}:
+                        raise
+                    issues = [f"{exc.code}: {exc}"]
+                ready = not issues
+                self._persist(completion_issues=issues)
                 if ready or time.monotonic() >= deadline - 30:
                     break
             service.save_draft(draft["draft_id"], state["revision"])
+            self._check_cancel()
+            # Revoke AI edit authority before binding a revision to publication.
+            scope.revoked.set()
+            host.close()
+            if ready and self.active.get("auto_register"):
+                self._persist(status="registering", result_revision=state["revision"],
+                    message="분석·교차검수 완료. 새 플랜 저장과 동작분석 등록을 확인하고 있습니다.",
+                    model_message=str(result.get("message", ""))[:6000])
+                self._auto_register(service, state)
+                return
             self._persist(status="review" if ready else "needs_review", result_revision=state["revision"],
                 message=("GPT 분석·양방향 대조 기록과 초안 저장을 확인했습니다. 결과를 직접 검토하세요." if ready else
-                         "자동 분석을 완료하지 못했습니다. 초안은 보존했으며 처리하지 못한 항목을 결과에 남겼습니다."),
+                         "분석 미완료 · " + " / ".join(issues)[:1500]),
                 model_message=str(result.get("message", ""))[:6000])
         except Exception as exc:
             cancelled = self.cancel_event.is_set()
+            registration_unknown = bool(service and self.active and self.active.get("draft_id")
+                and (service.workspace / (self.active["draft_id"] + ".publish-intent.json")).exists())
             try:
-                self._persist(status="cancelled" if cancelled else "error",
-                    message="분석을 취소했습니다. 이미 저장된 초안은 보관됩니다." if cancelled else
+                self._persist(status="registration_failed" if registration_unknown else "cancelled" if cancelled else "error",
+                    message="등록 저장 결과 확인 필요 · 초안과 파일을 보존했습니다: " + str(exc)[:1500] if registration_unknown else
+                            "분석을 취소했습니다. 이미 저장된 초안은 보관됩니다." if cancelled else
                             f"{getattr(exc, 'code', type(exc).__name__)}: {exc}"[:2000])
             except Exception:
                 # Never claim a durable completion if the job record itself could not be saved.
@@ -286,6 +322,43 @@ class RecordingJobs:
             if host:
                 host.close()
             self.runner = None
+
+    @staticmethod
+    def _completion_issues(state, valid):
+        issues = []
+        if not valid["rule_count"]:
+            issues.append("녹화 동작을 수행할 액션이 없습니다.")
+        elif not any(rule.get("enabled", True) for rule, *_ in walk(state["plan"])):
+            issues.append("모든 액션이 비활성입니다. 관찰한 동작은 활성 액션으로 작성하고 다시 검수해야 합니다.")
+        if not valid["ai_analysis_current"]:
+            issues.append("최신 액션 전체의 영상 근거·행동 목적 분석이 없습니다.")
+        if (state.get("analysis") or {}).get("open_questions"):
+            issues.append("이전 확인 질문이 남아 있습니다. 녹화 순서·시간·종료 상태를 기준으로 자율적으로 재분석하세요.")
+        if not valid["crosscheck_ready"]:
+            issues.append("최신 편집 이후 영상→플랜·플랜→영상 양방향 검수가 완료되지 않았습니다.")
+        for check in state.get("crosschecks", [])[-2:]:
+            issues.extend(str(issue)[:500] for issue in check.get("remaining_issues", []))
+            issues.extend(str(item["note"])[:500] for item in check.get("checks", []) if item.get("result") != "match")
+        return list(dict.fromkeys(issues))[:12]
+
+    def _auto_register(self, service, state):
+        """The Analyze button authorizes one NEW plan, never AI publication tools."""
+        self._check_cancel()
+        for attempt in range(2):
+            try:
+                with service.lock:
+                    publication, _ = self._publish_result(service, state, state["revision"], self.active["registration_name"], user_reviewed=False)
+                # After commit, even a late cancel must not hide a real saved plan.
+                self._persist(status="published", publication=publication,
+                    message=f"‘{publication['name']}’ 동작분석 등록 완료 · 파일 저장·재읽기 확인. 자동 실행하지 않습니다.")
+                return
+            except Exception as exc:
+                retryable = isinstance(exc, OSError) or getattr(exc, "code", None) in {"SAVE_FAILED", "SAVE_STATE_UNKNOWN"}
+                if attempt == 0 and retryable and not self.cancel_event.wait(.2):
+                    state = service.read_draft(state["draft_id"])
+                    continue
+                self._persist(status="registration_failed", message=f"분석 완료 · 플랜 등록 확인 실패: {getattr(exc, 'code', type(exc).__name__)}: {exc}. 초안은 보존했습니다. 같은 결과의 등록만 다시 시도하세요."[:2000])
+                return
 
     def _progress(self, message):
         if self.cancel_event.is_set() or self.closed:
@@ -316,6 +389,9 @@ class RecordingJobs:
             "was specified, author one bounded performance of the recorded workflow ending at its observed final state. "
             "Do not invent unseen repetitions, hidden inputs, cleanup or destructive actions. "
             "Use open_questions=[] in record_analysis. Reinspect ambiguous frames and finish the supported workflow. "
+            "Write observed, supported actions as enabled=true, not disabled candidates awaiting permission. "
+            "Do not treat missing style preferences (click speed, natural typing, loop count) as blockers: "
+            "use visible successful input results and recorded intervals, with repeat_count=1 by default. "
             "If essential behavior truly cannot be determined or implemented, record factual remaining_issues "
             "and uncertain/mismatch crosschecks, and explain the incomplete result without asking questions. "
             "You cannot execute or validate actual recognition/playback here. "
@@ -340,6 +416,8 @@ class RecordingJobs:
             + "USER GOAL (task request, not footage):\n" + self.active["goal"]
             + "\nOWNER FOLLOW-UP ANSWERS (resolve these against the current video and draft):\n"
             + "\n".join(entry["answer"] for entry in self.active.get("answers", []) if entry.get("answer"))
+            + "\nMECHANICAL COMPLETION ISSUES TO FIX IN THIS PASS:\n"
+            + "\n".join(self.active.get("completion_issues", []))
             + "\nFinish any earlier incomplete analysis and both fresh crosschecks autonomously, then validate and save."
         )
 
@@ -373,7 +451,7 @@ class RecordingJobs:
         service = self.service if self.active and self.active["job_id"] == job_id and self.service else DraftService(
             self.plans_dir, self.templates_dir, folder / "drafts", allow_publication=False)
         state = service.read_draft(metadata["draft_id"])
-        if metadata.get("status") in ACTIVE_STATES and not (self.active and self.active["job_id"] == job_id):
+        if metadata.get("status") in ACTIVE_STATES - {"registering"} and not (self.active and self.active["job_id"] == job_id):
             service.closed = True
         return service, state
 
@@ -385,17 +463,37 @@ class RecordingJobs:
                 raise BridgeError("JOB_BUSY", "분석 실행 중이거나 화면이 닫혔습니다. 분석을 마친 뒤 등록하세요.")
             service, state = self.load_result(job_id)
             metadata = self._metadata(service.workspace.parent)
-            if service.closed or state["draft_id"] != draft_id or metadata["status"] not in {"review", "needs_review"}:
+            allowed = {"review", "needs_review", "published", "registration_failed"}
+            if metadata.get("auto_register"):
+                allowed.add("registering")
+                if name != metadata["registration_name"] or expected_revision != metadata.get("result_revision"):
+                    raise BridgeError("REVISION_CONFLICT", "자동 등록할 제목·분석 버전이 바뀌었습니다. 저장 당시의 결과로만 등록을 재시도하세요.")
+            if service.closed or state["draft_id"] != draft_id or metadata["status"] not in allowed:
                 raise BridgeError("PERMISSION_REQUIRED", "실행 상태를 확인할 수 없는 분석 결과는 등록할 수 없습니다.")
             with service.lock:
-                publisher = DraftService(self.plans_dir, self.templates_dir, service.workspace)
-                publisher.lock = service.lock
-                if not state.get("publication"):
-                    if not publisher.validate_draft(draft_id)["rule_count"]:
-                        raise BridgeError("ANALYSIS_REQUIRED", "액션이 없는 초안은 플랜으로 등록할 수 없습니다.")
-                    publisher.approve_publication(draft_id, expected_revision, name=name)
-                publication = publisher.publish_new_plan(draft_id, expected_revision, name=name)
-                restored = service.read_draft(draft_id)
-                if restored.get("publication") != publication:
-                    raise BridgeError("SAVE_STATE_UNKNOWN", "등록 기록 재읽기가 일치하지 않습니다. 플랜 파일을 확인하세요.")
-                return publication, (service, restored)
+                result = self._publish_result(service, state, expected_revision, name, user_reviewed=not metadata.get("auto_register", False))
+            if metadata.get("auto_register"):
+                updated = dict(metadata, status="published", publication=result[0], updated_at=now(), message="동작분석 등록 완료 · 저장·재읽기 확인")
+                write_json(service.workspace.parent / "job.json", updated)
+                if self.active and self.active["job_id"] == job_id:
+                    self.active = updated
+                    self.serial += 1
+            return result
+
+    def _publish_result(self, service, state, expected_revision, name, *, user_reviewed=True):
+        draft_id = state["draft_id"]
+        publisher = DraftService(self.plans_dir, self.templates_dir, service.workspace)
+        publisher.lock = service.lock
+        if not state.get("publication"):
+            publisher._expect(state, expected_revision)
+            valid = publisher.validate_draft(draft_id)
+            if not valid["rule_count"]:
+                raise BridgeError("ANALYSIS_REQUIRED", "액션이 없는 초안은 플랜으로 등록할 수 없습니다.")
+            if not user_reviewed and self._completion_issues(state, valid):
+                raise BridgeError("ANALYSIS_REQUIRED", "자동 등록 전에 활성 액션·최신 분석·양방향 검수가 필요합니다.")
+            publisher.approve_publication(draft_id, expected_revision, name=name, user_reviewed=user_reviewed)
+        publication = publisher.publish_new_plan(draft_id, expected_revision, name=name)
+        restored = service.read_draft(draft_id)
+        if restored.get("publication") != publication:
+            raise BridgeError("SAVE_STATE_UNKNOWN", "등록 기록 재읽기가 일치하지 않습니다. 플랜 파일을 확인하세요.")
+        return publication, (service, restored)

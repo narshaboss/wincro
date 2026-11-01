@@ -100,3 +100,8 @@ def test_newer_result_revision_blocks_a_stale_ui_but_manual_edits_do_not():
     snapshot["job_id"] = "job_other"
     pane.current["revision"] = 1
     assert not DraftResultPane._awaiting_current_result(pane)
+    snapshot.update(job_id="job_one", publication={"plan_id": "plan_new"})
+    pane.current["revision"] = 9
+    assert DraftResultPane._awaiting_current_result(pane)
+    pane.current["publication"] = snapshot["publication"]
+    assert not DraftResultPane._awaiting_current_result(pane)

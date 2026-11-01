@@ -26,6 +26,7 @@ from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 DEFAULT_GOAL = "중간 질문 없이 녹화에 보이는 동작 순서·입력 간격·작업 종료 상태를 기준으로 같은 작업을 수행하는 초안을 자율적으로 완성하세요. 별도 반복 지시가 없으면 녹화된 작업을 한 번 수행하고 끝내세요. 실제로 확인·구현할 수 없는 핵심 내용은 임의로 지어내지 말고 미완료 사유로 정리하세요."
 JOB_LABELS = {"starting": "준비 중", "running": "GPT 분석 중", "review": "검토 가능", "published": "플랜 등록 완료", "needs_review": "추가 확인 필요",
+              "registering": "동작분석 등록 중", "registration_failed": "등록 재시도 필요",
               "error": "오류", "cancelled": "취소됨", "interrupted": "중단됨", "unconfirmed": "이전 실행 확인 필요"}
 COMBO_STYLE = dict(fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"],
     button_color=COLORS["bg_elevated"], button_hover_color=COLORS["bg_card_hover"],
@@ -63,6 +64,9 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._connection_status = None
         self._status_detail = ""
         self._last_failed_job = None
+        self._jobs_refresh_pending = False
+        self._pending_job_selection = None
+        self._notified_publications = set()
         self._analysis_progress = AnalysisProgress()
         self._progress_job_id = None
         self._progress_bar_value = 0.0
@@ -124,7 +128,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         buttons = ctk.CTkFrame(panel, fg_color="transparent")
         buttons.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         buttons.grid_columnconfigure(0, weight=1)
-        self.analyze = self._button(buttons, "선택한 녹화 분석 시작", self._analyze,
+        self.analyze = self._button(buttons, "분석 시작 · 완료 후 자동 등록", self._analyze,
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color=COLORS["text_on_accent"])
         self.analyze.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.cancel_button = self._button(buttons, "분석 취소", self._cancel, width=86, state="disabled")
@@ -157,11 +161,12 @@ class RecordingWorkspace(ctk.CTkFrame):
             cancelling=self.jobs.cancel_event.is_set())
         captions = {"idle": "분석 대기", "starting": "예상 진행률", "running": "예상 진행률",
             "finishing": "저장 마무리", "complete": "분석 완료", "needs_review": "분석 미완료",
+            "registering": "동작분석 등록 중", "registration_failed": "등록 재시도 필요",
             "cancelling": "분석 취소 중", "cancelled": "분석 취소됨", "error": "분석 오류",
             "unconfirmed": "진행 확인 필요"}
         if progress.phase == "complete":
             color = COLORS["success"]
-        elif progress.phase == "error":
+        elif progress.phase in {"error", "registration_failed"}:
             color = COLORS["error"]
         elif progress.phase in {"cancelling", "cancelled", "needs_review", "unconfirmed"}:
             color = COLORS["warning"]
@@ -255,13 +260,13 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._refresh_analysis_progress(None, False)
         try:
             started = self.jobs.start(path, self.goal.get().strip() or DEFAULT_GOAL, self.runtime,
-                input_log=log, excluded=excluded, reference=self.runtime.get("reference"))
+                input_log=log, excluded=excluded, reference=self.runtime.get("reference"), auto_register=True)
         except Exception as exc:
             self.set_status(str(exc))
             return False
         self._progress_job_id = started["job_id"]
         self._refresh_analysis_progress(started, True)
-        self.set_status("GPT 연결과 녹화 자료를 준비하고 있습니다. 결과는 별도 초안으로만 보관합니다.")
+        self.set_status("GPT가 질문 없이 분석·교차검수 후 새 플랜으로 자동 등록합니다. 기존 플랜과 재생목록은 변경하지 않습니다.")
         configure_changed(self.analyze, state="disabled", text="GPT 분석 준비 중…")
         configure_changed(self.cancel_button, state="normal")
         return True
@@ -300,7 +305,10 @@ class RecordingWorkspace(ctk.CTkFrame):
                 else:
                     self.set_status(error)
             else:
-                done(value)
+                try:
+                    done(value)
+                except Exception as exc:
+                    self.set_status("화면 갱신 실패 · 저장된 결과는 보존됩니다: " + str(exc))
         busy = self.jobs.busy
         connected = self.connection.connected
         connection = self.connection.snapshot()
@@ -312,7 +320,7 @@ class RecordingWorkspace(ctk.CTkFrame):
             connection = self.connection.snapshot()
         self._was_connected = connected
         configure_changed(self.analyze, state="disabled" if busy or self.busy or not connected else "normal",
-            text="GPT 분석 진행 중…" if busy else "선택한 녹화 분석 시작")
+            text="GPT 분석·등록 진행 중…" if busy else "분석 시작 · 완료 후 자동 등록")
         configure_changed(self.cancel_button, state="normal" if busy else "disabled")
         state = connection["state"]
         label = "GPT 연결 ON" if connected else "연결 중 · 취소" if state == "connecting" else "GPT 연결 OFF"
@@ -337,8 +345,12 @@ class RecordingWorkspace(ctk.CTkFrame):
             self._refresh_jobs(select=state["job_id"] if state and state.get("draft_id") else None)
         if not busy and not self.busy and not self.result.busy and self.result._awaiting_current_result():
             self._refresh_jobs(select=self.jobs.snapshot()["job_id"])
+        if self._jobs_refresh_pending and not self.busy and not self.result.busy and not self.result.dirty:
+            self._refresh_jobs(self._pending_job_selection)
         self._was_running = busy
         state = self.jobs.snapshot()
+        if not busy and state and state.get("status") == "published" and state.get("publication"):
+            self._notify_publication(state["publication"])
         self._refresh_analysis_progress(state, busy)
         if not busy and state and state.get("status") == "error" and state["job_id"] != self._last_failed_job:
             self._last_failed_job = state["job_id"]
@@ -350,9 +362,35 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._after_id = self.after(150, self._poll)
 
     def _refresh_jobs(self, select=None):
+        self._jobs_refresh_pending = True
+        if select:
+            self._pending_job_selection = select
+        if self.busy or self.result.busy or self.result.dirty:
+            return
+        selected = self._pending_job_selection
+        self._jobs_refresh_pending = False
+        self._pending_job_selection = None
         def loaded(states):
-            self.result.set_jobs(states, select)
+            deferred = self.result.dirty or self.result.busy
+            self.result.set_jobs(states, selected)
+            if selected and deferred:
+                self._jobs_refresh_pending = True
+                self._pending_job_selection = selected
         self._submit(self.jobs.list_jobs, loaded)
+
+    def _notify_publication(self, publication):
+        key = publication["plan_id"]
+        if key in self._notified_publications:
+            return
+        try:
+            analyzer = getattr(self.owner.winfo_toplevel(), "_views", {}).get("analyzer")
+            if analyzer is not None:
+                analyzer.refresh()
+            self._notified_publications.add(key)
+        except Exception as exc:
+            # Publication is durable even if the list widget cannot refresh.
+            self._notified_publications.add(key)
+            self.set_status("플랜 저장 완료 · 동작분석 목록을 다시 열어주세요: " + str(exc))
 
     def _dialog(self, title, width, height):
         dialog = ctk.CTkToplevel(self)
@@ -446,8 +484,8 @@ class RecordingWorkspace(ctk.CTkFrame):
             "3. ON 버튼을 누르면 OFF가 되어 연결과 진행 중 분석을 종료합니다. 분석 취소는 분석만 중단하며 ON 연결은 유지합니다. 현재 대화를 깨우는 기능은 아닙니다.\n\n"
             "4. GPT가 중간 질문 없이 녹화에 보이는 순서·입력 간격·작업 종료 상태를 기준으로 스스로 분석하고 최대 두 번 더 보완·검수합니다. 확인·구현할 수 없는 핵심 내용은 추측해서 성공 처리하지 않고 미완료 사유로 남깁니다.\n\n"
             "결과에서 대기·반복을 수정해 저장한 뒤 자동 재검수를 누르면 별도 질문·동의창 없이 같은 초안의 분석을 이어갑니다. 예전 기록에 원본 경로가 없으면 녹화 목록에서 원본을 선택하세요. 기존 초안은 보존합니다.\n\n"
-            "진행 바는 정확한 작업량이 아닌 예상 진행률입니다. 분석 중에는 100%가 되지 않으며, 분석·교차검수 기록과 초안 저장을 확인한 뒤에만 100%로 표시합니다. 실제 인식·재생 성공을 보장하지 않습니다.\n\n"
-            "5. 최신 GPT 분석·양방향 검수가 완료된 결과에 플랜 제목을 입력하고 동작분석에 등록을 누르세요. 승인하면 새 플랜 파일을 저장·재읽기 확인하며 동작분석 목록에 표시합니다. 기존 플랜·재생목록은 바꾸지 않고 자동 실행하지 않습니다. 수정으로 검수가 무효가 된 초안은 다시 GPT 분석·검수가 필요합니다.\n\n"
+            "진행 바는 정확한 작업량이 아닌 예상 진행률입니다. 새 플랜 파일 저장·재읽기와 등록까지 확인한 뒤에만 100%로 표시합니다. 실제 인식·재생 성공을 보장하지 않습니다.\n\n"
+            "5. 분석 시작은 완료된 결과를 새 플랜으로 자동 등록하는 요청입니다. 제목은 녹화 파일명을 사용합니다. 동작분석 목록에서 이름·액션을 편집할 수 있으며 기존 플랜·재생목록은 바꾸지 않고 자동 실행하지 않습니다. 등록 실패는 초안을 유지하며 같은 결과에서 등록만 재시도할 수 있습니다.\n\n"
             "녹화의 삭제 버튼은 목록에서만 제거합니다. 원본 영상·키 기록·분석 결과·기존 플랜은 보존되며 파일 추가로 복원할 수 있습니다. 기존 재생 플랜·맵은 수정하지 않습니다. 실제 인식·재생 성공은 별도 검증이 필요합니다.")
         dialog = self._dialog("녹화·GPT 분석 사용방법", 640, 480)
         box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
@@ -621,13 +659,26 @@ class DraftResultPane(ctk.CTkFrame):
         self.running = running
         published = bool(self.current and self.current.get("publication"))
         available = bool(self.current and not self.busy and not running and not self.service.closed and not published and not self._awaiting_current_result())
-        configure_changed(self.save, state="normal" if available and self.context and self.dirty else "disabled")
+        policy = self._registration_policy()
+        registration_pending = policy.get("auto_register") and policy.get("status") in {"registering", "registration_failed"}
+        editable = available and not registration_pending
+        configure_changed(self.save, state="normal" if editable and self.context and self.dirty else "disabled")
         for entry in self.entries.values():
-            configure_changed(entry, state="normal" if available and self.context else "disabled")
+            configure_changed(entry, state="normal" if editable and self.context else "disabled")
         configure_changed(self.jobs, state="disabled" if self.busy else "readonly")
-        configure_changed(self.title_entry, state="normal" if available else "disabled")
+        configure_changed(self.title_entry, state="normal" if editable else "disabled")
         configure_changed(self.register_button, state="normal" if available and not self.dirty else "disabled")
-        configure_changed(self.continue_button, state="normal" if available and not self.dirty else "disabled")
+        configure_changed(self.register_button, text="등록 재시도" if registration_pending else "동작분석에 등록")
+        configure_changed(self.continue_button, state="normal" if editable and not self.dirty else "disabled")
+
+    def _registration_policy(self):
+        if not self.service:
+            return {}
+        key = self.service.workspace.parent.name
+        active = self.workspace.jobs.snapshot()
+        if active and active["job_id"] == key:
+            return active
+        return next((state for state in self.job_states if state["job_id"] == key), {})
 
     def _awaiting_current_result(self):
         if not self.current or not self.service:
@@ -635,7 +686,8 @@ class DraftResultPane(ctk.CTkFrame):
         state = self.workspace.jobs.snapshot()
         expected = state.get("result_revision") if state else None
         return bool(state and state["job_id"] == self.service.workspace.parent.name
-            and type(expected) is int and self.current["revision"] < expected)
+            and ((type(expected) is int and self.current["revision"] < expected)
+                 or (state.get("publication") and not self.current.get("publication"))))
 
     def _select(self, label):
         if self.dirty:
@@ -675,7 +727,10 @@ class DraftResultPane(ctk.CTkFrame):
             if error:
                 self._result_error(error)
             else:
-                done(value)
+                try:
+                    done(value)
+                except Exception as exc:
+                    self._result_error("결과 화면 갱신 실패 · 저장된 파일은 보존됩니다: " + str(exc))
             self.set_running(self.running)
         self._after_id = self.after(120, self._poll)
 
@@ -691,8 +746,10 @@ class DraftResultPane(ctk.CTkFrame):
             # A late pre-publication job-list response must not downgrade a verified receipt.
             self.published_jobs.add(self.service.workspace.parent.name)
             self.set_jobs(self.job_states)
+            self.workspace._notify_publication(publication)
         if previous_id != state["draft_id"] or publication:
-            self.plan_title.set(publication["name"] if publication else state["plan"]["name"])
+            policy = self._registration_policy()
+            self.plan_title.set(publication["name"] if publication else policy.get("registration_name") if policy.get("auto_register") else state["plan"]["name"])
         _, ready = review_progress(state)
         configure_changed(self.registration_status, text="등록 완료 · 동작분석 목록에서 확인하세요." if publication else
             "최신 GPT 검수 완료 · 제목 입력 후 등록하세요." if ready else "추가 GPT 분석·양방향 검수 필요 · 등록할 수 없습니다.",
@@ -810,9 +867,6 @@ class DraftResultPane(ctk.CTkFrame):
             self._result_error(message, "최신 GPT 분석·양방향 검수 필요 · 상세 보기")
             return
         configure_changed(self.registration_status, text="최신 GPT 검수 완료 · 제목 입력 후 등록하세요.", text_color=COLORS["text_secondary"])
-        if not messagebox.askyesno("새 플랜 등록 승인", f"제목: {title}\n\n현재 분석 결과를 검토했으며 새 플랜 등록을 승인하시겠습니까?\n"
-                "기존 플랜·재생목록은 변경하지 않습니다. 실제 인식·재생은 별도로 확인해야 합니다.", parent=self):
-            return
         job_id = self.service.workspace.parent.name
         key, revision = state["draft_id"], state["revision"]
         configure_changed(self.registration_status, text="등록 중 · 파일 저장·재읽기 확인 중", text_color=COLORS["text_secondary"])
@@ -822,10 +876,7 @@ class DraftResultPane(ctk.CTkFrame):
             self.workspace.set_status(f"‘{publication['name']}’ 플랜 파일을 저장·재읽기 확인했습니다. 동작분석에서 확인하세요. 자동 실행하지 않습니다.")
             self.workspace._refresh_jobs()
             # Refresh only the analyzed-plan list; never reset a running playlist.
-            main_window = self.workspace.owner.winfo_toplevel()
-            analyzer = getattr(main_window, "_views", {}).get("analyzer")
-            if analyzer is not None:
-                analyzer.refresh()
+            self.workspace._notify_publication(publication)
         self._submit(lambda: self.workspace.jobs.register_plan(job_id, key, revision, title), registered)
 
     def _result_error(self, detail, summary="작업 실패 · 여기를 눌러 상세 확인"):
@@ -859,7 +910,7 @@ class DraftResultPane(ctk.CTkFrame):
             if info["media"]:
                 media = info["media"]
                 started = workspace.jobs.resume(info["job_id"], info["draft_id"], info["revision"], "", media["path"],
-                    workspace.runtime, input_log=media.get("input_log"), excluded=())
+                    workspace.runtime, input_log=media.get("input_log"), excluded=(), auto_register=True)
             else:
                 if not workspace.selected:
                     self._result_error("이전 기록에 원본 경로가 없습니다. 녹화 목록에서 원본을 선택한 뒤 자동 재검수를 누르세요.", "원본 녹화 선택 필요")
@@ -867,7 +918,7 @@ class DraftResultPane(ctk.CTkFrame):
                 # Legacy jobs lack a durable source scope: only use an explicitly selected recording.
                 workspace.jobs.followup_info(info["job_id"], info["draft_id"], info["revision"])
                 started = workspace.jobs.start(workspace.selected.path, info["goal"], workspace.runtime,
-                    input_log=getattr(workspace.selected, "input_log", None), reference=info["reference"])
+                    input_log=getattr(workspace.selected, "input_log", None), reference=info["reference"], auto_register=True)
         except Exception as exc:
             self._result_error(str(exc))
             return False

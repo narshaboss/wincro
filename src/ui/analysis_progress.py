@@ -39,17 +39,19 @@ class AnalysisProgress:
         elapsed = max(0.0, now - self._last)
         self._last = now
         status = state.get("status")
-        if status == "review" and not busy:
+        if not busy and (status == "published" or status == "review" and not state.get("auto_register")):
             self._value = 1.0
             return ProgressState(self._value, "complete")
         self._value = min(self._value, .99)
-        if status in {"error", "cancelled", "interrupted", "unconfirmed", "needs_review"} or not busy:
+        if status in {"error", "cancelled", "interrupted", "unconfirmed", "needs_review", "registration_failed"} or not busy:
             self._value = min(self._value, .95)
-            phase = status if status in {"error", "cancelled", "needs_review"} else "unconfirmed"
+            phase = status if status in {"error", "cancelled", "needs_review", "registration_failed"} else "unconfirmed"
             return ProgressState(self._value, phase)
         if cancelling or status == "cancelling":
             return ProgressState(self._value, "cancelling")
-        if status == "review":
+        if status == "registering":
+            target, phase = .99, "registering"
+        elif status in {"review", "published"}:
             target, phase = .99, "finishing"
         elif status == "running":
             if self._running_since is None:

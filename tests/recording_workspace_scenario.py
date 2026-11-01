@@ -160,6 +160,15 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
     workspace = view._workspace
     workspace.jobs.runner_factory = MCPPipelineActor
     workspace.connection.runner_factory = MCPIdleActor
+    # First retain coverage for saved legacy draft-only jobs and their editor.
+    # Restore the real entry points below to test the new automatic UI workflow.
+    automatic_start, automatic_resume = workspace.jobs.start, workspace.jobs.resume
+    def legacy_start(*args, **kwargs):
+        return automatic_start(*args, **dict(kwargs, auto_register=False))
+    def legacy_resume(*args, **kwargs):
+        return automatic_resume(*args, **dict(kwargs, auto_register=False))
+    monkeypatch.setattr(workspace.jobs, "start", legacy_start)
+    monkeypatch.setattr(workspace.jobs, "resume", legacy_resume)
     MCPPipelineActor.release.clear()
     try:
         assert _pump_until(ui_root, lambda: len(view._recording_items) == 1 and not workspace.busy, 8)
@@ -276,10 +285,9 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert "제목" in pane.registration_status.cget("text")
         assert pane.registration_status.cget("text_color") == recording_workspace.COLORS["error"]
         pane.plan_title.set("새로 등록한 제작 플랜")
-        monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: False)
-        pane.register_button.invoke()
-        assert list((data / "plans").iterdir()) == [original]
-        monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
+        def no_prompt(*args, **kwargs):
+            raise AssertionError("Recording analysis/registration must not ask a question")
+        monkeypatch.setattr(messagebox, "askyesno", no_prompt)
         register_plan = workspace.jobs.register_plan
         monkeypatch.setattr(workspace.jobs, "register_plan", Mock(side_effect=OSError("Synthetic registration write failure")))
         pane.register_button.invoke()
@@ -326,6 +334,35 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         analyzer.pack_forget()
         view.pack(fill="both", expand=True)
         workspace.tabs.set("녹화·분석")
+
+        # Real Analyze -> automatic repair -> automatic durable publication -> list refresh.
+        monkeypatch.setattr(workspace.jobs, "start", automatic_start)
+        monkeypatch.setattr(workspace.jobs, "resume", automatic_resume)
+        MCPPipelineActor.pending_passes = 1
+        assert _pump_until(ui_root, lambda: not workspace.busy and not pane.busy, 5)
+        workspace.analyze.invoke()
+        auto_job = workspace.jobs.snapshot()["job_id"]
+        assert workspace.jobs.snapshot()["auto_register"] is True
+        assert _pump_until(ui_root, lambda: not workspace.jobs.busy and not pane.busy and pane.current
+            and pane.service.workspace.parent.name == auto_job and pane.current.get("publication"), 25), workspace._status_detail
+        automatic = pane.current["publication"]
+        automatic_path = data / "plans" / (automatic["plan_id"] + ".json")
+        automatic_bytes = automatic_path.read_bytes()
+        assert workspace.jobs.snapshot()["status"] == "published"
+        assert workspace.jobs.snapshot()["review_pass"] == 2
+        assert json.loads(automatic_bytes)["user_verified"] is False
+        assert _pump_until(ui_root, lambda: workspace.progress_percent.cget("text") == "100%"
+            and any(plan.plan_id == automatic["plan_id"] for plan in analyzer._plan_items), 8)
+        assert not any(isinstance(child, ctk.CTkToplevel) for child in workspace.winfo_children())
+        assert pane.plan_title.get() == "workflow · 분석 플랜"
+        assert pane.register_button.cget("state") == "disabled"
+        assert len(list((data / "plans").glob("*.json"))) == 3
+        workspace.tabs.set("분석 결과 편집")
+        ui_root.update()
+        ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_auto_registered.png")
+        player.refresh.assert_not_called()
+        workspace.tabs.set("녹화·분석")
+        monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
         video_before = video.read_bytes()
         view._remove_media_item(view._recording_items[0])
         assert _pump_until(ui_root, lambda: not view._recording_items and not workspace.busy, 5)
@@ -374,8 +411,9 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         ImageGrab.grab(bbox=(0, 0, 1024, 740), all_screens=True).save(artifacts / "recording_model_error.png")
         error_window.destroy()
         assert original.read_bytes() == before
-        assert set((data / "plans").iterdir()) == {original, exported_path}
+        assert set((data / "plans").iterdir()) == {original, exported_path, automatic_path}
         assert exported_path.read_bytes() == exported_bytes
+        assert automatic_path.read_bytes() == automatic_bytes
         session.start.assert_not_called()
         capture.start.assert_not_called()
         database.create_recording.assert_not_called()

@@ -509,10 +509,12 @@ class DraftService:
             self._save(state)
             return self._public(state)
 
-    def approve_publication(self, draft_id, expected_revision, name=None):
+    def approve_publication(self, draft_id, expected_revision, name=None, *, user_reviewed=True):
         """UI-only method. Never exposed through MCP dispatch."""
         if not self.allow_publication:
             raise BridgeError("PUBLICATION_DISABLED", "This recording workspace only saves independent drafts")
+        if type(user_reviewed) is not bool:
+            raise BridgeError("INVALID_FIELD", "user_reviewed must be a boolean")
         with self.lock:
             state = self._load(draft_id)
             self._expect(state, expected_revision)
@@ -526,6 +528,8 @@ class DraftService:
             title = self.publication_title(state["plan"]["name"] if name is None else name)
             state["approval"] = {"instance_id": self.instance_id, "revision": expected_revision,
                                  "digest": digest(state["plan"]), "name": title}
+            if not user_reviewed:
+                state["approval"]["user_reviewed"] = False
             self._save(state)
 
     def publish_new_plan(self, draft_id, expected_revision, name=None):
@@ -544,8 +548,11 @@ class DraftService:
                 return copy.deepcopy(publication)
             self._expect(state, expected_revision)
             approval = state.get("approval") or {}
-            if approval != {"instance_id": self.instance_id, "revision": expected_revision,
-                            "digest": digest(state["plan"]), "name": title}:
+            expected_approval = {"instance_id": self.instance_id, "revision": expected_revision,
+                                 "digest": digest(state["plan"]), "name": title}
+            if approval.get("user_reviewed") is False:
+                expected_approval["user_reviewed"] = False
+            if approval != expected_approval:
                 raise BridgeError("PERMISSION_REQUIRED", "Approve this exact draft in WinCro first")
             source = state.get("source")
             if source and self.read_plan(source["plan_id"])["source_sha256"] != source["sha256"]:
@@ -562,7 +569,7 @@ class DraftService:
             plan = copy.deepcopy(state["plan"])
             # A user-selected export title does not invalidate the reviewed actions.
             plan["name"] = title
-            plan["user_verified"] = True
+            plan["user_verified"] = approval.get("user_reviewed", True)
             plan["modified"] = True
             filename = plan["plan_id"] + ".json"
             payload = encoded(plan)

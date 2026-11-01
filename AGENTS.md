@@ -16,8 +16,12 @@ consent dialogs. Use the observed order, timing and end of the selected recordin
 unless the user specified otherwise. Unobservable essential behavior must remain
 an explicitly incomplete result, not a guessed successful plan. Analyze authorizes
 only the selected recording and its explicitly associated input log; never scan
-for unrelated files or remove existing private intervals. Plan publication still
-requires user approval. An analysis record is traceability, not proof of
+for unrelated files or remove existing private intervals. In the recording tab,
+Analyze authorizes automatic registration of one NEW plan after current analysis,
+crosschecks and durable save verification. Only the app owner publishes; AI tools
+remain draft-only. Never change existing plans/playlists or auto-execute the result.
+Do not mark automatically registered plans as human-reviewed. Manual bridge
+publication still requires explicit owner approval. An analysis record is traceability, not proof of
 understanding or successful recognition/playback.
 
 ## Recognition baseline
