@@ -226,6 +226,8 @@ class GPTPlayPanel(ctk.CTkFrame):
 
     def close(self):
         self.closed = True
-        self.jobs.close()
-        if self._after_id:
+        if getattr(self, "jobs", None) is not None:
+            self.jobs.close()
+        if getattr(self, "_after_id", None):
             self.after_cancel(self._after_id)
+            self._after_id = None

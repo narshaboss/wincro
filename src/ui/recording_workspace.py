@@ -19,6 +19,7 @@ from ..agent_bridge.recording_catalog import RecordingVisibility
 from ..agent_bridge.storage import new_id, read_json, write_json
 from ..agent_bridge.service import DraftService
 from ..utils.config import DATA_DIR
+from ..utils.logger import get_logger
 from .ai_draft_guidance import readable_action, readable_analysis, review_progress
 from .analysis_progress import AnalysisProgress
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
@@ -31,10 +32,16 @@ JOB_LABELS = {"starting": "준비 중", "running": "GPT 분석 중", "review": "
 COMBO_STYLE = dict(fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"],
     button_color=COLORS["bg_elevated"], button_hover_color=COLORS["bg_card_hover"],
     dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["bg_elevated"], dropdown_text_color=COLORS["text_primary"])
+logger = get_logger(__name__)
 
 
 def configure_changed(widget, **values):
-    changes = {key: value for key, value in values.items() if widget.cget(key) != value}
+    def current(key):
+        # CTk 5.x forwards Text.state writes but not cget reads to its Tk Text.
+        if key == "state" and isinstance(widget, ctk.CTkTextbox):
+            return widget._textbox.cget(key)
+        return widget.cget(key)
+    changes = {key: value for key, value in values.items() if current(key) != value}
     if changes:
         widget.configure(**changes)
 
@@ -93,9 +100,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.start_page = self.tabs.add("녹화·분석")
         self.result_page = self.tabs.add("분석 결과 편집")
         self.play_page = self.tabs.add("GPT 플레이")
-        from .gpt_play_panel import GPTPlayPanel
-        self.play_panel = GPTPlayPanel(self.play_page, self, root, DATA_DIR / "plans", DATA_DIR / "templates")
-        self.play_panel.pack(fill="both", expand=True)
+        self.play_panel = None
+        self._play_root = root
         self.start_page.grid_columnconfigure(0, weight=1)
         self.start_page.grid_rowconfigure(1, weight=1, minsize=90)
         controls = ctk.CTkFrame(self.start_page, fg_color="transparent")
@@ -113,6 +119,7 @@ class RecordingWorkspace(ctk.CTkFrame):
             self.set_status(settings_error)
         self.result = DraftResultPane(self.result_page, self)
         self.result.pack(fill="both", expand=True)
+        self._build_play_panel()
         self._refresh_jobs()
         self._after_id = self.after(150, self._poll)
 
@@ -128,6 +135,40 @@ class RecordingWorkspace(ctk.CTkFrame):
             self.set_status("GPT 연결이 ON이어야 플레이를 시작할 수 있습니다.")
             return
         self.tabs.set("GPT 플레이")
+        if self.play_panel is None:
+            self._build_play_panel()
+
+    @property
+    def _play_busy(self):
+        return self.play_panel is not None and (self.play_panel.jobs.active or self.play_panel.jobs.busy)
+
+    def _build_play_panel(self):
+        if self.play_panel is not None or self.closed:
+            return
+        for child in self.play_page.winfo_children():
+            child.destroy()
+        try:
+            from .gpt_play_panel import GPTPlayPanel
+            panel = GPTPlayPanel(self.play_page, self, self._play_root, DATA_DIR / "plans", DATA_DIR / "templates")
+            panel.pack(fill="both", expand=True)
+        except Exception as exc:
+            logger.exception("GPT 플레이 화면 생성 실패; 기존 녹화 화면은 유지합니다")
+            # A failed widget constructor can leave children and scheduled polls.
+            for child in self.play_page.winfo_children():
+                try:
+                    close = getattr(child, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    logger.exception("GPT 플레이 초기화 실패 정리 오류")
+                finally:
+                    child.destroy()
+            message = "GPT 플레이 화면을 불러오지 못했습니다.\n녹화·분석 기능은 계속 사용할 수 있습니다.\n\n" + str(exc)
+            ctk.CTkLabel(self.play_page, text=message, justify="left", anchor="w", wraplength=420,
+                text_color=COLORS["error"]).pack(fill="x", padx=12, pady=12)
+            self._button(self.play_page, "GPT 화면 다시 불러오기", self._build_play_panel).pack(padx=12, pady=8)
+        else:
+            self.play_panel = panel
 
     def _build_analysis_controls(self):
         panel = ctk.CTkFrame(self.start_page, fg_color=COLORS["bg_glass"], border_width=IOS_METRICS["card_border_width"], border_color=COLORS["border"])
@@ -216,7 +257,8 @@ class RecordingWorkspace(ctk.CTkFrame):
     def _toggle_connection(self):
         if self.connection.busy:
             self._was_connected = False
-            self.play_panel.jobs.pause()
+            if self.play_panel is not None:
+                self.play_panel.jobs.pause()
             self.jobs.cancel()
             self.connection.disable()
             self.set_status("GPT 연결을 해제했습니다. 진행 중 분석은 취소하고 저장된 초안은 보관합니다.")
@@ -244,7 +286,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.owner._update_media_selection()
 
     def _analyze(self):
-        if self.play_panel.jobs.active or self.play_panel.jobs.busy:
+        if self._play_busy:
             self.set_status("GPT 플레이를 중지한 뒤 녹화 분석을 시작하세요.")
             return
         if self.jobs.busy or self.busy or self.owner._is_recording or self.owner._starting or self.owner._stopping:
@@ -262,7 +304,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._start_analysis(self.selected.path, getattr(self.selected, "input_log", None), ())
 
     def _start_analysis(self, path, log, excluded):
-        if self.play_panel.jobs.active or self.play_panel.jobs.busy:
+        if self._play_busy:
             self.set_status("GPT 플레이를 먼저 중지하세요.")
             return False
         if self.jobs.busy or self.busy or not self.selected or path != self.selected.path:
@@ -332,7 +374,7 @@ class RecordingWorkspace(ctk.CTkFrame):
                     self.set_status("화면 갱신 실패 · 저장된 결과는 보존됩니다: " + str(exc))
         busy = self.jobs.busy
         connected = self.connection.connected
-        play_active = self.play_panel.jobs.active or self.play_panel.jobs.busy
+        play_active = self._play_busy
         configure_changed(self.play_button, state="normal" if connected and not busy else "disabled")
         connection = self.connection.snapshot()
         if self._was_connected and not connected:
@@ -543,7 +585,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         if self.closed:
             return
         self.closed = True
-        self.play_panel.close()
+        if self.play_panel is not None:
+            self.play_panel.close()
         self.connection.close()
         self.jobs.close()
         self.result.close()

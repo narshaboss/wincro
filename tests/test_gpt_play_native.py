@@ -22,6 +22,113 @@ def ui_root():
     root.destroy()
 
 
+def test_textbox_state_reads_tk_state_on_ctk5_and_does_not_redraw_when_unchanged(ui_root, monkeypatch):
+    from src.ui.recording_workspace import configure_changed
+    from unittest.mock import Mock
+    original_cget = ctk.CTkTextbox.cget
+    def legacy_cget(self, name):
+        if name == "state":
+            raise ValueError("'state' is not a supported argument.")
+        return original_cget(self, name)
+    monkeypatch.setattr(ctk.CTkTextbox, "cget", legacy_cget)
+    box = ctk.CTkTextbox(ui_root)
+    configure = Mock(wraps=box.configure)
+    monkeypatch.setattr(box, "configure", configure)
+    try:
+        configure_changed(box, state="disabled")
+        assert box._textbox.cget("state") == "disabled"
+        for _ in range(10):
+            configure_changed(box, state="disabled")
+        assert configure.call_count == 1
+        configure_changed(box, state="normal")
+        assert box._textbox.cget("state") == "normal"
+        assert configure.call_count == 2
+        with pytest.raises(ValueError):
+            configure_changed(box, not_a_widget_option=True)
+    finally:
+        box.destroy()
+
+
+@pytest.mark.parametrize("fail_play_init", [False, True])
+def test_recorder_survives_play_init_failure_and_supports_ctk5(tmp_path, ui_root, monkeypatch, fail_play_init):
+    import time
+    from unittest.mock import Mock
+    from src.ui import main_window, recorder_view, recording_workspace
+    from src.ui.gpt_play_panel import GPTPlayPanel
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(recording_workspace, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(recorder_view, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(main_window, "get_config", lambda: SimpleNamespace(recording=SimpleNamespace(fps=30)))
+    database, session, capture = Mock(), Mock(), Mock()
+    database.get_all_recordings.return_value = []
+    monkeypatch.setattr(recorder_view, "get_db", lambda: database)
+    monkeypatch.setattr(recorder_view, "RecordingSession", lambda: session)
+    monkeypatch.setattr(recorder_view, "get_screen_recorder", lambda: capture)
+    monkeypatch.setattr(recorder_view.RecorderView, "_setup_hotkeys", Mock())
+    original_cget = ctk.CTkTextbox.cget
+    def legacy_cget(self, name):
+        if name == "state":
+            raise ValueError("'state' is not a supported argument.")
+        return original_cget(self, name)
+    monkeypatch.setattr(ctk.CTkTextbox, "cget", legacy_cget)
+    original_refresh = GPTPlayPanel._refresh_controls
+    failed_panels = []
+    def fail(self):
+        failed_panels.append(self)
+        raise RuntimeError("Injected optional GPT panel initialization failure")
+    if fail_play_init:
+        monkeypatch.setattr(GPTPlayPanel, "_refresh_controls", fail)
+    window = ctk.CTkToplevel(ui_root)
+    window.geometry("1024x740+0+0")
+    view = None
+    try:
+        view = recorder_view.RecorderView(window)
+        view.pack(fill="both", expand=True)
+        workspace = view._workspace
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            ui_root.update()
+            if workspace.analyze.winfo_ismapped() and not workspace.busy:
+                break
+            time.sleep(.02)
+        for widget in (workspace.badge, view._start_btn, view._stop_btn, workspace.play_button,
+                       workspace.analyze, view._recordings_scroll):
+            assert widget.winfo_ismapped(), type(widget).__name__
+        assert workspace.badge.cget("text") == "GPT 연결 OFF"
+        assert workspace.play_button.cget("state") == "disabled"
+        assert not workspace._play_busy
+        if fail_play_init:
+            assert workspace.play_panel is None
+            assert failed_panels and failed_panels[0].closed
+            assert not failed_panels[0].winfo_exists()
+            assert any(isinstance(child, ctk.CTkLabel) and "녹화·분석 기능" in child.cget("text")
+                       for child in workspace.play_page.winfo_children())
+            # Existing recording/analysis controls remain responsive after failure.
+            workspace._analyze()
+            assert "선택" in workspace.status.cget("text")
+            monkeypatch.setattr(GPTPlayPanel, "_refresh_controls", original_refresh)
+            workspace._build_play_panel()
+        assert workspace.play_panel is not None
+        assert workspace.play_panel.start_button.cget("state") == "disabled"
+        workspace.tabs.set("GPT 플레이")
+        ui_root.update()
+        assert workspace.play_panel.goal.winfo_ismapped()
+        workspace.tabs.set("녹화·분석")
+        ui_root.update()
+        artifacts = Path("artifacts/gpt_play")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(0, 0, 1024, 740)).save(artifacts / f"recorder_ctk5_recovery_{fail_play_init}.png")
+        session.start.assert_not_called()
+        capture.start.assert_not_called()
+        assert not (tmp_path / "data/plans").exists()
+    finally:
+        if view:
+            view.cleanup()
+            view.destroy()
+        window.destroy()
+
+
 @pytest.mark.parametrize("scale,width,height", [(1, 640, 680), (1.25, 800, 720), (1.5, 960, 780)])
 def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, width, height):
     from src.ui.gpt_play_panel import GPTPlayPanel

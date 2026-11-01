@@ -10,6 +10,32 @@ permissions:
   contents: read
 
 jobs:
+  recording-legacy-ui:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install operator-compatible UI dependencies
+        run: |
+          python -m pip install -r requirements.txt "customtkinter==5.2.2" "mcp==1.25.0"
+          python -c "import sys, customtkinter; print(sys.version, customtkinter.__version__); assert customtkinter.__version__ == '5.2.2'"
+      - name: Recording workspace and GPT UI on operator-compatible Windows
+        env:
+          WINCRO_GPT_PLAY_UI_QA: '1'
+          WINCRO_AI_EDITOR_UI_QA: '1'
+        run: python -m pytest -q tests/test_gpt_play_native.py tests/test_ai_draft_bridge_native.py -k "textbox_state or recorder_survives or panel_on_off or recording_workspace_layout" --junitxml=artifacts/gpt_play/legacy-ui.xml
+      - name: Upload legacy UI verification
+        if: ${{ always() && hashFiles('artifacts/gpt_play/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: recording-legacy-ui
+          path: |
+            artifacts/gpt_play/
+            artifacts/ai_draft/
+          retention-days: 14
   regression:
     runs-on: windows-latest
     timeout-minutes: 15
