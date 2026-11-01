@@ -622,6 +622,14 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
     monkeypatch.setattr(player_view, "setup_window_position", lambda *args, **kwargs: None)
     monkeypatch.setattr(analyzer_view, "setup_window_position", lambda *args, **kwargs: None)
     monkeypatch.setattr(player_view, "PLANS_DIR", tmp_path / "plans")
+    original_editor = player_view.ImageCropDialog
+
+    def initialized_editor(*args, **kwargs):
+        editor = original_editor(*args, **kwargs)
+        editor._coordinate_qa_ready = True
+        return editor
+
+    monkeypatch.setattr(player_view, "ImageCropDialog", initialized_editor)
     ctk.set_widget_scaling(scale)
     # DPI scales both the window and its controls, not controls alone.
     ctk.set_window_scaling(scale)
@@ -661,7 +669,7 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
         def edit_region_and_close():
             poll_after[0] = None
             dialogs = [child for child in owner.winfo_children() if isinstance(child, analyzer_view.ImageCropDialog)]
-            if len(dialogs) != 1 or "_search_radius_btn" not in dialogs[0].__dict__:
+            if len(dialogs) != 1 or not dialogs[0].__dict__.get("_coordinate_qa_ready"):
                 poll_after[0] = ui_root.after(25, edit_region_and_close)
                 return
             editor = dialogs[0]
