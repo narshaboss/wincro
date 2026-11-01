@@ -627,6 +627,7 @@ def test_recorded_character_timing_visible_in_owned_text_widget(monkeypatch, ui_
         worker.join(2)
         assert result == [True]
         assert snapshots == ["안", "안녕", "안녕하", "안녕하세", "안녕하세요"]
+        ui_root.update_idletasks()
         ImageGrab.grab(bbox=(0, 0, 620, 250)).save(Path("artifacts/ai_draft/typing_greeting_complete.png"))
     finally:
         executor._stop_event.set()
