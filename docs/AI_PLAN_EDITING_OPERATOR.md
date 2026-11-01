@@ -34,7 +34,7 @@
 
 화면녹화에서 새로 분석하거나 자동 재검수하는 작업은 각 액션의 `timing` 기록이 필수다. 시작·끝·다음 동작 시작 시각을 상세 영상 프레임에서 판단한다. 대기는 `next_start_seconds - end_seconds`로 계산하며 `wait_random=false`로 저장한다. 마지막 동작은 실제 작업 종료까지의 간격을 쓴다. 30fps 영상은 약 0.033초 단위다. 물리 키 입력 시각이나 실행 PC의 실제 지연까지 정확히 복원했다고 하지 않는다.
 
-`record_analysis.steps[].timing`에는 `start_seconds`, `end_seconds`, `next_start_seconds`, `precision_seconds`, `start_frame_trace_id`, `end_frame_trace_id`, `text_mode`를 넣는다. 시작·끝 프레임 근거, 영상 길이·정밀도, 대기시간 계산과 실제 플랜 값을 검사한다. 기존 수동 초안 API는 시간 기록 없는 자료도 읽을 수 있지만 새 녹화 작업은 기록 없이 자동 등록하지 않는다.
+`record_analysis.steps[].timing`에는 `start_seconds`, `end_seconds`, `next_start_seconds`, `precision_seconds`, `start_frame_trace_id`, `end_frame_trace_id`, `text_mode`를 넣는다. 정밀도는 원본 한 프레임인 `1/fps`로 기록한다. 타이핑에는 `character_frame_trace_ids`로 글자별 시점의 상세 프레임 근거도 넣는다. 작은 글씨는 `get_frames(region=원본좌표범위)`로 확대 확인한다. 미리보기 좌표는 scale로 나눈 뒤 preview_origin을 더한다. 시작·끝·글자별 프레임 근거, 영상 길이·정밀도, 대기시간 계산과 실제 플랜 값을 검사한다. 기존 수동 초안 API는 시간 기록 없는 자료도 읽을 수 있지만 새 녹화 작업은 기록 없이 자동 등록하지 않는다.
 
 글자가 순서대로 나타나면 `text_mode=typed`로 판단하고 `typing_timestamps`에 첫 글자 기준 각 글자의 표시 시점 오프셋을 저장한다. 예: `안녕`에 `[0, 0.45]`. 기존 `typing_delay`만 적어 두면 `typing_random=false`일 때 적용되지 않는다. 새 시점별 입력은 이 플래그와 무관하게 적용되며 마지막 글자 뒤에 타이핑용 대기를 더 붙이지 않는다. 원래 문장 전체를 붙여넣는 장면이면 `text_mode=paste`와 빈 시점 목록을 사용한다. 입력 내용이 바뀌면 글자 시점도 새 내용에 맞게 다시 검수해야 한다.
 

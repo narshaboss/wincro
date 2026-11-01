@@ -130,13 +130,14 @@ def measured_draft(clip):
     media.read_recording(key)
     draft = add(service, service.open_draft("Measured text"), "type", action_text="안녕하세요",
         typing_timestamps=[0, 1/3, 1, 5/3, 2], wait_after=.5, wait_random=False)
-    frames = media.get_frames(key, [1, 3])["frames"]
+    frames = media.get_frames(key, [1, 1+1/3, 2, 1+5/3])["frames"] + media.get_frames(key, [3])["frames"]
     rule = draft["plan"]["initial_rules"][0]
     step = dict(rule_id=rule["rule_id"], recording_id=key, seconds=3,
-        frame_trace_id=frames[1]["frame_trace_id"], observation="Synthetic growing text", purpose="Type slowly",
+        frame_trace_id=frames[-1]["frame_trace_id"], observation="Synthetic growing text", purpose="Type slowly",
         expected_result="Greeting remains", timing=dict(start_seconds=1, end_seconds=3, next_start_seconds=3.5,
             precision_seconds=1/3, start_frame_trace_id=frames[0]["frame_trace_id"],
-            end_frame_trace_id=frames[1]["frame_trace_id"], text_mode="typed"))
+            end_frame_trace_id=frames[-1]["frame_trace_id"], text_mode="typed",
+            character_frame_trace_ids=[f["frame_trace_id"] for f in frames]))
     return service, draft, step
 
 
@@ -163,7 +164,7 @@ def test_timing_wait_math_and_type_schedule_are_durable(clip):
     assert "사이 대기 0.500초" in readable_analysis(state)
 
 
-@pytest.mark.parametrize("change", ["gap", "precision", "reversed", "wrong_frame", "paste", "no_schedule", "random"])
+@pytest.mark.parametrize("change", ["gap", "precision", "reversed", "wrong_frame", "paste", "no_schedule", "random", "no_character_frames", "wrong_character_frame"])
 def test_inconsistent_measurements_cannot_be_recorded_as_success(clip, change):
     service, draft, step = measured_draft(clip)
     key = draft["draft_id"]
@@ -172,6 +173,8 @@ def test_inconsistent_measurements_cannot_be_recorded_as_success(clip, change):
     if change == "reversed": step["timing"]["end_seconds"] = .5
     if change == "wrong_frame": step["timing"]["start_frame_trace_id"] = step["frame_trace_id"]
     if change == "paste": step["timing"]["text_mode"] = "paste"
+    if change == "no_character_frames": step["timing"].pop("character_frame_trace_ids")
+    if change == "wrong_character_frame": step["timing"]["character_frame_trace_ids"][1] = step["frame_trace_id"]
     if change in {"no_schedule", "random"}:
         fields = {"typing_timestamps": []} if change == "no_schedule" else {"wait_random": True}
         service.stage_edits(draft["draft_id"], draft["revision"], "break", [
@@ -194,3 +197,28 @@ def test_required_recording_scope_rejects_prose_only_timing(clip):
     scope.dispatch("record_analysis", dict(draft_id=draft["draft_id"], expected_revision=draft["revision"],
         goal="Measured typing", steps=[step]))
     assert service.read_draft(draft["draft_id"])["analysis"]["timing_measured"]
+
+
+def test_text_roi_preserves_original_coordinates_and_frame_provenance(clip):
+    media, key, _ = clip
+    frame = media.get_frames(key, [1], region=[500, 300, 800, 400])["frames"][0]
+    import cv2
+    import base64
+    import numpy as np
+    image = cv2.imdecode(np.frombuffer(base64.b64decode(frame["base64"]), np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape[:2] == (100, 300)
+    assert frame["original_width"] == 1280 and frame["original_height"] == 720
+    assert frame["preview_origin"] == [500, 300] and frame["preview_scale"] == 1
+    assert media.service.frame_traces[frame["frame_trace_id"]]["recording_id"] == key
+    media.service.selected_media[key]["excluded"] = [[1, 2]]
+    with pytest.raises(BridgeError) as error:
+        media.get_frames(key, [1.5], region=[500, 300, 800, 400])
+    assert error.value.code == "PRIVATE_INTERVAL"
+
+
+@pytest.mark.parametrize("region", [[-1, 0, 30, 40], [0, 0, 1300, 500], [0, 0, 100, 800], [1, 2, 1, 3], [0, 0, True, 5]])
+def test_invalid_text_roi_issues_no_frame_evidence(clip, region):
+    media, key, _ = clip
+    with pytest.raises(BridgeError):
+        media.get_frames(key, [0], region=region)
+    assert not media.service.frame_traces

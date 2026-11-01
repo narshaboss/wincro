@@ -121,7 +121,7 @@ class MediaTools:
                 cap.release()
         return result
 
-    def get_frames(self, recording_id, timestamps, overview=False):
+    def get_frames(self, recording_id, timestamps, overview=False, region=None):
         import cv2
         if type(overview) is not bool:
             raise BridgeError("INVALID_FIELD", "overview must be boolean")
@@ -141,14 +141,24 @@ class MediaTools:
             for seconds in timestamps:
                 frame, actual = self._frame(record, seconds, capture=cap)
                 h, w = frame.shape[:2]
-                scale = min(1.0, (640 if overview else 1280) / w, (450 if overview else 900) / h)
-                preview = cv2.resize(frame, (round(w * scale), round(h * scale))) if scale < 1 else frame
+                origin = [0, 0]
+                if region is not None:
+                    if not (isinstance(region, list) and len(region) == 4 and all(type(v) is int for v in region)
+                            and 0 <= region[0] < region[2] <= w and 0 <= region[1] < region[3] <= h
+                            and (region[2] - region[0]) * (region[3] - region[1]) <= 1_000_000):
+                        raise BridgeError("INVALID_FIELD", "Use an original-frame region of at most 1MP")
+                    frame = frame[region[1]:region[3], region[0]:region[2]]
+                    origin = region[:2]
+                ph, pw = frame.shape[:2]
+                scale = min(1.0, (640 if overview else 1280) / pw, (450 if overview else 900) / ph)
+                preview = cv2.resize(frame, (round(pw * scale), round(ph * scale))) if scale < 1 else frame
                 ok, data = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if not ok:
                     raise BridgeError("INVALID_MEDIA", "Frame encoding failed")
                 trace_id = new_id("frame_")
                 result.append({"requested_seconds": seconds, "actual_seconds": actual,
                                "original_width": w, "original_height": h, "preview_scale": scale,
+                               "preview_origin": origin,
                                "mime_type": "image/jpeg", "base64": base64.b64encode(data).decode("ascii"),
                                "frame_trace_id": trace_id})
                 traces[trace_id] = {"recording_id": recording_id,

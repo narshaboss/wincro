@@ -192,8 +192,9 @@ def record_analysis(draft_id: str, expected_revision: int, goal: str, steps: lis
     New recording jobs require timing per step: {start_seconds,end_seconds,next_start_seconds,
     precision_seconds,start_frame_trace_id,end_frame_trace_id,text_mode}.
     Derive wait_after=next_start_seconds-end_seconds and disable wait_random.
-    precision_seconds >= 1/fps and <= max(0.1,1/fps). Inspect actual boundary frames.
+    precision_seconds=1/fps. Inspect actual boundary frames and first final-character appearances, not uniform averages.
     text_mode='typed' needs per-character typing_timestamps spanning end-start; 'paste' is only for observed bulk paste.
+    For typed text timing.character_frame_trace_ids contains a get_frames trace at each start+offset, one per character.
     WinCro does not analyze intentions itself.
     """
     return invoke("record_analysis", locals())
@@ -241,10 +242,12 @@ def read_recording(recording_id: str) -> dict:
 
 
 @mcp.tool()
-def get_frames(recording_id: str, timestamps: list[float], overview: bool = False) -> list:
+def get_frames(recording_id: str, timestamps: list[float], overview: bool = False, region: list[int] | None = None) -> list:
     """Get 1-4 detailed frames, or up to 12 smaller frames with overview=true for timeline orientation.
     Overview is not sufficient for unreadable text or small controls: fetch detail at those timestamps.
     Batch timestamps per call. Crop coordinates use ORIGINAL dimensions, not preview dimensions.
+    For readable small text, region=[x1,y1,x2,y2] crops original pixels (max 1MP).
+    Returned preview_origin must be added AFTER dividing preview coordinates by preview_scale.
     """
     result = invoke("get_frames", locals())
     if not result.get("ok"):

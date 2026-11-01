@@ -14,7 +14,7 @@ def validate_step_timing(service, rule, step):
     if not number(fps, .1, 1000) or not number(duration, 0, 86400):
         raise BridgeError("ANALYSIS_REQUIRED", "Read recording metadata before reporting timing")
     precision = timing.get("precision_seconds")
-    if not number(precision, 1 / fps - .00001, max(.1, 1 / fps) + .00001):
+    if not number(precision, 1 / fps - .00001, 1 / fps + .00001):
         raise BridgeError("INVALID_TIMING", "State video-frame precision; do not claim sub-frame accuracy")
     start, end, next_start = (timing.get(k) for k in ("start_seconds", "end_seconds", "next_start_seconds"))
     if not (number(start, 0, duration) and number(end, start, duration) and number(next_start, end, duration)):
@@ -36,6 +36,15 @@ def validate_step_timing(service, rule, step):
         if mode == "typed":
             if not offsets or abs(offsets[-1] - (end - start)) > precision + .00001:
                 raise BridgeError("INVALID_TIMING", "Gradual typing needs typing_timestamps spanning the observed first-to-last character time; typing_delay alone may be ignored")
+            character_traces = timing.get("character_frame_trace_ids")
+            if not isinstance(character_traces, list) or len(character_traces) != len(offsets):
+                raise BridgeError("INVALID_TIMING", "Provide one inspected character_frame_trace_id per typing timestamp")
+            for offset, trace_id in zip(offsets, character_traces):
+                trace = service.frame_traces.get(trace_id)
+                if (not trace or trace["recording_id"] != step["recording_id"]
+                        or trace["source_sha256"] != record["sha256"]
+                        or abs(trace["requested_seconds"] - (start + offset)) > precision + .00001):
+                    raise BridgeError("INVALID_TIMING", "Inspect a frame at each measured character appearance")
         elif offsets:
             raise BridgeError("INVALID_TIMING", "Do not claim bulk paste with a per-character timeline")
     return True
