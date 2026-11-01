@@ -75,7 +75,7 @@ def test_disabled_candidate_gets_explicit_repair_feedback_not_silent_publication
     start(jobs, media)
     final = finish(jobs)
     assert "모든 액션이 비활성" in Actor.prompts[1]
-    assert Actor.calls == (2 if fix else 3)
+    assert Actor.calls == 2
     assert final["status"] == ("published" if fix else "needs_review")
     assert len(list(jobs.plans_dir.glob("*.json"))) == (2 if fix else 1)
     if not fix:

@@ -16,7 +16,7 @@ EDITABLE = {
     "repeat_count", "repeat_delay", "repeat_delay_random", "repeat_delay_random_range",
     "target_image", "target_images", "confidence", "search_region", "skip_on_not_found",
     "verify_image_color", "verify_image_brightness", "scroll_amount", "drag_to_x",
-    "drag_to_y", "drag_duration",
+    "drag_to_y", "drag_duration", "typing_delay", "typing_random", "typing_delay_range",
 }
 BASIC_TYPES = {"click", "double_click", "right_click", "type", "hotkey", "key_press", "scroll", "drag"}
 IMAGE_FIELDS = {"image", "target_image", "target_images", "trigger_image", "monitoring_final_image",
@@ -164,9 +164,7 @@ class DraftService:
             plan, header = self._inspection_source(draft_id, plan_id)
             rows = list(walk(plan))
             result = []
-            keys = {"rule_id", "description", "action_type", "enabled", "target_image", "confidence",
-                    "search_region", "wait_after", "wait_random", "repeat_count", "repeat_delay",
-                    "skip_on_not_found", "click_until_image_disappears"}
+            keys = EDITABLE | {"rule_id", "action_type", "click_until_image_disappears"}
             for rule, _, parent, step in rows[offset:offset + limit]:
                 entry = {k: copy.deepcopy(v) for k, v in rule.items() if k in keys}
                 entry.update(parent_id=parent, step=step, children_count=len(rule.get("children", [])),
@@ -302,7 +300,7 @@ class DraftService:
             raise BridgeError("INVALID_FIELD", "Field is not editable")
         for key, value in fields.items():
             if key in {"enabled", "wait_random", "repeat_delay_random", "skip_on_not_found",
-                       "verify_image_color", "verify_image_brightness"} and type(value) is not bool:
+                       "verify_image_color", "verify_image_brightness", "typing_random"} and type(value) is not bool:
                 raise BridgeError("INVALID_FIELD", "Boolean field needs a boolean")
             if key in {"action_x", "action_y", "drag_to_x", "drag_to_y", "scroll_amount"} and value is not None and type(value) is not int:
                 raise BridgeError("INVALID_FIELD", "Coordinate needs an integer")

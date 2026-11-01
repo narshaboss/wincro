@@ -55,7 +55,7 @@ def test_legacy_questions_are_reanalyzed_without_requesting_an_answer(waiting):
 def test_prompt_requires_recorded_defaults_and_no_questions(waiting):
     jobs, _, _, _, state, _ = waiting
     prompt = jobs._prompt("recording_fixture", state["draft_id"])
-    for phrase in ("NEVER ask the user questions", "Preserve observed action order", "one bounded performance",
+    for phrase in ("NEVER ask the user questions", "Preserve the meaningful task's observed order", "one bounded performance",
                    "open_questions=[]", "factual remaining_issues", "both fresh crosschecks"):
         assert phrase in prompt
 

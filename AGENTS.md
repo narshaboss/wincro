@@ -12,8 +12,10 @@ After editing, the agent must repeatedly alternate video-to-plan and plan-to-vid
 cross-checks. Correct findings and redo both reviews after any edit. Recording
 two clean passes is a minimum traceability gate, never proof of perfection.
 Recording authoring is autonomous: do not interrupt with clarification or data
-consent dialogs. Use the observed order, timing and end of the selected recording
-unless the user specified otherwise. Unobservable essential behavior must remain
+consent dialogs. Reproduce the observed task order, approximate pacing and result,
+not incidental recorder start/stop UI or every transient IME composition glyph,
+unless those are the actual requested task. Explain the evidence-backed task boundary.
+Unobservable essential behavior must remain
 an explicitly incomplete result, not a guessed successful plan. Analyze authorizes
 only the selected recording and its explicitly associated input log; never scan
 for unrelated files or remove existing private intervals. In the recording tab,

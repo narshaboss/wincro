@@ -81,11 +81,13 @@ mcp = FastMCP("wincro-draft-editor", lifespan=client_lifespan, instructions=(
     "YOU must analyze recording frames and input context, understand the user's task and explain "
     "each action's purpose. WinCro does NOT infer intentions. Never substitute log conversion for "
     "AI interpretation. Record concise observation/purpose/expected-result evidence via record_analysis. "
-    "Then repeatedly cross-check video against plan and plan against video yourself; record both directions. "
+    "Survey short clips with batched overview frames, then inspect meaningful transitions in detail. "
+    "Distinguish task results from recorder UI overhead; ordinary text entry targets the final visible text, "
+    "not every transient IME glyph. Cross-check video against plan and plan against video; record both directions. "
     "After a correction, redo analysis and cross-checks. Two records alone are not proof of perfection. "
     "Edit independent drafts only. Read the latest revision before editing. "
     "Use unique request IDs and stable rule IDs, never displayed action numbers. "
-    "Only media explicitly selected in WinCro is available. Work autonomously from observed recording order, timing and end; "
+    "Only media explicitly selected in WinCro is available. Work autonomously from the observed task order, pacing and result; "
     "do not ask questions. Report factual blocking limitations without inventing successful results. "
     "Only the WinCro owner can publish a new plan: recording Analyze authorizes app-managed registration after review; "
     "your recording tools remain draft-only. Do not leave supported observed actions disabled awaiting approval. "
@@ -146,7 +148,7 @@ def read_draft(draft_id: str) -> dict:
 
 @mcp.tool()
 def read_actions(draft_id: str | None = None, plan_id: str | None = None, offset: int = 0, limit: int = 20) -> dict:
-    """Read action summaries in pages (max 50). Prefer this over full JSON for large plans.
+    """Read action summaries AND all editable fields in pages (max 50). Prefer this over full default-filled JSON.
     Select exactly one draft_id or granted plan_id; keep paging until next_offset is null.
     Compare source_sha256/revision across pages and restart if they differ.
     """
@@ -170,6 +172,8 @@ def stage_edits(draft_id: str, expected_revision: int, request_id: str, operatio
     """Apply an atomic batch. Operations: add_rule(action_type, fields, parent_id?, before_id?),
     update_rule(rule_id, fields), move_rule(rule_id, parent_id?, before_id?),
     delete_rule(rule_id; leaf only), rename_plan(name). No arbitrary JSON patch.
+    Basic type pacing: typing_delay, typing_random, typing_delay_range (seconds).
+    These differ from wait_after and repeat_delay. Batch related edits before reviewing.
     Retry an uncertain request using the SAME request_id, revision and contents.
     """
     return invoke("stage_edits", locals())
@@ -227,8 +231,11 @@ def read_recording(recording_id: str) -> dict:
 
 
 @mcp.tool()
-def get_frames(recording_id: str, timestamps: list[float]) -> list:
-    """Get 1-4 recording frames. Crop coordinates must use ORIGINAL dimensions, not preview dimensions."""
+def get_frames(recording_id: str, timestamps: list[float], overview: bool = False) -> list:
+    """Get 1-4 detailed frames, or up to 12 smaller frames with overview=true for timeline orientation.
+    Overview is not sufficient for unreadable text or small controls: fetch detail at those timestamps.
+    Batch timestamps per call. Crop coordinates use ORIGINAL dimensions, not preview dimensions.
+    """
     result = invoke("get_frames", locals())
     if not result.get("ok"):
         return [json.dumps(result, ensure_ascii=False)]

@@ -34,6 +34,7 @@ class JobScope:
         self.instance_id = service.instance_id
         self.draft_id = draft_id
         self.revoked = threading.Event()
+        self.tool_metrics = {}
 
     def dispatch(self, method, arguments):
         if self.revoked.is_set():
@@ -48,7 +49,24 @@ class JobScope:
             raise BridgeError("PERMISSION_REQUIRED", "Only this job's draft is accessible")
         if method == "read_plan" and arguments.get("plan_id") not in self.service.granted_sources:
             raise BridgeError("PERMISSION_REQUIRED", "Reference not selected by the user")
-        return self.service.dispatch(method, arguments)
+        started = time.monotonic()
+        failed = False
+        try:
+            return self.service.dispatch(method, arguments)
+        except Exception:
+            failed = True
+            raise
+        finally:
+            with self.lock:
+                metric = self.tool_metrics.setdefault(method, {"calls": 0, "errors": 0, "seconds": 0.0})
+                metric["calls"] += 1
+                metric["errors"] += int(failed)
+                metric["seconds"] += time.monotonic() - started
+
+    def metrics(self):
+        with self.lock:
+            return {name: dict(values, seconds=round(values["seconds"], 3))
+                    for name, values in self.tool_metrics.items()}
 
 
 class RecordingJobs:
@@ -264,6 +282,8 @@ class RecordingJobs:
             deadline = time.monotonic() + budget
             ready = False
             issues = []
+            previous_progress = None
+            pass_metrics = []
             for review_pass in range(1, 4):
                 self._check_cancel()
                 remaining = int(deadline - time.monotonic())
@@ -271,8 +291,11 @@ class RecordingJobs:
                 self._persist(status="running", review_pass=review_pass,
                     message="GPT가 녹화 장면과 초안을 분석하고 있습니다." if review_pass == 1 else
                             f"GPT가 누락된 분석·양방향 검수를 보완합니다 ({review_pass - 1}/2).")
+                started = time.monotonic()
                 result = self.runner.run(descriptor, self._prompt(media["recording_id"], draft["draft_id"]),
                                          self.cancel_event, self._progress)
+                pass_metrics.append({"pass": review_pass, "seconds": round(time.monotonic() - started, 3)})
+                self._persist(performance={"passes": pass_metrics, "tools": scope.metrics()})
                 self._check_cancel()
                 if result.get("exit_code") != 0:
                     raise BridgeError("GPT_EXECUTION_FAILED", result.get("message", "GPT 실행에 실패했습니다."))
@@ -285,9 +308,12 @@ class RecordingJobs:
                         raise
                     issues = [f"{exc.code}: {exc}"]
                 ready = not issues
-                self._persist(completion_issues=issues)
-                if ready or time.monotonic() >= deadline - 30:
+                progress = self._review_progress(state)
+                stalled = not ready and progress == previous_progress
+                self._persist(completion_issues=issues, review_stalled=stalled)
+                if ready or stalled or time.monotonic() >= deadline - 30:
                     break
+                previous_progress = progress
             service.save_draft(draft["draft_id"], state["revision"])
             self._check_cancel()
             # Revoke AI edit authority before binding a revision to publication.
@@ -301,7 +327,7 @@ class RecordingJobs:
                 return
             self._persist(status="review" if ready else "needs_review", result_revision=state["revision"],
                 message=("GPT 분석·양방향 대조 기록과 초안 저장을 확인했습니다. 결과를 직접 검토하세요." if ready else
-                         "분석 미완료 · " + " / ".join(issues)[:1500]),
+                         ("같은 미완료 상태가 반복되어 추가 재분석을 중단했습니다. 초안 보존 · " if stalled else "분석 미완료 · ") + " / ".join(issues)[:1500]),
                 model_message=str(result.get("message", ""))[:6000])
         except Exception as exc:
             cancelled = self.cancel_event.is_set()
@@ -324,6 +350,19 @@ class RecordingJobs:
             if host:
                 host.close()
             self.runner = None
+
+    @staticmethod
+    def _review_progress(state):
+        # New trace IDs/revisions or reworded caveats alone are not repair progress.
+        analysis = state.get("analysis") or {}
+        return digest({"plan": state["plan"],
+            "analysis_current": analysis.get("plan_digest") == digest(state["plan"]),
+            "coverage": sorted(step["rule_id"] for step in analysis.get("steps", [])),
+            "questions": bool(analysis.get("open_questions")),
+            "reviews": [{"direction": check["direction"], "passed": check["passed"],
+                "issues": bool(check.get("remaining_issues")),
+                "checks": sorted((item["rule_id"], item["result"]) for item in check.get("checks", []))}
+                for check in state.get("crosschecks", [])[-2:]]})
 
     @staticmethod
     def _completion_issues(state, valid):
@@ -401,12 +440,23 @@ class RecordingJobs:
             "and construct purpose-based parent/child actions. Do not convert input logs mechanically. "
             "connection_status must be your first call. Then read_recording and get_frames. "
             "Frame preview coordinates must be converted to original coordinates for crops and regions. "
-            "Read the full recording timeline in bounded chunks and inspect action transitions carefully; "
-            "request more frames as needed. Legacy input log timing and coordinate origin are unverified. "
+            "First survey the full timeline with get_frames(overview=true): up to 12 evenly spaced timestamps "
+            "per call, strictly below duration_seconds and outside excluded intervals. For a short clip this "
+            "usually needs one overview call. This is orientation, NOT proof all actions were seen. "
+            "Then request full-detail frames in batches of up to 4 around meaningful transitions or unreadable text. "
+            "Do not densely resample unchanged screens. Legacy input log timing and coordinate origin are unverified. "
             "Work autonomously. NEVER ask the user questions, request preferences, or wait for answers. "
-            "Preserve observed action order and input timing unless the user specified a change. "
+            "Preserve the meaningful task's observed order and approximate visible pacing unless the user specified a change. "
             "Infer the recorded workflow from before/after frames yourself. If no broader loop/termination "
-            "was specified, author one bounded performance of the recorded workflow ending at its observed final state. "
+            "was specified, author one bounded performance ending at the task's observed result. "
+            "Identify the TASK boundary from evidence: recorder startup/hiding/stopping and incidental terminal "
+            "or WinCro focus changes are not task steps unless the goal or footage shows they serve the task. "
+            "Explain excluded recording overhead in the analysis goal; never silently omit a real task action. "
+            "For ordinary text entry, reproduce the final visible intended text as one type action per input field. "
+            "Transient IME composition/corrected typos are not separate tasks unless demonstrating them is the goal. "
+            "Do not try to reverse-engineer invisible physical keys or exact key-down milliseconds from pixels. "
+            "Use the existing type action and supported typing_delay/typing_random/typing_delay_range settings "
+            "for approximate pacing; never claim exact physical key fidelity. "
             "Do not invent unseen repetitions, hidden inputs, cleanup or destructive actions. "
             "Use open_questions=[] in record_analysis. Reinspect ambiguous frames and finish the supported workflow. "
             "Write observed, supported actions as enabled=true, not disabled candidates awaiting permission. "
@@ -414,20 +464,30 @@ class RecordingJobs:
             "use visible successful input results and recorded intervals, with repeat_count=1 by default. "
             "If essential behavior truly cannot be determined or implemented, record factual remaining_issues "
             "and uncertain/mismatch crosschecks, and explain the incomplete result without asking questions. "
-            "You cannot execute or validate actual recognition/playback here. "
+            "You cannot execute or validate actual recognition/playback here. Generic untested playback, "
+            "unverified log alignment, or unknown physical keystrokes alone are field limitations, not mismatches "
+            "if the visible task is fully supported. Put those limitations in the final summary, not remaining_issues. "
+            "Do retain actual unsupported task steps, unreadable essential text, uncertain target identity and "
+            "unresolved coordinate assumptions as blocking findings. Prefer screenshot targets when screen origin is unknown. "
             "Use create_asset_crop for real screenshot templates; no generated images or masks. "
             "Only basic click/double_click/right_click/type/hotkey/key_press/scroll/drag edits are available. "
             "Do not fake unsupported monitoring, window-control, random-key or special-mode logic; report factual blocking limitations. "
             "Keep repeat_delay, wait_after and key hold durations distinct. Do not attach image waits to plain key input. "
             "Separate similar controls in different windows by their actual search regions. "
             "Edit ONLY the pre-created draft using stable rule IDs and current revisions. "
-            "Use small stage_edits batches with unique request IDs. Inspect saved actions after editing. "
+            "Batch related edits in stage_edits rather than one tool round-trip per field. "
+            "Use read_actions (includes editable settings) and draft_status for inspection; avoid read_draft's "
+            "large default-filled JSON unless full receipts or state are specifically needed. "
+            "Inspect saved actions after editing. "
             "This may be an existing draft: read its current actions first and do not add duplicate actions. "
             f"Use request IDs prefixed attempt-{self.active.get('attempt', 1)}-pass-{self.active.get('review_pass', 1)}-. "
             "After the edit is ready, record_analysis with concise observation/purpose/expected_result "
-            "and actual get_frames frame_trace_id evidence for every action. Repeatedly alternate fresh "
-            "video_to_plan and plan_to_video reviews using get_frames and record_crosscheck. Correct findings, "
+            "and actual get_frames frame_trace_id evidence for every action. Alternate fresh "
+            "video_to_plan and plan_to_video reviews using batched get_frames and record_crosscheck. Correct findings, "
             "then redo the analysis and both reviews. Two records are a minimum, not proof of perfection. "
+            "Once both reviews are clean and there is no specific unresolved finding, finish; do not restart "
+            "the same investigation merely because real playback cannot be tested. On a repair pass focus on "
+            "the listed issues and existing actions, not rebuilding the entire workflow. "
             "Finally validate_draft and save_draft. Summarize results/limitations in Korean without questions. "
             "Do not claim recognition or playback was tested. Draft-only: publication is disabled.\n"
             f"recording_id={recording_id}\ndraft_id={draft_id}\n"

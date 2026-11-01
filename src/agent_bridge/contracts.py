@@ -93,7 +93,8 @@ def validate(plan):
         if not isinstance(ref, str) or ref not in ids:
             raise BridgeError("INVALID_REFERENCE", "Dangling action reference")
     for rule, *_ in rows:
-        for field in ("wait_after", "wait_random_range", "repeat_delay", "repeat_delay_random_range"):
+        for field in ("wait_after", "wait_random_range", "repeat_delay", "repeat_delay_random_range",
+                      "typing_delay", "typing_delay_range"):
             if field in rule and not number(rule[field], 0, 86400):
                 raise BridgeError("INVALID_FIELD", f"Invalid {field}")
         if not number(rule.get("confidence", .65), 0.01, 1):

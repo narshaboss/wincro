@@ -4,7 +4,7 @@ import base64
 import hashlib
 from pathlib import Path
 
-from .contracts import BridgeError, number
+from .contracts import BridgeError, MAX_MESSAGE, encoded, number
 from .storage import new_id, publish_bytes
 
 
@@ -63,7 +63,7 @@ class MediaTools:
         if any(start - .1 <= seconds <= end + .1 for start, end in record["excluded"]):
             raise BridgeError("PRIVATE_INTERVAL", "This interval was excluded by the user")
 
-    def _frame(self, record, seconds):
+    def _frame(self, record, seconds, capture=None):
         import cv2
         if not number(seconds, 0, 86400):
             raise BridgeError("INVALID_FIELD", "Invalid recording time")
@@ -79,7 +79,7 @@ class MediaTools:
             frame = cv2.imdecode(np.frombuffer(record["path"].read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
             actual = 0.0
         else:
-            cap = cv2.VideoCapture(str(record["path"]))
+            cap = capture if capture is not None else cv2.VideoCapture(str(record["path"]))
             try:
                 fps, count = cap.get(cv2.CAP_PROP_FPS), cap.get(cv2.CAP_PROP_FRAME_COUNT)
                 if not number(fps, .1, 1000) or not number(count, 1, 10_000_000) or seconds >= count / fps:
@@ -94,7 +94,8 @@ class MediaTools:
                 actual = max(0, cap.get(cv2.CAP_PROP_POS_FRAMES) - 1) / fps
                 self._private(record, actual)
             finally:
-                cap.release()
+                if capture is None:
+                    cap.release()
         if frame is None or frame.shape[0] * frame.shape[1] > 16_000_000:
             raise BridgeError("INVALID_MEDIA", "Frame is missing or over 16 megapixels")
         return frame, actual
@@ -104,7 +105,8 @@ class MediaTools:
         result = {"recording_id": recording_id, "name": record["path"].name,
                 "sha256": record["sha256"], "input_log_selected": bool(record["input_log"]),
                 "excluded_intervals": record["excluded"],
-                "timing_status": "legacy_timing_unverified", "coordinate_origin": "user_must_confirm"}
+                "timing_status": "legacy_timing_unverified", "coordinate_origin": "unverified",
+                "coordinate_guidance": "Use original-frame pixels for crops. Do not assume these are desktop coordinates; prefer image targets without an absolute search region when the desktop origin is unknown."}
         if record["path"].suffix.lower() != ".png":
             import cv2
             cap = cv2.VideoCapture(str(record["path"]))
@@ -118,29 +120,45 @@ class MediaTools:
                 cap.release()
         return result
 
-    def get_frames(self, recording_id, timestamps):
+    def get_frames(self, recording_id, timestamps, overview=False):
         import cv2
-        if not isinstance(timestamps, list) or not 1 <= len(timestamps) <= 4:
-            raise BridgeError("LIMIT_REACHED", "Request 1 to 4 frames at a time")
+        if type(overview) is not bool:
+            raise BridgeError("INVALID_FIELD", "overview must be boolean")
+        limit = 12 if overview else 4
+        if not isinstance(timestamps, list) or not 1 <= len(timestamps) <= limit:
+            raise BridgeError("LIMIT_REACHED", f"Request 1 to {limit} frames at a time")
         record = self._get(recording_id)
         result = []
+        traces = {}
         if len(self.service.frame_traces) + len(timestamps) > 2048:
             raise BridgeError("LIMIT_REACHED", "Frame trace budget reached; open a new editor session")
-        for seconds in timestamps:
-            frame, actual = self._frame(record, seconds)
-            h, w = frame.shape[:2]
-            scale = min(1.0, 1280 / w, 900 / h)
-            preview = cv2.resize(frame, (round(w * scale), round(h * scale))) if scale < 1 else frame
-            ok, data = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if not ok:
-                raise BridgeError("INVALID_MEDIA", "Frame encoding failed")
-            result.append({"requested_seconds": seconds, "actual_seconds": actual,
-                           "original_width": w, "original_height": h, "preview_scale": scale,
-                           "mime_type": "image/jpeg", "base64": base64.b64encode(data).decode("ascii")})
-            trace_id = new_id("frame_")
-            self.service.frame_traces[trace_id] = {"recording_id": recording_id,
-                "requested_seconds": seconds, "source_sha256": record["sha256"]}
-            result[-1]["frame_trace_id"] = trace_id
+        cap = None
+        try:
+            # One decoder per bounded batch; never retain an open file between calls.
+            if record["path"].suffix.lower() != ".png":
+                cap = cv2.VideoCapture(str(record["path"]))
+            for seconds in timestamps:
+                frame, actual = self._frame(record, seconds, capture=cap)
+                h, w = frame.shape[:2]
+                scale = min(1.0, (640 if overview else 1280) / w, (450 if overview else 900) / h)
+                preview = cv2.resize(frame, (round(w * scale), round(h * scale))) if scale < 1 else frame
+                ok, data = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if not ok:
+                    raise BridgeError("INVALID_MEDIA", "Frame encoding failed")
+                trace_id = new_id("frame_")
+                result.append({"requested_seconds": seconds, "actual_seconds": actual,
+                               "original_width": w, "original_height": h, "preview_scale": scale,
+                               "mime_type": "image/jpeg", "base64": base64.b64encode(data).decode("ascii"),
+                               "frame_trace_id": trace_id})
+                traces[trace_id] = {"recording_id": recording_id,
+                    "requested_seconds": seconds, "source_sha256": record["sha256"]}
+                if len(encoded({"frames": result})) > MAX_MESSAGE - 1024:
+                    raise BridgeError("MESSAGE_TOO_LARGE", "Request fewer frames or use overview previews")
+        finally:
+            if cap is not None:
+                cap.release()
+        # A failed batch must not leave unreturned evidence traces behind.
+        self.service.frame_traces.update(traces)
         return {"frames": result}
 
     def get_input_events(self, recording_id, start=0, end=60, offset=0):

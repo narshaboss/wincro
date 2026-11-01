@@ -193,7 +193,7 @@ def test_cancel_continuation_revokes_scope_and_preserves_saved_actions(waiting):
     assert jobs.load_result(job_id)[1]["plan"] == state["plan"]
 
 
-@pytest.mark.parametrize("finish_after,expected_calls,expected_status", [(2, 2, "review"), (99, 3, "needs_review")])
+@pytest.mark.parametrize("finish_after,expected_calls,expected_status", [(2, 2, "review"), (99, 2, "needs_review")])
 def test_missing_crosschecks_get_bounded_ai_followups_not_fake_completion(jobs_setup, finish_after, expected_calls, expected_status):
     jobs, media, original = jobs_setup
     class PartialActor(ReviewingActor):
@@ -221,7 +221,8 @@ def test_missing_crosschecks_get_bounded_ai_followups_not_fake_completion(jobs_s
 
 def test_legacy_question_cannot_fake_completion_and_retries_are_bounded(waiting):
     jobs, _, _, _, _, _ = waiting
-    assert jobs.snapshot()["review_pass"] == 3
+    assert jobs.snapshot()["review_pass"] == 2
+    assert jobs.snapshot()["review_stalled"] is True
     assert jobs.snapshot()["status"] == "needs_review"
 
 
