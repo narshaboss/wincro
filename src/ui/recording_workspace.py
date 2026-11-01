@@ -260,7 +260,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._refresh_analysis_progress(None, False)
         try:
             started = self.jobs.start(path, self.goal.get().strip() or DEFAULT_GOAL, self.runtime,
-                input_log=log, excluded=excluded, reference=self.runtime.get("reference"), auto_register=True)
+                input_log=log, excluded=excluded, reference=self.runtime.get("reference"), auto_register=True, preserve_timing=True)
         except Exception as exc:
             self.set_status(str(exc))
             return False
@@ -910,7 +910,7 @@ class DraftResultPane(ctk.CTkFrame):
             if info["media"]:
                 media = info["media"]
                 started = workspace.jobs.resume(info["job_id"], info["draft_id"], info["revision"], "", media["path"],
-                    workspace.runtime, input_log=media.get("input_log"), excluded=(), auto_register=True)
+                    workspace.runtime, input_log=media.get("input_log"), excluded=(), auto_register=True, preserve_timing=True)
             else:
                 if not workspace.selected:
                     self._result_error("이전 기록에 원본 경로가 없습니다. 녹화 목록에서 원본을 선택한 뒤 자동 재검수를 누르세요.", "원본 녹화 선택 필요")
@@ -918,7 +918,7 @@ class DraftResultPane(ctk.CTkFrame):
                 # Legacy jobs lack a durable source scope: only use an explicitly selected recording.
                 workspace.jobs.followup_info(info["job_id"], info["draft_id"], info["revision"])
                 started = workspace.jobs.start(workspace.selected.path, info["goal"], workspace.runtime,
-                    input_log=getattr(workspace.selected, "input_log", None), reference=info["reference"], auto_register=True)
+                    input_log=getattr(workspace.selected, "input_log", None), reference=info["reference"], auto_register=True, preserve_timing=True)
         except Exception as exc:
             self._result_error(str(exc))
             return False

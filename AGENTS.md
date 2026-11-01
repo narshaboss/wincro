@@ -15,6 +15,12 @@ Recording authoring is autonomous: do not interrupt with clarification or data
 consent dialogs. Reproduce the observed task order, approximate pacing and result,
 not incidental recorder start/stop UI or every transient IME composition glyph,
 unless those are the actual requested task. Explain the evidence-backed task boundary.
+Preserve visible typing and action gaps with measured video timestamps. Never
+replace gradual typing with bulk paste merely because the final text matches.
+typing_delay is ignored by the legacy player when typing_random=false. New
+recording jobs use opt-in typing_timestamps and per-step timing evidence; do not
+change legacy input behavior globally. State video-frame precision and distinguish
+measured source timing from real device/recognition latency.
 Unobservable essential behavior must remain
 an explicitly incomplete result, not a guessed successful plan. Analyze authorizes
 only the selected recording and its explicitly associated input log; never scan

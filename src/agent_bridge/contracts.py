@@ -93,6 +93,14 @@ def validate(plan):
         if not isinstance(ref, str) or ref not in ids:
             raise BridgeError("INVALID_REFERENCE", "Dangling action reference")
     for rule, *_ in rows:
+        if rule.get("typing_timestamps"):
+            from ..utils.typing_timeline import validate_typing_timestamps
+            try:
+                validate_typing_timestamps(rule.get("action_text") or "", rule["typing_timestamps"])
+            except ValueError as exc:
+                raise BridgeError("INVALID_FIELD", str(exc)) from exc
+        elif "typing_timestamps" in rule and rule["typing_timestamps"] != []:
+            raise BridgeError("INVALID_FIELD", "typing_timestamps must be a list")
         for field in ("wait_after", "wait_random_range", "repeat_delay", "repeat_delay_random_range",
                       "typing_delay", "typing_delay_range"):
             if field in rule and not number(rule[field], 0, 86400):

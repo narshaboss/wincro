@@ -83,7 +83,9 @@ mcp = FastMCP("wincro-draft-editor", lifespan=client_lifespan, instructions=(
     "AI interpretation. Record concise observation/purpose/expected-result evidence via record_analysis. "
     "Survey short clips with batched overview frames, then inspect meaningful transitions in detail. "
     "Distinguish task results from recorder UI overhead; ordinary text entry targets the final visible text, "
-    "not every transient IME glyph. Cross-check video against plan and plan against video; record both directions. "
+    "not every transient IME glyph. Preserve measured visible character timing with typing_timestamps, "
+    "not bulk paste. Calculate action gaps from video boundary times rather than generic defaults. "
+    "Cross-check video against plan and plan against video; record both directions. "
     "After a correction, redo analysis and cross-checks. Two records alone are not proof of perfection. "
     "Edit independent drafts only. Read the latest revision before editing. "
     "Use unique request IDs and stable rule IDs, never displayed action numbers. "
@@ -173,6 +175,9 @@ def stage_edits(draft_id: str, expected_revision: int, request_id: str, operatio
     update_rule(rule_id, fields), move_rule(rule_id, parent_id?, before_id?),
     delete_rule(rule_id; leaf only), rename_plan(name). No arbitrary JSON patch.
     Basic type pacing: typing_delay, typing_random, typing_delay_range (seconds).
+    typing_delay is ignored when typing_random=false. For observed typing use typing_timestamps:
+    one offset per character, starting at zero, e.g. [0, 0.2, 0.55] for 'abc'.
+    This opt-in schedule overrides bulk paste/random pacing and has no final character delay.
     These differ from wait_after and repeat_delay. Batch related edits before reviewing.
     Retry an uncertain request using the SAME request_id, revision and contents.
     """
@@ -184,6 +189,11 @@ def record_analysis(draft_id: str, expected_revision: int, goal: str, steps: lis
     """Save YOUR concise AI analysis, not hidden reasoning. Each step needs rule_id, recording_id,
     frame_trace_id (from get_frames), seconds, observation, purpose, expected_result. Cover every action autonomously from the video.
     Keep open_questions empty; use factual crosscheck remaining_issues for unsupported behavior. A later edit invalidates this review.
+    New recording jobs require timing per step: {start_seconds,end_seconds,next_start_seconds,
+    precision_seconds,start_frame_trace_id,end_frame_trace_id,text_mode}.
+    Derive wait_after=next_start_seconds-end_seconds and disable wait_random.
+    precision_seconds >= 1/fps and <= max(0.1,1/fps). Inspect actual boundary frames.
+    text_mode='typed' needs per-character typing_timestamps spanning end-start; 'paste' is only for observed bulk paste.
     WinCro does not analyze intentions itself.
     """
     return invoke("record_analysis", locals())

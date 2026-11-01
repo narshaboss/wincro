@@ -79,6 +79,14 @@ def readable_action(rule):
         lines.append("입력 키: " + " + ".join(str(k).upper() for k in keys))
     if rule.get("action_text"):
         lines.append("입력할 글자: " + str(rule["action_text"]))
+        offsets = rule.get("typing_timestamps")
+        if offsets:
+            lines.append(f"타이핑: 녹화 시점별 입력 · {len(offsets)}글자 / {offsets[-1]:.3f}초")
+            lines.append("글자 표시 간격(초): " + ", ".join(f"{b-a:.3f}" for a, b in zip(offsets, offsets[1:])))
+        elif rule.get("typing_random"):
+            lines.append(f"타이핑: 글자별 입력 · {rule.get('typing_delay', .1):g}초 ± {rule.get('typing_delay_range', .05):g}초")
+        else:
+            lines.append("타이핑: 일반 입력 (한글은 문장 단위 붙여넣기)")
     if rule.get("action_key_events"):
         lines.append(f"기록된 키 동작: {len(rule['action_key_events'])}개")
     if rule.get("target_image"):
@@ -105,6 +113,12 @@ def readable_analysis(state):
         if item:
             lines.extend(["화면에서 확인: " + item["observation"], "동작 목적: " + item["purpose"],
                           "기대 결과: " + item["expected_result"], f"영상 근거: {item['seconds']}초"])
+            timing = item.get("timing")
+            if timing:
+                lines.append(f"영상 시각: {timing['start_seconds']:.3f}~{timing['end_seconds']:.3f}초 · "
+                    f"다음 동작 {timing['next_start_seconds']:.3f}초 · "
+                    f"사이 대기 {timing['next_start_seconds']-timing['end_seconds']:.3f}초 · "
+                    f"판독 정밀도 {timing['precision_seconds']:.3f}초")
         else:
             lines.append("GPT의 행동 분석 기록이 없습니다.")
     if analysis.get("open_questions"):

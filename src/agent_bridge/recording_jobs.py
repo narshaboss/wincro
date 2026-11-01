@@ -28,13 +28,14 @@ def now():
 class JobScope:
     """A separate revocable pipe capability for one job, not the manual editor."""
 
-    def __init__(self, service, draft_id):
+    def __init__(self, service, draft_id, preserve_timing=False):
         self.service = service
         self.lock = service.lock
         self.instance_id = service.instance_id
         self.draft_id = draft_id
         self.revoked = threading.Event()
         self.tool_metrics = {}
+        self.preserve_timing = preserve_timing
 
     def dispatch(self, method, arguments):
         if self.revoked.is_set():
@@ -43,6 +44,9 @@ class JobScope:
             raise BridgeError("TOOL_DENIED", "Recording analysis cannot publish or create other drafts")
         if method == "record_analysis" and arguments.get("open_questions"):
             raise BridgeError("AUTONOMOUS_REVIEW_REQUIRED", "Do not ask questions. Reinspect the recording and use observed order/timing/end. Record genuinely unsupported behavior as factual crosscheck remaining_issues, not questions or a false successful review.")
+        if method == "record_analysis" and self.preserve_timing and not (
+                arguments.get("steps") and all(isinstance(step, dict) and step.get("timing") for step in arguments["steps"])):
+            raise BridgeError("TIMING_REQUIRED", "Measure start/end/next-start and frame precision for every action. Include timing in each analysis step; prose about natural speed alone is not sufficient.")
         if method in {"list_drafts"}:
             return [self.service.draft_status(self.draft_id)]
         if "draft_id" in arguments and arguments["draft_id"] not in (None, self.draft_id):
@@ -154,7 +158,7 @@ class RecordingJobs:
     def busy(self):
         return bool(self.worker and self.worker.is_alive())
 
-    def start(self, recording, goal, runtime, *, input_log=None, excluded=(), reference=None, answer="", auto_register=False):
+    def start(self, recording, goal, runtime, *, input_log=None, excluded=(), reference=None, answer="", auto_register=False, preserve_timing=False):
         with self.lock:
             if self.closed or self.busy:
                 raise BridgeError("JOB_BUSY", "Another analysis is active or this view is closed")
@@ -163,6 +167,8 @@ class RecordingJobs:
             self._answer(answer)
             if type(auto_register) is not bool:
                 raise BridgeError("INVALID_FIELD", "auto_register must be a boolean")
+            if type(preserve_timing) is not bool:
+                raise BridgeError("INVALID_FIELD", "preserve_timing must be a boolean")
             if len(self.list_jobs()) >= 100:
                 raise BridgeError("LIMIT_REACHED", "분석 기록이 100개입니다. 작업 폴더를 보관·정리한 뒤 다시 시도하세요.")
             key = new_id("job_")
@@ -175,6 +181,7 @@ class RecordingJobs:
                 "message": "선택한 녹화와 실행기를 확인하고 있습니다.", "reference": reference, "attempt": 1,
                 "answers": [{"answer": answer.strip(), "at": now()}] if answer.strip() else [],
                 "auto_register": auto_register,
+                "preserve_timing": preserve_timing,
                 "registration_name": DraftService.publication_title(Path(recording).stem[:180] + " · 분석 플랜")}
             self._persist()
             self.worker = threading.Thread(target=self._run, args=(str(recording), input_log, excluded, dict(runtime)),
@@ -203,7 +210,7 @@ class RecordingJobs:
                 "message": metadata.get("model_message", ""), "media": metadata.get("media"),
                 "reference": metadata.get("reference"), "attempt": metadata.get("attempt", 1)}
 
-    def resume(self, job_id, draft_id, expected_revision, answer, recording, runtime, *, input_log=None, excluded=(), auto_register=None):
+    def resume(self, job_id, draft_id, expected_revision, answer, recording, runtime, *, input_log=None, excluded=(), auto_register=None, preserve_timing=None):
         """Owner-only reanalysis of the selected source; never exposed to AI tools."""
         self._answer(answer)
         with self.lock:
@@ -216,10 +223,13 @@ class RecordingJobs:
             metadata = self._metadata(service.workspace.parent)
             if auto_register is not None and type(auto_register) is not bool:
                 raise BridgeError("INVALID_FIELD", "auto_register must be a boolean")
+            if preserve_timing is not None and type(preserve_timing) is not bool:
+                raise BridgeError("INVALID_FIELD", "preserve_timing must be a boolean")
             next_state = dict(metadata, attempt=info["attempt"] + 1, status="starting", updated_at=now(),
                 answers=metadata.get("answers", []) + [{"answer": answer.strip(), "questions": info["questions"],
                     "revision": expected_revision, "at": now()}], message="같은 초안을 녹화 기준으로 자동 분석·검수합니다.",
                 auto_register=metadata.get("auto_register", False) if auto_register is None else auto_register,
+                preserve_timing=metadata.get("preserve_timing", False) if preserve_timing is None else preserve_timing,
                 registration_name=metadata.get("registration_name") or DraftService.publication_title(state["plan"]["name"]),
                 completion_issues=[])
             write_json(service.workspace.parent / "job.json", next_state)
@@ -264,7 +274,7 @@ class RecordingJobs:
                        "sha256": media["sha256"], "excluded": record["excluded"],
                        "input_log": str(record["input_log"]) if record["input_log"] else None,
                        "log_sha256": record["log_sha256"]})
-            scope = JobScope(service, draft["draft_id"])
+            scope = JobScope(service, draft["draft_id"], self.active.get("preserve_timing", False))
             self.scope = scope
             self._check_cancel()
             host = LocalHost(scope, folder / "connections")
@@ -304,7 +314,7 @@ class RecordingJobs:
                 state = service.read_draft(draft["draft_id"])
                 try:
                     valid = service.validate_draft(draft["draft_id"])
-                    issues = self._completion_issues(state, valid)
+                    issues = self._completion_issues(state, valid, self.active.get("preserve_timing", False))
                 except BridgeError as exc:
                     if exc.code not in {"INVALID_FIELD", "INVALID_REFERENCE", "UNSUPPORTED_SCHEMA", "INVALID_PLAN", "INVALID_TREE"}:
                         raise
@@ -358,6 +368,7 @@ class RecordingJobs:
         # New trace IDs/revisions or reworded caveats alone are not repair progress.
         analysis = state.get("analysis") or {}
         return digest({"plan": state["plan"],
+            "timing_measured": analysis.get("timing_measured", False),
             "analysis_current": analysis.get("plan_digest") == digest(state["plan"]),
             "coverage": sorted(step["rule_id"] for step in analysis.get("steps", [])),
             "questions": bool(analysis.get("open_questions")),
@@ -367,7 +378,7 @@ class RecordingJobs:
                 for check in state.get("crosschecks", [])[-2:]]})
 
     @staticmethod
-    def _completion_issues(state, valid):
+    def _completion_issues(state, valid, preserve_timing=False):
         issues = []
         if not valid["rule_count"]:
             issues.append("녹화 동작을 수행할 액션이 없습니다.")
@@ -393,6 +404,8 @@ class RecordingJobs:
                 issues.append(prefix + "스크롤 이동량이 0입니다.")
         if not valid["ai_analysis_current"]:
             issues.append("최신 액션 전체의 영상 근거·행동 목적 분석이 없습니다.")
+        if preserve_timing and not (state.get("analysis") or {}).get("timing_measured"):
+            issues.append("영상의 동작 시작·끝·다음 동작 시각과 타이핑 간격 계산이 없습니다.")
         if (state.get("analysis") or {}).get("open_questions"):
             issues.append("이전 확인 질문이 남아 있습니다. 녹화 순서·시간·종료 상태를 기준으로 자율적으로 재분석하세요.")
         if not valid["crosscheck_ready"]:
@@ -457,8 +470,22 @@ class RecordingJobs:
             "For ordinary text entry, reproduce the final visible intended text as one type action per input field. "
             "Transient IME composition/corrected typos are not separate tasks unless demonstrating them is the goal. "
             "Do not try to reverse-engineer invisible physical keys or exact key-down milliseconds from pixels. "
-            "Use the existing type action and supported typing_delay/typing_random/typing_delay_range settings "
-            "for approximate pacing; never claim exact physical key fidelity. "
+            "Preserve VISIBLE typing speed, not bulk paste: typing_delay is IGNORED when typing_random=false. "
+            "For gradually appearing text, measure when each final character becomes visible and set typing_timestamps "
+            "to offsets from the first character, e.g. text='abc', offsets=[0,0.2,0.55]. This opts in to measured "
+            "per-character playback even with typing_random=false, and has no extra delay after the last character. "
+            "Do not invent random timing. If footage genuinely pastes the whole string at once, keep bulk paste. "
+            "Do not claim physical IME/key fidelity; visible character timing has frame-rate uncertainty. "
+            "Measure each action's visible start_seconds/end_seconds and next_start_seconds in video time. "
+            "Set wait_after=next_start_seconds-end_seconds and wait_random=false, not a generic default or total action duration. "
+            "For the last action next_start_seconds is the meaningful task ending (often end_seconds, giving zero tail wait). "
+            "Get detail frames around measured boundaries/text changes in bounded batches, not the whole video frame by frame. "
+            "In EACH record_analysis step include timing={start_seconds,end_seconds,next_start_seconds,precision_seconds,"
+            "start_frame_trace_id,end_frame_trace_id,text_mode}. precision_seconds must be at least 1/fps, "
+            "at most max(0.1,1/fps). Start/end traces must be at the measured times within that precision. "
+            "text_mode is 'typed' or 'paste' for type actions, 'not_text' otherwise. typing_timestamps[-1] must match "
+            "end_seconds-start_seconds for typed text. Keep runtime device/recognition delays distinct from measured "
+            "source timing: actual playback can be slower, never claim an exact wall-clock replay without testing it. "
             "Do not invent unseen repetitions, hidden inputs, cleanup or destructive actions. "
             "Use open_questions=[] in record_analysis. Reinspect ambiguous frames and finish the supported workflow. "
             "Write observed, supported actions as enabled=true, not disabled candidates awaiting permission. "
@@ -578,7 +605,8 @@ class RecordingJobs:
             valid = publisher.validate_draft(draft_id)
             if not valid["rule_count"]:
                 raise BridgeError("ANALYSIS_REQUIRED", "액션이 없는 초안은 플랜으로 등록할 수 없습니다.")
-            if not user_reviewed and self._completion_issues(state, valid):
+            preserve_timing = self._metadata(service.workspace.parent).get("preserve_timing", False)
+            if not user_reviewed and self._completion_issues(state, valid, preserve_timing):
                 raise BridgeError("ANALYSIS_REQUIRED", "자동 등록 전에 활성 액션·최신 분석·양방향 검수가 필요합니다.")
             publisher.approve_publication(draft_id, expected_revision, name=name, user_reviewed=user_reviewed)
         publication = publisher.publish_new_plan(draft_id, expected_revision, name=name)

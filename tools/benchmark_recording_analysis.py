@@ -34,7 +34,7 @@ def main():
     started = time.monotonic()
     try:
         jobs.start(media["path"], metadata["goal"], load_runtime(args.runtime),
-                   input_log=media.get("input_log"), excluded=media.get("excluded", ()), auto_register=True)
+                   input_log=media.get("input_log"), excluded=media.get("excluded", ()), auto_register=True, preserve_timing=True)
         previous = None
         while jobs.busy:
             state = jobs.snapshot()
@@ -51,7 +51,7 @@ def main():
             "model_message": state.get("model_message"), "analysis": draft.get("analysis"),
             "publication": state.get("publication"), "crosschecks": draft.get("crosschecks"),
             "actions": [{k: rule.get(k) for k in ("rule_id", "action_type", "description", "action_text",
-                        "action_keys", "target_image", "wait_after", "typing_delay", "search_region")}
+                        "action_keys", "target_image", "wait_after", "typing_delay", "typing_timestamps", "search_region")}
                         for rule, *_ in walk(draft["plan"])]}
         write_json(output / "summary.json", summary)
         print(f"RESULT {summary['status']} {summary['elapsed_seconds']}s passes={summary['review_pass']}", flush=True)

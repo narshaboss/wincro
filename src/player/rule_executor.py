@@ -2822,7 +2822,7 @@ class RuleExecutor:
                     typing_random = getattr(rule, 'typing_random', False)
                     typing_delay = getattr(rule, 'typing_delay', 0.1)
                     typing_delay_range = getattr(rule, 'typing_delay_range', 0.05)
-                    typed = self._type_text_with_clipboard(rule.action_text, typing_random, typing_delay, typing_delay_range)
+                    typed = self._type_rule_text(rule)
                     if typed is False:
                         message = "실행 중지됨" if self._stop_event.is_set() else "텍스트 입력 실패"
                         return self._make_result(rule, False, message, start_time)
@@ -3122,7 +3122,7 @@ class RuleExecutor:
                     typing_random = getattr(rule, 'typing_random', False)
                     typing_delay = getattr(rule, 'typing_delay', 0.1)
                     typing_delay_range = getattr(rule, 'typing_delay_range', 0.05)
-                    typed = self._type_text_with_clipboard(rule.action_text, typing_random, typing_delay, typing_delay_range)
+                    typed = self._type_rule_text(rule)
                     if typed is False:
                         message = "실행 중지됨" if self._stop_event.is_set() else "텍스트 입력 실패"
                         return self._make_result(rule, False, message, start_time)
@@ -3276,8 +3276,17 @@ class RuleExecutor:
 
             time.sleep(check_interval)
 
+    def _type_rule_text(self, rule):
+        args = (rule.action_text, getattr(rule, "typing_random", False),
+                getattr(rule, "typing_delay", .1), getattr(rule, "typing_delay_range", .05))
+        timestamps = getattr(rule, "typing_timestamps", None)
+        if timestamps:
+            return self._type_text_with_clipboard(*args, typing_timestamps=timestamps)
+        return self._type_text_with_clipboard(*args)
+
     def _type_text_with_clipboard(self, text: str, typing_random: bool = False,
-                                    typing_delay: float = 0.1, typing_delay_range: float = 0.05) -> bool:
+                                    typing_delay: float = 0.1, typing_delay_range: float = 0.05,
+                                    typing_timestamps=None) -> bool:
         """클립보드를 사용하여 텍스트 입력 (한글 지원)"""
         if not text:
             return True
@@ -3285,6 +3294,33 @@ class RuleExecutor:
             return False
 
         input_ctrl = get_input_controller()
+
+        if typing_timestamps:
+            from ..utils.typing_timeline import replay_typing_timeline, validate_typing_timestamps
+            # Validate before touching the clipboard or sending any input.
+            validate_typing_timestamps(text, typing_timestamps)
+            if text.isascii():
+                def send(char):
+                    return not self._wait_for_resume() and input_ctrl.type_text(char) is not False
+                return replay_typing_timeline(text, typing_timestamps, send, self._auto_list_wait)
+            original_clipboard = None
+            try:
+                try:
+                    original_clipboard = pyperclip.paste()
+                except (OSError, pyperclip.PyperclipException):
+                    pass
+                def send(char):
+                    if self._wait_for_resume():
+                        return False
+                    pyperclip.copy(char)
+                    return self._auto_list_wait(.02) and input_ctrl.hotkey('ctrl', 'v') is not False
+                return replay_typing_timeline(text, typing_timestamps, send, self._auto_list_wait)
+            finally:
+                if original_clipboard is not None:
+                    try:
+                        pyperclip.copy(original_clipboard)
+                    except (OSError, pyperclip.PyperclipException):
+                        pass
 
         # ASCII만 있는 경우
         if text.isascii():

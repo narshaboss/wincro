@@ -16,7 +16,7 @@ EDITABLE = {
     "repeat_count", "repeat_delay", "repeat_delay_random", "repeat_delay_random_range",
     "target_image", "target_images", "confidence", "search_region", "skip_on_not_found",
     "verify_image_color", "verify_image_brightness", "scroll_amount", "drag_to_x",
-    "drag_to_y", "drag_duration", "typing_delay", "typing_random", "typing_delay_range",
+    "drag_to_y", "drag_duration", "typing_delay", "typing_random", "typing_delay_range", "typing_timestamps",
 }
 BASIC_TYPES = {"click", "double_click", "right_click", "type", "hotkey", "key_press", "scroll", "drag"}
 IMAGE_FIELDS = {"image", "target_image", "target_images", "trigger_image", "monitoring_final_image",
@@ -413,8 +413,10 @@ class DraftService:
             self._expect(state, expected_revision)
             if not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 2000 or not isinstance(steps, list):
                 raise BridgeError("INVALID_ANALYSIS", "Provide a goal and evidence-backed action summaries")
-            ids = {r["rule_id"] for r, *_ in walk(state["plan"])}
+            rules = {r["rule_id"]: r for r, *_ in walk(state["plan"])}
+            ids = set(rules)
             covered = set()
+            timing_covered = set()
             for step in steps:
                 if not isinstance(step, dict) or step.get("rule_id") not in ids:
                     raise BridgeError("INVALID_ANALYSIS", "Analysis must reference this draft's stable action IDs")
@@ -438,13 +440,17 @@ class DraftService:
                     raise BridgeError("INVALID_ANALYSIS", "Analysis time does not match the evidence frame")
                 from .media import MediaTools
                 MediaTools._private(record, seconds)
+                from .timing import validate_step_timing
+                if validate_step_timing(self, rules[step["rule_id"]], step):
+                    timing_covered.add(step["rule_id"])
             if covered != ids:
                 raise BridgeError("INVALID_ANALYSIS", "Every action requires an AI purpose/evidence summary")
             questions = open_questions or []
             if not isinstance(questions, list) or not all(isinstance(q, str) and len(q) <= 2000 for q in questions):
                 raise BridgeError("INVALID_ANALYSIS", "Open questions must be a list of text")
             state["analysis"] = {"goal": goal, "steps": copy.deepcopy(steps), "open_questions": questions,
-                                 "plan_digest": digest(state["plan"]), "understanding_not_proven": True}
+                                 "plan_digest": digest(state["plan"]), "understanding_not_proven": True,
+                                 "timing_measured": bool(ids) and timing_covered == ids}
             state["crosschecks"] = []
             state["revision"] += 1
             state["approval"] = None

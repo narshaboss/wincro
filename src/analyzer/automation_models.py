@@ -198,6 +198,7 @@ class AutomationRule:
     typing_random: bool = False  # ???????? ???????? ??? ?????
     typing_delay: float = 0.1  # ?????? ??? ?????(??
     typing_delay_range: float = 0.05  # ???? ????????? (??
+    typing_timestamps: List[float] = field(default_factory=list)  # Opt-in video-observed character offsets.
     timeout: float = 30.0  # ??????(??
     enabled: bool = True  # False? ???? ??
     skip_on_not_found: bool = False  # ???? ?????? wait_after ????? ?????? ???
@@ -473,6 +474,7 @@ class AutomationRule:
             "typing_random": self.typing_random,
             "typing_delay": self.typing_delay,
             "typing_delay_range": self.typing_delay_range,
+            "typing_timestamps": list(self.typing_timestamps),
             "timeout": self.timeout,
             "skip_on_not_found": self.skip_on_not_found,
             "stop_playlist_on_trigger_missing": self.stop_playlist_on_trigger_missing,
@@ -621,6 +623,7 @@ class AutomationRule:
             typing_random=data.get("typing_random", False),
             typing_delay=data.get("typing_delay", 0.1),
             typing_delay_range=data.get("typing_delay_range", 0.05),
+            typing_timestamps=data.get("typing_timestamps", []),
             timeout=data.get("timeout", 30.0),
             skip_on_not_found=data.get("skip_on_not_found", False),
             stop_playlist_on_trigger_missing=data.get("stop_playlist_on_trigger_missing", False),

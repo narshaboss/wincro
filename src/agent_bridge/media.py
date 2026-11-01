@@ -116,6 +116,7 @@ class MediaTools:
                     raise BridgeError("INVALID_MEDIA", "Recording metadata is not decodable")
                 result.update(fps=fps, total_frames=int(count), duration_seconds=count / fps,
                     original_width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), original_height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+                record.update(fps=fps, duration_seconds=count / fps)
             finally:
                 cap.release()
         return result
