@@ -654,6 +654,7 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
         row_before, label_before = widget_data["widget"], widget_data["name_label"]
         assert "1301" not in label_before.cget("text")
         applied = []
+        timeout_state = []
 
         def edit_region_and_close():
             dialogs = [child for child in owner.winfo_children() if isinstance(child, analyzer_view.ImageCropDialog)]
@@ -666,8 +667,25 @@ def test_action_coordinate_labels_after_region_edit_and_durable_reload(ui_root, 
             finally:
                 editor.destroy()
 
+        def abort_editor_wait():
+            state = {"callback_errors": list(ui_root._ai_callback_errors),
+                "children": [type(child).__name__ for child in owner.winfo_children()]}
+            timeout_state.append(state)
+            artifacts = Path("artifacts/ai_draft")
+            artifacts.mkdir(parents=True, exist_ok=True)
+            (artifacts / f"coordinate_timeout_{compact}_{scale}.json").write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            for child in owner.winfo_children():
+                if isinstance(child, analyzer_view.ImageCropDialog):
+                    child.destroy()
+
         ui_root.after(200, edit_region_and_close)
-        owner._open_image_editor(rules[1].target_image, rules[1])
+        watchdog = ui_root.after(8000, abort_editor_wait)
+        try:
+            owner._open_image_editor(rules[1].target_image, rules[1])
+        finally:
+            ui_root.after_cancel(watchdog)
+        assert not timeout_state, timeout_state
         assert applied == [True]
         assert widget_data["widget"] is row_before and widget_data["name_label"] is label_before
         label_text = label_before.cget("text")
