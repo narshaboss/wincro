@@ -206,9 +206,14 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         view._is_recording = False
         consent.add_button.invoke()
         assert _pump_until(ui_root, lambda: workspace.badge.cget("text") == "GPT 연결 ON", 12), workspace.jobs.snapshot()
+        assert workspace.progress_bar.winfo_ismapped()
+        assert 0 < workspace.progress_bar.get() < 1
+        assert workspace.progress_percent.cget("text") != "100%"
         MCPPipelineActor.release.set()
         assert _pump_until(ui_root, lambda: workspace.result.current is not None and not workspace.result.busy and not workspace.jobs.busy, 15)
         assert workspace.jobs.snapshot()["status"] == "review"
+        assert _pump_until(ui_root, lambda: workspace.progress_percent.cget("text") == "100%", 3)
+        assert workspace.progress_bar.get() == 1
         assert workspace.connection.connected  # Analysis completion must not turn OFF.
         workspace.tabs.set("분석 결과 편집")
         pane = workspace.result
@@ -251,6 +256,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: not workspace.connection.busy and workspace.badge.cget("text") == "GPT 연결 OFF", 8)
         assert _pump_until(ui_root, lambda: not workspace.jobs.busy, 8)
         assert workspace.jobs.snapshot()["status"] == "cancelled"
+        assert workspace.progress_percent.cget("text") != "100%"
         assert workspace.badge.cget("text_color") == recording_workspace.COLORS["error"]
         assert workspace.analyze.cget("state") == "disabled"
         assert not workspace.jobs.busy
@@ -268,6 +274,7 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         assert _pump_until(ui_root, lambda: not workspace.jobs.busy and len(error_windows()) == 1, 12)
         assert "MODEL_UNAVAILABLE" in workspace._status_detail
         assert workspace.jobs.snapshot()["status"] == "error"
+        assert workspace.progress_percent.cget("text") != "100%"
         persisted = json.loads((workspace.jobs.root / workspace.jobs.snapshot()["job_id"] / "job.json").read_text(encoding="utf-8"))
         assert persisted == workspace.jobs.snapshot()
         error_window = error_windows()[0]

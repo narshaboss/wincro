@@ -422,6 +422,11 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         workspace = view._workspace
         assert workspace.badge.cget("text") == "GPT 연결 OFF"
         assert workspace.jobs.host is None and not workspace.jobs.busy
+        assert workspace.progress_percent.cget("text") == "0%"
+        for widget in (workspace.progress_label, workspace.progress_bar, workspace.progress_percent):
+            assert widget.winfo_ismapped()
+            assert widget.winfo_rootx() + widget.winfo_width() <= window.winfo_rootx() + window.winfo_width()
+            assert widget.winfo_rooty() + widget.winfo_height() <= window.winfo_rooty() + window.winfo_height()
         for button in (view._start_btn, view._stop_btn, workspace.analyze, workspace.cancel_button):
             assert button.winfo_ismapped()
             assert window.winfo_rootx() <= button.winfo_rootx()
@@ -477,6 +482,46 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert settings.winfo_rooty() + settings.winfo_height() <= settings.winfo_screenheight()
         ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_settings_{int(scale*100)}pct.png")
         settings.destroy()
+        assert _pump_until(ui_root, lambda: not workspace.busy, 5)
+        workspace.tabs.set("녹화·분석")
+        # Isolate animation rendering; the separate pipeline test uses real job events.
+        workspace.after_cancel(workspace._after_id)
+        workspace._after_id = None
+        from src.ui.analysis_progress import AnalysisProgress
+        clock = [0.0]
+        workspace._analysis_progress = AnalysisProgress(clock=lambda: clock[0])
+        workspace._progress_job_id = "job_progress"
+        progress_state = {"job_id": "job_progress", "status": "running"}
+        workspace._refresh_analysis_progress(progress_state, True)
+        ui_root.update_idletasks()
+        widgets = (workspace.progress_label, workspace.progress_bar, workspace.progress_percent)
+        positions = [(widget.winfo_x(), widget.winfo_y(), widget.winfo_width(), widget.winfo_height()) for widget in widgets]
+        values = []
+        for tick in range(1, 10):
+            clock[0] = tick * 5
+            workspace._refresh_analysis_progress(progress_state, True)
+            ui_root.update_idletasks()
+            values.append(workspace.progress_bar.get())
+            assert [(widget.winfo_x(), widget.winfo_y(), widget.winfo_width(), widget.winfo_height()) for widget in widgets] == positions
+        assert values == sorted(values) and len(set(values)) > 1
+        assert workspace.progress_percent.cget("text") != "100%"
+        assert workspace.progress_percent._label.winfo_reqwidth() <= workspace.progress_percent.winfo_width()
+        assert workspace.progress_label._label.winfo_reqwidth() <= workspace.progress_label.winfo_width()
+        deadline = time.monotonic() + .3
+        assert _pump_until(ui_root, lambda: time.monotonic() >= deadline, 2)
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_progress_{int(scale*100)}pct.png")
+        progress_row = workspace.progress_bar.master
+        left, top = progress_row.winfo_rootx(), progress_row.winfo_rooty()
+        ImageGrab.grab(bbox=(left, top, left+progress_row.winfo_width(), top+progress_row.winfo_height()),
+            all_screens=True).save(artifacts / f"recording_progress_bar_{int(scale*100)}pct.png")
+        progress_state["status"] = "review"
+        workspace._refresh_analysis_progress(progress_state, False)
+        assert workspace.progress_percent.cget("text") == "100%"
+        assert workspace.progress_bar.cget("progress_color") == recording_workspace.COLORS["success"]
+        workspace._refresh_analysis_progress(dict(progress_state, status="error"), False)
+        assert workspace.progress_percent.cget("text") != "100%"
+        assert workspace.progress_bar.cget("progress_color") == recording_workspace.COLORS["error"]
+        assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
     finally:
         if view is not None:
             view.cleanup()

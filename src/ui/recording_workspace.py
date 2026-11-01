@@ -19,6 +19,7 @@ from ..agent_bridge.recording_catalog import RecordingVisibility
 from ..agent_bridge.storage import new_id, read_json, write_json
 from ..utils.config import DATA_DIR
 from .ai_draft_guidance import readable_action, readable_analysis
+from .analysis_progress import AnalysisProgress
 from .theme import COLORS, IOS_FONTS, IOS_METRICS
 
 
@@ -62,6 +63,9 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._status_detail = ""
         self._consent_dialog = None
         self._last_failed_job = None
+        self._analysis_progress = AnalysisProgress()
+        self._progress_job_id = None
+        self._progress_bar_value = 0.0
         self.queue = queue.Queue(maxsize=8)
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wincro-recording-ui")
         self._after_id = None
@@ -125,13 +129,50 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.analyze.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.cancel_button = self._button(buttons, "분석 취소", self._cancel, width=86, state="disabled")
         self.cancel_button.grid(row=0, column=1)
+        progress_row = ctk.CTkFrame(panel, fg_color="transparent", height=24)
+        progress_row.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 3))
+        progress_row.grid_columnconfigure(1, weight=1)
+        self.progress_label = ctk.CTkLabel(progress_row, text="분석 대기", anchor="w", width=104,
+            height=24, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
+        self.progress_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.progress_bar = ctk.CTkProgressBar(progress_row, height=8, width=80, mode="determinate",
+            fg_color=COLORS["bg_elevated"], progress_color=COLORS["text_muted"], corner_radius=4)
+        self.progress_bar.grid(row=0, column=1, sticky="ew")
+        self.progress_bar.set(0)
+        self.progress_percent = ctk.CTkLabel(progress_row, text="0%", width=48, height=24,
+            anchor="e", text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 13, "bold"))
+        self.progress_percent.grid(row=0, column=2, sticky="e", padx=(8, 0))
         self.status = ctk.CTkLabel(panel, text="", height=32,
             anchor="w", justify="left", width=1, wraplength=560, text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 11))
-        self.status.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.status.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 5))
         self.set_status("먼저 GPT 연결 OFF를 눌러 연결하세요. 녹화를 선택한 뒤 분석을 시작합니다.")
         self.status.bind("<Button-1>", lambda _event: self._job_details(), add="+")
         tk.Misc.bind(self.status, "<Configure>", lambda event: configure_changed(self.status,
             wraplength=max(120, int(event.width / self.status._get_widget_scaling()) - 4)), add="+")
+
+    def _refresh_analysis_progress(self, state, busy):
+        if not state or state.get("job_id") != self._progress_job_id:
+            state = None
+        progress = self._analysis_progress.update(state, busy,
+            cancelling=self.jobs.cancel_event.is_set())
+        captions = {"idle": "분석 대기", "starting": "예상 진행률", "running": "예상 진행률",
+            "finishing": "저장 마무리", "complete": "분석 완료", "needs_review": "추가 확인 필요",
+            "cancelling": "분석 취소 중", "cancelled": "분석 취소됨", "error": "분석 오류",
+            "unconfirmed": "진행 확인 필요"}
+        if progress.phase == "complete":
+            color = COLORS["success"]
+        elif progress.phase == "error":
+            color = COLORS["error"]
+        elif progress.phase in {"cancelling", "cancelled", "needs_review", "unconfirmed"}:
+            color = COLORS["warning"]
+        else:
+            color = COLORS["text_muted"] if progress.phase == "idle" else COLORS["accent"]
+        configure_changed(self.progress_label, text=captions[progress.phase], text_color=color)
+        configure_changed(self.progress_percent, text=f"{progress.percent}%", text_color=color)
+        configure_changed(self.progress_bar, progress_color=color)
+        if progress.value != self._progress_bar_value:
+            self.progress_bar.set(progress.value)
+            self._progress_bar_value = progress.value
 
     def set_status(self, text):
         self._status_detail = str(text)
@@ -161,6 +202,8 @@ class RecordingWorkspace(ctk.CTkFrame):
         if previous == media.path:
             return
         self.selected = media
+        self._progress_job_id = None
+        self._refresh_analysis_progress(None, False)
         self.selection_label.configure(text="선택: " + media.name[:80])
         self.owner._update_media_selection()
 
@@ -196,12 +239,16 @@ class RecordingWorkspace(ctk.CTkFrame):
         if self.result.dirty or self.result.busy:
             self.set_status("분석 결과의 미저장 입력을 먼저 저장하거나 취소하세요.")
             return False
+        self._progress_job_id = None
+        self._refresh_analysis_progress(None, False)
         try:
-            self.jobs.start(path, self.goal.get().strip() or DEFAULT_GOAL, self.runtime,
+            started = self.jobs.start(path, self.goal.get().strip() or DEFAULT_GOAL, self.runtime,
                 input_log=log, excluded=excluded, reference=self.runtime.get("reference"))
         except Exception as exc:
             self.set_status(str(exc))
             return False
+        self._progress_job_id = started["job_id"]
+        self._refresh_analysis_progress(started, True)
         self.set_status("GPT 연결과 녹화 자료를 준비하고 있습니다. 결과는 별도 초안으로만 보관합니다.")
         configure_changed(self.analyze, state="disabled", text="GPT 분석 준비 중…")
         configure_changed(self.cancel_button, state="normal")
@@ -209,6 +256,7 @@ class RecordingWorkspace(ctk.CTkFrame):
 
     def _cancel(self):
         self.jobs.cancel()
+        self._refresh_analysis_progress(self.jobs.snapshot(), self.jobs.busy)
         self.set_status("취소 요청 중입니다. 저장된 초안은 보관하며 새 도구 호출은 차단했습니다.")
 
     def _submit(self, job, done, failed=None):
@@ -277,6 +325,7 @@ class RecordingWorkspace(ctk.CTkFrame):
             self._refresh_jobs(select=state["job_id"] if state and state.get("draft_id") else None)
         self._was_running = busy
         state = self.jobs.snapshot()
+        self._refresh_analysis_progress(state, busy)
         if not busy and state and state.get("status") == "error" and state["job_id"] != self._last_failed_job:
             self._last_failed_job = state["job_id"]
             self._show_job_error(state)
@@ -382,6 +431,7 @@ class RecordingWorkspace(ctk.CTkFrame):
             "2. 녹화 시작으로 작업을 녹화하고 F7로 중지하세요. 목록에서 녹화를 선택한 뒤 분석 시작을 누르고 자료 제공에 동의합니다. 기존 영상은 파일 추가로 넣습니다.\n\n"
             "3. ON 버튼을 누르면 OFF가 되어 연결과 진행 중 분석을 종료합니다. 분석 취소는 분석만 중단하며 ON 연결은 유지합니다. 현재 대화를 깨우는 기능은 아닙니다.\n\n"
             "4. 분석 결과 편집에서 액션·목적·질문을 검토하고 대기·반복을 수정해 저장할 수 있습니다. 수정하면 이전 GPT 교차검수는 무효가 됩니다.\n\n"
+            "진행 바는 정확한 작업량이 아닌 예상 진행률입니다. 분석 중에는 100%가 되지 않으며, 분석·교차검수 기록과 초안 저장을 확인한 뒤에만 100%로 표시합니다. 실제 인식·재생 성공을 보장하지 않습니다.\n\n"
             "녹화의 삭제 버튼은 목록에서만 제거합니다. 원본 영상·키 기록·분석 결과·기존 플랜은 보존되며 파일 추가로 복원할 수 있습니다. 기존 재생 플랜·맵은 수정하지 않습니다. 이 화면은 초안만 저장하며 실제 인식·재생 성공은 별도 검증이 필요합니다.")
         dialog = self._dialog("녹화·GPT 분석 사용방법", 640, 480)
         box = ctk.CTkTextbox(dialog, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
