@@ -43,6 +43,7 @@ from pynput import keyboard
 
 from ..utils.logger import get_logger, create_execution_logger
 from ..utils.config import get_config
+from ..ai_play.ownership import legacy_start
 from ..utils.input_controller import (
     begin_input_cleanup, block_automation_input, finish_input_cleanup,
     get_input_controller, request_input_release,
@@ -509,6 +510,7 @@ class ActionPlayer:
         self._on_action_start = on_action_start
         self._on_action_complete = on_action_complete
 
+    @legacy_start
     def play(
         self,
         sequence: Sequence,
@@ -1454,6 +1456,7 @@ class ActionPlayer:
                                  name="wincro-legacy-completion", daemon=True).start()
 
 
+    @legacy_start
     def play_automation_plan(
         self,
         plan: AutomationPlan,

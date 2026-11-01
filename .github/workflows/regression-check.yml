@@ -36,6 +36,20 @@ jobs:
         run: python -m pytest -q tests/test_ai_draft_bridge.py tests/test_ai_draft_guidance.py tests/test_recording_jobs.py tests/test_recording_plan_registration.py tests/test_recording_auto_registration.py tests/test_recording_followup.py tests/test_recording_autonomous.py tests/test_recording_analysis_performance.py tests/test_recording_connection.py tests/test_analyzer_playlist_only.py tests/test_analyzer_playlist_perf_regression.py tests/test_ui_virtualization_regression.py tests/test_ios_design_theme_regression.py tests/test_ui_text_overflow_regression.py tests/test_video_thumbnail.py tests/test_action_coordinate_labels.py tests/test_analysis_progress.py --junitxml=artifacts/ai_draft/core.xml
       - name: Measured recording timing and device-isolated typing simulations
         run: python -m pytest -q tests/test_recording_timing.py --junitxml=artifacts/ai_draft/timing.xml
+      - name: GPT play isolation, input admission and candidate simulations
+        run: python -m pytest -q tests/test_gpt_play.py --junitxml=artifacts/gpt_play/simulations.xml
+      - name: GPT play UI and authenticated pipe on isolated Windows
+        if: ${{ !cancelled() }}
+        env:
+          WINCRO_GPT_PLAY_UI_QA: '1'
+        run: python -m pytest -q tests/test_gpt_play_native.py --junitxml=artifacts/gpt_play/native.xml
+      - name: Upload GPT play verification
+        if: ${{ always() && hashFiles('artifacts/gpt_play/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-play-qa
+          path: artifacts/gpt_play/
+          retention-days: 14
       - name: AI draft local-pipe and layout verification on isolated Windows
         if: ${{ !cancelled() }}
         env:

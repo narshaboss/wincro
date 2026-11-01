@@ -704,6 +704,18 @@ class InputController:
             _software_key_tap,
         )
 
+    def play_lab_tap(self, key: str) -> bool:
+        """Opt-in GPT lab only: never use split KP/KR or software fallback for HID."""
+        if is_automation_input_blocked():
+            return False
+        if self._use_arduino() or self._strict_mode():
+            from .arduino_hid import get_arduino_hid
+            device = get_arduino_hid()
+            if not device.is_connected or not device.supports_key_combo_tap():
+                return False
+            return device._send_command("KQ," + str(device._get_keycode(key)))
+        return self.press(key)
+
     def tap_combo_once(self, *keys) -> bool:
         """Press modifiers, tap the final key once, then release modifiers immediately."""
         normalized_keys = [str(key).strip().lower() for key in keys if str(key).strip()]

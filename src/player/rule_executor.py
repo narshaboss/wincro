@@ -40,6 +40,7 @@ from ..utils.input_controller import (
     unblock_automation_input,
     wait_for_input_cleanup,
 )
+from ..ai_play.ownership import legacy_start
 
 # pynput 사용 시도 (멀티모니터 지원)
 try:
@@ -1065,6 +1066,7 @@ class RuleExecutor:
         except Exception as exc:
             logger.error(f"execution completion callback failed: {exc}")
 
+    @legacy_start
     def execute_plan(
         self,
         plan: AutomationPlan,
