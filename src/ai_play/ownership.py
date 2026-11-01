@@ -18,6 +18,20 @@ def lab_active():
         return _owner is not None
 
 
+def device_change_allowed():
+    """Permit explicit recovery only after all managed input has stopped."""
+    with _lock:
+        if any(starting or _active(player) for player, starting in list(_players.items())):
+            return False
+        if _owner is None:
+            return True
+        session = getattr(_owner, "session", None)
+        return bool(session and session.state in {"paused", "stopped", "needs_review", "error"}
+                    and not session.io_lock.locked()
+                    and not (session.playback and session.playback.busy)
+                    and not _owner.preparing.is_set())
+
+
 def _active(player):
     for name in ("_execution_thread", "_play_thread", "_thread"):
         thread = getattr(player, name, None)

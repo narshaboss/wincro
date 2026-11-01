@@ -98,7 +98,7 @@ class ArduinoHID:
         with self._io_lock:
             return bool(self._supports_key_combo_tap)
 
-    def connect(self, port: str = None, baud_rate: int = None) -> bool:
+    def connect(self, port: str = None, baud_rate: int = None, *, reuse_existing: bool = False) -> bool:
         """아두이노에 연결"""
         config = get_config()
 
@@ -113,6 +113,10 @@ class ArduinoHID:
 
         self._io_lock.acquire()
         try:
+            if (reuse_existing and self.is_connected and self._port.casefold() == port.casefold()
+                    and self._baud_rate == baud_rate):
+                logger.info(f"Arduino HID 기존 연결 재사용: {port} (포트 재열기 없음)")
+                return True
             # 이전 연결 정리
             self.disconnect()
 
@@ -158,6 +162,13 @@ class ArduinoHID:
             return False
         finally:
             self._io_lock.release()
+
+    def connection_status(self) -> dict:
+        """Read the shared connection without opening, pinging or resetting hardware."""
+        with self._io_lock:
+            return {"connected": self.is_connected, "open": self.has_open_session(),
+                "port": self._port, "baud_rate": self._baud_rate,
+                "mouse_move": self._supports_mouse_move, "key_combo_tap": self._supports_key_combo_tap}
 
     def _open_serial_session(self, port: str, baud_rate: int) -> bool:
         """Open serial and wait for Leonardo reset."""

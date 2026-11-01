@@ -10,6 +10,7 @@ from ..agent_bridge.contracts import BridgeError, digest
 from ..agent_bridge.storage import new_id
 from . import candidate
 from .session import text
+from .diagnostics import action_text, error_text
 
 
 class CandidatePlayback:
@@ -44,6 +45,7 @@ class CandidatePlayback:
             s.state, s.message = "verifying", "후보 플랜 독립 재생 중: GPT 입력은 차단됩니다."
             s.latest = None
             s._persist()
+        s.trace.emit("trial_start", f"후보 v{revision} 독립 재생 시작 · GPT 입력은 차단됩니다.", phase="후보 독립 재생")
         self.worker = threading.Thread(target=self._run, daemon=True, name="gpt-play-candidate")
         self.worker.start()
         return trial.copy()
@@ -57,6 +59,7 @@ class CandidatePlayback:
                     ok = False
                 trial.update(state="executed" if ok else "failed", execution_ok=ok, ended_at=s.clock(), end_action_count=s.action_count)
         except Exception as exc:
+            s.trace.emit("trial_failed", error_text(exc), level="error")
             with s.state_lock:
                 trial.update(state="failed", execution_ok=False, ended_at=s.clock(), end_action_count=s.action_count, error=str(exc)[:1000])
         finally:
@@ -72,6 +75,8 @@ class CandidatePlayback:
                     s.state, s.message = "reviewing_trial", "재생 종료: GPT가 실제 클리어·보상 결과를 확인합니다."
                 s.latest = None
                 s._persist()
+            s.trace.emit("trial_end", "후보 실행 종료 · 실행 결과=" + str(trial["execution_ok"])
+                         + " · 실제 클리어·보상 확인은 별도입니다.", phase="후보 결과 확인")
 
     def stop(self):
         if self.executor:
@@ -101,6 +106,8 @@ class CandidatePlayback:
             s.trial = record
             s.state, s.message = "exploring", "검수 결과 보관: " + ("성공 관찰" if success else "실패·후보 보완 필요")
             s._persist()
+        s.trace.emit("trial_result", "GPT 결과 관찰: " + ("성공" if success else "실패") + " · " + observation,
+                     phase="GPT 판단 대기")
         return record
 
 
@@ -176,13 +183,16 @@ def native_executor(session):
                     session.latest = None
                     session.receipts[request_id] = receipt
                 session._persist()
+                session.trace.emit("trial_input_begin", action_text(action) + f" · 요청 {session.action_count}")
                 try:
                     ok = session.backend.send(action, region, self.check)
                     if not ok:
                         raise BridgeError("DELIVERY_UNKNOWN", "후보 입력 전송 결과가 불확실합니다.")
                     receipt["state"] = "sent_not_game_success"
+                    session.trace.emit("trial_input_sent", action_text(action) + " · 전송 완료, 게임 반응 미확인")
                     return True
-                except Exception:
+                except Exception as exc:
+                    session.trace.emit("trial_input_failed", action_text(action) + " · " + error_text(exc), level="error")
                     self._stop_event.set()
                     raise
                 finally:

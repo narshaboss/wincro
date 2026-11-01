@@ -706,15 +706,17 @@ class InputController:
 
     def _play_lab_device(self):
         # Do not call _use_arduino/_get_arduino: they may reconnect/flash firmware.
+        from ..agent_bridge.contracts import BridgeError
         settings = get_config().arduino
         if not settings.enabled:
             if getattr(settings, "require_for_playback", True):
-                raise RuntimeError("Arduino is required by the existing playback settings")
+                raise BridgeError("ARDUINO_DISABLED", "설정에서 아두이노 필수 사용은 켜져 있지만 아두이노 사용이 꺼져 있습니다.")
             return None
         from .arduino_hid import get_arduino_hid
         device = get_arduino_hid()
         if not device.is_connected:
-            raise RuntimeError("GPT play requires an already connected Arduino")
+            port = getattr(device, "_port", "") or getattr(settings, "com_port", "") or "미지정"
+            raise BridgeError("ARDUINO_DISCONNECTED", f"아두이노 기존 연결이 없습니다: {port}. GPT 플레이는 포트를 다시 열지 않습니다.")
         return device
 
     def play_lab_prepare(self) -> bool:
@@ -738,36 +740,68 @@ class InputController:
         return True
 
     def play_lab_move_to(self, x, y, check, duration=.2) -> bool:
+        from ..agent_bridge.contracts import BridgeError
         device = self._play_lab_device()
         check()
         if is_automation_input_blocked():
-            return False
+            raise BridgeError("INPUT_BLOCKED", "입력 정리 또는 중지 상태이므로 마우스를 이동하지 않습니다.")
         if device is None:
             pyautogui.moveTo(x, y, duration=duration)
             return True
         if not device.supports_mouse_move():
-            return False
-        for _ in range(_MOVE_MAX_CORRECTIONS):
+            raise BridgeError("ARDUINO_MM_UNSUPPORTED", "연결된 아두이노가 마우스 이동 MM 명령을 지원하지 않습니다.")
+        previous = command = None
+        gain = [1.0, 1.0]
+        stationary = 0
+        for attempt in range(_MOVE_MAX_CORRECTIONS):
             check()
-            if is_automation_input_blocked() or not device.is_connected:
-                return False
+            if is_automation_input_blocked():
+                raise BridgeError("INPUT_BLOCKED", "마우스 이동 도중 중지되었습니다. 클릭은 보내지 않았습니다.")
+            if not device.is_connected:
+                raise BridgeError("ARDUINO_DISCONNECTED", "마우스 이동 도중 아두이노 연결이 끊겼습니다. 클릭은 보내지 않았습니다.")
             position = self._get_cursor_pos()
             if position is None:
-                return False
+                raise BridgeError("CURSOR_UNAVAILABLE", "현재 커서 좌표를 읽지 못했습니다. 클릭은 보내지 않았습니다.")
             dx, dy = x - position[0], y - position[1]
             if max(abs(dx), abs(dy)) <= _MOVE_VERIFY_TOLERANCE:
+                logger.info(f"[GPT플레이입력] 마우스 위치 확인: target=({x},{y}) actual={position} corrections={attempt}")
                 return True
-            if not device.mouse_move(max(-64, min(64, dx)), max(-64, min(64, dy))):
-                return False
-            time.sleep(.005)
-        return False
+            if previous is not None:
+                stationary = stationary + 1 if position == previous else 0
+                if stationary >= 8:
+                    raise BridgeError("CURSOR_NOT_MOVING", f"MM 응답은 있지만 커서가 움직이지 않습니다: target=({x},{y}) actual={position}. 클릭은 보내지 않았습니다.")
+                for axis in (0, 1):
+                    moved = position[axis] - previous[axis]
+                    if command[axis] and moved * command[axis] > 0:
+                        gain[axis] = max(.25, min(16.0, abs(moved / command[axis])))
+            # Screen pixels and HID deltas differ under Windows pointer acceleration.
+            # Use measured gain and a damped correction rather than repeating overshoot.
+            steps = []
+            for axis, error in enumerate((dx, dy)):
+                if abs(error) <= _MOVE_VERIFY_TOLERANCE:
+                    steps.append(0)
+                else:
+                    step = max(1, min(64, int(abs(error) * .5 / gain[axis])))
+                    steps.append(step if error > 0 else -step)
+            command, previous = tuple(steps), position
+            if not device.mouse_move(*command):
+                raise BridgeError("ARDUINO_MOVE_UNCONFIRMED", f"MM 이동 명령 응답을 확인하지 못했습니다: target=({x},{y}) actual={position}. 클릭은 보내지 않았습니다.")
+            time.sleep(.01)
+        check()
+        position = self._get_cursor_pos()
+        if position is not None and max(abs(x - position[0]), abs(y - position[1])) <= _MOVE_VERIFY_TOLERANCE:
+            return True
+        raise BridgeError("CURSOR_TARGET_NOT_REACHED", f"커서 위치 보정 한도: target=({x},{y}) actual={position} attempts={_MOVE_MAX_CORRECTIONS}. 클릭은 보내지 않았습니다.")
 
     def play_lab_click(self) -> bool:
+        from ..agent_bridge.contracts import BridgeError
         if is_automation_input_blocked():
             return False
         device = self._play_lab_device()
         if device is not None:
-            return bool(device.mouse_click("left"))
+            if not device.mouse_click("left"):
+                raise BridgeError("CLICK_DELIVERY_UNKNOWN", "왼쪽 클릭 MC 응답을 확인하지 못했습니다. 실제 화면 확인 전에는 재전송하지 마세요.")
+            return True
         pyautogui.click(button="left")
         return True
 

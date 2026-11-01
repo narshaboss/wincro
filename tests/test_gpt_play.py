@@ -587,7 +587,7 @@ def test_atomic_arduino_tap_never_falls_back_or_sends_split_edges(monkeypatch):
     assert controller.play_lab_tap("up")
     assert commands == ["KQ,218"]
     device.is_connected = False
-    with pytest.raises(RuntimeError):
+    with pytest.raises(BridgeError, match="기존 연결"):
         controller.play_lab_tap("up")
     assert len(commands) == 1
 
@@ -606,9 +606,11 @@ def test_native_start_rearms_stopped_input_only_after_cleanup(monkeypatch):
     monkeypatch.setattr(ic, "is_arduino_strict_enabled", lambda: False)
     backend = object.__new__(WindowIO)
     backend.controller = SimpleNamespace(play_lab_prepare=lambda: True)
-    backend.target = object()
+    backend.target = SimpleNamespace(handle=123)
     focuses = []
-    backend.windows = SimpleNamespace(set_foreground_window=lambda _: focuses.append(True) or True)
+    backend.windows = SimpleNamespace(set_foreground_window=lambda _: focuses.append(True) or True,
+        get_foreground_window=lambda: 123,
+        get_window=lambda _: SimpleNamespace(minimized=False, executable_name="owned.exe", title="CI owned window"))
     backend.validate = lambda: [0, 0, 100, 100]
     with pytest.raises(BridgeError) as err:
         backend.prepare()
@@ -648,15 +650,15 @@ def test_lab_mouse_does_not_connect_flash_fallback_or_send_right_click(monkeypat
     monkeypatch.setattr(controller, "_get_cursor_pos", lambda: tuple(position))
     assert controller.play_lab_prepare()
     assert controller.play_lab_move_to(120, 80, lambda: None)
-    assert moves and position == [120, 80]
+    assert moves and max(abs(position[0] - 120), abs(position[1] - 80)) <= ic._MOVE_VERIFY_TOLERANCE
     assert controller.play_lab_click() and clicks == ["left"]
     assert controller.play_lab_release([])
     device.is_connected = False
     for operation in (controller.play_lab_prepare, controller.play_lab_click,
                       lambda: controller.play_lab_move_to(0, 0, lambda: None), lambda: controller.play_lab_release([])):
-        with pytest.raises(RuntimeError):
+        with pytest.raises(BridgeError, match="기존 연결"):
             operation()
     assert clicks == ["left"]
     monkeypatch.setattr(ic, "get_config", lambda: SimpleNamespace(arduino=SimpleNamespace(enabled=False, require_for_playback=True)))
-    with pytest.raises(RuntimeError, match="required"):
+    with pytest.raises(BridgeError, match="필수 사용"):
         controller.play_lab_prepare()

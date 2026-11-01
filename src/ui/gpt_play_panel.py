@@ -25,13 +25,15 @@ class GPTPlayPanel(ctk.CTkFrame):
         self._signature = self._image_id = None
         self._published = set()
         self._after_id = None
+        self._log_trace = None
+        self._log_sequence = self._log_lines = 0
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=8, pady=5)
         header.grid_columnconfigure(0, weight=1)
         self.status = ctk.CTkLabel(header, text="GPT 연결 ON 후 시작할 수 있습니다.", anchor="w", width=1,
-            text_color=COLORS["text_muted"])
+            height=42, justify="left", wraplength=510, text_color=COLORS["text_muted"])
         self.status.grid(row=0, column=0, sticky="ew")
         body = ctk.CTkScrollableFrame(self, fg_color=COLORS["bg_content"])
         body.grid(row=1, column=0, sticky="nsew")
@@ -73,11 +75,18 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.resume_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=3)
         self.stop_button = self._button(self.actions, "중지", self.jobs.stop)
         self.stop_button.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=3)
-        self.detail = ctk.CTkTextbox(body, height=75, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
-        self.detail.grid(row=9, column=0, sticky="ew", padx=10, pady=5)
+        log_header = ctk.CTkFrame(body, fg_color="transparent")
+        log_header.grid(row=9, column=0, sticky="ew", padx=10)
+        log_header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(log_header, text="실행 로그 · 최근 300줄", anchor="w",
+            text_color=COLORS["accent_text"]).grid(row=0, column=0, sticky="ew")
+        self.copy_log = self._button(log_header, "로그 복사", self._copy_log, width=85)
+        self.copy_log.grid(row=0, column=1, padx=(5, 0))
+        self.detail = ctk.CTkTextbox(body, height=150, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
+        self.detail.grid(row=10, column=0, sticky="ew", padx=10, pady=5)
         self.detail.configure(state="disabled")
         self.question_card = ctk.CTkFrame(body, fg_color=COLORS["bg_card"])
-        self.question_card.grid(row=10, column=0, sticky="ew", padx=10, pady=5)
+        self.question_card.grid(row=11, column=0, sticky="ew", padx=10, pady=5)
         self.question_card.grid_columnconfigure(0, weight=1)
         self.question_text = ctk.CTkLabel(self.question_card, text="", anchor="w", justify="left", wraplength=500,
             text_color=COLORS["text_primary"])
@@ -91,7 +100,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.question_card.grid_remove()
         self.result = ctk.CTkLabel(body, text="기존 재생 플랜·녹화·특화모드는 변경하지 않습니다.",
             anchor="w", justify="left", text_color=COLORS["text_muted"], wraplength=510)
-        self.result.grid(row=11, column=0, sticky="ew", padx=10, pady=8)
+        self.result.grid(row=12, column=0, sticky="ew", padx=10, pady=8)
         self.bind("<Configure>", self._resize, add="+")
         self._poll()
 
@@ -107,11 +116,39 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.warning.configure(wraplength=width)
         self.result.configure(wraplength=width)
         self.question_text.configure(wraplength=max(180, width - 20))
+        self.status.configure(wraplength=width)
 
     def _message(self, value):
+        self.jobs.trace.emit("ui_message", value)
+        self._render_log()
+
+    def _copy_log(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.detail.get("1.0", "end-1c"))
+
+    def _render_log(self):
+        trace = self.jobs.trace
+        changed = trace is not self._log_trace
+        rows = trace.since(0 if changed else self._log_sequence)
+        if not changed and not rows:
+            return
+        follow = changed or self.detail._textbox.yview()[1] >= .98
         self.detail.configure(state="normal")
-        self.detail.delete("1.0", "end")
-        self.detail.insert("1.0", str(value))
+        if changed:
+            self._log_trace = trace
+            self._log_sequence = self._log_lines = 0
+            self.detail.delete("1.0", "end")
+        for row in rows:
+            level = {"warning": "주의", "error": "오류"}.get(row["level"], "진행")
+            self.detail.insert("end", f"{row['time'][11:19]} [{level}] {row['message']}\n")
+        self._log_lines += len(rows)
+        if self._log_lines > trace.max_rows:
+            self.detail.delete("1.0", f"{self._log_lines - trace.max_rows + 1}.0")
+            self._log_lines = trace.max_rows
+        if rows:
+            self._log_sequence = rows[-1]["seq"]
+        if follow:
+            self.detail.see("end")
         self.detail.configure(state="disabled")
 
     def _refresh(self):
@@ -125,9 +162,11 @@ class GPTPlayPanel(ctk.CTkFrame):
             self.target.configure(values=labels)
             self.target.set(labels[0])
         except Exception as exc:
-            self._message(exc)
+            self.jobs.report_error("window_list_failed", exc)
+            self._render_log()
 
     def _start(self):
+        self.jobs.trace.emit("start_button", "플레이 시작 버튼 요청 · 설정과 실행 가능 상태를 확인합니다.")
         try:
             w = self.workspace
             if w.jobs.busy or w.busy or w.owner._is_recording or w.owner._starting or w.owner._stopping:
@@ -145,22 +184,24 @@ class GPTPlayPanel(ctk.CTkFrame):
             keys = [k.strip().lower() for k in self.keys.get().split(",") if k.strip()]
             self.jobs.start(target, self.goal.get("1.0", "end").strip(), keys, w.runtime,
                 test_environment=self.test_environment.get())
-            self._message("선택한 창을 확인한 뒤 GPT가 플레이를 시작합니다.")
         except Exception as exc:
-            self._message(exc)
+            self.jobs.report_error("start_rejected", exc)
+        self._render_log()
 
     def _resume(self):
         try:
             self.jobs.resume()
         except Exception as exc:
-            self._message(exc)
+            self.jobs.report_error("resume_rejected", exc)
+            self._render_log()
 
     def _answer(self):
         try:
             self.jobs.resume(self.answer.get("1.0", "end").strip())
             self.answer.delete("1.0", "end")
         except Exception as exc:
-            self._message(exc)
+            self.jobs.report_error("answer_rejected", exc)
+            self._render_log()
 
     def _refresh_controls(self):
         from .recording_workspace import configure_changed
@@ -183,14 +224,16 @@ class GPTPlayPanel(ctk.CTkFrame):
             return
         from .recording_workspace import configure_changed
         self._refresh_controls()
+        self._render_log()
         state = self.jobs.ui_snapshot()
         if state:
-            configure_changed(self.status, text=f'{STATE_LABELS.get(state["state"], state["state"])} | 입력 {state["action_count"]}/{state["max_actions"]}',
-                text_color=COLORS["success"] if self.workspace.connection.connected else COLORS["error"])
+            problem = state["state"] in {"paused", "error", "needs_review"}
+            configure_changed(self.status, text=f'{STATE_LABELS.get(state["state"], state["state"])} | 관찰 {state["frame_count"]}회 · 요청 {state["action_count"]}/{state["max_actions"]}\n'
+                f'{state["phase"]} · 마지막 진행 후 {state["quiet_seconds"]}초',
+                text_color=COLORS["warning"] if problem else COLORS["success"] if self.workspace.connection.connected else COLORS["error"])
             signature = (state["state"], state["message"], (state.get("question") or {}).get("id"))
             if signature != self._signature:
                 self._signature = signature
-                self._message(state["message"])
                 question = state.get("question")
                 if question:
                     self.question_text.configure(text=question["context"] + "\n\n" + question["question"])

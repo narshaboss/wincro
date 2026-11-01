@@ -12,21 +12,31 @@ from ..agent_bridge.transport import LocalHost, protect_directory
 from . import candidate, ownership
 from .playback import CandidatePlayback
 from .session import PlaySession, TOOLS, text
+from .diagnostics import PlayTrace, concise, error_text
 
 
 class PlayRunner(CodexRunner):
     def __init__(self, settings, folder):
         super().__init__(settings, folder, tools=TOOLS)
+        self.trace = None
 
     def accepts_connection(self, status):
-        return (status.get("editing_only") is False and status.get("live_execution") is True
+        accepted = (status.get("editing_only") is False and status.get("live_execution") is True
                 and status.get("authority") == "bounded_gpt_play_only" and status.get("recording_authority") is False)
+        if self.trace:
+            self.trace.emit("model_connection", "GPT 전용 도구 연결 확인 " + ("완료 · 판단 응답 대기" if accepted else "실패"),
+                            level="info" if accepted else "error", phase="GPT 판단 대기" if accepted else "연결 실패")
+        return accepted
 
     def preflight(self):
+        if self.trace:
+            self.trace.emit("runtime_check", "Codex·Python·허용 도구 설정을 검사합니다.", phase="GPT 실행기 검사")
         codex, python, _ = super().preflight()
         server = Path(__file__).resolve().parents[2] / "tools" / "wincro_play_mcp_server.py"
         if not server.is_file():
             raise BridgeError("RUNTIME_MISSING", "GPT 플레이 전용 서버가 없습니다.")
+        if self.trace:
+            self.trace.emit("runtime_ready", "실행기 검사 완료 · GPT 프로세스·모델·전용 도구 연결을 준비합니다.", phase="GPT 연결 준비")
         return codex, python, str(server)
 
 
@@ -45,6 +55,18 @@ class PlayScope:
         self.instance_id, self.lock = session.instance_id, session.lock
 
     def dispatch(self, method, arguments):
+        if method != "play_status":
+            self.session.trace.emit("tool_begin", "GPT 요청: " + concise(method, 60))
+        try:
+            result = self._dispatch(method, arguments)
+        except Exception as exc:
+            self.session.trace.emit("tool_rejected", concise(method, 60) + " · " + error_text(exc), level="warning")
+            raise
+        if method not in {"play_status", "play_observe", "play_act", "play_note", "play_question"}:
+            self.session.trace.emit("tool_done", "GPT 요청 처리 완료: " + concise(method, 60))
+        return result
+
+    def _dispatch(self, method, arguments):
         s = self.session
         if method == "play_candidate":
             return candidate.build(s, **arguments)
@@ -86,6 +108,7 @@ class PlayScope:
             s.notes.append({"final": summary, "remaining_issues": remaining_issues, "recovery": recovery_observations})
             s._release_async()
             s._persist()
+        s.trace.emit("finished", summary, phase="검수 완료" if s.state == "complete" else "미완료")
         return {"state": s.state, "publication": "owner will register only a complete result"}
 
 
@@ -143,6 +166,14 @@ class PlayJobs:
         self.closed = False
         self._owns_input = False
         self._cleanup_lock = threading.Lock()
+        self._initial_trace = PlayTrace()
+
+    @property
+    def trace(self):
+        return self.session.trace if self.session else self._initial_trace
+
+    def report_error(self, event, exc):
+        self.trace.emit(event, error_text(exc), level="error")
 
     @property
     def busy(self):
@@ -174,6 +205,11 @@ class PlayJobs:
             folder = self.root / new_id("session_")
             protect_directory(folder)
             self.session = PlaySession(folder, goal, keys, backend, self.connected, max_seconds=max_seconds)
+            label = "테스트 대상" if target is None else f"{getattr(target, 'executable_name', '?')} | {getattr(target, 'title', '?')} | hwnd={getattr(target, 'handle', '?')}"
+            self.trace.emit("start_requested", "시작 요청 · 대상=" + concise(label, 240) + " · 허용 키=" + ", ".join(self.session.keys), phase="게임 창 준비")
+            configure = getattr(backend, "set_diagnostics", None)
+            if configure:
+                configure(self.trace, self.session.check)
             self.session.playback = CandidatePlayback(self.session)
             self.runtime = copy.deepcopy(runtime)
             self.cancel = threading.Event()
@@ -182,7 +218,8 @@ class PlayJobs:
             self.worker = threading.Thread(target=self._run, args=(True,), daemon=True, name="gpt-play-model")
             self.worker.start()
             threading.Thread(target=self._watch, args=(self.session, self.monitor_stop), daemon=True, name="gpt-play-watchdog").start()
-        except Exception:
+        except Exception as exc:
+            self.report_error("start_failed", exc)
             self.preparing.clear()
             ownership.release(self)
             self._owns_input = False
@@ -193,17 +230,22 @@ class PlayJobs:
             if session.state in {"complete", "needs_review", "stopped", "error"}:
                 return
             try:
+                session.trace.heartbeat(session.state, session.action_count, len(session.frames))
                 if not self.connected():
                     raise BridgeError("CONNECTION_OFF", "GPT 연결이 해제되었습니다.")
                 if getattr(session.backend, "emergency_pressed", lambda: False)():
                     self.stop()
                     return
+                if session.state == "paused":
+                    self._cancel_runner()
+                    continue
                 if session.state not in {"paused", "question", "ready"} and not self.preparing.is_set():
                     session.check()
                     session.backend.validate()
             except Exception as exc:
                 if session.state not in {"paused", "question"}:
-                    session.pause(str(exc))
+                    self.report_error("watchdog_blocked", exc)
+                    session.pause(error_text(exc))
                 self._cancel_runner()
 
     def _run(self, initial):
@@ -211,7 +253,9 @@ class PlayJobs:
         host = runner = None
         try:
             s.check()
+            s.trace.emit("prepare_begin", "입력 장치와 게임 창 전면 상태를 확인합니다. 아직 입력하지 않습니다.", phase="게임 창 준비")
             s.backend.prepare()  # Only following user Start/Continue, never model-driven refocus.
+            s.trace.emit("prepare_done", "게임 창·입력 장치 준비 확인 완료", phase="GPT 연결 준비")
             if initial:
                 s.start()
             s.check()
@@ -220,16 +264,22 @@ class PlayJobs:
             protect_directory(folder)
             host = PlayHost(PlayScope(s), folder / "pipe")
             self.host = host
+            s.trace.emit("bridge_start", "GPT 플레이 전용 통신을 시작합니다.", phase="GPT 연결 준비")
             descriptor = host.start()
             runner = self.runner_factory(self.runtime, folder)
+            if isinstance(runner, PlayRunner):
+                runner.trace = s.trace
             self.runner = runner
+            s.trace.emit("model_start", "GPT 실행 요청 · 화면 관찰 도구가 호출될 때까지 대기합니다.", phase="GPT 응답 대기")
             result = runner.run(descriptor, PROMPT + "\nSESSION:\n" + json.dumps(s.snapshot(), ensure_ascii=False),
                                 self.cancel, lambda message: self._progress(message))
+            s.trace.emit("model_turn_end", "GPT 응답 턴 종료 · 세션 상태=" + s.state)
             if s.state not in {"complete", "needs_review", "paused", "question", "stopped"}:
                 s.pause("GPT 턴이 끝났지만 검수가 완료되지 않았습니다. 계속 버튼으로 이어갑니다. " + str(result)[-600:])
         except Exception as exc:
+            self.report_error("execution_failed", exc)
             if not s.stop_event.is_set() and s.state not in {"question", "paused"}:
-                s.pause(str(exc)[:2000])
+                s.pause(error_text(exc))
         finally:
             self.preparing.clear()
             if host:
@@ -239,8 +289,11 @@ class PlayJobs:
             self.host = self.runner = None
             if s.state == "complete":
                 try:
+                    s.trace.emit("publish_begin", "검수된 새 플랜 저장·재로딩을 확인합니다.", phase="새 플랜 등록")
                     candidate.publish(s, self.plans_dir, self.templates_dir)
+                    s.trace.emit("published", "새 플랜 등록 완료 · 기존 플랜은 변경하지 않았습니다.", phase="완료")
                 except Exception as exc:
+                    self.report_error("publish_failed", exc)
                     s.message = "플랜 등록 실패: " + str(exc)
                     s.state = "needs_review"
                     s._persist()
@@ -268,17 +321,21 @@ class PlayJobs:
             except Exception:
                 released = False
             if not released:
-                session.message = "입력 해제 확인 실패: 장치 연결을 확인하고 중지를 다시 누르세요. 새 재생은 차단됩니다."
+                session.message = "입력 해제 확인 실패: " + session.message + " · 장치 상태 확인 후 중지를 다시 누르세요. 새 재생은 차단됩니다."
                 session._persist()
+                session.trace.emit("release_failed", session.message, level="error")
                 return
         ownership.release(self)
         self._owns_input = False
+        session.trace.emit("input_released", "이 세션의 입력 정리 완료 · 입력 소유권 해제")
 
     def _progress(self, message):
         s = self.session
-        if s and s.state in {"exploring", "reviewing_trial"}:
+        if s:
+            s.trace.progress(message)
             with s.state_lock:
-                s.message = str(message)[-500:]
+                if s.state in {"exploring", "reviewing_trial"}:
+                    s.message = concise(message, 500)
 
     def _cancel_runner(self):
         self.cancel.set()

@@ -95,7 +95,9 @@ def test_settings_arduino_firmware_check_requires_kq_capability():
     assert 'ser.write(b"KQ\\n")' in check_body
     assert 'return True, "current"' in check_body
     assert 'return False, "outdated"' in check_body
-    assert "arduino_hid._supports_key_combo_tap = firmware_ok" in connect_body
+    assert "device.connect(port, baud_rate, reuse_existing=True)" in connect_body
+    assert 'state["key_combo_tap"] and state["mouse_move"]' in connect_body
+    assert "serial.Serial(" not in connect_body
 
 
 def test_settings_background_threads_post_ui_safely():

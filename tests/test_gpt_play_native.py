@@ -156,13 +156,30 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
         panel.status.configure(text="GPT 연결 ON · 시작 대기", text_color="#22c55e")
         root.update_idletasks()
         assert panel.start_button.cget("state") == "normal"
-        for widget in (panel.target, panel.goal, panel.keys, panel.start_button, panel.stop_button):
+        for widget in (panel.target, panel.goal, panel.keys, panel.start_button, panel.stop_button, panel.detail, panel.copy_log):
             assert widget.winfo_width() > 30
             assert widget.winfo_rootx() >= root.winfo_rootx()
             assert widget.winfo_rootx() + widget.winfo_width() <= root.winfo_rootx() + root.winfo_width()
         artifacts = Path("artifacts/gpt_play")
         artifacts.mkdir(parents=True, exist_ok=True)
         ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"panel_{scale}.png")
+        from unittest.mock import Mock
+        panel.jobs.trace.emit("focus_requested", "전면 전환 확인 중 · 대상 hwnd=7 현재 전면 hwnd=8")
+        panel.jobs.trace.emit("action_sent", "키 UP · 장치 전송 완료 · 게임 반응은 아직 미확인")
+        panel._render_log()
+        previous_text = panel.detail.get("1.0", "end")
+        configure = Mock(wraps=panel.detail.configure)
+        monkeypatch.setattr(panel.detail, "configure", configure)
+        for _ in range(5):
+            panel._render_log()
+        assert configure.call_count == 0
+        assert panel.detail.get("1.0", "end") == previous_text
+        assert previous_text.count("키 UP") == 1
+        panel.copy_log.invoke()
+        assert "hwnd=7" in root.clipboard_get()
+        panel.body._parent_canvas.yview_moveto(1.0)
+        root.update()
+        ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"play_logs_{scale}.png")
         session = PlaySession(tmp_path / "session", "Clear", ["enter"], Backend(), lambda: connection.connected)
         session.start()
         reference = session.observe()["frame_id"]
@@ -174,6 +191,7 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
         assert panel.answer_button.cget("state") == "normal"
         assert panel.answer.winfo_exists()
         assert selected_tabs[-1] == "GPT 플레이"
+        assert "사용자 답변 대기" in panel.detail.get("1.0", "end")
         root.update_idletasks()
         ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"question_{scale}.png")
         connection.connected = False

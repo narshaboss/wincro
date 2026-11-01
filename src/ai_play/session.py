@@ -12,6 +12,7 @@ import time
 
 from ..agent_bridge.contracts import BridgeError, digest, number
 from ..agent_bridge.storage import new_id, publish_bytes, write_json, within
+from .diagnostics import PlayTrace, action_text, concise, error_text
 
 
 SAFE_KEYS = frozenset("up down left right enter esc space tab pageup pagedown home end insert delete backspace".split()) | frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
@@ -31,6 +32,7 @@ class PlaySession:
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self.instance_id = new_id("play_")
+        self.trace = PlayTrace(self.folder, self.instance_id, clock=clock)
         self.lock = threading.RLock()  # transport serialization, never held by UI stop
         self.state_lock = threading.RLock()
         self.io_lock = threading.Lock()
@@ -60,6 +62,7 @@ class PlaySession:
         self.publication = None
         self.release_workers = []
         self._persist()
+        self.trace.emit("session_ready", "세션 생성 완료 · 아직 화면 관찰과 입력은 시작하지 않았습니다.")
 
     def _persist(self):
         with self.state_lock:
@@ -92,8 +95,11 @@ class PlaySession:
     def ui_snapshot(self):
         # UI polling must not repeatedly copy all evidence and native rule fields.
         with self.state_lock:
+            phase, quiet = self.trace.status()
+            phase = {"paused": "일시정지", "question": "답변 대기", "stopped": "중지"}.get(self.state, phase)
             return {"state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
                 "action_count": self.action_count, "max_actions": self.max_actions,
+                "phase": phase, "quiet_seconds": quiet, "frame_count": len(self.frames),
                 "publication": copy.deepcopy(self.publication), "trial_count": len(self.trials),
                 "candidate": {"revision": self.candidate["revision"]} if self.candidate else None}
 
@@ -119,6 +125,7 @@ class PlaySession:
             self.state = "exploring"
             self.message = "GPT가 선택한 게임 화면을 관찰합니다."
             self._persist()
+        self.trace.emit("session_start", self.message, phase="GPT 실행 준비")
 
     def pause(self, reason="사용자 일시정지"):
         with self.state_lock:
@@ -131,6 +138,7 @@ class PlaySession:
             self.message = reason
             self.epoch += 1
             self.latest = None
+        self.trace.emit("paused", reason, level="warning", phase="답변 대기" if self.state == "question" else "일시정지")
         if self.playback:
             self.playback.stop()
         # No key is held between requests. Release is best effort after in-flight I/O.
@@ -144,9 +152,11 @@ class PlaySession:
                     if not self.backend.release():
                         with self.state_lock:
                             self.message += " / 입력 장치 해제 확인 실패"
-                except Exception:
+                        self.trace.emit("release_failed", "입력 장치 해제 확인 실패", level="error")
+                except Exception as exc:
                     with self.state_lock:
                         self.message += " / 입력 장치 해제 확인 실패"
+                    self.trace.emit("release_failed", error_text(exc), level="error")
         worker = threading.Thread(target=release, daemon=True, name="gpt-play-release")
         with self.state_lock:
             self.release_workers = [w for w in self.release_workers if w.is_alive()]
@@ -158,6 +168,7 @@ class PlaySession:
         self.pause("사용자 중지")
         self.state = "stopped"
         self._persist()
+        self.trace.emit("stopped", "사용자 중지 · 이전 실패 원인은 이 로그에 보존됩니다.", phase="중지")
 
     def resume(self, answer=None):
         if self.stop_event.is_set() or self.state not in {"paused", "question"}:
@@ -176,9 +187,11 @@ class PlaySession:
         self.latest = None
         self.state, self.message = "exploring", "현재 화면부터 다시 확인합니다."
         self._persist()
+        self.trace.emit("resumed", "사용자 계속 요청 · 새 화면 확인 후에만 입력합니다.", phase="게임 창 준비")
 
     def observe(self):
         self.check()
+        self.trace.emit("observe_begin", "선택한 게임 창의 현재 화면을 읽습니다.", phase="화면 관찰")
         with self.io_lock:
             self.check()
             epoch = self.epoch
@@ -201,9 +214,13 @@ class PlaySession:
             "region": list(region), "sha256": __import__("hashlib").sha256(raw).hexdigest(),
             "action_count": self.action_count, "bytes": len(raw)}
         with self.state_lock:
+            previous = next(reversed(self.frames.values()), None) if self.frames else None
             self.frames[frame_id] = metadata
             self.latest = frame_id
         self._persist()
+        change = "첫 화면" if previous is None else "이전 관찰과 동일" if previous["sha256"] == metadata["sha256"] else "이전 관찰과 화면 변화 있음"
+        self.trace.emit("observe_done", f"화면 {len(self.frames)}장 확인: {image.width}x{image.height} 범위={list(region)} · {change} "
+                        "· 캐릭터 이동·목표 달성 여부는 GPT 확인 필요", phase="GPT 판단 대기")
         return {**metadata, "width": image.width, "height": image.height,
             "coordinate_space": "image pixels, relative to client area", "png_base64": base64.b64encode(raw).decode()}
 
@@ -234,6 +251,7 @@ class PlaySession:
         if old:
             if old["digest"] != fingerprint:
                 raise BridgeError("REQUEST_REUSED", "같은 ID로 다른 행동을 보낼 수 없습니다.")
+            self.trace.emit("duplicate_request", f"이미 처리한 요청 {request_id}: 재전송하지 않음 · 상태={old['state']}")
             return copy.deepcopy(old)
         if self.action_count >= self.max_actions:
             self.pause("최대 입력 횟수에 도달했습니다.")
@@ -266,6 +284,8 @@ class PlaySession:
                 self.receipts[request_id] = receipt
                 self.action_count += 1
             self._persist()  # Write-ahead: uncertain delivery must never be resent blindly.
+            target = f" 화면좌표({rect[0] + action['x']}, {rect[1] + action['y']})" if kind == "click" else ""
+            self.trace.emit("action_begin", f"요청 {self.action_count}: {action_text(action)}{target} · 목적={concise(purpose, 250)}", phase="입력 수행")
             try:
                 if kind == "wait":
                     end = self.clock() + action["seconds"]
@@ -278,8 +298,11 @@ class PlaySession:
                 if not ok:
                     raise BridgeError("DELIVERY_UNKNOWN", "입력 완료를 확인하지 못했습니다. 재전송하지 말고 화면을 확인하세요.")
                 receipt["state"] = "sent_not_game_success"
-            except Exception:
-                self.pause("입력 결과 불확실: 화면과 장치 연결을 확인하세요.")
+                self.trace.emit("action_sent", f"{action_text(action)} · " + ("대기 완료" if kind == "wait" else "장치 전송 완료")
+                    + " · 게임 반응은 아직 미확인, 다음 화면으로 확인합니다.", phase="다음 화면 확인 대기")
+            except Exception as exc:
+                self.trace.emit("action_failed", action_text(action) + " · " + error_text(exc), level="error")
+                self.pause("동작 확인 실패: " + error_text(exc) + " · 원인을 확인한 뒤 계속을 누르세요.")
                 raise
             finally:
                 self.latest = None
@@ -296,6 +319,7 @@ class PlaySession:
         self.question = {"id": new_id("question_"), "observation_id": observation_id,
             "question": text(question, "질문"), "context": text(context, "관찰·불확실한 점")}
         self.state = "question"
+        self.trace.emit("question", "GPT 질문: " + self.question["question"], phase="답변 대기")
         self.pause("사용자 답변 대기: 게임 자체는 계속 진행될 수 있습니다.")
         return {"waiting_for_user": True, "instruction": "End this turn now. WinCro restarts you after the answer. Do not poll."}
 
@@ -307,6 +331,8 @@ class PlaySession:
         self.notes.append({"frame_id": observation_id, "observation": text(observation, "관찰"),
             "purpose": text(purpose, "목적"), "expected_result": text(expected_result, "예상 결과")})
         self._persist()
+        self.trace.emit("observation_note", "GPT 관찰: " + concise(observation, 250) + " · 목적: " + concise(purpose, 250)
+                        + " · 예상 결과: " + concise(expected_result, 250))
         return {"saved_and_reloaded": True}
 
     def dispatch(self, method, arguments):

@@ -3513,7 +3513,9 @@ del "%~f0"
 
     def _toggle_arduino_connection(self) -> None:
         """아두이노 연결/해제 토글"""
-        if self._arduino_serial and self._arduino_serial.is_open:
+        from ..utils.arduino_hid import get_arduino_hid
+        state = get_arduino_hid().connection_status()
+        if state["open"]:
             self._disconnect_arduino()
         else:
             self._connect_arduino()
@@ -3543,149 +3545,39 @@ del "%~f0"
         thread.start()
 
     def _connect_arduino_thread(self, port: str, baud_rate: int) -> None:
-        """아두이노 연결 스레드"""
-        import time
-        import traceback
-
-        # pyserial 임포트
-        try:
-            import serial
-        except ImportError:
-            self._post_ui(lambda: self._update_arduino_status(False, "pyserial 미설치"))
-            return
-
-        # UI 업데이트
+        """Reuse the application's serialized HID owner; never open a second port."""
+        from ..utils.arduino_hid import get_arduino_hid
         self._post_ui(lambda: self._update_arduino_status(False, "연결 중..."))
-
         try:
-            # 이전 연결 정리
-            if self._arduino_serial:
-                try:
-                    self._arduino_serial.close()
-                except (OSError, serial.SerialException):
-                    pass
-                self._arduino_serial = None
-
-            # 시리얼 연결
-            logger.info(f"아두이노 연결 시도: {port} @ {baud_rate}")
-            ser = serial.Serial(
-                port=port,
-                baudrate=baud_rate,
-                timeout=2,
-                write_timeout=2,
-                dsrdtr=False,
-                rtscts=False
-            )
-
-            if not ser.is_open:
-                self._post_ui(lambda: self._update_arduino_status(False, "포트 열기 실패"))
+            device = get_arduino_hid()
+            state = device.connection_status()
+            from ..ai_play.ownership import device_change_allowed
+            same = state["connected"] and state["port"].casefold() == port.casefold() and state["baud_rate"] == baud_rate
+            if not same and not device_change_allowed():
+                self._post_ui(lambda: self._update_arduino_status(state["connected"], "실행 중지 후 연결 변경"))
                 return
-
-            self._arduino_serial = ser
-
-            # Leonardo 리셋
-            logger.info("Leonardo 리셋 중...")
-            ser.dtr = False
-            time.sleep(0.1)
-            ser.dtr = True
-            time.sleep(2)
-            ser.reset_input_buffer()
-
-            # 펌웨어 확인 (PING + 필수 기능 테스트)
-            logger.info("펌웨어 확인 중...")
-            firmware_ok, firmware_status = self._check_firmware_status(ser)
-
-            if not firmware_ok:
-                # 펌웨어 없음/구형 - 자동 업로드 시도
-                status_text = "펌웨어 업데이트 중..." if firmware_status == "outdated" else "펌웨어 업로드 중..."
-                self._post_ui(lambda s=status_text: self._update_arduino_status(False, s))
-                logger.info(f"펌웨어 상태={firmware_status}, 자동 업로드 시작")
-
-                ser.close()
-                self._arduino_serial = None
-
-                # 펌웨어 업로드
-                try:
-                    from ..utils.arduino_uploader import upload_firmware
-
-                    def progress_cb(msg):
-                        self._post_ui(lambda m=msg: self._update_arduino_status(False, m))
-
-                    success, message = upload_firmware(port, progress_cb)
-
-                    if not success:
-                        self._post_ui(lambda m=message[:40]: self._update_arduino_status(False, f"업로드 실패: {m}"))
-                        logger.error(f"펌웨어 업로드 실패: {message}")
-                        return
-                except Exception as upload_err:
-                    self._post_ui(lambda: self._update_arduino_status(False, "펌웨어 업로드 오류"))
-                    logger.error(f"펌웨어 업로드 예외: {upload_err}")
-                    return
-
-                # 업로드 후 재연결
-                time.sleep(3)
-                logger.info("업로드 후 재연결...")
-
-                ser = serial.Serial(
-                    port=port,
-                    baudrate=baud_rate,
-                    timeout=2,
-                    write_timeout=2,
-                    dsrdtr=False,
-                    rtscts=False
-                )
-                self._arduino_serial = ser
-
-                time.sleep(2)
-                ser.reset_input_buffer()
-                firmware_ok, firmware_status = self._check_firmware_status(ser)
-
-            # ArduinoHID 인스턴스 연결 (재생 시 사용)
-            try:
-                from ..utils.arduino_hid import get_arduino_hid
-                arduino_hid = get_arduino_hid()
-                if arduino_hid:
-                    arduino_hid._serial = self._arduino_serial
-                    arduino_hid._connected = True
-                    arduino_hid._port = port
-                    arduino_hid._baud_rate = baud_rate
-                    arduino_hid._supports_mouse_move = firmware_ok
-                    arduino_hid._supports_key_combo_tap = firmware_ok
-            except Exception as hid_err:
-                logger.warning(f"ArduinoHID 설정 실패 (무시): {hid_err}")
-
-            # 결과 표시
-            if firmware_ok:
-                self._post_ui(lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (HID 준비)"))
-                logger.info(f"아두이노 HID 연결 성공: {port}")
-            else:
-                self._post_ui(lambda p=port: self._update_arduino_status(True, f"{p} 연결됨 (펌웨어?)"))
-                logger.warning(f"펌웨어 준비 미완료: {firmware_status}")
-
-            # 설정 저장
+            if not device.connect(port, baud_rate, reuse_existing=True):
+                self._post_ui(lambda: self._update_arduino_status(False, "HID 연결 실패 · 로그 확인"))
+                return
+            state = device.connection_status()
+            if not state["connected"]:
+                self._post_ui(lambda: self._update_arduino_status(False, "연결 확인 중 장치가 해제됨"))
+                return
+            ready = state["key_combo_tap"] and state["mouse_move"]
+            # This is a non-owning UI reference; ArduinoHID owns all port I/O.
+            self._arduino_serial = device._serial
             config = get_config()
             config.arduino.com_port = port
             config.arduino.baud_rate = baud_rate
-            save_config()
-
-        except PermissionError:
-            logger.error(f"아두이노 연결 오류: 포트 접근 권한 없음\n{traceback.format_exc()}")
-            self._post_ui(lambda: self._update_arduino_status(False, "포트 사용중"))
-        except FileNotFoundError:
-            logger.error(f"아두이노 연결 오류: 포트를 찾을 수 없음\n{traceback.format_exc()}")
-            self._post_ui(lambda: self._update_arduino_status(False, "포트 없음"))
-        except serial.SerialException as e:
-            error_msg = str(e).lower()
-            logger.error(f"아두이노 연결 오류: {e}\n{traceback.format_exc()}")
-            if "permission" in error_msg or "access" in error_msg:
-                self._post_ui(lambda: self._update_arduino_status(False, "포트 사용중"))
-            elif "could not open port" in error_msg or "filenotfound" in error_msg:
-                self._post_ui(lambda: self._update_arduino_status(False, "포트 없음"))
-            else:
-                short_msg = str(e)[:35]
-                self._post_ui(lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
+            saved = save_config()
+            message = f"{port} 연결됨 (HID 준비)" if ready else f"{port} 연결됨 (KQ·MM 확인 필요)"
+            if not saved:
+                message += " · 설정 저장 실패"
+                logger.error("아두이노 연결은 성공했으나 연결 설정 저장 실패")
+            self._post_ui(lambda m=message: self._update_arduino_status(True, m))
+            logger.info(f"아두이노 공유 연결 확인: {port}, KQ={state['key_combo_tap']}, MM={state['mouse_move']}, reused={same}")
         except Exception as e:
-            logger.error(f"아두이노 연결 오류: {e}\n{traceback.format_exc()}")
+            logger.exception("아두이노 공유 연결 오류")
             short_msg = str(e)[:35]
             self._post_ui(lambda m=short_msg: self._update_arduino_status(False, f"실패: {m}"))
 
