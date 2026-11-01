@@ -366,6 +366,8 @@ def exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until):
         workspace.tabs.set("녹화·분석")
         monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
         video_before = video.read_bytes()
+        # Publication can precede the async job-list refresh; deletion is guarded until idle.
+        assert _pump_until(ui_root, lambda: not workspace.busy and not pane.busy and not workspace.jobs.busy, 5)
         view._remove_media_item(view._recording_items[0])
         assert _pump_until(ui_root, lambda: not view._recording_items and not workspace.busy, 5)
         assert _pump_until(ui_root, lambda: workspace.progress_percent.cget("text") == "0%", 3)
