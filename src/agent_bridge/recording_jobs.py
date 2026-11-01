@@ -332,6 +332,24 @@ class RecordingJobs:
             issues.append("녹화 동작을 수행할 액션이 없습니다.")
         elif not any(rule.get("enabled", True) for rule, *_ in walk(state["plan"])):
             issues.append("모든 액션이 비활성입니다. 관찰한 동작은 활성 액션으로 작성하고 다시 검수해야 합니다.")
+        for rule, _, _, step in walk(state["plan"]):
+            if not rule.get("enabled", True):
+                continue
+            kind = rule.get("action_type")
+            prefix = f"액션 [{step}] ({rule['rule_id']}): "
+            has_point = all(type(rule.get(field)) is int for field in ("action_x", "action_y"))
+            if kind in {"click", "double_click", "right_click", "drag"} and not (
+                    has_point or rule.get("target_image") or any(rule.get("target_images") or [])):
+                issues.append(prefix + "클릭할 실제 이미지 또는 좌표가 없습니다.")
+            if kind == "drag" and not all(type(rule.get(field)) is int for field in ("drag_to_x", "drag_to_y")):
+                issues.append(prefix + "드래그 도착 좌표가 없습니다.")
+            if kind in {"hotkey", "key_press"} and not (rule.get("action_key_events") or
+                    any(isinstance(key, str) and key.strip() for key in rule.get("action_keys") or [])):
+                issues.append(prefix + "입력할 키 또는 기록 키 동작이 없습니다.")
+            if kind == "type" and not rule.get("action_text"):
+                issues.append(prefix + "입력할 문자열이 없습니다.")
+            if kind == "scroll" and not rule.get("scroll_amount"):
+                issues.append(prefix + "스크롤 이동량이 0입니다.")
         if not valid["ai_analysis_current"]:
             issues.append("최신 액션 전체의 영상 근거·행동 목적 분석이 없습니다.")
         if (state.get("analysis") or {}).get("open_questions"):

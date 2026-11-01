@@ -220,3 +220,56 @@ def test_automatic_publication_is_not_an_ai_tool(jobs_setup):
     for method in ("register_plan", "approve_publication", "publish_new_plan", "_auto_register"):
         with pytest.raises(BridgeError):
             jobs.scope.dispatch(method, {})
+
+
+@pytest.mark.parametrize("kind,fields,missing", [
+    ("click", {}, "이미지 또는 좌표"), ("double_click", {"action_x": 0}, "이미지 또는 좌표"),
+    ("right_click", {"action_x": 0, "action_y": 0}, None),
+    ("click", {"target_image": "crop.png"}, None),
+    ("drag", {"action_x": 3, "action_y": 4}, "도착 좌표"),
+    ("hotkey", {"action_keys": []}, "입력할 키"),
+    ("key_press", {"action_keys": [" "]}, "입력할 키"),
+    ("hotkey", {"action_keys": ["enter"]}, None),
+    ("type", {"action_text": ""}, "문자열"), ("type", {"action_text": "안녕하세요"}, None),
+    ("scroll", {"scroll_amount": 0}, "이동량"), ("scroll", {"scroll_amount": -2}, None),
+])
+def test_missing_execution_fields_return_repair_feedback(kind, fields, missing):
+    draft = {"plan": {"initial_rules": [{"rule_id": "rule_one", "parent_id": None,
+        "action_type": kind, "enabled": True, **fields}]}, "analysis": {}, "crosschecks": []}
+    issues = RecordingJobs._completion_issues(draft, {"rule_count": 1, "ai_analysis_current": True, "crosscheck_ready": True})
+    assert (not issues) is (missing is None)
+    if missing:
+        assert any(missing in issue and "rule_one" in issue for issue in issues)
+
+
+def test_automatic_registration_copies_real_crop_and_preserves_input_and_waits(jobs_setup):
+    from src.agent_bridge.media import MediaTools
+    jobs, media, original = jobs_setup
+    class CropActor(ReviewingActor):
+        def run(self, descriptor, prompt, cancelled, progress):
+            super().run(descriptor, prompt, cancelled, progress)
+            scope = FakeHost.scopes[descriptor]
+            service, key = scope.service, scope.draft_id
+            recording_id = next(iter(service.selected_media))
+            state = service.read_draft(key)
+            crop = MediaTools(service).create_asset_crop(recording_id, 0, [3, 4, 30, 25], key, state["revision"])
+            state = service.read_draft(key)
+            service.stage_edits(key, state["revision"], "synthetic-crop-actions", [
+                {"op": "add_rule", "action_type": "double_click", "fields": {"target_image": crop["asset_name"],
+                    "search_region": [0, 0, 80, 60], "wait_after": .8}},
+                {"op": "add_rule", "action_type": "type", "fields": {"action_text": "안녕하세요", "wait_after": 1.2}}])
+            review(service, service.read_draft(key), recording_id)
+            return {"exit_code": 0, "message": "Synthetic crop and text workflow"}
+    jobs.runner_factory = CropActor
+    start(jobs, media)
+    final = finish(jobs)
+    assert final["status"] == "published", final
+    service, draft = jobs.load_result(final["job_id"])
+    plan = read_json(jobs.plans_dir / (final["publication"]["plan_id"] + ".json"))
+    assert plan["initial_rules"] == draft["plan"]["initial_rules"]
+    image_rule, text_rule = plan["initial_rules"][1:]
+    filename = image_rule["target_image"]
+    assert (jobs.templates_dir / filename).read_bytes() == (service.workspace / "assets" / filename).read_bytes()
+    assert image_rule["search_region"] == [0, 0, 80, 60] and image_rule["wait_after"] == .8
+    assert text_rule["action_text"] == "안녕하세요" and text_rule["wait_after"] == 1.2
+    assert original.is_file()
