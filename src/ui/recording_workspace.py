@@ -542,22 +542,22 @@ class DraftResultPane(ctk.CTkFrame):
         self.tree.bind("<<TreeviewSelect>>", self._selected)
         form = ctk.CTkFrame(self, fg_color=COLORS["bg_glass"])
         form.grid(row=2, column=0, sticky="ew", pady=5)
-        form.grid_columnconfigure((0, 1), weight=1, uniform="fields")
+        form.grid_columnconfigure((1, 3), weight=1, uniform="fields")
         self.variables = {}
         self.entries = {}
         for index, (field, label) in enumerate((("description", "액션 이름"), ("wait_after", "액션 후 대기(초)"),
                                                ("repeat_count", "반복 횟수"), ("repeat_delay", "반복 사이 대기(초)"))):
             row, column = divmod(index, 2)
-            ctk.CTkLabel(form, text=label, anchor="w", text_color=COLORS["text_primary"], height=20).grid(
-                row=row*2, column=column, sticky="ew", padx=8)
+            ctk.CTkLabel(form, text=label, anchor="w", text_color=COLORS["text_primary"], height=28).grid(
+                row=row, column=column*2, sticky="w", padx=(8, 4), pady=3)
             variable = tk.StringVar(master=self)
             variable.trace_add("write", self._changed)
-            entry = ctk.CTkEntry(form, textvariable=variable, height=28, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
-            entry.grid(row=row*2+1, column=column, sticky="ew", padx=8, pady=(0, 3))
+            entry = ctk.CTkEntry(form, textvariable=variable, width=80, height=28, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
+            entry.grid(row=row, column=column*2+1, sticky="ew", padx=(0, 8), pady=3)
             self.variables[field] = variable
             self.entries[field] = entry
         buttons = ctk.CTkFrame(form, fg_color="transparent")
-        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=5)
+        buttons.grid(row=2, column=0, columnspan=4, sticky="ew", padx=8, pady=3)
         buttons.grid_columnconfigure((0, 1), weight=1)
         self.save = workspace._button(buttons, "이 수정 저장", self._save, state="disabled")
         self.save.grid(row=0, column=0, sticky="ew", padx=(0, 4))
@@ -570,14 +570,14 @@ class DraftResultPane(ctk.CTkFrame):
         registration.grid(row=4, column=0, sticky="ew", pady=(0, 4))
         registration.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(registration, text="플랜 제목", text_color=COLORS["text_primary"], width=60).grid(
-            row=0, column=0, padx=(8, 4), pady=7)
+            row=0, column=0, padx=(8, 4), pady=5)
         self.plan_title = tk.StringVar(master=self)
         self.title_entry = ctk.CTkEntry(registration, textvariable=self.plan_title, height=28,
             placeholder_text="동작분석에 표시할 제목", fg_color=COLORS["bg_dark"],
             text_color=COLORS["text_primary"], border_color=COLORS["border"])
-        self.title_entry.grid(row=0, column=1, sticky="ew", pady=7)
+        self.title_entry.grid(row=0, column=1, sticky="ew", pady=5)
         self.register_button = workspace._button(registration, "동작분석에 등록", self._register_plan, width=130, state="disabled")
-        self.register_button.grid(row=0, column=2, padx=8, pady=7)
+        self.register_button.grid(row=0, column=2, padx=8, pady=5)
         self.registration_status = ctk.CTkLabel(registration, text="최신 GPT 검수 완료 후 새 플랜으로 등록합니다.",
             anchor="w", text_color=COLORS["text_secondary"], height=20, font=ctk.CTkFont(size=11))
         self.registration_status.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 4))

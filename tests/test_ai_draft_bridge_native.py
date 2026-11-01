@@ -472,6 +472,7 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert workspace.result.save.winfo_ismapped()
         assert workspace.result.save.winfo_rooty() + workspace.result.save.winfo_height() <= window.winfo_height()
         pane = workspace.result
+        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_result_{int(scale*100)}pct.png")
         for widget in (pane.title_entry, pane.register_button, pane.registration_status, pane.summary, pane.tree):
             assert widget.winfo_ismapped()
             assert widget.winfo_rootx() >= pane.winfo_rootx()
@@ -482,7 +483,9 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
         assert pane.registration_status._label.winfo_reqwidth() <= pane.registration_status.winfo_width()
         assert pane.tree.winfo_height() >= 50, "Registration controls must not hide the action list"
         assert pane.title_entry.winfo_rootx() + pane.title_entry.winfo_width() <= pane.register_button.winfo_rootx()
-        ImageGrab.grab(bbox=(0, 0, 1024, 768), all_screens=True).save(artifacts / f"recording_result_{int(scale*100)}pct.png")
+        for entry in pane.entries.values():
+            assert entry.winfo_width() >= round(50 * scale)
+            assert entry.winfo_rootx() + entry.winfo_width() <= pane.winfo_rootx() + pane.winfo_width()
         assert _pump_until(ui_root, lambda: not workspace.busy, 5)
         ctk.set_window_scaling(scale)
         workspace._settings()
