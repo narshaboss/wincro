@@ -88,6 +88,7 @@ from .constants import (
     get_waypoint_clipboard, set_waypoint_clipboard,
 )
 from .virtual_scroll import VirtualScrollFrame
+from .video_thumbnail import load_video_thumbnail
 from .key_input_dialog import KeyInputDialog
 from .random_key_sequence_dialog import RandomKeySequenceDialog
 from .auto_list_dialog import AutoListDialog, AutoListValueInputDialog
@@ -3493,10 +3494,18 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
                     return
 
                 # 캐시 미스 — 플레이스홀더 표시 후 백그라운드 로딩
-                placeholder = ctk.CTkLabel(
-                    parent, text="📷", font=ctk.CTkFont(size=max(12, min(18, size // 2))),
-                    text_color=COLORS["text_muted"],
-                )
+                if is_video_media_path(image_path):
+                    placeholder = ctk.CTkButton(
+                        parent, text="▶", width=button_size, height=button_size,
+                        fg_color="transparent", hover_color=COLORS["bg_card_hover"],
+                        corner_radius=IOS_METRICS["control_radius_small"],
+                        command=lambda p=image_path, r=rule: self._open_image_editor(p, r),
+                    )
+                else:
+                    placeholder = ctk.CTkLabel(
+                        parent, text="📷", font=ctk.CTkFont(size=max(12, min(18, size // 2))),
+                        text_color=COLORS["text_muted"],
+                    )
                 placeholder.pack(expand=True)
                 ui_post = resolve_widget_ui_post(self)
 
@@ -3504,20 +3513,25 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
                     try:
                         if self._thumbnail_closed:
                             return
-                        img_arr = np.fromfile(path, np.uint8)
-                        img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                        if img is None:
-                            return
-                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        h, w = img_rgb.shape[:2]
-                        scale = min(thumb_size / w, thumb_size / h)
-                        new_w, new_h = int(w * scale), int(h * scale)
-                        resized = cv2.resize(img_rgb, (new_w, new_h))
-                        pil_image = Image.fromarray(resized)
+                        if is_video_media_path(path):
+                            pil_image = load_video_thumbnail(path, thumb_size)
+                            new_w, new_h = pil_image.size
+                        else:
+                            img_arr = np.fromfile(path, np.uint8)
+                            img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                            if img is None:
+                                return
+                            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                            h, w = img_rgb.shape[:2]
+                            scale = min(thumb_size / w, thumb_size / h)
+                            new_w, new_h = int(w * scale), int(h * scale)
+                            resized = cv2.resize(img_rgb, (new_w, new_h))
+                            pil_image = Image.fromarray(resized)
 
                         def _apply():
                             try:
-                                if self._thumbnail_closed:
+                                if (self._thumbnail_closed or not ph.winfo_exists() or not pr.winfo_exists()
+                                        or getattr(r, "target_image", None) != path):
                                     return
                                 ctk_img = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(new_w, new_h))
                                 set_cached_thumbnail(path, target_size, ctk_img)
@@ -3536,7 +3550,7 @@ class PlanDetailDialog(WindowControlEditorMixin, ctk.CTkToplevel):
                                 pass
 
                         ui_post(_apply)
-                    except (IOError, OSError, ValueError):
+                    except (IOError, OSError, ValueError, cv2.error):
                         pass
 
                 submit_thumbnail_task(_load_thumb)

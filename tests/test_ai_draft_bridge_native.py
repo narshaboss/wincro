@@ -494,6 +494,102 @@ def test_recording_pipeline_select_consent_mcp_result_and_durable_save(tmp_path,
     scenario.exercise_recording_pipeline(tmp_path, monkeypatch, ui_root, _pump_until)
 
 
+@pytest.mark.parametrize("scale,size", [(1.0, 40), (1.25, 60), (1.5, 100)])
+def test_plan_video_thumbnail_opens_current_video_before_load_and_from_cache(tmp_path, monkeypatch, ui_root, scale, size):
+    from collections import deque
+    import threading
+    import customtkinter as ctk
+    from PIL import ImageGrab
+    from src.ui import player_view, analyzer_view
+    from src.ui.ui_batcher import UiCallbackDispatcher
+    from src.analyzer.automation_models import AutomationRule, AutomationPlan
+
+    root = Path(__file__).resolve().parents[1]
+    plan_file = root / "data/plans/plan_20260118_174859.json"
+    plan_before = plan_file.read_bytes()
+    state = json.loads(plan_before)
+    saved_rule = dict(state["initial_rules"][12]["children"][0])
+    saved_rule["target_image"] = "template_video_20260703_154056_306.mp4"
+    rule = AutomationRule.from_dict(saved_rule, root / "data/templates")
+    video = Path(rule.target_image)
+    assert video.suffix == ".mp4"
+    video_before = video.read_bytes()
+    monkeypatch.setattr(player_view, "setup_window_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(analyzer_view, "setup_window_position", lambda *args, **kwargs: None)
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(1)
+    owner = player_view.PlanDetailDialog.__new__(player_view.PlanDetailDialog)
+    ctk.CTkToplevel.__init__(owner, ui_root)
+    owner.title("13-1 video thumbnail QA")
+    owner.geometry("400x280+0+0")
+    owner.configure(fg_color="#0d0b07")
+    owner._plan = AutomationPlan(name="Thumbnail only", initial_rules=[rule])
+    owner._thumbnail_closed = False
+    owner._thumbnail_refs = deque(maxlen=32)
+    owner._image_rule_cache = None
+    owner._ui_dispatcher = UiCallbackDispatcher(owner)
+    gate = threading.Event()
+    original_loader = player_view.load_video_thumbnail
+    reads = []
+    def held_loader(path, requested_size):
+        reads.append(path)
+        assert gate.wait(10)
+        return original_loader(path, requested_size)
+    monkeypatch.setattr(player_view, "load_video_thumbnail", held_loader)
+    player_view.invalidate_thumbnail_cache(str(video))
+    frame = ctk.CTkFrame(owner, width=size+8, height=size+8, fg_color="#0d0b07")
+    frame.pack(pady=15)
+    frame.pack_propagate(False)
+    opened = []
+    def close_editor():
+        dialogs = [child for child in owner.winfo_children() if isinstance(child, analyzer_view.ImageCropDialog)]
+        assert len(dialogs) == 1
+        editor = dialogs[0]
+        opened.append((editor._image_path, editor._is_video, editor._original_image is not None))
+        editor.destroy()
+    original_open = owner._open_image_editor
+    def open_and_verify(path, target):
+        assert target is rule
+        ui_root.after(200, close_editor)
+        original_open(path, target)
+    owner._open_image_editor = open_and_verify
+    try:
+        owner._display_thumbnail(frame, rule, size)
+        placeholder = frame.winfo_children()[0]
+        assert isinstance(placeholder, ctk.CTkButton)
+        assert placeholder.cget("text") == "▶"
+        placeholder.invoke()
+        assert opened == [(str(video), True, True)]
+        gate.set()
+        assert _pump_until(ui_root, lambda: not placeholder.winfo_exists() and bool(frame.winfo_children()), 8)
+        button = frame.winfo_children()[0]
+        assert button.cget("image") is not None and button.cget("text") == ""
+        assert button.winfo_width() <= frame.winfo_width()
+        assert button.winfo_height() <= frame.winfo_height()
+        artifacts = Path("artifacts/ai_draft")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(0, 0, 500, 350), all_screens=True).save(artifacts / f"action_video_thumbnail_{int(scale*100)}pct.png")
+        cached_frame = ctk.CTkFrame(owner, width=size+8, height=size+8)
+        cached_frame.pack()
+        cached_frame.pack_propagate(False)
+        owner._display_thumbnail(cached_frame, rule, size)
+        cached = cached_frame.winfo_children()[0]
+        assert cached.cget("image") is button.cget("image")
+        cached.invoke()
+        assert opened == [(str(video), True, True)] * 2
+        assert reads == [str(video)]
+        assert video.read_bytes() == video_before
+        assert plan_file.read_bytes() == plan_before
+        assert not ui_root._ai_callback_errors, ui_root._ai_callback_errors
+    finally:
+        gate.set()
+        owner._thumbnail_closed = True
+        owner._ui_dispatcher.close()
+        owner.destroy()
+        ctk.set_widget_scaling(1)
+        ctk.set_window_scaling(1)
+
+
 @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
 def test_analyzer_only_playlist_layout_refresh_and_edit_without_plan_writes(ui_root, monkeypatch, tmp_path, scale):
     import customtkinter as ctk
