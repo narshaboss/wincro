@@ -352,6 +352,20 @@ def test_gpt_cannot_rescue_or_edit_while_candidate_running(session):
         playback.worker.join(3)
 
 
+def test_fresh_round_can_return_to_identical_menu_pixels(session):
+    reviewed(session)
+    playback = CandidatePlayback(session, SimulatedExecutor)
+    session.playback = playback
+    for _ in range(3):
+        session.backend.color = 10
+        trial = playback.start(session.candidate["revision"], frame(session), "Returned to the same initial menu in a new round")
+        playback.worker.join(3)
+        playback.result(trial["trial_id"], frame(session), True, "New result after replay")
+    assert len(session.trials) == 3
+    assert len({t["start_sha256"] for t in session.trials}) == 1
+    assert len({t["start_frame_id"] for t in session.trials}) == 3
+
+
 def test_trial_failure_cannot_be_reported_as_success(session):
     reviewed(session)
     class Failed(SimulatedExecutor):

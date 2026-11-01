@@ -31,8 +31,8 @@ class CandidatePlayback:
             raise BridgeError("REVIEW_REQUIRED", "현재 후보의 미해결 항목과 양방향 대조부터 끝내세요.")
         candidate.verify_assets(s)
         frame = s._frame(start_frame_id, fresh=True)
-        if any(t["start_sha256"] == frame["sha256"] for t in s.trials if t["success"]):
-            raise BridgeError("FRESH_ROUND_REQUIRED", "동일한 시작 화면을 재사용할 수 없습니다. 새 시도인지 확인하세요.")
+        if s.trials and frame["time"] < s.trials[-1]["reviewed_at"]:
+            raise BridgeError("FRESH_ROUND_REQUIRED", "이전 결과 확인 이후 새 시작 화면을 관찰하세요.")
         trial = {"trial_id": new_id("trial_"), "revision": revision, "candidate_digest": s.candidate["digest"],
             "start_frame_id": start_frame_id, "start_sha256": frame["sha256"],
             "fresh_round_evidence": text(fresh_round_evidence, "새 시도 근거"), "state": "running",
@@ -86,7 +86,8 @@ class CandidatePlayback:
                         or s.action_count <= trial["start_action_count"]):
             raise BridgeError("INVALID_SUCCESS", "입력·화면 변화·재생 완료를 확인하지 못했습니다.")
         record = {**trial, "success": success, "end_frame_id": end_frame_id,
-            "observation": text(observation, "실제 결과 근거"), "state": "reviewed", "human_verified": False}
+            "observation": text(observation, "실제 결과 근거"), "state": "reviewed", "human_verified": False,
+            "reviewed_at": s.clock()}
         s.trials.append(record)
         s.trial = record
         s.state, s.message = "exploring", "검수 결과 보관: " + ("성공 관찰" if success else "실패·후보 보완 필요")
