@@ -32,15 +32,11 @@ class WindowIO:
             raise BridgeError("TARGET_DENIED", "WinCro 자체는 플레이 대상으로 선택할 수 없습니다.")
 
     def prepare(self):
-        from ..utils.input_controller import (is_arduino_enabled, is_arduino_strict_enabled,
-            wait_for_input_cleanup, unblock_automation_input)
+        from ..utils.input_controller import wait_for_input_cleanup, unblock_automation_input
         if not wait_for_input_cleanup(timeout=0):
             raise BridgeError("INPUT_CLEANUP_PENDING", "이전 입력 장치 정리가 끝난 뒤 계속하세요.")
-        if is_arduino_enabled() or is_arduino_strict_enabled():
-            from ..utils.arduino_hid import get_arduino_hid
-            device = get_arduino_hid()
-            if not device.is_connected or not device.supports_key_combo_tap():
-                raise BridgeError("DEVICE_NOT_READY", "먼저 기존 설정에서 Arduino를 연결하세요. GPT 플레이는 KQ 원자 입력 지원이 필요하며 펌웨어를 자동 수정하지 않습니다.")
+        if not self.controller.play_lab_prepare():
+            raise BridgeError("DEVICE_NOT_READY", "GPT 플레이는 이미 연결된 Arduino의 KQ·MM 지원이 필요합니다. 펌웨어를 자동 수정하지 않습니다.")
         if not self.windows.set_foreground_window(self.target):
             raise BridgeError("FOCUS_REQUIRED", "선택한 게임 창을 앞으로 가져오지 못했습니다. 직접 선택한 뒤 계속하세요.")
         self.validate()
@@ -86,14 +82,14 @@ class WindowIO:
             self.used_keys.add(action["key"])
             return self.controller.play_lab_tap(action["key"])
         x, y = region[0] + action["x"], region[1] + action["y"]
-        if not self.controller.move_to(x, y, duration=.2):
+        if not self.controller.play_lab_move_to(x, y, check, duration=.2):
             return False
         check()
         self.validate(region)
         hit = self.user.WindowFromPoint(wintypes.POINT(x, y))
         if not hit or int(self.user.GetAncestor(hit, 2) or hit) != self.target.handle:
             raise BridgeError("TARGET_OCCLUDED", "다른 창이 클릭 위치를 가리고 있습니다.")
-        return self.controller.click()
+        return self.controller.play_lab_click()
 
     def release(self):
         return self.controller.play_lab_release(tuple(self.used_keys))

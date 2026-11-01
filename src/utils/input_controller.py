@@ -704,24 +704,75 @@ class InputController:
             _software_key_tap,
         )
 
+    def _play_lab_device(self):
+        # Do not call _use_arduino/_get_arduino: they may reconnect/flash firmware.
+        if not get_config().arduino.enabled:
+            return None
+        from .arduino_hid import get_arduino_hid
+        device = get_arduino_hid()
+        if not device.is_connected:
+            raise RuntimeError("GPT play requires an already connected Arduino")
+        return device
+
+    def play_lab_prepare(self) -> bool:
+        device = self._play_lab_device()
+        return device is None or (device.supports_key_combo_tap() and device.supports_mouse_move())
+
     def play_lab_tap(self, key: str) -> bool:
         """Opt-in GPT lab only: never use split KP/KR or software fallback for HID."""
         if is_automation_input_blocked():
             return False
-        if self._use_arduino() or self._strict_mode():
-            from .arduino_hid import get_arduino_hid
-            device = get_arduino_hid()
-            if not device.is_connected or not device.supports_key_combo_tap():
+        device = self._play_lab_device()
+        if device is not None:
+            if not device.supports_key_combo_tap():
                 return False
             return device._send_command("KQ," + str(device._get_keycode(key)))
-        return self.press(key)
+        try:
+            pyautogui.keyDown(key, _pause=False)
+            time.sleep(_KEY_TAP_HOLD_DELAY)
+        finally:
+            pyautogui.keyUp(key, _pause=False)
+        return True
+
+    def play_lab_move_to(self, x, y, check, duration=.2) -> bool:
+        device = self._play_lab_device()
+        check()
+        if is_automation_input_blocked():
+            return False
+        if device is None:
+            pyautogui.moveTo(x, y, duration=duration)
+            return True
+        if not device.supports_mouse_move():
+            return False
+        for _ in range(_MOVE_MAX_CORRECTIONS):
+            check()
+            if is_automation_input_blocked() or not device.is_connected:
+                return False
+            position = self._get_cursor_pos()
+            if position is None:
+                return False
+            dx, dy = x - position[0], y - position[1]
+            if max(abs(dx), abs(dy)) <= _MOVE_VERIFY_TOLERANCE:
+                return True
+            if not device.mouse_move(max(-64, min(64, dx)), max(-64, min(64, dy))):
+                return False
+            time.sleep(.005)
+        return False
+
+    def play_lab_click(self) -> bool:
+        if is_automation_input_blocked():
+            return False
+        device = self._play_lab_device()
+        if device is not None:
+            return bool(device.mouse_click("left"))
+        pyautogui.click(button="left")
+        return True
 
     def play_lab_release(self, keys) -> bool:
         """Release lab inputs without reconnecting or refreshing device firmware."""
-        if self._use_arduino() or self._strict_mode():
-            from .arduino_hid import get_arduino_hid
-            device = get_arduino_hid()
-            return bool(device.is_connected and device.release_all())
+        device = self._play_lab_device()
+        if device is not None:
+            return bool(device.release_all())
         ok = True
         for key in keys:
             try:

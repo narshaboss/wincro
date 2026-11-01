@@ -581,12 +581,14 @@ def test_atomic_arduino_tap_never_falls_back_or_sends_split_edges(monkeypatch):
     monkeypatch.setattr(arduino_hid, "get_arduino_hid", lambda: device)
     monkeypatch.setattr(module, "is_automation_input_blocked", lambda: False)
     controller = module.InputController()
-    monkeypatch.setattr(controller, "_use_arduino", lambda: True)
+    monkeypatch.setattr(module, "get_config", lambda: SimpleNamespace(arduino=SimpleNamespace(enabled=True)))
+    monkeypatch.setattr(module, "_get_arduino", lambda: pytest.fail("automatic reconnect forbidden"))
     monkeypatch.setattr(controller, "press", lambda *_: pytest.fail("software/raw fallback forbidden"))
     assert controller.play_lab_tap("up")
     assert commands == ["KQ,218"]
     device.is_connected = False
-    assert controller.play_lab_tap("up") is False
+    with pytest.raises(RuntimeError):
+        controller.play_lab_tap("up")
     assert len(commands) == 1
 
 
@@ -603,6 +605,7 @@ def test_native_start_rearms_stopped_input_only_after_cleanup(monkeypatch):
     monkeypatch.setattr(ic, "is_arduino_enabled", lambda: False)
     monkeypatch.setattr(ic, "is_arduino_strict_enabled", lambda: False)
     backend = object.__new__(WindowIO)
+    backend.controller = SimpleNamespace(play_lab_prepare=lambda: True)
     backend.target = object()
     focuses = []
     backend.windows = SimpleNamespace(set_foreground_window=lambda _: focuses.append(True) or True)
@@ -621,3 +624,36 @@ def test_native_start_rearms_stopped_input_only_after_cleanup(monkeypatch):
     assert not blocked.is_set()
     backend.user = SimpleNamespace(GetAsyncKeyState=lambda key: 1)
     assert backend.emergency_pressed()
+
+
+def test_lab_mouse_does_not_connect_flash_fallback_or_send_right_click(monkeypatch):
+    from src.utils import input_controller as ic
+    from src.utils import arduino_hid
+    position, clicks, moves = [0, 0], [], []
+    def move(dx, dy):
+        moves.append((dx, dy))
+        position[0] += dx
+        position[1] += dy
+        return True
+    device = SimpleNamespace(is_connected=True, supports_mouse_move=lambda: True,
+        supports_key_combo_tap=lambda: True, mouse_move=move,
+        mouse_click=lambda button: clicks.append(button) or True, release_all=lambda: True)
+    monkeypatch.setattr(ic, "get_config", lambda: SimpleNamespace(arduino=SimpleNamespace(enabled=True)))
+    monkeypatch.setattr(arduino_hid, "get_arduino_hid", lambda: device)
+    monkeypatch.setattr(ic, "_get_arduino", lambda: pytest.fail("automatic reconnect forbidden"))
+    monkeypatch.setattr(ic, "is_automation_input_blocked", lambda: False)
+    monkeypatch.setattr(ic.pyautogui, "click", lambda **_: pytest.fail("software fallback forbidden"))
+    monkeypatch.setattr(ic.pyautogui, "moveTo", lambda *_a, **_k: pytest.fail("software fallback forbidden"))
+    controller = ic.InputController()
+    monkeypatch.setattr(controller, "_get_cursor_pos", lambda: tuple(position))
+    assert controller.play_lab_prepare()
+    assert controller.play_lab_move_to(120, 80, lambda: None)
+    assert moves and position == [120, 80]
+    assert controller.play_lab_click() and clicks == ["left"]
+    assert controller.play_lab_release([])
+    device.is_connected = False
+    for operation in (controller.play_lab_prepare, controller.play_lab_click,
+                      lambda: controller.play_lab_move_to(0, 0, lambda: None), lambda: controller.play_lab_release([])):
+        with pytest.raises(RuntimeError):
+            operation()
+    assert clicks == ["left"]

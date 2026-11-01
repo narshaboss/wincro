@@ -145,6 +145,7 @@ root.mainloop()
             time.sleep(.05)
         assert target is not None
         controller = ic.InputController()
+        monkeypatch.setattr(ic, "get_config", lambda: SimpleNamespace(arduino=SimpleNamespace(enabled=False)))
         monkeypatch.setattr(ic, "get_input_controller", lambda: controller)
         monkeypatch.setattr(ic, "is_arduino_enabled", lambda: False)
         monkeypatch.setattr(ic, "is_arduino_strict_enabled", lambda: False)
