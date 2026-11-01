@@ -429,6 +429,11 @@ def test_recording_workspace_layout_and_selection_without_capture(ui_root, monke
             assert widget.winfo_ismapped()
             assert widget.winfo_rootx() + widget.winfo_width() <= window.winfo_rootx() + window.winfo_width()
             assert widget.winfo_rooty() + widget.winfo_height() <= window.winfo_rooty() + window.winfo_height()
+        for widget in (workspace.selection_label, workspace.goal, workspace.analyze, workspace.status):
+            page = workspace.start_page
+            assert widget.winfo_ismapped()
+            assert widget.winfo_rooty() >= page.winfo_rooty()
+            assert widget.winfo_rooty() + widget.winfo_height() <= page.winfo_rooty() + page.winfo_height()
         for button in (view._start_btn, view._stop_btn, workspace.analyze, workspace.cancel_button, workspace.play_button):
             assert button.winfo_ismapped()
             assert window.winfo_rootx() <= button.winfo_rootx()

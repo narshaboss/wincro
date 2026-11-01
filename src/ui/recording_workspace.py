@@ -103,9 +103,9 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.play_panel = None
         self._play_root = root
         self.start_page.grid_columnconfigure(0, weight=1)
-        self.start_page.grid_rowconfigure(1, weight=1, minsize=round(self._apply_widget_scaling(110)))
+        self.start_page.grid_rowconfigure(1, weight=1, minsize=round(self._apply_widget_scaling(100)))
         controls = ctk.CTkFrame(self.start_page, fg_color="transparent")
-        controls.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 2))
         owner._setup_record_card(controls)
         self.play_button = self._button(owner._start_btn.master, "GPT 플레이", self._open_play, state="disabled", width=88)
         self.play_button.grid(row=0, column=3, padx=(0, 8), pady=5)
@@ -133,7 +133,7 @@ class RecordingWorkspace(ctk.CTkFrame):
     def _set_scaling(self, new_widget_scaling, new_window_scaling):
         super()._set_scaling(new_widget_scaling, new_window_scaling)
         if getattr(self, "start_page", None) is not None:
-            self.start_page.grid_rowconfigure(1, minsize=round(self._apply_widget_scaling(110)))
+            self.start_page.grid_rowconfigure(1, minsize=round(self._apply_widget_scaling(100)))
 
     def _open_play(self):
         if not self.connection.connected:
@@ -177,7 +177,7 @@ class RecordingWorkspace(ctk.CTkFrame):
 
     def _build_analysis_controls(self):
         panel = ctk.CTkFrame(self.start_page, fg_color=COLORS["bg_glass"], border_width=IOS_METRICS["card_border_width"], border_color=COLORS["border"])
-        panel.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+        panel.grid(row=2, column=0, sticky="ew", pady=(2, 0))
         panel.grid_columnconfigure(0, weight=1)
         self.selection_label = ctk.CTkLabel(panel, text="목록에서 분석할 녹화를 선택하세요.", anchor="w", width=1,
             text_color=COLORS["text_primary"], height=20)
@@ -209,7 +209,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         self._status_font = ctk.CTkFont(family=IOS_FONTS["family"], size=11)
         self.status = ctk.CTkLabel(panel, text="", height=20,
             anchor="w", width=1, text_color=COLORS["text_muted"], font=self._status_font)
-        self.status.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 3))
+        self.status.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 2))
         self.set_status("먼저 GPT 연결 OFF를 눌러 연결하세요. 녹화를 선택한 뒤 분석을 시작합니다.")
         self.status.bind("<Button-1>", lambda _event: self._job_details(), add="+")
         tk.Misc.bind(self.status, "<Configure>", lambda event: self._refresh_status_text(event.width), add="+")
