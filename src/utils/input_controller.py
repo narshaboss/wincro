@@ -706,7 +706,10 @@ class InputController:
 
     def _play_lab_device(self):
         # Do not call _use_arduino/_get_arduino: they may reconnect/flash firmware.
-        if not get_config().arduino.enabled:
+        settings = get_config().arduino
+        if not settings.enabled:
+            if getattr(settings, "require_for_playback", True):
+                raise RuntimeError("Arduino is required by the existing playback settings")
             return None
         from .arduino_hid import get_arduino_hid
         device = get_arduino_hid()

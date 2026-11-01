@@ -657,3 +657,6 @@ def test_lab_mouse_does_not_connect_flash_fallback_or_send_right_click(monkeypat
         with pytest.raises(RuntimeError):
             operation()
     assert clicks == ["left"]
+    monkeypatch.setattr(ic, "get_config", lambda: SimpleNamespace(arduino=SimpleNamespace(enabled=False, require_for_playback=True)))
+    with pytest.raises(RuntimeError, match="required"):
+        controller.play_lab_prepare()
