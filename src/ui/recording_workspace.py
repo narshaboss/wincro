@@ -103,7 +103,7 @@ class RecordingWorkspace(ctk.CTkFrame):
         self.play_panel = None
         self._play_root = root
         self.start_page.grid_columnconfigure(0, weight=1)
-        self.start_page.grid_rowconfigure(1, weight=1, minsize=90)
+        self.start_page.grid_rowconfigure(1, weight=1, minsize=round(self._apply_widget_scaling(110)))
         controls = ctk.CTkFrame(self.start_page, fg_color="transparent")
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         owner._setup_record_card(controls)
@@ -129,6 +129,11 @@ class RecordingWorkspace(ctk.CTkFrame):
             corner_radius=IOS_METRICS["control_radius"])
         style.update(kwargs)
         return ctk.CTkButton(parent, text=text, command=command, **style)
+
+    def _set_scaling(self, new_widget_scaling, new_window_scaling):
+        super()._set_scaling(new_widget_scaling, new_window_scaling)
+        if getattr(self, "start_page", None) is not None:
+            self.start_page.grid_rowconfigure(1, minsize=round(self._apply_widget_scaling(110)))
 
     def _open_play(self):
         if not self.connection.connected:
@@ -175,13 +180,13 @@ class RecordingWorkspace(ctk.CTkFrame):
         panel.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         panel.grid_columnconfigure(0, weight=1)
         self.selection_label = ctk.CTkLabel(panel, text="목록에서 분석할 녹화를 선택하세요.", anchor="w", width=1,
-            text_color=COLORS["text_primary"], height=24)
+            text_color=COLORS["text_primary"], height=20)
         self.selection_label.grid(row=0, column=0, sticky="ew", padx=10)
-        self.goal = ctk.CTkEntry(panel, placeholder_text="선택한 녹화·연결 키 기록을 GPT가 자동 분석합니다 · 추가 지시(선택)", height=30,
+        self.goal = ctk.CTkEntry(panel, placeholder_text="선택한 녹화·연결 키 기록을 GPT가 자동 분석합니다 · 추가 지시(선택)", height=28,
             fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
         self.goal.grid(row=1, column=0, sticky="ew", padx=10)
         buttons = ctk.CTkFrame(panel, fg_color="transparent")
-        buttons.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        buttons.grid(row=2, column=0, sticky="ew", padx=10, pady=3)
         buttons.grid_columnconfigure(0, weight=1)
         self.analyze = self._button(buttons, "분석 시작 · 완료 후 자동 등록", self._analyze,
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color=COLORS["text_on_accent"])
@@ -202,9 +207,9 @@ class RecordingWorkspace(ctk.CTkFrame):
             anchor="e", text_color=COLORS["text_muted"], font=(IOS_FONTS["family"], 13, "bold"))
         self.progress_percent.grid(row=0, column=2, sticky="e", padx=(8, 0))
         self._status_font = ctk.CTkFont(family=IOS_FONTS["family"], size=11)
-        self.status = ctk.CTkLabel(panel, text="", height=22,
+        self.status = ctk.CTkLabel(panel, text="", height=20,
             anchor="w", width=1, text_color=COLORS["text_muted"], font=self._status_font)
-        self.status.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.status.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 3))
         self.set_status("먼저 GPT 연결 OFF를 눌러 연결하세요. 녹화를 선택한 뒤 분석을 시작합니다.")
         self.status.bind("<Button-1>", lambda _event: self._job_details(), add="+")
         tk.Misc.bind(self.status, "<Configure>", lambda event: self._refresh_status_text(event.width), add="+")
