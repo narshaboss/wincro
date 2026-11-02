@@ -185,7 +185,7 @@ def run_behavior(session, behavior_id, observation_id, request_id):
     memory = session.learning
     record = memory.store.get(memory.task, "behavior", behavior_id)
     fingerprint = digest({"behavior": record["digest"], "observation": observation_id})
-    old = session.behavior_receipts.get(request_id)
+    old = session.receipt_for("behavior", request_id)
     if old:
         if old["digest"] != fingerprint:
             raise BridgeError("REQUEST_REUSED", "이미 사용한 재사용 요청 ID입니다.")

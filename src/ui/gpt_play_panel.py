@@ -136,7 +136,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.confirm = ctk.CTkCheckBox(body, text="테스트 PC 모드 · 항상 사용", variable=self.test_environment,
             state="disabled", text_color=COLORS["text_primary"])
         self.confirm.grid(row=6, column=0, sticky="w", padx=10, pady=8)
-        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\nArduino 전용: 키 유지·2키 동시 입력은 GL1 펌웨어가 필요합니다. 자동 업로드하지 않습니다.\n위 목록에서 경험을 선택하면 기록을 이어갑니다. 과거 화면·입력은 자동 재생하지 않습니다.\n질문·개입 중에도 게임은 계속됩니다. 테스트 PC에서만 시작하세요.",
+        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\n시간·행동·시도 횟수 제한 없음 · 저장·장치 안전 검사는 유지합니다.\n이동·스킬은 최대 2초 연속 조작 · GL1 Arduino 펌웨어가 필요합니다. 자동 업로드하지 않습니다.\n위 목록에서 경험을 선택하면 기록을 이어갑니다. 과거 화면·입력은 자동 재생하지 않습니다.\n질문·개입 중에도 게임은 계속됩니다. 테스트 PC에서만 시작하세요.",
             justify="left", anchor="w", text_color=COLORS["warning"], wraplength=510)
         self.warning.grid(row=7, column=0, sticky="ew", padx=10, pady=5)
         self.actions = ctk.CTkFrame(body, fg_color="transparent")
@@ -550,7 +550,9 @@ class GPTPlayPanel(ctk.CTkFrame):
                     + "\n기존 플랜·재생목록은 덮어쓰지 않습니다. 동적 GPT 판단이 필수인 후보는 완료 등록하지 않습니다.")
         if state:
             problem = state["state"] in {"paused", "error", "needs_review"}
-            configure_changed(self.status, text=f'{STATE_LABELS.get(state["state"], state["state"])} | 관찰 {state["frame_count"]}회 · 요청 {state["action_count"]}/{state["max_actions"]}\n'
+            usage = (f"요청 {state['action_count']}회 · 실행 한도 없음" if state["max_actions"] is None
+                     else f"요청 {state['action_count']}/{state['max_actions']}")
+            configure_changed(self.status, text=f'{STATE_LABELS.get(state["state"], state["state"])} | 관찰 {state["frame_count"]}회 · {usage}\n'
                 f'{state["phase"]} · 마지막 진행 후 {state["quiet_seconds"]}초',
                 text_color=COLORS["warning"] if problem else COLORS["success"] if self.workspace.connection.connected else COLORS["error"])
             signature = (state["state"], state["message"], (state.get("question") or {}).get("id"))

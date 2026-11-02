@@ -140,6 +140,20 @@ class WindowIO:
         action = validate_action(action)
         check()
         self.validate(region)
+        if action["kind"] == "control":
+            for index, segment in enumerate(action["segments"], 1):
+                check()
+                self.validate(region)
+                self._log("control_segment", f"연속 조작 {index}/{len(action['segments'])} · "
+                          + "+".join(segment["keys"]).upper() + f" {segment['duration_ms']}ms")
+                try:
+                    if not self.send({"kind": "hold", **segment}, region, check):
+                        return False
+                except BridgeError as exc:
+                    if index > 1 and exc.code == "TIMED_INPUT_UNSUPPORTED":
+                        raise BridgeError("DELIVERY_UNKNOWN", "연속 조작 일부 실행 후 장치 기능이 사라졌습니다. 새 화면 확인 전 재전송하지 않습니다.") from exc
+                    raise
+            return True
         if action["kind"] in {"hold", "repeat"}:
             keys = action["keys"] if action["kind"] == "hold" else [action["key"]]
             self.used_keys.update(keys)

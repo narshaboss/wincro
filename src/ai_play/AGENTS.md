@@ -9,6 +9,14 @@
 - GL1 is the opt-in timed-input protocol. Keep legacy KQ/KP/KR semantics unchanged.
   Its firmware enforces duration and a heartbeat lease without a blocking delay.
   Never upload firmware from GPT play or fall back to software on unsupported devices.
+- Live sessions have no default elapsed/action/attempt/normal-turn ceiling. Keep
+  recording-analysis limits separate. Storage integrity and individual device leases
+  remain enforced; never substitute infinite key holds for a continuous session.
+- play_control executes up to eight GL1 segments, at most two seconds combined,
+  then returns a fresh image in the same call. It is not autonomous game-state
+  understanding. A partial bundle is uncertain, never a safe-to-resend request.
+- Archive old frames/receipts durably before trimming hot caches. Archived request
+  IDs must still deduplicate; historical images must never regain input freshness.
 - Learning, routine reuse, candidate trials and native gpt_play_behavior playback
   must use the same versioned program validator/executor. Never flatten timed/guarded
   behavior to legacy naked key actions. Dynamic GPT-dependent branches stay incomplete.

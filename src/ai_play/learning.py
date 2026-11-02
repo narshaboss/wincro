@@ -84,8 +84,6 @@ class Learning:
         if event == "start":
             if self.attempt and self.attempt["status"] == "running":
                 raise BridgeError("ATTEMPT_ACTIVE", "현재 시도의 결과를 먼저 기록하세요.")
-            if self.attempt_count >= 10:
-                raise BridgeError("ATTEMPT_LIMIT", "이번 실행의 10회 시도 한도에 도달했습니다. 기록 확인 후 이어가세요.")
             value = {"attempt_id": new_id("attempt_"), "session_id": s.instance_id,
                 "status": "running", "stage": stage, "strategy": strategy, "goal_revision": self.revision,
                 "started": time.time(), "start_frame": observation_id, "start_sha256": frame["sha256"],
@@ -109,7 +107,7 @@ class Learning:
         else:
             raise BridgeError("INVALID_EXPERIENCE", "시도 시작(start) 또는 결과(result)를 지정하세요.")
         s._persist()
-        s.trace.emit("attempt", f"시도 {self.attempt_count}/10 · {stage} · {value['status']} · {strategy}")
+        s.trace.emit("attempt", f"시도 {self.attempt_count} · {stage} · {value['status']} · {strategy}")
         return copy.deepcopy(value)
 
     def record(self, observation_id, kind, observation, hypothesis="", next_experiment="", stage=""):

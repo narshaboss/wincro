@@ -248,14 +248,18 @@ class CodexRunner:
         """Default remains draft-only; a live runner must opt in explicitly."""
         return status.get("editing_only") is True and status.get("live_execution") is not True
 
+    def execution_limits(self):
+        timeout = self.settings.get("max_seconds", 1200)
+        if type(timeout) is not int or not 30 <= timeout <= 3600:
+            raise BridgeError("INVALID_FIELD", "분석 제한 시간은 30~3600초여야 합니다.")
+        return timeout, 10000
+
     def run(self, descriptor, prompt, cancelled, progress, *, idle=False, ready=None, continue_prompt=None):
         codex, python, server = self.preflight()
         if cancelled.is_set():
             raise BridgeError("JOB_CANCELLED", "분석이 취소되었습니다.")
         args = self.arguments(codex, python, server, descriptor)
-        timeout = self.settings.get("max_seconds", 1200)
-        if type(timeout) is not int or not 30 <= timeout <= 3600:
-            raise BridgeError("INVALID_FIELD", "분석 제한 시간은 30~3600초여야 합니다.")
+        timeout, event_limit = self.execution_limits()
         events = queue.Queue(maxsize=4)
         stderr = bytearray()
         stop_reading = threading.Event()
@@ -332,7 +336,7 @@ class CodexRunner:
                     send({"id": 21, "method": "mcpServer/tool/call", "params": {
                         "threadId": thread_id, "server": self.server_name, "tool": "connection_status", "arguments": {}}})
                     pending_ping = now
-                if (not idle and now - started > timeout) or (idle and last_ping is None and now - started > 60):
+                if (not idle and timeout is not None and now - started > timeout) or (idle and last_ping is None and now - started > 60):
                     raise BridgeError("GPT_TIMEOUT", "분석 제한 시간이 지났습니다. 저장된 초안은 결과 탭에서 확인할 수 있습니다.")
                 try:
                     line = events.get(timeout=.15)
@@ -345,7 +349,7 @@ class CodexRunner:
                 if not line.strip():
                     continue
                 count += 1
-                if count > 10000 and not idle:
+                if event_limit is not None and count > event_limit and not idle:
                     raise BridgeError("LIMIT_REACHED", "분석 이벤트 제한에 도달했습니다. 초안을 확인하세요.")
                 try:
                     event = json.loads(line)

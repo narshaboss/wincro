@@ -20,7 +20,7 @@ from .actions import validate_action, input_cost
 TOOLS = {"connection_status", "play_observe", "play_frame", "play_act", "play_status", "play_question",
          "play_note", "play_candidate", "play_review", "play_verify", "play_trial_result", "play_finish"}
 TOOLS.update({"play_experience", "play_memory", "play_memory_frame", "play_attempt",
-              "play_behavior", "play_run_behavior", "play_reconcile"})
+              "play_behavior", "play_run_behavior", "play_reconcile", "play_control"})
 
 
 def text(value, label, maximum=3000):
@@ -30,8 +30,8 @@ def text(value, label, maximum=3000):
 
 
 class PlaySession:
-    def __init__(self, folder, goal, keys, backend, connected, *, max_seconds=900,
-                 max_actions=500, clock=time.monotonic, memory=None, task_id=None):
+    def __init__(self, folder, goal, keys, backend, connected, *, max_seconds=None,
+                 max_actions=None, clock=time.monotonic, memory=None, task_id=None):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self.instance_id = new_id("play_")
@@ -43,12 +43,12 @@ class PlaySession:
         self.goal = text(goal, "목표")
         if not isinstance(keys, list) or not keys or any(k not in SAFE_KEYS for k in keys):
             raise BridgeError("INVALID_KEYS", "허용할 방향키·스킬키를 확인하세요. 조합키·시스템키는 허용하지 않습니다.")
-        if type(max_seconds) is not int or not 30 <= max_seconds <= 3600:
+        if max_seconds is not None and (type(max_seconds) is not int or not 30 <= max_seconds <= 3600):
             raise BridgeError("INVALID_LIMIT", "실행 제한은 30~3600초입니다.")
-        if type(max_actions) is not int or not 1 <= max_actions <= 2000:
+        if max_actions is not None and (type(max_actions) is not int or not 1 <= max_actions <= 2000):
             raise BridgeError("INVALID_LIMIT", "최대 입력 횟수는 1~2000회입니다.")
         self.keys = sorted(set(keys))
-        self.deadline = clock() + max_seconds
+        self.deadline = None if max_seconds is None else clock() + max_seconds
         self.max_actions = max_actions
         self.stop_event = threading.Event()
         self.input_cancelled = threading.Event()
@@ -57,6 +57,7 @@ class PlaySession:
         self.question = None
         self.answers, self.notes, self.frames, self.receipts = [], [], {}, {}
         self.latest = None
+        self.frame_count = 0
         self.action_count = 0
         self.epoch = 0
         self.candidate = None
@@ -101,18 +102,46 @@ class PlaySession:
 
     def _persist(self):
         try:
-            value = self.snapshot(internal=True)
-            if len(encoded(value)) > 3_800_000:
-                raise BridgeError("SESSION_STORAGE_LIMIT", "세션 기록 크기 한도입니다. 마지막 정상 저장을 보존하며 입력을 중단합니다.")
-            write_json(self.folder / "session.json", value)
-            if self.learning:
-                self.learning.persist(value)
+            # Serialize the whole save chain, including cache archival. UI stop
+            # signals cancellation before waiting for this lock.
+            with self.state_lock:
+                if self.learning:
+                    for kind, cache in (("input", self.receipts), ("behavior", self.behavior_receipts)):
+                        for ident, receipt in list(cache.items())[:-128]:
+                            if receipt.get("state", receipt.get("status")) == "unknown":
+                                continue
+                            self.learning.store.put(self.learning.task, kind + "_receipt",
+                                self.instance_id + ":" + ident, receipt)
+                            del cache[ident]
+                    while len(self.frames) > 128:
+                        self.frames.pop(next(iter(self.frames)))
+                value = self.snapshot(internal=True)
+                if len(encoded(value)) > 3_800_000:
+                    raise BridgeError("SESSION_STORAGE_LIMIT", "세션 기록 크기 한도입니다. 마지막 정상 저장을 보존하며 입력을 중단합니다.")
+                write_json(self.folder / "session.json", value)
+                if self.learning:
+                    self.learning.persist(value)
         except Exception:
             # Never continue sending inputs after a failed write-ahead/outcome save.
             self.storage_failed = True
             self.latest = None
             self._release_async()
             raise
+
+    def receipt_for(self, kind, ident):
+        cache = self.receipts if kind == "input" else self.behavior_receipts
+        if ident in cache:
+            return cache[ident]
+        if self.learning:
+            try:
+                return self.learning.store.get(self.learning.task, kind + "_receipt", self.instance_id + ":" + ident)
+            except BridgeError as exc:
+                if exc.code != "MEMORY_NOT_FOUND":
+                    self.storage_failed = True
+                    self.input_cancelled.set()
+                    self._release_async()
+                    raise
+        return None
 
     def snapshot(self, internal=False):
         with self.state_lock:
@@ -124,7 +153,8 @@ class PlaySession:
                 "latest_observation": self.latest, "candidate": copy.deepcopy(self.candidate),
                 "reviews": copy.deepcopy(self.reviews), "trials": copy.deepcopy(self.trials),
                 "trial": copy.deepcopy(self.trial), "publication": self.publication,
-                "remaining_seconds": max(0, int(self.deadline - self.clock())),
+                "remaining_seconds": None if self.deadline is None else max(0, int(self.deadline - self.clock())),
+                "frame_count": self.frame_count,
                 "game_paused": False, "full_playlist_replay_verified": False,
                 "candidate_replay_successes": sum(bool(t.get("success")) for t in self.trials)}
             if internal:
@@ -158,7 +188,7 @@ class PlaySession:
             phase = {"paused": "일시정지", "question": "답변 대기", "stopped": "중지"}.get(self.state, phase)
             self._ui_cache = {"state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
                 "action_count": self.action_count, "max_actions": self.max_actions,
-                "phase": phase, "quiet_seconds": quiet, "frame_count": len(self.frames),
+                "phase": phase, "quiet_seconds": quiet, "frame_count": self.frame_count,
                 "publication": copy.deepcopy(self.publication), "trial_count": len(self.trials),
                 "candidate": {"revision": self.candidate["revision"]} if self.candidate else None,
                 "learning": self.learning.summary() if self.learning else None,
@@ -188,7 +218,8 @@ class PlaySession:
             raise BridgeError("CONNECTION_OFF", self.message)
         if self.stop_event.is_set() or self.state in {"stopped", "complete", "needs_review", "error"}:
             raise BridgeError("SESSION_STOPPED", self.message)
-        if self.clock() >= self.deadline or self.action_count > self.max_actions:
+        if ((self.deadline is not None and self.clock() >= self.deadline)
+                or (self.max_actions is not None and self.action_count > self.max_actions)):
             self.pause("시간 또는 입력 한도에 도달했습니다. 세션 기록은 보관합니다.")
             raise BridgeError("BUDGET_EXHAUSTED", self.message)
         if self.state in {"paused", "question"}:
@@ -270,7 +301,8 @@ class PlaySession:
                 raise BridgeError("INVALID_STATE", "대기 중인 세션만 이어갈 수 있습니다.")
             if not self.connected():
                 raise BridgeError("CONNECTION_OFF", "먼저 GPT 연결을 ON으로 바꾸세요.")
-            if self.clock() >= self.deadline or self.action_count >= self.max_actions:
+            if ((self.deadline is not None and self.clock() >= self.deadline)
+                    or (self.max_actions is not None and self.action_count >= self.max_actions)):
                 raise BridgeError("BUDGET_EXHAUSTED", "한도가 끝났습니다. 기록을 확인하고 새 세션을 시작하세요.")
             if self.playback and self.playback.busy:
                 raise BridgeError("PLAYBACK_BUSY", "이전 후보 재생이 멈추는 중입니다.")
@@ -308,8 +340,6 @@ class PlaySession:
         with self.state_lock:
             if self.state not in {"paused", "question"} or self.stop_event.is_set():
                 raise BridgeError("INVALID_STATE", "개입 또는 일시정지 후 명령을 전달하세요.")
-            if len(self.commands) - self._initial_commands >= 100:
-                raise BridgeError("LIMIT_REACHED", "중간 명령은 세션당 100개까지 보관합니다.")
             previous = self.reviews, self.trials, self.trial
             self.commands.append({"command": command, "action_count": self.action_count,
                                   "time": self.clock()})
@@ -334,17 +364,18 @@ class PlaySession:
             self.check()
             if epoch != self.epoch:
                 raise BridgeError("STALE_OBSERVATION", "상태가 변경되어 화면을 폐기했습니다.")
-        if len(self.frames) >= 600:
+        if not self.learning and len(self.frames) >= 600:
             raise BridgeError("LIMIT_REACHED", "화면 근거 600장 한도에 도달했습니다.")
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         raw = buffer.getvalue()
         if len(raw) > 2_500_000:
             raise BridgeError("FRAME_TOO_LARGE", "선택 창이 너무 큽니다. 테스트 창 크기를 줄이세요.")
-        if sum(f.get("bytes", 0) for f in self.frames.values()) + len(raw) > 128_000_000:
+        if not self.learning and sum(f.get("bytes", 0) for f in self.frames.values()) + len(raw) > 128_000_000:
             raise BridgeError("LIMIT_REACHED", "세션 화면 근거 128MB 한도에 도달했습니다.")
         frame_id = new_id("frame_")
-        publish_bytes(self.folder / "frames", frame_id + ".png", raw)
+        if not self.learning:
+            publish_bytes(self.folder / "frames", frame_id + ".png", raw)
         metadata = {"frame_id": frame_id, "time": observed_at, "epoch": epoch,
             "region": list(region), "sha256": __import__("hashlib").sha256(raw).hexdigest(),
             "action_count": observed_actions, "bytes": len(raw)}
@@ -362,9 +393,10 @@ class PlaySession:
             previous = next(reversed(self.frames.values()), None) if self.frames else None
             self.frames[frame_id] = metadata
             self.latest = frame_id
+            self.frame_count += 1
         self._persist()
         change = "첫 화면" if previous is None else "이전 관찰과 동일" if previous["sha256"] == metadata["sha256"] else "이전 관찰과 화면 변화 있음"
-        self.trace.emit("observe_done", f"화면 {len(self.frames)}장 확인: {image.width}x{image.height} 범위={list(region)} · {change} "
+        self.trace.emit("observe_done", f"화면 {self.frame_count}장 확인: {image.width}x{image.height} 범위={list(region)} · {change} "
                         "· 캐릭터 이동·목표 달성 여부는 GPT 확인 필요", phase="GPT 판단 대기")
         return {**metadata, "width": image.width, "height": image.height,
             "coordinate_space": "image pixels, relative to client area", "png_base64": base64.b64encode(raw).decode()}
@@ -382,7 +414,7 @@ class PlaySession:
 
     def read_frame(self, frame_id):
         self.check()
-        if frame_id not in self.frames and self.learning:
+        if self.learning:
             return self.learning.frame(frame_id)
         metadata = self._frame(frame_id)
         path = within(self.folder / "frames" / (frame_id + ".png"), self.folder / "frames")
@@ -396,7 +428,7 @@ class PlaySession:
         request_id = text(request_id, "요청 ID", 100)
         purpose = text(purpose, "행동 목적")
         fingerprint = digest({"observation_id": observation_id, "action": action, "purpose": purpose})
-        old = self.receipts.get(request_id)
+        old = self.receipt_for("input", request_id)
         if old:
             if old["digest"] != fingerprint:
                 raise BridgeError("REQUEST_REUSED", "같은 ID로 다른 행동을 보낼 수 없습니다.")
@@ -404,7 +436,7 @@ class PlaySession:
             return copy.deepcopy(old)
         action = validate_action(action, self.keys)
         cost = input_cost(action)
-        if self.action_count + cost > self.max_actions:
+        if self.max_actions is not None and self.action_count + cost > self.max_actions:
             self.pause("최대 입력 횟수에 도달했습니다.")
             raise BridgeError("BUDGET_EXHAUSTED", self.message)
         kind = action.get("kind")
@@ -446,7 +478,7 @@ class PlaySession:
                 changed = getattr(exc, "code", "") == "BEHAVIOR_GUARD_CHANGED"
                 if changed:
                     receipt["state"] = "not_sent"
-                if kind == "hold" and getattr(exc, "code", "") == "TIMED_INPUT_UNSUPPORTED":
+                if kind in {"hold", "control"} and getattr(exc, "code", "") == "TIMED_INPUT_UNSUPPORTED":
                     receipt["state"] = "not_sent"
                 if self.learning and receipt["state"] == "unknown":
                     self.learning.pending.append(copy.deepcopy(receipt))
@@ -459,13 +491,17 @@ class PlaySession:
                 self._persist()
         return copy.deepcopy(receipt)
 
+    def control(self, observation_id, request_id, segments, purpose):
+        receipt = self.act(observation_id, request_id, {"kind": "control", "segments": segments}, purpose)
+        # One model/tool round trip delivers the local input bundle AND its
+        # fresh result frame. A repeated request ID never repeats the inputs.
+        return {"receipt": receipt, "observation": self.observe()}
+
     def ask(self, observation_id, question, context):
         self.check()
         self._frame(observation_id, fresh=True)
         if self.state in {"verifying", "reviewing_trial"}:
             raise BridgeError("OBSERVER_ONLY", "검수 중 개입하면 해당 검수는 중단해야 합니다.")
-        if len(self.answers) - self._initial_answers >= 40:
-            raise BridgeError("LIMIT_REACHED", "질문 한도에 도달했습니다.")
         self.question = {"id": new_id("question_"), "observation_id": observation_id,
             "question": text(question, "질문"), "context": text(context, "관찰·불확실한 점")}
         self.state = "question"
@@ -476,10 +512,15 @@ class PlaySession:
     def note(self, observation_id, observation, purpose, expected_result):
         self.check()
         self._frame(observation_id)
-        if len(self.notes) >= 500:
+        if not self.learning and len(self.notes) >= 500:
             raise BridgeError("LIMIT_REACHED", "관찰 기록 한도에 도달했습니다.")
-        self.notes.append({"frame_id": observation_id, "observation": text(observation, "관찰"),
-            "purpose": text(purpose, "목적"), "expected_result": text(expected_result, "예상 결과")})
+        note = {"frame_id": observation_id, "observation": text(observation, "관찰"),
+            "purpose": text(purpose, "목적"), "expected_result": text(expected_result, "예상 결과")}
+        if self.learning:
+            self.learning.store.event(self.learning.task, "note", note)
+        self.notes.append(note)
+        if self.learning:
+            self.notes = self.notes[-128:]
         self._persist()
         self.trace.emit("observation_note", "GPT 관찰: " + concise(observation, 250) + " · 목적: " + concise(purpose, 250)
                         + " · 예상 결과: " + concise(expected_result, 250))
@@ -508,7 +549,8 @@ class PlaySession:
                     self.input_cancelled.set()
                     self._release_async()
                 raise
-        methods = {"play_observe": self.observe, "play_frame": self.read_frame, "play_act": self.act, "play_status": self.snapshot,
+        methods = {"play_observe": self.observe, "play_frame": self.read_frame, "play_act": self.act,
+            "play_control": self.control, "play_status": self.snapshot,
             "play_question": self.ask, "play_note": self.note}
         if method not in methods:
             raise BridgeError("TOOL_DENIED", "허용되지 않은 GPT 플레이 도구입니다.")

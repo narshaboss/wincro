@@ -33,6 +33,19 @@ def validate_action(action, allowed=None):
                 or action["duration_ms"] * action["count"] + action["interval_ms"] * (action["count"] - 1) > 1000):
             raise BridgeError("INVALID_ACTION", "키 반복은 최대 5회, 전체 1초 이내로 제한됩니다.")
         keys = [action["key"]]
+    elif kind == "control":
+        segments = action.get("segments")
+        if (set(action) != {"kind", "segments"} or not isinstance(segments, list)
+                or not 1 <= len(segments) <= 8):
+            raise BridgeError("INVALID_ACTION", "연속 조작은 1~8구간입니다.")
+        total = 0
+        for segment in segments:
+            if not isinstance(segment, dict) or set(segment) != {"keys", "duration_ms"}:
+                raise BridgeError("INVALID_ACTION", "조작 구간에는 keys와 duration_ms가 필요합니다.")
+            validate_action({"kind": "hold", **segment}, allowed)
+            total += segment["duration_ms"]
+        if total > 2000:
+            raise BridgeError("INVALID_ACTION", "새 화면 확인 전 연속 조작은 최대 2초입니다.")
     elif kind == "click":
         if set(action) != {"kind", "x", "y"} or any(type(action[k]) is not int or action[k] < 0 for k in ("x", "y")):
             raise BridgeError("INVALID_ACTION", "창 내부의 정수 x, y가 필요합니다.")
@@ -47,4 +60,6 @@ def validate_action(action, allowed=None):
 
 
 def input_cost(action):
+    if action["kind"] == "control":
+        return len(action["segments"])
     return action.get("count", 1) if action["kind"] == "repeat" else 1

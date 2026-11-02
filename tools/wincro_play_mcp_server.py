@@ -111,6 +111,24 @@ def play_act(observation_id: str, request_id: str, action: dict, purpose: str) -
 
 
 @mcp.tool()
+def play_control(observation_id: str, request_id: str, segments: list[dict], purpose: str) -> list:
+    """Fast local movement/skills AND fresh result image in ONE call. GL1 Arduino required.
+
+    segments=[{keys:[right],duration_ms:300},{keys:[right,z],duration_ms:200}].
+    1..8 segments, 1..2 gameplay keys each, 50..1000ms each, <=2000ms combined.
+    No per-key GPT wait. Focus/stop/device checks continue during execution.
+    Adapt from the returned observation.frame_id and image, not an extra observe call.
+    This does not infer coordinates, enemies, death or success while running.
+    """
+    response = invoke("play_control", locals())
+    if not response.get("ok"):
+        return [json.dumps(response, ensure_ascii=False)]
+    result = response["result"]
+    raw = base64.b64decode(result["observation"].pop("png_base64"))
+    return [json.dumps(result, ensure_ascii=False), Image(data=raw, format="png")]
+
+
+@mcp.tool()
 def play_question(observation_id: str, question: str, context: str) -> dict:
     """Ask user via real answer UI, release inputs, then END the turn."""
     return invoke("play_question", locals())

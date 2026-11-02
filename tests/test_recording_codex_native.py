@@ -48,8 +48,8 @@ def test_packaged_mcp_client_starts_with_only_its_explicit_source_files(tmp_path
     assert b"--connection-file" in result.stdout
 
 
-@pytest.mark.parametrize("continue_once", [False, True])
-def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tmp_path, monkeypatch, continue_once):
+@pytest.mark.parametrize("continue_once,use_control", [(False, False), (True, False), (False, True)])
+def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tmp_path, monkeypatch, continue_once, use_control):
     from src.ai_play.jobs import PlayJobs, PlayRunner
     from src.ai_play.session import TOOLS
     from tests.test_gpt_play import Backend
@@ -66,12 +66,15 @@ def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tm
             requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             namespace = next(t["name"] for t in declared_tools(requests[0]) if t.get("name", "").startswith("mcp__wincroRecording_"))
             count = len(requests)
-            if count <= 3 or (count == 4 and not continue_once) or (count == 5 and continue_once):
+            if (count <= 3 or (count == 4 and not continue_once) or (count == 5 and continue_once)) and not (use_control and count > 3):
                 name, arguments = "play_observe", {}
                 if count == 2:
                     name, arguments = "play_act", {"observation_id": jobs.session.latest, "request_id": "native-one",
                         "action": {"kind": "key", "key": "enter"}, "purpose": "join fixture arena"}
-                elif count >= 4:
+                    if use_control:
+                        name, arguments = "play_control", {"observation_id": jobs.session.latest, "request_id": "native-control",
+                            "segments": [{"keys": ["enter"], "duration_ms": 100}] * 2, "purpose": "fixture local controls"}
+                elif count >= 4 or (use_control and count == 3):
                     name, arguments = "play_question", {"observation_id": jobs.session.latest,
                         "question": "Which revive button?", "context": "Fixture death observed"}
                 item = {"id": f"fc_{count}", "type": "function_call", "call_id": f"call_{count}",
@@ -114,10 +117,12 @@ def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tm
         jobs.worker.join(80)
         assert not jobs.busy, jobs.snapshot()
         assert jobs.session.state == "question", jobs.snapshot()
-        assert len(requests) == (6 if continue_once else 5)
+        assert len(requests) == (4 if use_control else 6 if continue_once else 5)
         assert len([row for row in jobs.trace.since(0) if row["event"] == "model_start"]) == 1
         assert len([row for row in jobs.trace.since(0) if row["event"] == "model_continue"]) == (1 if continue_once else 0)
-        assert backend.sent == [{"kind": "key", "key": "enter"}]
+        assert backend.sent == ([{"kind": "control", "segments": [{"keys": ["enter"], "duration_ms": 100}] * 2}]
+                                if use_control else [{"kind": "key", "key": "enter"}])
+        assert jobs.session.action_count == (2 if use_control else 1)
         namespaces = [t for t in declared_tools(requests[0]) if t.get("name", "").startswith("mcp__wincroRecording_")]
         assert len(namespaces) == 1
         assert not list((tmp_path / "plans").glob("*.json"))

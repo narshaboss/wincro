@@ -23,6 +23,11 @@ class PlayRunner(CodexRunner):
         self.trace = None
         self.continue_prompt = None
 
+    def execution_limits(self):
+        # Continuous live play is not a recording-analysis job. Cancellation,
+        # bounded tool payloads and device leases remain enforced independently.
+        return None, None
+
     def run(self, descriptor, prompt, cancelled, progress, **kwargs):
         return super().run(descriptor, prompt, cancelled, progress,
                            continue_prompt=self.continue_prompt, **kwargs)
@@ -130,6 +135,16 @@ Use one bounded action per fresh observation: key (legacy short tap), hold
 {kind:hold,keys:[up],duration_ms:300}, repeat
 {kind:repeat,key:z,duration_ms:100,count:3,interval_ms:50}, left click or <=2s wait.
 Hold supports 1..2 non-system gameplay keys, 50..1000ms. Repeats <=5 and <=1000ms total.
+For movement/combat prefer play_control(observation_id,request_id,segments,purpose).
+Segments are [{keys:[right],duration_ms:300},{keys:[right,z],duration_ms:200}].
+Up to8 segments, <=2000ms combined. WinCro executes them locally without per-key
+GPT calls, then returns a FRESH result image in the same tool response. Adapt from
+that image. This is not coordinate pathfinding or autonomous enemy/death detection.
+Start with short 100..300ms movement probes; increase only after real visual response.
+Use single key only for menus/confirmations, not 6ms key-by-key sustained movement.
+Inspect device_capabilities before movement. If GL1 is unsupported and timed
+movement/combat is required, ask once for firmware preparation. Do not pretend
+rapid continuous movement is available and keep wasting turns on tiny legacy taps.
 Timed actions REQUIRE GL1 Arduino firmware. If unsupported report it, never fall back
 to software input, raw down/up, or pretend movement occurred. Prefer measured 100ms taps
 then adjust bounded holds from actual game response, not from acknowledgements.
@@ -179,7 +194,8 @@ Read play_memory first. It contains task-scoped historical experience, NOT the c
 screen. play_memory_frame(ident) opens its evidence; never act on historical frames.
 Use play_attempt(event=start,observation_id,stage,strategy) for each genuine attempt,
 then event=result with outcome=success|defeat|technical_error|incomplete, observation,
-hypothesis and next_experiment. Ten attempts per explicitly started session maximum.
+hypothesis and next_experiment. Session time, action and attempt counts are unlimited;
+individual input durations, focus/cancellation checks and storage integrity are not.
 Distinguish observed facts from unproven causes; change one major tactic per experiment.
 Use play_experience for facts/hypotheses/experiments/recovery/outcomes with evidence.
 Retry ordinary game defeats without asking when return/revival is already authorized
@@ -259,7 +275,7 @@ class PlayJobs:
     def ui_snapshot(self):
         return self.session.ui_snapshot() if self.session else None
 
-    def start(self, target, goal, keys, runtime, *, test_environment=False, max_seconds=900, backend=None, task_id=None):
+    def start(self, target, goal, keys, runtime, *, test_environment=False, max_seconds=None, backend=None, task_id=None):
         if self.closed or self.busy or self.active:
             raise BridgeError("PLAY_BUSY", "기존 GPT 플레이를 먼저 중지하세요.")
         if not self.connected():
@@ -334,7 +350,7 @@ class PlayJobs:
             if session.state in {"complete", "needs_review", "stopped", "error"}:
                 return
             try:
-                session.trace.heartbeat(session.state, session.action_count, len(session.frames))
+                session.trace.heartbeat(session.state, session.action_count, session.frame_count)
                 if not self.connected():
                     raise BridgeError("CONNECTION_OFF", "GPT 연결이 해제되었습니다.")
                 if getattr(session.backend, "emergency_pressed", lambda: False)():
@@ -382,19 +398,18 @@ class PlayJobs:
             runner = self.runner_factory(self.runtime, folder)
             if isinstance(runner, PlayRunner):
                 runner.trace = s.trace
-                last_progress = [s.action_count, 0, 0]
+                last_progress = [s.action_count, 0]
                 def continue_play():
                     if self.cancel.is_set() or s.state in {"complete", "needs_review", "paused", "question", "stopped", "error"}:
                         return None
                     s.check()
-                    last_progress[2] += 1
                     last_progress[1] = last_progress[1] + 1 if last_progress[0] == s.action_count else 0
                     last_progress[0] = s.action_count
-                    if last_progress[1] >= 2 or last_progress[2] >= 20:
-                        s.pause("GPT 턴 진행이 없거나 20회 턴 한도에 도달했습니다. 기록 확인 후 계속하세요.")
+                    if last_progress[1] >= 2:
+                        s.pause("연속 GPT 턴에서 입력 진행이 없습니다. 기록 확인 후 계속하세요.")
                         return None
                     s.trace.emit("model_continue", "같은 GPT 플레이 연결에서 다음 판단을 이어갑니다. 실행 예산은 초기화하지 않습니다.")
-                    return "Continue the same authorized task within the remaining budget. Observe fresh state. " \
+                    return "Continue the same authorized continuous task. Observe fresh state. " \
                         "Use recorded experience; do not repeat uncertain sends. SESSION:\n" + json.dumps(s.model_context(), ensure_ascii=False)
                 runner.continue_prompt = continue_play
             self.runner = runner

@@ -191,7 +191,7 @@ def native_executor(session):
                 self.check()
                 if action["kind"] == "key" and (action["key"] not in session.keys or action["key"] in reserved_keys()):
                     raise BridgeError("KEY_DENIED", "WinCro 제어 단축키는 후보 재생에서도 전송하지 않습니다.")
-                if session.action_count + cost > session.max_actions:
+                if session.max_actions is not None and session.action_count + cost > session.max_actions:
                     raise BridgeError("BUDGET_EXHAUSTED", "입력 한도 도달")
                 request_id = new_id("trial_input_")
                 receipt = {"request_id": request_id, "state": "unknown", "action": action,
