@@ -233,6 +233,113 @@ def test_live_pipe_uses_separate_authenticated_authority(tmp_path):
         host.thread.join(3)
 
 
+def test_panel_intervention_start_command_resume_and_durable_log(tmp_path, ui_root, monkeypatch):
+    import time
+    import threading
+    from src.ai_play import jobs
+    from src.agent_bridge.storage import read_json
+    from src.ui.gpt_play_panel import GPTPlayPanel
+    from src.ui.recording_workspace import RecordingWorkspace
+    from tests.test_gpt_play import Backend, FakeHost
+    monkeypatch.setattr(jobs, "PlayHost", FakeHost)
+    monkeypatch.setattr(jobs, "protect_directory", lambda p: Path(p).mkdir(parents=True, exist_ok=True))
+    backend, first_turn = Backend(), threading.Event()
+    prompts = []
+    class Actor:
+        def __init__(self, *_):
+            pass
+        def cancel(self):
+            pass
+        def run(self, descriptor, prompt, cancel, progress):
+            scope = FakeHost.hosts[descriptor].scope
+            prompts.append(prompt)
+            observation = scope.dispatch("play_observe", {})["frame_id"]
+            if len(prompts) == 1:
+                first_turn.set()
+                assert cancel.wait(5)
+            else:
+                scope.dispatch("play_act", {"observation_id": observation, "request_id": "after-command",
+                    "action": {"kind": "key", "key": "up"}, "purpose": "user instruction"})
+            return "turn done"
+    def pump(predicate, seconds=5):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            ui_root.update()
+            if predicate():
+                return True
+            time.sleep(.02)
+        return False
+    workspace = SimpleNamespace(connection=SimpleNamespace(connected=True), busy=False, runtime={},
+        owner=SimpleNamespace(_is_recording=False, _starting=False, _stopping=False),
+        jobs=SimpleNamespace(busy=False), tabs=SimpleNamespace(set=lambda _: None), _notify_publication=lambda _: None)
+    workspace._button = lambda parent, text, command, **kw: RecordingWorkspace._button(workspace, parent, text, command, **kw)
+    window = ctk.CTkToplevel(ui_root)
+    window.geometry("850x740+0+0")
+    panel = GPTPlayPanel(window, workspace, tmp_path, tmp_path / "plans", tmp_path / "templates")
+    panel.pack(fill="both", expand=True)
+    panel.jobs.runner_factory = Actor
+    original_start = panel.jobs.start
+    monkeypatch.setattr(panel.jobs, "start", lambda *args, **kw: original_start(*args, **kw, backend=backend))
+    panel.targets = {"owned fake game": None}
+    target = SimpleNamespace(executable_name="ci-game.exe", title="Owned CI fake", handle=1)
+    panel.targets["owned fake game"] = target
+    panel.target.set("owned fake game")
+    try:
+        assert panel.test_environment.get()
+        assert pump(lambda: panel.start_button.cget("state") == "normal")
+        panel.start_button.invoke()
+        assert pump(first_turn.is_set)
+        assert pump(lambda: panel.interrupt_button.cget("state") == "normal")
+        panel.interrupt_button.invoke()
+        assert pump(lambda: panel.command_button.cget("state") == "normal")
+        assert panel.jobs.session.latest is None and not backend.sent
+        assert window.focus_get() == panel.command._textbox
+        panel.command.insert("1.0", "NPC부터 다시 확인해")
+        panel.command_button.invoke()
+        assert pump(lambda: len(prompts) == 2 and not panel.jobs.busy)
+        assert backend.sent == [{"kind": "key", "key": "up"}]
+        saved = read_json(panel.jobs.session.folder / "session.json")
+        assert saved["commands"][0]["command"] == "NPC부터 다시 확인해"
+        assert "NPC부터 다시 확인해" in prompts[-1]
+        assert (panel.jobs.session.folder / "events.jsonl").is_file()
+        assert not (tmp_path / "plans").exists()
+        assert panel.command.get("1.0", "end").strip() == ""
+        panel.jobs.stop()
+        assert pump(lambda: not panel.jobs.active)
+    finally:
+        panel.close()
+        if panel.jobs.worker:
+            panel.jobs.worker.join(3)
+        if panel.jobs.session:
+            panel.jobs._release_owner(panel.jobs.session)
+        panel.destroy()
+        window.destroy()
+
+
+def test_real_hotkey_registration_message_routing_and_cleanup():
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        pytest.skip("Global hotkey registration only on isolated CI")
+    import ctypes
+    from ctypes import wintypes
+    from src.ai_play.controls import PlayHotkeys
+    keys = PlayHotkeys()
+    try:
+        assert not keys.failed
+        assert keys.poll() == []
+        kernel, user = ctypes.WinDLL("kernel32"), ctypes.WinDLL("user32")
+        kernel.GetCurrentThreadId.restype = wintypes.DWORD
+        user.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        assert user.PostThreadMessageW(kernel.GetCurrentThreadId(), 0x0312, 0x5C10, 0)
+        assert keys.poll() == ["intervene"]
+    finally:
+        keys.close()
+    again = PlayHotkeys()
+    try:
+        assert not again.failed
+    finally:
+        again.close()
+
+
 def test_window_io_captures_and_sends_only_to_owned_ci_game(tmp_path, monkeypatch):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         pytest.skip("Real input is only permitted on an isolated CI desktop")
