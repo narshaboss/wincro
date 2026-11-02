@@ -132,6 +132,14 @@ def matches(image, guard, template=None):
     return score >= guard["threshold"] and worst_score >= guard["threshold"], min(score, worst_score)
 
 
+def confirm_before_send(backend, region, guard):
+    """Recheck after durable write-ahead; storage latency can change the scene."""
+    image, current = backend.capture()
+    if (list(current) != list(region) or image.size != (region[2] - region[0], region[3] - region[1])
+            or not matches(image, guard)[0]):
+        raise BridgeError("BEHAVIOR_GUARD_CHANGED", "기록 저장 중 시작 화면이 바뀌었습니다. 입력하지 않고 다시 판단합니다.")
+
+
 def execute(program, backend, check, transmit, *, clock=time.monotonic, sleep=time.sleep):
     program = validate_program(program)
     started = clock()
@@ -148,7 +156,12 @@ def execute(program, backend, check, transmit, *, clock=time.monotonic, sleep=ti
         if not hit:
             return {"status": "mismatch", "step": index + 1, "reason": "start_condition", "score": score}
         check()
-        transmit(step["action"], region, step["purpose"])
+        try:
+            transmit(step["action"], region, step["purpose"], step["before"])
+        except BridgeError as exc:
+            if exc.code != "BEHAVIOR_GUARD_CHANGED":
+                raise
+            return {"status": "mismatch", "step": index + 1, "reason": "condition_changed_before_send"}
         deadline = clock() + step["timeout"]
         template = _image(step["after"])
         while True:
@@ -190,12 +203,12 @@ def run_behavior(session, behavior_id, observation_id, request_id):
         session.check(input_allowed=True)
         if epoch != session.epoch:
             raise BridgeError("STALE_EXECUTION", "중지·개입 이전의 재사용 요청입니다.")
-    def transmit(action, region, purpose):
+    def transmit(action, region, purpose, guard):
         check()
         # Each step gets a durable fresh observation and the same write-ahead path.
         current = session.observe()
         session.backend.validate(region)
-        return session.act(current["frame_id"], new_id("routine_"), action, purpose)
+        return session.act(current["frame_id"], new_id("routine_"), action, purpose, _guard=guard)
     try:
         result = execute(record["program"], session.backend, check, transmit)
         receipt.update(result)

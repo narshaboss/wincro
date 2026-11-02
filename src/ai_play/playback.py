@@ -169,7 +169,7 @@ def native_executor(session):
             from .saved_runtime import run_saved
             candidate.verify_assets(session)
             result = run_saved(rule.gpt_play_config, self.check, backend=session.backend,
-                               transmit=lambda action, region, purpose: self._send(action, region))
+                               transmit=lambda action, region, purpose, guard: self._send(action, region, guard))
             ok = result["status"] == "conditions_matched"
             return self._make_result(rule, ok, str(result), start_time)
 
@@ -183,7 +183,7 @@ def native_executor(session):
                 raise BridgeError("AMBIGUOUS_TARGET", "후보 이미지가 여러 곳과 일치합니다. 더 구체적인 이미지를 작성하세요.")
             return result
 
-        def _send(self, action, region):
+        def _send(self, action, region, guard=None):
             from .actions import validate_action, input_cost
             action = validate_action(action, session.keys)
             cost = input_cost(action)
@@ -203,6 +203,10 @@ def native_executor(session):
                 session._persist()
                 session.trace.emit("trial_input_begin", action_text(action) + f" · 요청 {session.action_count}")
                 try:
+                    if guard is not None:
+                        from .behaviors import confirm_before_send
+                        confirm_before_send(session.backend, region, guard)
+                        self.check()
                     if action["kind"] == "wait":
                         import time
                         end = session.clock() + action["seconds"]
@@ -218,6 +222,8 @@ def native_executor(session):
                     session.trace.emit("trial_input_sent", action_text(action) + " · 전송 완료, 게임 반응 미확인")
                     return True
                 except Exception as exc:
+                    if getattr(exc, "code", "") == "BEHAVIOR_GUARD_CHANGED":
+                        receipt["state"] = "not_sent"
                     if session.learning and receipt["state"] == "unknown":
                         session.learning.pending.append(dict(receipt))
                     session.trace.emit("trial_input_failed", action_text(action) + " · " + error_text(exc), level="error")

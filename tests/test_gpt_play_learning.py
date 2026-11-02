@@ -621,3 +621,52 @@ def test_ui_control_waits_for_cleanup_and_keeps_pending_stop_without_tk():
     panel._control_worker.join(3)
     jobs.stop.assert_called_once()
     assert not GPTPlayPanel._controls_busy(panel)
+
+
+@pytest.mark.parametrize("path", ["learning", "candidate", "saved"])
+def test_scene_change_during_write_ahead_prevents_input_on_all_paths(learned, monkeypatch, tmp_path, path):
+    from src.ai_play import saved_runtime
+    from src.ai_play.playback import CandidatePlayback
+    from src.player import rule_executor
+    monkeypatch.setattr(rule_executor.pyautogui, "position", lambda: (0, 0))
+    s = learned
+    behavior = confirmed(s)
+    current = candidate.build(s, "guarded", [{"kind": "behavior", "behavior_id": behavior["behavior_id"],
+        "frame_id": frame(s), "purpose": "enter", "expected_result": "arena"}], [])
+    program = s.candidate["plan"]["initial_rules"][0]["gpt_play_config"]
+    s.backend.color = 1
+    sent_before = len(s.backend.sent)
+    if path == "saved":
+        write = saved_runtime.write_json
+        def flip_after_write(location, value):
+            result = write(location, value)
+            if value.get("state") == "unknown":
+                s.backend.color = 2
+            return result
+        monkeypatch.setattr(saved_runtime, "write_json", flip_after_write)
+        result = saved_runtime.run_saved(program, lambda: None, backend=s.backend, receipt_root=tmp_path / "receipts")
+        assert result["reason"] == "condition_changed_before_send"
+        records = [read_json(p) for p in (tmp_path / "receipts").rglob("input_*.json")]
+        assert len(records) == 1 and records[0]["state"] == "not_sent"
+    else:
+        persist = s._persist
+        def flip_after_persist():
+            persist()
+            if any(r["state"] == "unknown" for r in s.receipts.values()):
+                s.backend.color = 2
+        monkeypatch.setattr(s, "_persist", flip_after_persist)
+        if path == "learning":
+            result = behaviors.run_behavior(s, behavior["behavior_id"], frame(s), "scene-drift")
+            assert result["reason"] == "condition_changed_before_send"
+            assert s.state == "exploring"
+        else:
+            for direction in ("experience_to_plan", "plan_to_experience"):
+                candidate.review(s, current["revision"], direction, [{"rule_id": item["rule_id"], "frame_id": item["frame_id"],
+                    "result": "match", "note": "tested"} for item in current["evidence"]], [])
+            s.playback = CandidatePlayback(s)
+            s.playback.start(current["revision"], frame(s), "new initial round")
+            s.playback.worker.join(5)
+            assert not s.playback.busy and not s.trial["execution_ok"]
+        assert any(r["state"] == "not_sent" for r in s.receipts.values())
+        assert not s.learning.pending
+    assert len(s.backend.sent) == sent_before

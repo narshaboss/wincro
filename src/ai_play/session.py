@@ -391,7 +391,7 @@ class PlaySession:
             raise BridgeError("EVIDENCE_CHANGED", "저장된 관찰 장면이 변경되었습니다.")
         return {**metadata, "historical_not_current": True, "png_base64": base64.b64encode(data).decode()}
 
-    def act(self, observation_id, request_id, action, purpose):
+    def act(self, observation_id, request_id, action, purpose, *, _guard=None):
         self.check(input_allowed=True)
         request_id = text(request_id, "요청 ID", 100)
         purpose = text(purpose, "행동 목적")
@@ -425,6 +425,10 @@ class PlaySession:
             target = f" 화면좌표({rect[0] + action['x']}, {rect[1] + action['y']})" if kind == "click" else ""
             self.trace.emit("action_begin", f"요청 {self.action_count}: {action_text(action)}{target} · 목적={concise(purpose, 250)}", phase="입력 수행")
             try:
+                if _guard is not None:
+                    from .behaviors import confirm_before_send
+                    confirm_before_send(self.backend, rect, _guard)
+                    self.check(input_allowed=True)
                 if kind == "wait":
                     end = self.clock() + action["seconds"]
                     while self.clock() < end:
@@ -439,12 +443,16 @@ class PlaySession:
                 self.trace.emit("action_sent", f"{action_text(action)} · " + ("대기 완료" if kind == "wait" else "장치 전송 완료")
                     + " · 게임 반응은 아직 미확인, 다음 화면으로 확인합니다.", phase="다음 화면 확인 대기")
             except Exception as exc:
+                changed = getattr(exc, "code", "") == "BEHAVIOR_GUARD_CHANGED"
+                if changed:
+                    receipt["state"] = "not_sent"
                 if kind == "hold" and getattr(exc, "code", "") == "TIMED_INPUT_UNSUPPORTED":
                     receipt["state"] = "not_sent"
                 if self.learning and receipt["state"] == "unknown":
                     self.learning.pending.append(copy.deepcopy(receipt))
                 self.trace.emit("action_failed", action_text(action) + " · " + error_text(exc), level="error")
-                self.pause("동작 확인 실패: " + error_text(exc) + " · 원인을 확인한 뒤 계속을 누르세요.")
+                if not changed:
+                    self.pause("동작 확인 실패: " + error_text(exc) + " · 원인을 확인한 뒤 계속을 누르세요.")
                 raise
             finally:
                 self.latest = None
@@ -478,6 +486,8 @@ class PlaySession:
         return {"saved_and_reloaded": True}
 
     def dispatch(self, method, arguments):
+        if method == "play_act" and set(arguments) - {"observation_id", "request_id", "action", "purpose"}:
+            raise BridgeError("INVALID_ARGUMENT", "내부 화면 조건은 공개 입력 도구에서 지정할 수 없습니다.")
         if method in {"play_experience", "play_memory", "play_memory_frame", "play_attempt", "play_behavior", "play_run_behavior", "play_reconcile"}:
             self.check()
             if not self.learning:

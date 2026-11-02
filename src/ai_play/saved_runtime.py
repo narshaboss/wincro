@@ -5,7 +5,7 @@ import time
 from ..agent_bridge.contracts import BridgeError
 from ..agent_bridge.storage import new_id, write_json
 from .actions import input_cost
-from .behaviors import execute, validate_program
+from .behaviors import execute, validate_program, confirm_before_send
 from .experience import memory_root
 
 MAX_RECEIPT_RUNS = 1000
@@ -32,7 +32,7 @@ def run_saved(program, check, *, backend=None, transmit=None, receipt_root=None)
             raise BridgeError("MEMORY_FULL", "GPT 플랜 실행 기록 1000회 한도입니다. 기존 근거를 보존하며 새 입력을 중단합니다.")
         folder = root / new_id("run_")
         folder.mkdir(parents=True, exist_ok=False)
-        def transmit(action, region, purpose):
+        def transmit(action, region, purpose, guard):
             nonlocal count
             check()
             count += input_cost(action)
@@ -41,6 +41,14 @@ def run_saved(program, check, *, backend=None, transmit=None, receipt_root=None)
             ident = new_id("input_")
             receipt = {"id": ident, "action": action, "purpose": purpose, "state": "unknown"}
             write_json(folder / (ident + ".json"), receipt)
+            try:
+                confirm_before_send(backend, region, guard)
+                check()
+            except BridgeError as exc:
+                if exc.code == "BEHAVIOR_GUARD_CHANGED":
+                    receipt["state"] = "not_sent"
+                    write_json(folder / (ident + ".json"), receipt)
+                raise
             if action["kind"] == "wait":
                 end = time.monotonic() + action["seconds"]
                 while time.monotonic() < end:
