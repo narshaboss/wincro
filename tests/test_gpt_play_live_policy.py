@@ -55,6 +55,21 @@ def test_input_requires_actual_retrieval_and_durable_review(live):
     assert len(live.backend.sent) == 1
 
 
+def test_two_model_roundtrips_cover_memory_review_input_and_result(live):
+    situation = live.dispatch("play_situation", {"stage": "NPC"})
+    assert situation["observation"]["png_base64"] and not live.backend.sent
+    args = {"observation_id": situation["observation"]["frame_id"], "request_id": "combined",
+        "action": {"kind": "control", "segments": [{"keys": ["up"], "duration_ms": 200}]},
+        "purpose": "enter", "retrieval_id": situation["memory"]["retrieval_id"], "references": [],
+        "decision": "No prior task evidence; bounded movement probe."}
+    result = live.dispatch("play_decide", args)
+    assert result["observation"]["frame_id"] == live.latest
+    assert result["receipt"]["state"] == "sent_not_game_success"
+    assert live.live.review and len(live.backend.sent) == 1
+    live.dispatch("play_decide", args)
+    assert len(live.backend.sent) == 1
+
+
 def test_wrong_references_and_ignoring_available_experience_are_rejected(live):
     ident = frame(live)
     live.learning.record(ident, "fact", "NPC exists", stage="NPC")

@@ -139,6 +139,15 @@ class PlayScope:
 
 
 PROMPT = """You are the GPT player inside WinCro. Read connection_status and play_status first.
+FAST DEFAULT: use play_situation(stage) to obtain CURRENT frames AND relevant
+experience in ONE call. Then play_decide(observation_id,request_id,action,purpose,
+retrieval_id,references,decision) records your concise apply/reject decision, runs
+the bounded action and returns a fresh result image in ONE call. Prefer these to
+separate memory/observe/review/act/observe calls. action may be a standard action,
+{kind:behavior,behavior_id:...}, or {kind:navigate,target:[x,y],axis_order:xy,
+hold_ms:100,max_ms:4000,scene:{frame_id,region,threshold}} using saved calibration.
+For the same already-reviewed stage, play_control or play_run_behavior needs no
+new memory review each key/segment. Reuse the returned current observation.
 LIVE POLICY: Before input read play_memory(stage=<current situation>) and a fresh
 play_observe, then call play_use_experience with retrieval_id, references and a
 short evidence-backed apply/reject decision. No hidden reasoning. Empty references

@@ -21,7 +21,8 @@ TOOLS = {"connection_status", "play_observe", "play_frame", "play_act", "play_st
          "play_note", "play_candidate", "play_review", "play_verify", "play_trial_result", "play_finish"}
 TOOLS.update({"play_experience", "play_memory", "play_memory_frame", "play_attempt",
               "play_behavior", "play_run_behavior", "play_reconcile", "play_control",
-              "play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate"})
+              "play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate",
+              "play_situation", "play_decide"})
 
 
 def text(value, label, maximum=3000):
@@ -595,6 +596,41 @@ class PlaySession:
         observation.pop("recent", None)
         return {"receipt": result, "observation": observation}
 
+    def situation(self, stage="start", offset=0):
+        memory = self.live.recall(stage, offset)
+        observation = self.observe()
+        result = {"memory": memory, "observation": observation}
+        # Preserve full current pixels and evidence, drop only historical previews
+        # if combined memory/media would exceed the authenticated pipe envelope.
+        while len(encoded(result)) > 3_850_000 and observation.get("recent"):
+            observation["recent"].pop(0)
+        return result
+
+    def decide(self, observation_id, request_id, action, purpose, retrieval_id, references, decision):
+        request_id = text(request_id, "요청 ID", 100)
+        purpose = text(purpose, "행동 목적")
+        if not isinstance(action, dict):
+            raise BridgeError("INVALID_ACTION", "행동 객체가 필요합니다.")
+        kind = "behavior" if action.get("kind") == "behavior" else "input"
+        old = self.receipt_for(kind, request_id)
+        if not old:
+            self.live.use(observation_id, retrieval_id, references, decision)
+        if kind == "behavior":
+            if set(action) != {"kind", "behavior_id"}:
+                raise BridgeError("INVALID_ACTION", "재사용 동작에는 behavior_id만 지정하세요.")
+            from .behaviors import run_behavior
+            receipt = run_behavior(self, action["behavior_id"], observation_id, request_id)
+        elif action.get("kind") == "navigate" and "profile" not in action:
+            if set(action) != {"kind", "target", "axis_order", "hold_ms", "max_ms", "scene"}:
+                raise BridgeError("INVALID_ACTION", "좌표 이동 목표·방향·시간·장면 조건을 지정하세요.")
+            return self.navigate(observation_id, request_id, purpose=purpose,
+                                 **{k: v for k, v in action.items() if k != "kind"})
+        else:
+            receipt = self.act(observation_id, request_id, action, purpose)
+        observation = self.observe()
+        observation.pop("recent", None)
+        return {"receipt": receipt, "observation": observation}
+
     def ask(self, observation_id, question, context):
         self.check()
         self._frame(observation_id, fresh=True)
@@ -628,13 +664,13 @@ class PlaySession:
         if method == "play_act" and set(arguments) - {"observation_id", "request_id", "action", "purpose"}:
             raise BridgeError("INVALID_ARGUMENT", "내부 화면 조건은 공개 입력 도구에서 지정할 수 없습니다.")
         if method in {"play_experience", "play_memory", "play_memory_frame", "play_attempt", "play_behavior", "play_run_behavior", "play_reconcile",
-                      "play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate"}:
+                      "play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate", "play_situation", "play_decide"}:
             self.check()
             if not self.learning:
                 raise BridgeError("MEMORY_UNAVAILABLE", "경험 저장소가 연결되지 않았습니다.")
             from .behaviors import author, run_behavior
             from .navigation import calibrate
-            if method in {"play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate"} and not self.live:
+            if method in {"play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate", "play_situation", "play_decide"} and not self.live:
                 raise BridgeError("LIVE_POLICY_REQUIRED", "새 GPT 플레이 세션에서 사용할 수 있습니다.")
             learning_methods = {"play_experience": self.learning.record,
                 "play_memory": (self.live.recall if self.live else lambda offset=0, stage="start": self.learning.store.context(self.learning.task, offset)),
@@ -644,6 +680,7 @@ class PlaySession:
                 "play_goal_achieved": self.live.achieved if self.live else None,
                 "play_coordinate_setup": lambda **kw: calibrate(self, **kw),
                 "play_navigate": self.navigate,
+                "play_situation": self.situation, "play_decide": self.decide,
                 "play_behavior": lambda **kw: author(self, **kw),
                 "play_run_behavior": lambda **kw: run_behavior(self, **kw)}
             try:

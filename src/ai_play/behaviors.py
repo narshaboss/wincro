@@ -194,6 +194,8 @@ def run_behavior(session, behavior_id, observation_id, request_id):
             raise BridgeError("REQUEST_REUSED", "이미 사용한 재사용 요청 ID입니다.")
         return copy.deepcopy(old)
     session._frame(observation_id, fresh=True)
+    if digest(record["program"]) != record["digest"]:
+        raise BridgeError("BEHAVIOR_CHANGED", "재사용 정의가 검수 후 변경되었습니다.")
     if (record["status"] == "revalidate" and record["goal_revision"] == memory.revision
             and memory.store.only_entry_mismatches(memory.task, behavior_id, record["failures"])):
         # Repair old entry-only quarantines only with a complete failure audit.
@@ -204,8 +206,6 @@ def run_behavior(session, behavior_id, observation_id, request_id):
         memory.store.put(memory.task, "behavior", behavior_id, record)
     if record["goal_revision"] != memory.revision or record["status"] in {"disabled", "revalidate"}:
         raise BridgeError("BEHAVIOR_REVALIDATION", "목표가 바뀌었거나 실패한 재사용 구간입니다. 근거를 다시 확인해 새 후보를 작성하세요.")
-    if digest(record["program"]) != record["digest"]:
-        raise BridgeError("BEHAVIOR_CHANGED", "재사용 정의가 검수 후 변경되었습니다.")
     receipt = {"request_id": request_id, "digest": fingerprint, "behavior_id": behavior_id, "status": "unknown"}
     session.behavior_receipts[request_id] = receipt
     session._persist()

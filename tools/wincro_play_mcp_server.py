@@ -155,6 +155,40 @@ def play_memory(offset: int = 0, stage: str = "start") -> dict:
 
 
 @mcp.tool()
+def play_situation(stage: str = "start", offset: int = 0) -> list:
+    """FAST DEFAULT: current full image + recent temporal previews + stage-ranked experience in ONE call."""
+    response = invoke("play_situation", locals())
+    if not response.get("ok"):
+        return [json.dumps(response, ensure_ascii=False)]
+    result = response["result"]
+    current = base64.b64decode(result["observation"].pop("png_base64"))
+    history = result["observation"].pop("recent", [])
+    content = []
+    for sample in history:
+        raw = base64.b64decode(sample.pop("png_base64"))
+        content.extend([json.dumps(sample, ensure_ascii=False), Image(data=raw, format="png")])
+    return content + [json.dumps(result, ensure_ascii=False), Image(data=current, format="png")]
+
+
+@mcp.tool()
+def play_decide(observation_id: str, request_id: str, action: dict, purpose: str,
+                retrieval_id: str, references: list[str], decision: str) -> list:
+    """FAST DEFAULT: persist experience review + execute + fresh result image in ONE call.
+    action: normal key/hold/control/click/wait, {kind:behavior,behavior_id:...}, or
+    {kind:navigate,target:[x,y],axis_order:xy,hold_ms:100,max_ms:4000,scene:{frame_id,region,threshold}}.
+    Cite play_situation.memory references; decision is concise application evidence, not reasoning.
+    Same request ID never resends. Unknown delivery requires reconciliation, never a blind retry.
+    """
+    response = invoke("play_decide", locals())
+    if not response.get("ok"):
+        return [json.dumps(response, ensure_ascii=False)]
+    result = response["result"]
+    raw = base64.b64decode(result["observation"].pop("png_base64"))
+    result["observation"].pop("recent", None)
+    return [json.dumps(result, ensure_ascii=False), Image(data=raw, format="png")]
+
+
+@mcp.tool()
 def play_use_experience(observation_id: str, retrieval_id: str, references: list[str], decision: str) -> dict:
     """Required before input. Cite retrieved experience and concise apply/reject evidence, not reasoning."""
     return invoke("play_use_experience", locals())

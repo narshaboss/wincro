@@ -525,7 +525,8 @@ root.mainloop()
             child.wait(5)
 
 
-def test_real_play_mcp_schema_images_actions_questions_and_denied_recording_tools(tmp_path):
+@pytest.mark.parametrize("enhanced", [False, True])
+def test_real_play_mcp_schema_images_actions_questions_and_denied_recording_tools(tmp_path, enhanced):
     import asyncio
     import json
     import sys
@@ -534,7 +535,11 @@ def test_real_play_mcp_schema_images_actions_questions_and_denied_recording_tool
     from src.ai_play.jobs import PlayHost, PlayScope
     from src.ai_play.session import PlaySession, TOOLS
     from tests.test_gpt_play import Backend
-    session = PlaySession(tmp_path / "session", "Clear", ["enter"], Backend(), lambda: True)
+    from src.ai_play.experience import ExperienceStore
+    store = ExperienceStore(tmp_path / "memory") if enhanced else None
+    task = store.create("Clear", {"executable": "test.exe", "title": "Test"}) if store else None
+    session = PlaySession(tmp_path / "session", "Clear", ["enter"], Backend(), lambda: True,
+                          memory=store, task_id=task, live_policy=enhanced)
     session.start()
     host = PlayHost(PlayScope(session), tmp_path / "pipe")
     descriptor = host.start()
@@ -547,14 +552,21 @@ def test_real_play_mcp_schema_images_actions_questions_and_denied_recording_tool
                 assert {t.name for t in (await client.list_tools()).tools} == TOOLS
                 status = await client.call_tool("connection_status", {})
                 assert json.loads(status.content[0].text)["result"]["live_execution"]
-                response = await client.call_tool("play_observe", {})
+                response = await client.call_tool("play_situation" if enhanced else "play_observe", {})
                 assert any(c.type == "image" for c in response.content)
-                metadata = json.loads(next(c.text for c in response.content if c.type == "text"))
-                action = await client.call_tool("play_act", {"observation_id": metadata["frame_id"],
-                    "request_id": "one", "action": {"kind": "key", "key": "enter"}, "purpose": "join"})
-                assert json.loads(action.content[0].text)["ok"]
+                metadata = json.loads([c.text for c in response.content if c.type == "text"][-1])
+                if enhanced:
+                    action = await client.call_tool("play_decide", {"observation_id": metadata["observation"]["frame_id"],
+                        "request_id": "one", "action": {"kind": "key", "key": "enter"}, "purpose": "join",
+                        "retrieval_id": metadata["memory"]["retrieval_id"], "references": [], "decision": "No prior knowledge; bounded fixture probe."})
+                    assert any(c.type == "image" for c in action.content)
+                    assert json.loads(action.content[0].text)["receipt"]["state"] == "sent_not_game_success"
+                else:
+                    action = await client.call_tool("play_act", {"observation_id": metadata["frame_id"],
+                        "request_id": "one", "action": {"kind": "key", "key": "enter"}, "purpose": "join"})
+                    assert json.loads(action.content[0].text)["ok"]
                 response = await client.call_tool("play_observe", {})
-                metadata = json.loads(next(c.text for c in response.content if c.type == "text"))
+                metadata = json.loads([c.text for c in response.content if c.type == "text"][-1])
                 question = await client.call_tool("play_question", {"observation_id": metadata["frame_id"],
                     "question": "Which NPC?", "context": "Two candidates visible"})
                 assert json.loads(question.content[0].text)["result"]["waiting_for_user"]

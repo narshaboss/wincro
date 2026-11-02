@@ -9,6 +9,9 @@ modified. No release, version bump, deployment, main-PC input or firmware upload
 
 ## Implemented
 
+- The default fast path combines screen+memory in play_situation and review+input+
+  result screen in play_decide. Two model/tool round trips replace five separate
+  calls without removing the durable review or input safety checks.
 - Task-wide, stage-ranked retrieval includes older success/failure evidence, not
   only the last ten events. Input requires an actual retrieval and a durably saved
   apply/reject review naming returned references. Resume, retry and reported stage
