@@ -12,6 +12,9 @@ modified. No release, version bump, deployment, main-PC input or firmware upload
 - The default fast path combines screen+memory in play_situation and review+input+
   result screen in play_decide. Two model/tool round trips replace five separate
   calls without removing the durable review or input safety checks.
+- Guard/digit PNGs are not sent as base64 text in model receipts. GPT authors
+  purpose/result/guards and references a recorded action by request ID; the app
+  resolves the exact stored input internally. This is not automatic log extraction.
 - Task-wide, stage-ranked retrieval includes older success/failure evidence, not
   only the last ten events. Input requires an actual retrieval and a durably saved
   apply/reject review naming returned references. Resume, retry and reported stage

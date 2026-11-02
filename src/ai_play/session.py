@@ -228,7 +228,14 @@ class PlaySession:
         # Keep user authority intact, but don't resend the whole observation diary.
         value["notes"] = value["notes"][-8:]
         value["trials"] = value["trials"][-10:]
-        return value
+        def compact(item):
+            if isinstance(item, dict):
+                return {k: ("stored internally; use recorded_action request_id" if k == "png" else compact(v))
+                        for k, v in item.items()}
+            if isinstance(item, list):
+                return [compact(v) for v in item]
+            return item
+        return compact(value)
 
     def check(self, *, input_allowed=False, playback=False):
         if self.stop_event.is_set() or self.storage_failed:

@@ -56,11 +56,22 @@ mcp = FastMCP("wincro-gpt-play", lifespan=lifespan, instructions=(
     "During candidate verification observe only; never rescue a trial and call it success."))
 
 
+def public_result(value):
+    # Guard/digit assets stay in durable records. Sending base64 as TEXT to the
+    # model adds latency/tokens; actual screen images use png_base64 + Image.
+    if isinstance(value, dict):
+        return {key: ("stored internally; use recorded_action request_id" if key == "png" else public_result(item))
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [public_result(item) for item in value]
+    return value
+
+
 def invoke(method, arguments):
     global client
     client = mcp.get_context().session
     try:
-        return call(connection_file, method, arguments)
+        return public_result(call(connection_file, method, arguments))
     except Exception as exc:
         return {"ok": False, "code": "PLAY_CONNECTION_ERROR", "message": str(exc)[:1000]}
 
@@ -263,6 +274,9 @@ def play_attempt(event: str, observation_id: str, stage: str, strategy: str, out
 def play_behavior(name: str, steps: list[dict]) -> dict:
     """Author guarded routine. Each step: before/after={frame_id,region,threshold},
     action,timeout,purpose,expected_result. One local action between distinctive guards.
+    For a prior navigation/input use action={kind:recorded_action,request_id:...};
+    before.frame_id must equal its original observation. Stored assets are resolved
+    internally. GPT still authors purpose/result/guards; this is not automatic log replay.
     """
     return invoke("play_behavior", locals())
 

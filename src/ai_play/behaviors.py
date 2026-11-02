@@ -102,8 +102,18 @@ def author(session, name, steps):
     for step in steps:
         if not isinstance(step, dict) or set(step) != {"before", "action", "after", "timeout", "purpose", "expected_result"}:
             raise BridgeError("INVALID_BEHAVIOR", "재사용 단계의 필드가 올바르지 않습니다.")
-        validate_action(step["action"], session.keys)
-        compiled.append({**step, "before": _guard(session, step["before"], size), "after": _guard(session, step["after"], size)})
+        action = step["action"]
+        if isinstance(action, dict) and action.get("kind") == "recorded_action":
+            if set(action) != {"kind", "request_id"}:
+                raise BridgeError("INVALID_BEHAVIOR", "검수 동작 참조에는 request_id만 지정하세요.")
+            receipt = session.receipt_for("input", required(action["request_id"], 100))
+            if (not receipt or receipt.get("state") != "sent_not_game_success"
+                    or receipt.get("observation_id") != step["before"].get("frame_id")):
+                raise BridgeError("INVALID_BEHAVIOR", "이 시작 화면에서 전송 확인된 입력만 참조하세요.")
+            action = receipt["action"]
+        validate_action(action, session.keys)
+        compiled.append({**step, "action": copy.deepcopy(action), "before": _guard(session, step["before"], size),
+                         "after": _guard(session, step["after"], size)})
     program = validate_program({"version": 1, "size": size, "target": environment, "steps": compiled})
     record = {"behavior_id": new_id("behavior_"), "name": required(name, 200), "program": program,
         "digest": digest(program), "goal_revision": memory.revision, "status": "candidate",

@@ -443,7 +443,7 @@ def test_navigation_profile_roundtrip_and_exact_saved_runtime(live, tmp_path):
     after = result["observation"]["frame_id"]
     record = behaviors.author(live, "reach exit", [{"before": {"frame_id": before,"region": [0,28,36,57],"threshold": .98},
         "after": {"frame_id": after,"region": [0,28,36,57],"threshold": .98},
-        "action": result["receipt"]["action"], "timeout": .1, "purpose": "reach exit", "expected_result": "XY15,9"}])
+        "action": {"kind": "recorded_action", "request_id": "nav"}, "timeout": .1, "purpose": "reach exit", "expected_result": "XY15,9"}])
     candidate.build(live, "test navigation", [{"kind": "behavior", "behavior_id": record["behavior_id"],
         "frame_id": after, "purpose": "reach exit", "expected_result": "XY15,9"}], [])
     from src.agent_bridge.storage import read_json
@@ -473,3 +473,12 @@ def test_model_calibration_saves_reloadable_screen_samples(live):
     saved = ExperienceStore(live.learning.store.root).get(live.learning.task, "coordinate_profile", "active")
     assert CoordinateReader(saved).read(live.backend.capture()[0])["xy"] == [12,7]
     assert not live.backend.sent
+
+
+def test_model_receipts_do_not_send_guard_assets_as_text():
+    from tools.wincro_play_mcp_server import public_result
+    source = {"action": navigation(GridGame()), "observation": {"png_base64": "actual-screen"}}
+    result = public_result(source)
+    assert result["action"]["profile"]["digits"][0]["png"].startswith("stored internally")
+    assert result["observation"]["png_base64"] == "actual-screen"
+    assert source["action"]["profile"]["digits"][0]["png"] != result["action"]["profile"]["digits"][0]["png"]
