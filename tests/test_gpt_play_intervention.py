@@ -140,6 +140,37 @@ def test_user_instruction_invalidates_prior_verification(tmp_path):
     assert read_json(tmp_path / "session.json")["commands"][0]["command"] == "새 규칙으로 해"
 
 
+def test_new_command_waits_for_retired_tool_request_even_after_model_exits(tmp_path):
+    manager = PlayJobs(tmp_path, tmp_path / "plans", tmp_path / "templates", lambda: True)
+    manager.session = PlaySession(tmp_path / "session", "clear", ["up"], Backend(), lambda: True)
+    manager.session.start()
+    manager.session.pause()
+    released(manager.session)
+    pending = [True]
+    manager.retiring_host = SimpleNamespace(thread=SimpleNamespace(is_alive=lambda: pending[0]))
+    assert manager.busy
+    with pytest.raises(BridgeError) as error:
+        manager.send_command("new instruction")
+    assert error.value.code == "PLAY_BUSY"
+    assert not manager.session.commands
+    pending[0] = False
+    assert not manager.busy
+
+
+def test_failed_input_release_keeps_resume_blocked(tmp_path):
+    backend = Backend()
+    backend.release = lambda: False
+    s = PlaySession(tmp_path, "clear", ["up"], backend, lambda: True)
+    s.start()
+    s.pause()
+    for worker in s.release_workers:
+        worker.join(2)
+    assert not s.input_released
+    with pytest.raises(BridgeError) as error:
+        s.resume()
+    assert error.value.code == "INPUT_RELEASE_PENDING"
+
+
 def test_hotkey_registration_is_owned_polled_and_released(monkeypatch):
     from src.ai_play import controls
     events = [0x5C10, 0x5C11]

@@ -163,6 +163,7 @@ class PlayJobs:
         self.connected = connected
         self.runner_factory = runner_factory
         self.session = self.worker = self.runner = self.host = None
+        self.retiring_host = None
         self.watcher = None
         self.cancel = threading.Event()
         self.monitor_stop = threading.Event()
@@ -182,7 +183,8 @@ class PlayJobs:
 
     @property
     def busy(self):
-        return bool(self.worker and self.worker.is_alive())
+        thread = getattr(self.retiring_host, "thread", None)
+        return bool((self.worker and self.worker.is_alive()) or (thread and thread.is_alive()))
 
     @property
     def active(self):
@@ -310,9 +312,17 @@ class PlayJobs:
         finally:
             self.preparing.clear()
             if host:
+                self.retiring_host = host
                 host.close()
             if runner:
                 runner.cancel()
+            previous_request = getattr(host, "thread", None)
+            if previous_request and previous_request is not threading.current_thread():
+                previous_request.join(.5)
+                if previous_request.is_alive():
+                    s.trace.emit("previous_request_pending", "이전 GPT 도구 요청이 종료 중입니다. 정리가 끝날 때까지 새 명령·계속을 차단합니다.", level="warning")
+                else:
+                    self.retiring_host = None
             self.host = self.runner = None
             if s.state == "complete":
                 try:
@@ -335,6 +345,10 @@ class PlayJobs:
 
     def _finish_cleanup(self, session):
         # Keep the admission lock until an interrupted candidate/input actually stops.
+        previous_request = getattr(self.retiring_host, "thread", None)
+        if previous_request and previous_request.is_alive():
+            session.trace.emit("previous_request_pending", "이전 통신 정리 완료 후 중지를 다시 누르세요. 새 재생은 차단됩니다.", level="warning")
+            return
         self.monitor_stop.set()
         if self.watcher and self.watcher is not threading.current_thread():
             self.watcher.join(1)
