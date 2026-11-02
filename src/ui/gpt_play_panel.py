@@ -45,6 +45,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         controls.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         controls.grid_columnconfigure((0, 1, 2), weight=1)
         self._control_worker = None
+        self._pending_stop = False
         self.interrupt_button = self._button(controls, "개입·명령 F10", self._interrupt, width=100, state="disabled")
         self.interrupt_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.header_pause = self._button(controls, "일시정지 F11", lambda: self._control(self.jobs.pause), width=100, state="disabled")
@@ -409,6 +410,8 @@ class GPTPlayPanel(ctk.CTkFrame):
     def _start(self):
         self.jobs.trace.emit("start_button", "플레이 시작 버튼 요청 · 설정과 실행 가능 상태를 확인합니다.")
         try:
+            if self._controls_busy():
+                raise ValueError("이전 중지·개입 처리가 끝난 뒤 시작하세요.")
             w = self.workspace
             if w.jobs.busy or w.busy or w.owner._is_recording or w.owner._starting or w.owner._stopping:
                 raise ValueError("기존 녹화·분석을 끝낸 뒤 시작하세요.")
@@ -438,6 +441,12 @@ class GPTPlayPanel(ctk.CTkFrame):
             self.jobs.session.input_cancelled.set()
             if stop:
                 self.jobs.session.stop_event.set()
+        if stop:
+            self._pending_stop = True
+        if self._control_worker and self._control_worker.is_alive():
+            return
+        if stop:
+            self._pending_stop = False
         def apply():
             try:
                 operation()
@@ -445,6 +454,9 @@ class GPTPlayPanel(ctk.CTkFrame):
                 self.jobs.report_error("control_failed", exc)
         self._control_worker = threading.Thread(target=apply, daemon=True, name="gpt-ui-control")
         self._control_worker.start()
+
+    def _controls_busy(self):
+        return self._pending_stop or bool(self._control_worker and self._control_worker.is_alive())
 
     def _show_intervention(self):
         self.workspace.tabs.set("GPT 플레이")
@@ -460,6 +472,8 @@ class GPTPlayPanel(ctk.CTkFrame):
 
     def _send_command(self):
         try:
+            if self._controls_busy():
+                raise ValueError("이전 중지·개입 처리가 끝난 뒤 명령을 전달하세요.")
             self.jobs.send_command(self.command.get("1.0", "end").strip())
             self.command.delete("1.0", "end")
         except Exception as exc:
@@ -468,6 +482,8 @@ class GPTPlayPanel(ctk.CTkFrame):
 
     def _resume(self):
         try:
+            if self._controls_busy():
+                raise ValueError("이전 중지·개입 처리가 끝난 뒤 계속하세요.")
             self.jobs.resume()
         except Exception as exc:
             self.jobs.report_error("resume_rejected", exc)
@@ -475,6 +491,8 @@ class GPTPlayPanel(ctk.CTkFrame):
 
     def _answer(self):
         try:
+            if self._controls_busy():
+                raise ValueError("이전 중지·개입 처리가 끝난 뒤 답변하세요.")
             self.jobs.resume(self.answer.get("1.0", "end").strip())
             self.answer.delete("1.0", "end")
         except Exception as exc:
@@ -486,18 +504,19 @@ class GPTPlayPanel(ctk.CTkFrame):
         state = self.jobs.ui_snapshot() or {}
         connected = self.workspace.connection.connected
         active = self.jobs.active or self.jobs.busy
-        enabled = connected and not active
+        control_busy = self._controls_busy()
+        enabled = connected and not active and not control_busy
         session = self.jobs.session
         released = bool(session and session.input_released)
         configure_changed(self.start_button, state="normal" if enabled else "disabled")
-        configure_changed(self.pause_button, state="normal" if active and state.get("state") not in {"paused", "question"} else "disabled")
+        configure_changed(self.pause_button, state="normal" if active and not control_busy and state.get("state") not in {"paused", "question"} else "disabled")
         configure_changed(self.stop_button, state="normal" if active else "disabled")
         configure_changed(self.header_pause, state=self.pause_button.cget("state"))
         configure_changed(self.header_stop, state=self.stop_button.cget("state"))
-        configure_changed(self.resume_button, state="normal" if connected and state.get("state") == "paused" and not self.jobs.busy and released else "disabled")
-        configure_changed(self.answer_button, state="normal" if connected and state.get("state") == "question" and not self.jobs.busy and released else "disabled")
-        configure_changed(self.interrupt_button, state="normal" if self.jobs.active and state.get("state") not in {"complete", "needs_review", "stopped", "error"} else "disabled")
-        configure_changed(self.command_button, state="normal" if connected and released and not self.jobs.busy and state.get("state") in {"paused", "question"} else "disabled")
+        configure_changed(self.resume_button, state="normal" if connected and not control_busy and state.get("state") == "paused" and not self.jobs.busy and released else "disabled")
+        configure_changed(self.answer_button, state="normal" if connected and not control_busy and state.get("state") == "question" and not self.jobs.busy and released else "disabled")
+        configure_changed(self.interrupt_button, state="normal" if self.jobs.active and not control_busy and state.get("state") not in {"complete", "needs_review", "stopped", "error"} else "disabled")
+        configure_changed(self.command_button, state="normal" if connected and not control_busy and released and not self.jobs.busy and state.get("state") in {"paused", "question"} else "disabled")
         configure_changed(self.refresh, state="disabled" if active else "normal")
         configure_changed(self.target, state="disabled" if active else "readonly")
         configure_changed(self.goal, state="disabled" if active else "normal")
@@ -509,6 +528,8 @@ class GPTPlayPanel(ctk.CTkFrame):
     def _poll(self):
         if self.closed:
             return
+        if self._pending_stop and not (self._control_worker and self._control_worker.is_alive()):
+            self._control(self.jobs.stop, stop=True)
         from .recording_workspace import configure_changed
         self._refresh_controls()
         self._render_log()

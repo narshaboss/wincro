@@ -594,3 +594,30 @@ def test_watchdog_save_failure_still_cancels_runner(learned, monkeypatch, tmp_pa
     cancel.assert_called_once()
     assert learned.input_cancelled.is_set()
     monkeypatch.undo()
+
+
+def test_ui_control_waits_for_cleanup_and_keeps_pending_stop_without_tk():
+    from unittest.mock import Mock
+    from src.ui.gpt_play_panel import GPTPlayPanel
+    entered, finish = threading.Event(), threading.Event()
+    session = SimpleNamespace(input_cancelled=threading.Event(), stop_event=threading.Event())
+    jobs = SimpleNamespace(session=session, stop=Mock(), report_error=Mock())
+    panel = SimpleNamespace(jobs=jobs, _pending_stop=False, _control_worker=None)
+    def slow_control():
+        entered.set()
+        finish.wait(3)
+    GPTPlayPanel._control(panel, slow_control)
+    assert entered.wait(1)
+    try:
+        assert GPTPlayPanel._controls_busy(panel)
+        GPTPlayPanel._control(panel, jobs.stop, stop=True)
+        assert session.stop_event.is_set() and panel._pending_stop
+        jobs.stop.assert_not_called()
+    finally:
+        finish.set()
+        panel._control_worker.join(3)
+    assert GPTPlayPanel._controls_busy(panel)  # Pending stop still blocks Start/Resume.
+    GPTPlayPanel._control(panel, jobs.stop, stop=True)
+    panel._control_worker.join(3)
+    jobs.stop.assert_called_once()
+    assert not GPTPlayPanel._controls_busy(panel)
