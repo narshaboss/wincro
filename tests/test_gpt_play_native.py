@@ -130,7 +130,7 @@ def test_recorder_survives_play_init_failure_and_supports_ctk5(tmp_path, ui_root
 
 
 @pytest.mark.parametrize("scale,width,height", [(1, 640, 680), (1.25, 800, 720), (1.5, 960, 780)])
-def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, width, height):
+def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, monkeypatch, scale, width, height):
     from src.ui.gpt_play_panel import GPTPlayPanel
     from src.ui.recording_workspace import RecordingWorkspace
     from src.ai_play.session import PlaySession
@@ -148,7 +148,9 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
     panel.pack(fill="both", expand=True)
     try:
         root.update()
-        panel.test_environment.set(True)
+        assert panel.test_environment.get() is True
+        assert panel.confirm.cget("state") == "disabled"
+        assert not hasattr(panel, "keys")
         panel._refresh_controls()
         assert panel.start_button.cget("state") == "disabled"
         connection.connected = True
@@ -156,7 +158,8 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
         panel.status.configure(text="GPT 연결 ON · 시작 대기", text_color="#22c55e")
         root.update_idletasks()
         assert panel.start_button.cget("state") == "normal"
-        for widget in (panel.target, panel.goal, panel.keys, panel.start_button, panel.stop_button, panel.detail, panel.copy_log):
+        for widget in (panel.target, panel.goal, panel.keys_summary, panel.start_button, panel.stop_button, panel.detail, panel.copy_log,
+                       panel.interrupt_button, panel.command, panel.command_button):
             assert widget.winfo_width() > 30
             assert widget.winfo_rootx() >= root.winfo_rootx()
             assert widget.winfo_rootx() + widget.winfo_width() <= root.winfo_rootx() + root.winfo_width()
@@ -185,6 +188,8 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, scale, wid
         reference = session.observe()["frame_id"]
         session.ask(reference, "무료 부활은 어떤 버튼인가요?", "사망 화면입니다. 자동 퇴장 여부를 확인하지 못했습니다.")
         panel.jobs.session = session
+        for worker in session.release_workers:
+            worker.join(2)
         panel._poll()
         root.update()
         assert panel.question_card.winfo_manager() == "grid"

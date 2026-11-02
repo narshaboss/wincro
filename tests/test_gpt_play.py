@@ -79,6 +79,12 @@ def frame(session):
     return session.observe()["frame_id"]
 
 
+def released(session):
+    for worker in list(session.release_workers):
+        worker.join(2)
+    assert session.input_released
+
+
 def authored(session, click=False):
     reference = frame(session)
     steps = [{"kind": "key", "key": "space", "frame_id": reference,
@@ -156,6 +162,7 @@ def test_unknown_delivery_is_persisted_and_never_blindly_retried(session):
         session.act(*args)
     assert session.state == "paused"
     assert read_json(session.folder / "session.json")["receipts"]["unknown"]["state"] == "unknown"
+    released(session)
     session.resume()
     assert session.act(*args)["state"] == "unknown"
     assert len(session.backend.sent) == 1
@@ -171,6 +178,7 @@ def test_question_has_real_answer_and_invalidates_old_scene(session):
     with pytest.raises(BridgeError):
         session.resume("")
     assert session.question is not None
+    released(session)
     session.resume("왼쪽 무료 부활 버튼을 눌러.")
     assert session.answers[-1]["answer"] == "왼쪽 무료 부활 버튼을 눌러."
     assert session.question is None
@@ -407,6 +415,7 @@ def test_gpt_cannot_rescue_after_executor_finishes_before_outcome_review(session
         session.act(frame(session), "late-rescue", {"kind": "key", "key": "enter"}, "claim the missed reward")
     assert err.value.code == "OBSERVER_ONLY"
     session.pause()
+    released(session)
     session.resume()
     with pytest.raises(BridgeError):
         playback.result(trial["trial_id"], frame(session), True, "interrupted is not success")
@@ -453,8 +462,9 @@ def test_old_recording_tools_never_get_live_authority():
     for method in TOOLS - {"connection_status"}:
         with pytest.raises(BridgeError):
             ConnectionScope().dispatch(method, {})
-    assert "win" not in SAFE_KEYS and "ctrl" not in SAFE_KEYS and "alt" not in SAFE_KEYS
-    assert not any(f"f{i}" in SAFE_KEYS for i in range(1, 13))
+    assert "win" not in SAFE_KEYS and "ctrl" in SAFE_KEYS and "alt" in SAFE_KEYS
+    assert all(f"f{i}" in SAFE_KEYS for i in range(1, 7))
+    assert not any(f"f{i}" in SAFE_KEYS for i in range(7, 13))
 
 
 def test_historical_frames_are_readable_but_do_not_refresh_input_authority(session):
@@ -545,6 +555,7 @@ def test_jobs_off_gate_and_question_resume_roundtrip(tmp_path, monkeypatch):
         manager.start(None, "clear", ["enter"], {}, test_environment=True, backend=backend)
         manager.worker.join(3)
         assert manager.session.state == "question"
+        released(manager.session)
         manager.resume("Use free revive")
         manager.worker.join(3)
         assert calls == ["question", "Use free revive"]

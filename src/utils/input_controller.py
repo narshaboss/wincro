@@ -731,7 +731,8 @@ class InputController:
         if device is not None:
             if not device.supports_key_combo_tap():
                 return False
-            return device._send_command("KQ," + str(device._get_keycode(key)))
+            code = 219 if key == "numlock" else device._get_keycode(key)
+            return device._send_command("KQ," + str(code))
         try:
             pyautogui.keyDown(key, _pause=False)
             time.sleep(_KEY_TAP_HOLD_DELAY)

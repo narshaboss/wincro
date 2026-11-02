@@ -11,6 +11,7 @@ from ..agent_bridge.storage import new_id
 from . import candidate
 from .session import text
 from .diagnostics import action_text, error_text
+from .key_policy import reserved_keys
 
 
 class CandidatePlayback:
@@ -173,6 +174,8 @@ def native_executor(session):
         def _send(self, action, region):
             with session.io_lock:
                 self.check()
+                if action["kind"] == "key" and (action["key"] not in session.keys or action["key"] in reserved_keys()):
+                    raise BridgeError("KEY_DENIED", "WinCro 제어 단축키는 후보 재생에서도 전송하지 않습니다.")
                 if session.action_count >= session.max_actions:
                     raise BridgeError("BUDGET_EXHAUSTED", "입력 한도 도달")
                 request_id = new_id("trial_input_")

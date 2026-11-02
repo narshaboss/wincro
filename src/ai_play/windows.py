@@ -24,6 +24,7 @@ class WindowIO:
         self.used_keys = set()
         self.trace = None
         self.preparation_check = lambda: None
+        self.controls = None
         self.user = ctypes.WinDLL("user32", use_last_error=True)
         self.user.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         self.user.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
@@ -132,6 +133,9 @@ class WindowIO:
         check()
         self.validate(region)
         if action["kind"] == "key":
+            from .key_policy import SAFE_KEYS, reserved_keys
+            if action["key"] not in SAFE_KEYS or action["key"] in reserved_keys():
+                raise BridgeError("KEY_DENIED", "WinCro 제어 단축키·OS 제어키는 전송하지 않습니다.")
             self.used_keys.add(action["key"])
             return self.controller.play_lab_tap(action["key"])
         x, y = region[0] + action["x"], region[1] + action["y"]
@@ -152,3 +156,17 @@ class WindowIO:
 
     def emergency_pressed(self):
         return bool(self.user.GetAsyncKeyState(0x7B) & 0x8001)  # Include a short press between polls.
+
+    def start_controls(self):
+        from .controls import PlayHotkeys
+        self.controls = PlayHotkeys()
+        for name, code in self.controls.failed:
+            self._log("hotkey_unavailable", f"{name} 단축키 등록 실패({code}) · 화면 버튼을 사용하세요.")
+
+    def poll_controls(self):
+        return self.controls.poll() if self.controls else []
+
+    def close_controls(self):
+        if self.controls:
+            self.controls.close()
+            self.controls = None

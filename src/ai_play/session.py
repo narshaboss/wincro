@@ -13,9 +13,9 @@ import time
 from ..agent_bridge.contracts import BridgeError, digest, number
 from ..agent_bridge.storage import new_id, publish_bytes, write_json, within
 from .diagnostics import PlayTrace, action_text, concise, error_text
+from .key_policy import SAFE_KEYS, reserved_keys
 
 
-SAFE_KEYS = frozenset("up down left right enter esc space tab pageup pagedown home end insert delete backspace".split()) | frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 TOOLS = {"connection_status", "play_observe", "play_frame", "play_act", "play_status", "play_question",
          "play_note", "play_candidate", "play_review", "play_verify", "play_trial_result", "play_finish"}
 
@@ -61,6 +61,9 @@ class PlaySession:
         self.playback = None
         self.publication = None
         self.release_workers = []
+        self.release_confirmed = threading.Event()
+        self.release_confirmed.set()
+        self.commands = []
         self._persist()
         self.trace.emit("session_ready", "세션 생성 완료 · 아직 화면 관찰과 입력은 시작하지 않았습니다.")
 
@@ -72,7 +75,7 @@ class PlaySession:
         with self.state_lock:
             value = {"session_id": self.instance_id, "goal": self.goal, "allowed_keys": self.keys,
                 "state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
-                "answers": copy.deepcopy(self.answers), "notes": copy.deepcopy(self.notes),
+                "answers": copy.deepcopy(self.answers), "commands": copy.deepcopy(self.commands), "notes": copy.deepcopy(self.notes),
                 "action_count": self.action_count, "max_actions": self.max_actions,
                 "latest_observation": self.latest, "candidate": copy.deepcopy(self.candidate),
                 "reviews": copy.deepcopy(self.reviews), "trials": copy.deepcopy(self.trials),
@@ -138,6 +141,7 @@ class PlaySession:
             self.message = reason
             self.epoch += 1
             self.latest = None
+            self.release_confirmed.clear()
         self.trace.emit("paused", reason, level="warning", phase="답변 대기" if self.state == "question" else "일시정지")
         if self.playback:
             self.playback.stop()
@@ -149,7 +153,9 @@ class PlaySession:
         def release():
             with self.io_lock:
                 try:
-                    if not self.backend.release():
+                    if self.backend.release():
+                        self.release_confirmed.set()
+                    else:
                         with self.state_lock:
                             self.message += " / 입력 장치 해제 확인 실패"
                         self.trace.emit("release_failed", "입력 장치 해제 확인 실패", level="error")
@@ -179,6 +185,8 @@ class PlaySession:
             raise BridgeError("BUDGET_EXHAUSTED", "한도가 끝났습니다. 기록을 확인하고 새 세션을 시작하세요.")
         if self.playback and self.playback.busy:
             raise BridgeError("PLAYBACK_BUSY", "이전 후보 재생이 멈추는 중입니다.")
+        if not self.input_released:
+            raise BridgeError("INPUT_RELEASE_PENDING", "이전 입력 해제 확인을 기다리고 있습니다. 실패 로그가 있으면 장치를 먼저 확인하세요.")
         if self.question:
             answer = text(answer, "답변")
             self.answers.append({**self.question, "answer": answer})
@@ -188,6 +196,33 @@ class PlaySession:
         self.state, self.message = "exploring", "현재 화면부터 다시 확인합니다."
         self._persist()
         self.trace.emit("resumed", "사용자 계속 요청 · 새 화면 확인 후에만 입력합니다.", phase="게임 창 준비")
+
+    @property
+    def input_released(self):
+        with self.state_lock:
+            return (self.release_confirmed.is_set() and not self.io_lock.locked()
+                    and not any(worker.is_alive() for worker in self.release_workers)
+                    and not (self.playback and self.playback.busy))
+
+    def add_command(self, command):
+        command = text(command, "중간 명령", 2000)
+        with self.state_lock:
+            if self.state not in {"paused", "question"} or self.stop_event.is_set():
+                raise BridgeError("INVALID_STATE", "개입 또는 일시정지 후 명령을 전달하세요.")
+            if len(self.commands) >= 100:
+                raise BridgeError("LIMIT_REACHED", "중간 명령은 세션당 100개까지 보관합니다.")
+            previous = self.reviews, self.trials, self.trial
+            self.commands.append({"command": command, "action_count": self.action_count,
+                                  "time": self.clock()})
+            # New instructions invalidate verification of the previous intent.
+            self.reviews, self.trials, self.trial = [], [], None
+            try:
+                self._persist()
+            except Exception:
+                self.commands.pop()
+                self.reviews, self.trials, self.trial = previous
+                raise
+        self.trace.emit("user_command", "사용자 중간 명령: " + concise(command))
 
     def observe(self):
         self.check()
@@ -260,7 +295,7 @@ class PlaySession:
             raise BridgeError("INVALID_ACTION", "행동 형식이 잘못됐습니다.")
         kind = action.get("kind")
         if kind == "key":
-            if set(action) != {"kind", "key"} or action.get("key") not in self.keys:
+            if set(action) != {"kind", "key"} or action.get("key") not in self.keys or action.get("key") in reserved_keys():
                 raise BridgeError("KEY_DENIED", "허용 목록의 단일 키만 사용할 수 있습니다.")
         elif kind == "click":
             if set(action) != {"kind", "x", "y"} or any(type(action.get(k)) is not int for k in ("x", "y")):

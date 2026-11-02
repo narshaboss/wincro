@@ -9,6 +9,7 @@ from PIL import Image
 from ..agent_bridge.contracts import BridgeError, digest, encoded, number
 from ..agent_bridge.storage import new_id, publish_bytes, read_json, write_json, within
 from .session import text
+from .key_policy import reserved_keys
 
 
 def build(session, title, steps, remaining_issues):
@@ -35,7 +36,7 @@ def build(session, title, steps, remaining_issues):
         kind = step.get("kind")
         rule = AutomationRule(description="GPT: " + purpose, wait_after=wait,
             repeat_count=repeat, repeat_delay=delay, wait_random=False, repeat_delay_random=False)
-        if kind == "key" and step.get("key") in session.keys:
+        if kind == "key" and step.get("key") in session.keys and step["key"] not in reserved_keys():
             rule.action_type, rule.action_keys = "key_press", [step["key"]]
         elif kind == "click":
             crop = step.get("crop")

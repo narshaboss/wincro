@@ -6,7 +6,7 @@ import customtkinter as ctk
 from PIL import Image
 
 from ..ai_play.jobs import PlayJobs
-from ..ai_play.session import SAFE_KEYS
+from ..ai_play.key_policy import automatic_keys, reserved_keys
 from .theme import COLORS, IOS_FONTS
 
 
@@ -35,6 +35,8 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.status = ctk.CTkLabel(header, text="GPT 연결 ON 후 시작할 수 있습니다.", anchor="w", width=1,
             height=42, justify="left", wraplength=510, text_color=COLORS["text_muted"])
         self.status.grid(row=0, column=0, sticky="ew")
+        self.interrupt_button = self._button(header, "개입·명령 F10", self._interrupt, width=125, state="disabled")
+        self.interrupt_button.grid(row=0, column=1, padx=(6, 0))
         body = ctk.CTkScrollableFrame(self, fg_color=COLORS["bg_content"])
         body.grid(row=1, column=0, sticky="nsew")
         body.grid_columnconfigure(0, weight=1)
@@ -53,15 +55,15 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.goal = ctk.CTkTextbox(body, height=85, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         self.goal.grid(row=3, column=0, sticky="ew", padx=10, pady=(2, 7))
         self.goal.insert("1.0", "화면의 NPC를 클릭해 게임에 참가하고, 클리어한 뒤 보상을 받아라. 판단이 어려우면 질문해라.")
-        self._label("3. 허용할 키 (쉼표 구분) · 게임 안의 키만 입력", 4)
-        self.keys = ctk.CTkEntry(body, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
-        self.keys.grid(row=5, column=0, sticky="ew", padx=10, pady=(2, 7))
-        self.keys.insert(0, "up, down, left, right, space, enter, esc, 1, 2, 3")
-        self.test_environment = tk.BooleanVar(value=False)
-        self.confirm = ctk.CTkCheckBox(body, text="테스트 PC·격리 환경에서 실행", variable=self.test_environment,
-            text_color=COLORS["text_primary"], command=self._refresh_controls)
+        self._label("3. 키 자동 허용 · 직접 입력할 필요 없습니다", 4)
+        self.keys_summary = ctk.CTkLabel(body, text="", justify="left", anchor="w", wraplength=510,
+            text_color=COLORS["text_muted"])
+        self.keys_summary.grid(row=5, column=0, sticky="ew", padx=10, pady=(2, 7))
+        self.test_environment = tk.BooleanVar(value=True)
+        self.confirm = ctk.CTkCheckBox(body, text="테스트 PC 모드 · 항상 사용", variable=self.test_environment,
+            state="disabled", text_color=COLORS["text_primary"])
         self.confirm.grid(row=6, column=0, sticky="w", padx=10, pady=8)
-        self.warning = ctk.CTkLabel(body, text="선택한 창에만 실제 입력합니다. 메인 PC에서는 시작하지 마세요.\n긴급 중지: F12 · 질문 대기 중에도 게임은 계속될 수 있습니다.\n짧은 단일 키·왼쪽 클릭만 지원합니다. 긴 누르기·동시 키·F1~F12 입력은 차단합니다.",
+        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\n선택한 창에만 실제 입력합니다. 긴 누르기·동시 키·OS 제어는 지원하지 않습니다.\n질문·개입 중에도 게임은 계속될 수 있습니다. 테스트 PC에서만 시작하세요.",
             justify="left", anchor="w", text_color=COLORS["warning"], wraplength=510)
         self.warning.grid(row=7, column=0, sticky="ew", padx=10, pady=5)
         self.actions = ctk.CTkFrame(body, fg_color="transparent")
@@ -85,8 +87,19 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.detail = ctk.CTkTextbox(body, height=150, wrap="word", fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         self.detail.grid(row=10, column=0, sticky="ew", padx=10, pady=5)
         self.detail.configure(state="disabled")
+        self.command_card = ctk.CTkFrame(body, fg_color=COLORS["bg_card"])
+        self.command_card.grid(row=11, column=0, sticky="ew", padx=10, pady=5)
+        self.command_card.grid_columnconfigure(0, weight=1)
+        self.command_hint = ctk.CTkLabel(self.command_card, text="중간 명령 · F10으로 GPT 입력을 멈추고 여기에 지시하세요.",
+            anchor="w", justify="left", wraplength=490, text_color=COLORS["accent_text"])
+        self.command_hint.grid(row=0, column=0, sticky="ew", padx=10, pady=7)
+        self.command = ctk.CTkTextbox(self.command_card, height=70, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
+        self.command.grid(row=1, column=0, sticky="ew", padx=10, pady=3)
+        self.command.bind("<Control-Return>", lambda _event: self._send_command() or "break", add="+")
+        self.command_button = self._button(self.command_card, "명령 전달 후 계속 · Ctrl+Enter", self._send_command, state="disabled")
+        self.command_button.grid(row=2, column=0, sticky="ew", padx=10, pady=8)
         self.question_card = ctk.CTkFrame(body, fg_color=COLORS["bg_card"])
-        self.question_card.grid(row=11, column=0, sticky="ew", padx=10, pady=5)
+        self.question_card.grid(row=12, column=0, sticky="ew", padx=10, pady=5)
         self.question_card.grid_columnconfigure(0, weight=1)
         self.question_text = ctk.CTkLabel(self.question_card, text="", anchor="w", justify="left", wraplength=500,
             text_color=COLORS["text_primary"])
@@ -100,7 +113,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.question_card.grid_remove()
         self.result = ctk.CTkLabel(body, text="기존 재생 플랜·녹화·특화모드는 변경하지 않습니다.",
             anchor="w", justify="left", text_color=COLORS["text_muted"], wraplength=510)
-        self.result.grid(row=12, column=0, sticky="ew", padx=10, pady=8)
+        self.result.grid(row=13, column=0, sticky="ew", padx=10, pady=8)
         self.bind("<Configure>", self._resize, add="+")
         self._poll()
 
@@ -116,7 +129,9 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.warning.configure(wraplength=width)
         self.result.configure(wraplength=width)
         self.question_text.configure(wraplength=max(180, width - 20))
-        self.status.configure(wraplength=width)
+        self.status.configure(wraplength=max(180, width - 135))
+        self.keys_summary.configure(wraplength=width)
+        self.command_hint.configure(wraplength=max(180, width - 20))
 
     def _message(self, value):
         self.jobs.trace.emit("ui_message", value)
@@ -181,12 +196,38 @@ class GPTPlayPanel(ctk.CTkFrame):
             target = self.targets.get(self.target.get())
             if target is None:
                 raise ValueError("먼저 게임 창 목록을 새로고침하고 대상을 선택하세요.")
-            keys = [k.strip().lower() for k in self.keys.get().split(",") if k.strip()]
+            keys = automatic_keys()
             self.jobs.start(target, self.goal.get("1.0", "end").strip(), keys, w.runtime,
-                test_environment=self.test_environment.get())
+                test_environment=True)
         except Exception as exc:
             self.jobs.report_error("start_rejected", exc)
         self._render_log()
+
+    def _interrupt(self):
+        try:
+            self.jobs.interrupt()
+        except Exception as exc:
+            self.jobs.report_error("intervention_rejected", exc)
+            self._render_log()
+
+    def _show_intervention(self):
+        self.workspace.tabs.set("GPT 플레이")
+        root = self.winfo_toplevel()
+        root.deiconify()
+        root.lift()
+        root.focus_force()
+        self.body.update_idletasks()
+        self.body._parent_canvas.yview_moveto(self.command_card.winfo_y() / max(1, self.body.winfo_height()))
+        self.command.focus_set()
+        self.jobs.trace.emit("intervention_ui", "입력 해제 확인 후 WinCro 중간 명령창을 열었습니다. 명령 전달 전에는 재개하지 않습니다.")
+
+    def _send_command(self):
+        try:
+            self.jobs.send_command(self.command.get("1.0", "end").strip())
+            self.command.delete("1.0", "end")
+        except Exception as exc:
+            self.jobs.report_error("command_rejected", exc)
+            self._render_log()
 
     def _resume(self):
         try:
@@ -208,16 +249,21 @@ class GPTPlayPanel(ctk.CTkFrame):
         state = self.jobs.ui_snapshot() or {}
         connected = self.workspace.connection.connected
         active = self.jobs.active or self.jobs.busy
-        enabled = connected and not active and self.test_environment.get()
+        enabled = connected and not active
+        session = self.jobs.session
+        released = bool(session and session.input_released)
         configure_changed(self.start_button, state="normal" if enabled else "disabled")
         configure_changed(self.pause_button, state="normal" if active and state.get("state") not in {"paused", "question"} else "disabled")
         configure_changed(self.stop_button, state="normal" if active else "disabled")
-        configure_changed(self.resume_button, state="normal" if connected and state.get("state") == "paused" and not self.jobs.busy else "disabled")
-        configure_changed(self.answer_button, state="normal" if connected and state.get("state") == "question" and not self.jobs.busy else "disabled")
+        configure_changed(self.resume_button, state="normal" if connected and state.get("state") == "paused" and not self.jobs.busy and released else "disabled")
+        configure_changed(self.answer_button, state="normal" if connected and state.get("state") == "question" and not self.jobs.busy and released else "disabled")
+        configure_changed(self.interrupt_button, state="normal" if self.jobs.active and state.get("state") not in {"complete", "needs_review", "stopped", "error"} else "disabled")
+        configure_changed(self.command_button, state="normal" if connected and released and not self.jobs.busy and state.get("state") in {"paused", "question"} else "disabled")
         configure_changed(self.refresh, state="disabled" if active else "normal")
         configure_changed(self.target, state="disabled" if active else "readonly")
         configure_changed(self.goal, state="disabled" if active else "normal")
-        configure_changed(self.keys, state="disabled" if active else "normal")
+        configure_changed(self.keys_summary, text="일반 키·숫자·기호·방향키·기능키 자동 사용\n제외: "
+                          + ", ".join(key.upper() for key in sorted(reserved_keys())) + " · Windows 등 OS 제어키·동시 조합키")
 
     def _poll(self):
         if self.closed:
@@ -225,6 +271,9 @@ class GPTPlayPanel(ctk.CTkFrame):
         from .recording_workspace import configure_changed
         self._refresh_controls()
         self._render_log()
+        if self.jobs.intervention_requested.is_set() and self.jobs.session and self.jobs.session.input_released:
+            self.jobs.intervention_requested.clear()
+            self._show_intervention()
         state = self.jobs.ui_snapshot()
         if state:
             problem = state["state"] in {"paused", "error", "needs_review"}
