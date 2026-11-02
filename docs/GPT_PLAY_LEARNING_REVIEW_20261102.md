@@ -1,5 +1,7 @@
 # GPT 플레이 경험 학습 구현·검수 보고서
 
+후속 변경: 시간·행동·시도 한도 제거와 GL1 보드 준비 및 연속 조작 검수는 [2026-11-03 후속 보고서](GPT_PLAY_CONTINUOUS_CONTROL_REVIEW_20261103.md)를 참조한다. 아래 내용은 명시한 이전 코드 기준의 검수 기록이다.
+
 작성일: 2026-11-02. 최종 검수일: 2026-11-03.
 구현 기준: `fc6470f32ce4267e4f51c906760538d4d95f2926`.
 최종 CI: [Regression Check 41468237833, 재실행 2](https://github.com/narshaboss/wincro/actions/runs/41468237833/attempts/2), 성공.
