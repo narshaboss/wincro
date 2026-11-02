@@ -179,24 +179,30 @@ class PlaySession:
         self.trace.emit("stopped", "사용자 중지 · 이전 실패 원인은 이 로그에 보존됩니다.", phase="중지")
 
     def resume(self, answer=None):
-        if self.stop_event.is_set() or self.state not in {"paused", "question"}:
-            raise BridgeError("INVALID_STATE", "대기 중인 세션만 이어갈 수 있습니다.")
-        if not self.connected():
-            raise BridgeError("CONNECTION_OFF", "먼저 GPT 연결을 ON으로 바꾸세요.")
-        if self.clock() >= self.deadline or self.action_count >= self.max_actions:
-            raise BridgeError("BUDGET_EXHAUSTED", "한도가 끝났습니다. 기록을 확인하고 새 세션을 시작하세요.")
-        if self.playback and self.playback.busy:
-            raise BridgeError("PLAYBACK_BUSY", "이전 후보 재생이 멈추는 중입니다.")
-        if not self.input_released:
-            raise BridgeError("INPUT_RELEASE_PENDING", "이전 입력 해제 확인을 기다리고 있습니다. 실패 로그가 있으면 장치를 먼저 확인하세요.")
-        if self.question:
-            answer = text(answer, "답변")
-            self.answers.append({**self.question, "answer": answer})
-            self.question = None
-        self.epoch += 1
-        self.latest = None
-        self.state, self.message = "exploring", "현재 화면부터 다시 확인합니다."
-        self._persist()
+        with self.state_lock:
+            if self.stop_event.is_set() or self.state not in {"paused", "question"}:
+                raise BridgeError("INVALID_STATE", "대기 중인 세션만 이어갈 수 있습니다.")
+            if not self.connected():
+                raise BridgeError("CONNECTION_OFF", "먼저 GPT 연결을 ON으로 바꾸세요.")
+            if self.clock() >= self.deadline or self.action_count >= self.max_actions:
+                raise BridgeError("BUDGET_EXHAUSTED", "한도가 끝났습니다. 기록을 확인하고 새 세션을 시작하세요.")
+            if self.playback and self.playback.busy:
+                raise BridgeError("PLAYBACK_BUSY", "이전 후보 재생이 멈추는 중입니다.")
+            if not self.input_released:
+                raise BridgeError("INPUT_RELEASE_PENDING", "이전 입력 해제 확인을 기다리고 있습니다. 실패 로그가 있으면 장치를 먼저 확인하세요.")
+            previous = self.state, self.message, self.question, list(self.answers), self.epoch, self.latest
+            if self.question:
+                answer = text(answer, "답변")
+                self.answers.append({**self.question, "answer": answer})
+                self.question = None
+            self.epoch += 1
+            self.latest = None
+            self.state, self.message = "exploring", "현재 화면부터 다시 확인합니다."
+            try:
+                self._persist()
+            except Exception:
+                self.state, self.message, self.question, self.answers, self.epoch, self.latest = previous
+                raise
         self.trace.emit("resumed", "사용자 계속 요청 · 새 화면 확인 후에만 입력합니다.", phase="게임 창 준비")
 
     @property

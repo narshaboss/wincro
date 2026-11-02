@@ -171,6 +171,22 @@ def test_failed_input_release_keeps_resume_blocked(tmp_path):
     assert error.value.code == "INPUT_RELEASE_PENDING"
 
 
+def test_resume_save_failure_preserves_pause_and_does_not_start_model(tmp_path, monkeypatch):
+    manager = PlayJobs(tmp_path, tmp_path / "plans", tmp_path / "templates", lambda: True)
+    s = manager.session = PlaySession(tmp_path / "session", "clear", ["up"], Backend(), lambda: True)
+    s.start()
+    s.pause()
+    released(s)
+    previous = s.state, s.epoch, s.latest
+    def fail():
+        raise OSError("save failed")
+    monkeypatch.setattr(s, "_persist", fail)
+    with pytest.raises(OSError, match="save failed"):
+        manager.resume()
+    assert (s.state, s.epoch, s.latest) == previous
+    assert manager.worker is None and not manager.busy and not manager.preparing.is_set()
+
+
 def test_hotkey_registration_is_owned_polled_and_released(monkeypatch):
     from src.ai_play import controls
     events = [0x5C10, 0x5C11]
