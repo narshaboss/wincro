@@ -192,14 +192,16 @@ def test_guarded_reuse_is_idempotent_and_has_no_model_per_step(learned):
     assert first["game_success"] == "not_inferred_from_screen_match"
 
 
-def test_wrong_start_guard_does_not_click_and_requires_revalidation(learned):
+def test_wrong_start_guard_does_not_click_but_retains_valid_routine(learned):
     record = routine(learned)
     count = len(learned.backend.sent)
     result = behaviors.run_behavior(learned, record["behavior_id"], frame(learned), "wrong")
     assert result["reason"] == "start_condition" and len(learned.backend.sent) == count
     learned.backend.color = 1
-    with pytest.raises(BridgeError, match="목표가 바뀌었거나"):
-        behaviors.run_behavior(learned, record["behavior_id"], frame(learned), "again")
+    result = behaviors.run_behavior(learned, record["behavior_id"], frame(learned), "again")
+    assert result["status"] == "conditions_matched"
+    saved = learned.learning.store.get(learned.learning.task, "behavior", record["behavior_id"])
+    assert saved["not_applicable"] == 1 and saved["failures"] == 0
 
 
 def test_command_change_invalidates_reuse_but_preserves_memory(learned):

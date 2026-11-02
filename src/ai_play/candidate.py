@@ -30,7 +30,7 @@ def success_streak(session):
 
 
 def build(session, title, steps, remaining_issues):
-    session.check(input_allowed=True)
+    session.check(input_allowed=not bool(session.live))
     if session.state == "verifying":
         raise BridgeError("OBSERVER_ONLY", "검수가 끝난 뒤 후보를 수정하세요.")
     if not isinstance(steps, list) or not 1 <= len(steps) <= 100:
@@ -59,7 +59,8 @@ def build(session, title, steps, remaining_issues):
             from .behaviors import ACTION_TYPE, validate_program
             memory = session.learning
             behavior = memory.store.get(memory.task, "behavior", step.get("behavior_id"))
-            if behavior["goal_revision"] != memory.revision or behavior["status"] != "repeated":
+            accepted = {"candidate", "provisional", "repeated"} if session.live else {"repeated"}
+            if behavior["goal_revision"] != memory.revision or behavior["status"] not in accepted:
                 raise BridgeError("BEHAVIOR_UNVERIFIED", "같은 목표·정의에서 화면 조건 확인 3회 이상인 구간만 후보로 옮깁니다.")
             program = validate_program(behavior["program"])
             if digest(program) != behavior["digest"]:
@@ -114,7 +115,7 @@ def build(session, title, steps, remaining_issues):
     if session.learning:
         candidate["goal_revision"] = session.learning.revision
     with session.state_lock:
-        session.check(input_allowed=True)
+        session.check(input_allowed=not bool(session.live))
         write_json(session.folder / "candidate.json", candidate)
         # Round-trip the actual player model, not just JSON serialization.
         restored = AutomationPlan.from_dict(read_json(session.folder / "candidate.json")["plan"], session.folder / "assets").to_dict()

@@ -46,6 +46,10 @@ def validate_action(action, allowed=None):
             total += segment["duration_ms"]
         if total > 2000:
             raise BridgeError("INVALID_ACTION", "새 화면 확인 전 연속 조작은 최대 2초입니다.")
+    elif kind == "navigate":
+        from .navigation import validate_navigation
+        validate_navigation(action)
+        keys = ["up", "down", "left", "right"]
     elif kind == "click":
         if set(action) != {"kind", "x", "y"} or any(type(action[k]) is not int or action[k] < 0 for k in ("x", "y")):
             raise BridgeError("INVALID_ACTION", "창 내부의 정수 x, y가 필요합니다.")
@@ -60,6 +64,8 @@ def validate_action(action, allowed=None):
 
 
 def input_cost(action):
+    if action["kind"] == "navigate":
+        return 40  # Conservative hard bound, shared with the feedback executor.
     if action["kind"] == "control":
         return len(action["segments"])
     return action.get("count", 1) if action["kind"] == "repeat" else 1

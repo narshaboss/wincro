@@ -33,6 +33,8 @@ def action_text(action):
     if kind == "control":
         return "연속 조작 " + " → ".join("+".join(s["keys"]).upper() + f" {s['duration_ms']}ms"
                                      for s in action["segments"])
+    if kind == "navigate":
+        return f"화면 좌표 이동 → {action.get('target')} · 축 {action.get('axis_order')} · 최대 {action.get('max_ms')}ms"
     if kind == "click":
         return f"왼쪽 클릭 창내({action.get('x')}, {action.get('y')})"
     if kind == "wait":

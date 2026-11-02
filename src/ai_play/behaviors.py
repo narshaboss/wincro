@@ -88,11 +88,14 @@ def _guard(session, value, size):
 
 
 def author(session, name, steps):
-    session.check(input_allowed=True)
+    session.check()  # Authoring is read-only even after the goal freezes input.
     memory = session.learning
     if not isinstance(steps, list) or not 1 <= len(steps) <= 20:
         raise BridgeError("INVALID_BEHAVIOR", "재사용 구간은 1~20단계입니다.")
-    region = session.backend.validate()
+    if not isinstance(steps[0], dict) or not isinstance(steps[0].get("before"), dict) or "frame_id" not in steps[0]["before"]:
+        raise BridgeError("INVALID_BEHAVIOR", "시작 화면 근거가 필요합니다.")
+    source = session._frame(steps[0]["before"]["frame_id"])
+    region = source["region"]
     size = [region[2] - region[0], region[3] - region[1]]
     environment = memory.store.get(memory.task, "task", memory.task)["environment"]
     compiled = []
@@ -191,6 +194,14 @@ def run_behavior(session, behavior_id, observation_id, request_id):
             raise BridgeError("REQUEST_REUSED", "이미 사용한 재사용 요청 ID입니다.")
         return copy.deepcopy(old)
     session._frame(observation_id, fresh=True)
+    if (record["status"] == "revalidate" and record["goal_revision"] == memory.revision
+            and memory.store.only_entry_mismatches(memory.task, behavior_id, record["failures"])):
+        # Repair old entry-only quarantines only with a complete failure audit.
+        # Missing history or any actual result failure remains quarantined.
+        record["not_applicable"] = record.get("not_applicable", 0) + record["failures"]
+        record["failures"] = 0
+        record["status"] = "repeated" if record["successes"] >= 3 else "provisional"
+        memory.store.put(memory.task, "behavior", behavior_id, record)
     if record["goal_revision"] != memory.revision or record["status"] in {"disabled", "revalidate"}:
         raise BridgeError("BEHAVIOR_REVALIDATION", "목표가 바뀌었거나 실패한 재사용 구간입니다. 근거를 다시 확인해 새 후보를 작성하세요.")
     if digest(record["program"]) != record["digest"]:
@@ -215,6 +226,9 @@ def run_behavior(session, behavior_id, observation_id, request_id):
         if result["status"] == "conditions_matched":
             record["successes"] += 1
             record["status"] = "repeated" if record["successes"] >= 3 else "provisional"
+        elif result.get("step") == 1 and result.get("reason") in {"start_condition", "condition_changed_before_send"}:
+            # Not being at this routine's entry scene is not execution failure.
+            record["not_applicable"] = record.get("not_applicable", 0) + 1
         else:
             record["failures"] += 1
             record["status"] = "revalidate"

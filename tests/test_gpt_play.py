@@ -79,6 +79,13 @@ def frame(session):
     return session.observe()["frame_id"]
 
 
+def review_live_memory(scope, observation_id):
+    memory = scope.dispatch("play_memory", {"stage": "test"})
+    scope.dispatch("play_use_experience", {"observation_id": observation_id,
+        "retrieval_id": memory["retrieval_id"], "references": [r["reference"] for r in memory["records"]],
+        "decision": "Apply recorded user instruction; synthetic fixture screen matches."})
+
+
 def released(session):
     for worker in list(session.release_workers):
         worker.join(2)
@@ -537,6 +544,7 @@ def test_jobs_off_gate_and_question_resume_roundtrip(tmp_path, monkeypatch):
                 scope.dispatch("play_question", {"observation_id": reference, "question": "Which revive?", "context": "Dead"})
             else:
                 calls.append(s.answers[-1]["answer"])
+                review_live_memory(scope, reference)
                 scope.dispatch("play_act", {"observation_id": reference, "request_id": "revive", "action": {"kind": "key", "key": "enter"}, "purpose": "free revive"})
             return "turn complete"
     connected = [False]

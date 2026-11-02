@@ -107,6 +107,8 @@ class Learning:
         else:
             raise BridgeError("INVALID_EXPERIENCE", "시도 시작(start) 또는 결과(result)를 지정하세요.")
         s._persist()
+        if event == "result" and s.live:
+            s.live.invalidate()
         s.trace.emit("attempt", f"시도 {self.attempt_count} · {stage} · {value['status']} · {strategy}")
         return copy.deepcopy(value)
 
@@ -127,4 +129,5 @@ class Learning:
     def summary(self):
         return {"task_id": self.task, "attempt_count": self.attempt_count,
                 "attempt": copy.deepcopy(self.attempt), "goal_revision": self.revision,
+                "storage": self.store.usage(),
                 "uncertain_requests": copy.deepcopy(self.pending)}

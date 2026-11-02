@@ -140,6 +140,9 @@ class WindowIO:
         action = validate_action(action)
         check()
         self.validate(region)
+        if action["kind"] == "navigate":
+            from .navigation import execute_navigation
+            return execute_navigation(action, self, region, check)
         if action["kind"] == "control":
             for index, segment in enumerate(action["segments"], 1):
                 check()

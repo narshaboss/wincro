@@ -17,6 +17,20 @@
   understanding. A partial bundle is uncertain, never a safe-to-resend request.
 - Archive old frames/receipts durably before trimming hot caches. Archived request
   IDs must still deduplicate; historical images must never regain input freshness.
+- Application-created live-policy sessions require task experience retrieval and a
+  persisted apply/reject review before input. A review receipt proves provenance,
+  not semantic understanding. Resume, retry and reported stage changes invalidate it.
+- Background selected-window frames are ephemeral (six/24MB); selected full frames
+  are ephemeral (six/12MB) until cited by input, learning or review. Pin referenced
+  evidence before discarding it. Never garbage-collect old evidence blindly.
+- Screen-coordinate navigation is GPT-only: calibrated digit ROIs, a stable scene
+  guard, GPT-selected goal/axis order, bounded GL1 holds and a four-second feedback
+  slice. No shared special-mode OCR, maps, walls or pathfinding. Both learning and
+  native GPT behavior replay use the same navigation validator and executor.
+- Final goal freezes game input. Evidence-only draft authoring remains available.
+  A new live-policy draft may contain unverified routines; it is NOT a verified
+  plan. Publication still requires crosschecks and independent successful trials.
+  Only an app-owner UI action grants one trial; no model tool can grant permission.
 - Learning, routine reuse, candidate trials and native gpt_play_behavior playback
   must use the same versioned program validator/executor. Never flatten timed/guarded
   behavior to legacy naked key actions. Dynamic GPT-dependent branches stay incomplete.

@@ -26,7 +26,7 @@ class CandidatePlayback:
 
     def start(self, revision, start_frame_id, fresh_round_evidence):
         s = self.session
-        s.check(input_allowed=True)
+        s.check(input_allowed=True, playback=bool(s.live))
         if self.busy or s.state == "verifying":
             raise BridgeError("PLAYBACK_BUSY", "이미 후보 재생 중입니다.")
         if not candidate.ready(s) or revision != s.candidate["revision"]:
@@ -42,7 +42,9 @@ class CandidatePlayback:
             "started_at": s.clock(), "start_action_count": s.action_count, "success": False}
         self.executor = self.executor_factory(s)
         with s.state_lock:
-            s.check(input_allowed=True)
+            s.check(input_allowed=True, playback=bool(s.live))
+            if s.live:
+                s.live.consume_verification()
             s.trial = trial
             s.state, s.message = "verifying", "후보 플랜 독립 재생 중: GPT 입력은 차단됩니다."
             s.latest = None

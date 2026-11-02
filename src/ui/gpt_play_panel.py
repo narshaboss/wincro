@@ -111,6 +111,9 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.verification_text = ctk.CTkTextbox(self.tabs.tab("플랜 검수"), wrap="word", state="disabled",
             fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
         self.verification_text.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.verification_permission = self._button(self.tabs.tab("플랜 검수"),
+            "시작 화면 준비 완료\n검수 재생 1회 허용", lambda: self._control(self.jobs.allow_verification), height=48, state="disabled")
+        self.verification_permission.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
         self._verification_signature = None
         body.grid_columnconfigure(0, weight=1)
         self.body = body
@@ -136,7 +139,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.confirm = ctk.CTkCheckBox(body, text="테스트 PC 모드 · 항상 사용", variable=self.test_environment,
             state="disabled", text_color=COLORS["text_primary"])
         self.confirm.grid(row=6, column=0, sticky="w", padx=10, pady=8)
-        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\n시간·행동·시도 횟수 제한 없음 · 저장·장치 안전 검사는 유지합니다.\n이동·스킬 연속 조작: 입력 유지 합계 2초 이내 · GL1 Arduino 필요 · 자동 업로드 없음\n위 목록에서 경험을 선택하면 기록을 이어갑니다. 과거 화면·입력은 자동 재생하지 않습니다.\n질문·개입 중에도 게임은 계속됩니다. 테스트 PC에서만 시작하세요.",
+        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\n시간·행동·시도 횟수 제한 없음 · 저장·장치 안전 검사는 유지합니다.\n연속 조작 2초 / 화면 XY 보정 후 좌표 이동 4초 단위 · GL1 Arduino 필요\n위 목록에서 경험을 선택하면 기록을 이어갑니다. 과거 입력은 자동 재생하지 않습니다.\n목표 달성 후 입력 종료 · 실제 검수 재생은 별도 허용\n질문·개입 중에도 게임은 계속됩니다. 테스트 PC에서만 시작하세요.",
             justify="left", anchor="w", text_color=COLORS["warning"], wraplength=510)
         self.warning.grid(row=7, column=0, sticky="ew", padx=10, pady=5)
         self.actions = ctk.CTkFrame(body, fg_color="transparent")
@@ -187,6 +190,9 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.result = ctk.CTkLabel(body, text="기존 재생 플랜·녹화·특화모드는 변경하지 않습니다.",
             anchor="w", justify="left", text_color=COLORS["text_muted"], wraplength=510)
         self.result.grid(row=13, column=0, sticky="ew", padx=10, pady=8)
+        self.live_detail = ctk.CTkLabel(body, text="경험 조회 후 입력 · 연속 화면은 임시 보관 · 목표 달성 시 입력 종료",
+            anchor="w", justify="left", width=1, wraplength=490, text_color=COLORS["text_muted"])
+        self.live_detail.grid(row=14, column=0, sticky="ew", padx=10, pady=8)
         self.bind("<Configure>", self._resize, add="+")
         self._poll()
 
@@ -358,6 +364,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.question_text.configure(wraplength=max(180, width - 20))
         self.status.configure(wraplength=width)
         self.keys_summary.configure(wraplength=width)
+        self.live_detail.configure(wraplength=width)
         self.command_hint.configure(wraplength=max(180, width - 20))
 
     def _message(self, value):
@@ -520,6 +527,10 @@ class GPTPlayPanel(ctk.CTkFrame):
         configure_changed(self.refresh, state="disabled" if active else "normal")
         configure_changed(self.target, state="disabled" if active else "readonly")
         configure_changed(self.goal, state="disabled" if active else "normal")
+        live = state.get("live") or {}
+        configure_changed(self.verification_permission, state="normal" if connected and not control_busy
+            and not self.jobs.busy and released and state.get("state") == "paused"
+            and live.get("goal") and state.get("candidate") else "disabled")
         configure_changed(self.memory_selection, state="disabled" if active else "readonly")
         configure_changed(self.start_button, text="새 실행으로 경험 이어하기" if self.memory_selection.get() != "새 경험 시작" else "GPT 플레이 시작")
         configure_changed(self.keys_summary, text="일반 키·숫자·기호·방향키·기능키 자동 사용\n제외: "
@@ -549,6 +560,19 @@ class GPTPlayPanel(ctk.CTkFrame):
                     + "\n".join(summary["steps"]) + "\n\n미해결: " + (", ".join(summary["remaining"]) or "없음")
                     + "\n기존 플랜·재생목록은 덮어쓰지 않습니다. 동적 GPT 판단이 필수인 후보는 완료 등록하지 않습니다.")
         if state:
+            live = state.get("live") or {}
+            metrics = live.get("timings_ms", {})
+            navigation = live.get("navigation") or {}
+            trajectory = navigation.get("trajectory", [])
+            last_xy = trajectory[-1]["xy"] if trajectory else "미보정"
+            review = live.get("experience_review") or {}
+            usage_bytes = ((state.get("learning") or {}).get("storage") or {}).get("evidence_bytes", 0)
+            configure_changed(self.live_detail, text=f"단계: {live.get('stage', '-')} · 경험: {'검토됨' if review else '입력 전 검토 필요'}\n"
+                f"좌표: {last_xy} → {navigation.get('target', '-')} · {navigation.get('reason', 'GPT 판단 대기')}\n"
+                f"화면 {metrics.get('capture', {}).get('last', 0):.0f}ms / 도구 사이(GPT·통신 포함) "
+                f"{metrics.get('between_tools_model_transport', {}).get('last', 0)/1000:.1f}초\n"
+                f"영구 근거 {usage_bytes/1048576:.1f}MB · 임시 연속 화면 최대 6장\n"
+                + ("목표 달성: 입력 차단 · 플랜 작성/검수는 별도" if live.get("goal") else "실제 게임 결과는 GPT가 화면으로 확인합니다."))
             problem = state["state"] in {"paused", "error", "needs_review"}
             usage = (f"요청 {state['action_count']}회 · 실행 한도 없음" if state["max_actions"] is None
                      else f"요청 {state['action_count']}/{state['max_actions']}")

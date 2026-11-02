@@ -85,7 +85,12 @@ def play_observe() -> list:
         return [json.dumps(response, ensure_ascii=False)]
     result = response["result"]
     data = base64.b64decode(result.pop("png_base64"))
-    return [json.dumps(result, ensure_ascii=False), Image(data=data, format="png")]
+    history = result.pop("recent", [])
+    content = []
+    for sample in history:
+        raw = base64.b64decode(sample.pop("png_base64"))
+        content.extend([json.dumps(sample, ensure_ascii=False), Image(data=raw, format="png")])
+    return content + [json.dumps(result, ensure_ascii=False), Image(data=data, format="png")]
 
 
 @mcp.tool()
@@ -125,6 +130,7 @@ def play_control(observation_id: str, request_id: str, segments: list[dict], pur
         return [json.dumps(response, ensure_ascii=False)]
     result = response["result"]
     raw = base64.b64decode(result["observation"].pop("png_base64"))
+    result["observation"].pop("recent", None)
     return [json.dumps(result, ensure_ascii=False), Image(data=raw, format="png")]
 
 
@@ -141,11 +147,51 @@ def play_note(observation_id: str, observation: str, purpose: str, expected_resu
 
 
 @mcp.tool()
-def play_memory(offset: int = 0) -> dict:
+def play_memory(offset: int = 0, stage: str = "start") -> dict:
     """Task-scoped attempts, hypotheses, routines, checkpoint. Historical only.
     Ten per category; offset=10,20,... opens older experience while has_more.
     """
     return invoke("play_memory", locals())
+
+
+@mcp.tool()
+def play_use_experience(observation_id: str, retrieval_id: str, references: list[str], decision: str) -> dict:
+    """Required before input. Cite retrieved experience and concise apply/reject evidence, not reasoning."""
+    return invoke("play_use_experience", locals())
+
+
+@mcp.tool()
+def play_goal_achieved(observation_id: str, observation: str) -> dict:
+    """Final goal/reward visibly achieved: freeze game input and switch to evidence-only plan authoring."""
+    return invoke("play_goal_achieved", locals())
+
+
+@mcp.tool()
+def play_coordinate_setup(observation_id: str, x_region: list[int], y_region: list[int],
+                          light: bool, level: int, samples: list[dict]) -> dict:
+    """Screen-only XY calibration, saved per task. samples=[{digit:0,frame_id:...,region:[x1,y1,x2,y2]}].
+    Crop individual observed glyphs, never invent missing digits. light=true for bright digits on dark.
+    level is luminance threshold 1..254. Tight x/y ROIs must contain numbers ONLY.
+    No input. Unknown/ambiguous digits fail closed. New samples replace full profile, include old digits.
+    """
+    return invoke("play_coordinate_setup", locals())
+
+
+@mcp.tool()
+def play_navigate(observation_id: str, request_id: str, target: list[int], axis_order: str,
+                  hold_ms: int, max_ms: int, scene: dict, purpose: str) -> list:
+    """GPT chooses XY goal and xy/yx axis order. Local screen feedback runs Arduino holds <=4s.
+    Requires saved coordinate calibration. hold_ms=50..500, start with100; max_ms<=4000.
+    scene={frame_id,region,threshold} is a distinctive stable map/scene guard. Stop on uncertain XY,
+    blocked, jump, wrong motion, scene/focus change. Returns trajectory + fresh image. No learned walls.
+    """
+    response = invoke("play_navigate", locals())
+    if not response.get("ok"):
+        return [json.dumps(response, ensure_ascii=False)]
+    result = response["result"]
+    raw = base64.b64decode(result["observation"].pop("png_base64"))
+    result["observation"].pop("recent", None)
+    return [json.dumps(result, ensure_ascii=False), Image(data=raw, format="png")]
 
 
 @mcp.tool()

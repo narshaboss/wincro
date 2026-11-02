@@ -20,7 +20,8 @@ from .actions import validate_action, input_cost
 TOOLS = {"connection_status", "play_observe", "play_frame", "play_act", "play_status", "play_question",
          "play_note", "play_candidate", "play_review", "play_verify", "play_trial_result", "play_finish"}
 TOOLS.update({"play_experience", "play_memory", "play_memory_frame", "play_attempt",
-              "play_behavior", "play_run_behavior", "play_reconcile", "play_control"})
+              "play_behavior", "play_run_behavior", "play_reconcile", "play_control",
+              "play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate"})
 
 
 def text(value, label, maximum=3000):
@@ -31,7 +32,7 @@ def text(value, label, maximum=3000):
 
 class PlaySession:
     def __init__(self, folder, goal, keys, backend, connected, *, max_seconds=None,
-                 max_actions=None, clock=time.monotonic, memory=None, task_id=None):
+                 max_actions=None, clock=time.monotonic, memory=None, task_id=None, live_policy=False):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self.instance_id = new_id("play_")
@@ -71,6 +72,9 @@ class PlaySession:
         self.commands = []
         self.storage_failed = False
         self.learning = None
+        self.live = None
+        self.stream = None
+        self.ephemeral_frames = {}
         self.behavior_receipts = {}
         self._ui_cache = None
         if memory is not None:
@@ -95,6 +99,15 @@ class PlaySession:
                     self.reviews = copy.deepcopy(previous.get("reviews", []))
                     self.trials = copy.deepcopy(previous.get("trials", []))
                     self.publication = copy.deepcopy(previous.get("publication"))
+        if live_policy:
+            if not self.learning:
+                raise BridgeError("MEMORY_UNAVAILABLE", "새 GPT 플레이는 영구 경험 저장소가 필요합니다.")
+            from .live_policy import LivePolicy
+            from .observation_stream import ObservationStream
+            self.live = LivePolicy(self)
+            self.stream = ObservationStream(self.backend.capture,
+                lambda: self.state == "exploring" and not self.stop_event.is_set()
+                and not self.input_cancelled.is_set() and not self.live.goal, clock=self.clock)
         self._initial_answers = len(self.answers)
         self._initial_commands = len(self.commands)
         self._persist()
@@ -158,7 +171,7 @@ class PlaySession:
                 "game_paused": False, "full_playlist_replay_verified": False,
                 "candidate_replay_successes": sum(bool(t.get("success")) for t in self.trials)}
             if internal:
-                value.update(frames=copy.deepcopy(self.frames), receipts=copy.deepcopy(self.receipts),
+                value.update(frames=copy.deepcopy({k: v for k, v in self.frames.items() if k not in self.ephemeral_frames}), receipts=copy.deepcopy(self.receipts),
                              behavior_receipts=copy.deepcopy(self.behavior_receipts))
             elif value["candidate"]:
                 current = value["candidate"]
@@ -176,6 +189,8 @@ class PlaySession:
                                         for key in ("before", "after")}} for step in program["steps"]]}
             if self.learning:
                 value["learning"] = self.learning.summary()
+            if self.live:
+                value["live"] = self.live.snapshot()
             return value
 
     def ui_snapshot(self):
@@ -192,6 +207,7 @@ class PlaySession:
                 "publication": copy.deepcopy(self.publication), "trial_count": len(self.trials),
                 "candidate": {"revision": self.candidate["revision"]} if self.candidate else None,
                 "learning": self.learning.summary() if self.learning else None,
+                "live": self.live.snapshot() if self.live else None,
                 "verification": {"revision": self.candidate["revision"],
                     "required": 10 if self.learning else 3,
                     "successes": success_streak(self),
@@ -228,6 +244,8 @@ class PlaySession:
             raise BridgeError("OBSERVER_ONLY", "후보 재생 중 GPT는 관찰만 할 수 있습니다.")
         if input_allowed and self.learning and self.learning.pending:
             raise BridgeError("RECONCILIATION_REQUIRED", "과거 입력 결과가 불확실합니다. 새 화면을 확인해 play_reconcile로 정리한 뒤 입력하세요.")
+        if input_allowed and self.live:
+            self.live.admit(playback=playback)
 
     def start(self):
         self.check()
@@ -242,6 +260,10 @@ class PlaySession:
     def pause(self, reason="사용자 일시정지"):
         # Signal hardware cancellation before waiting for a slow disk/state lock.
         self.input_cancelled.set()
+        if self.live:
+            self.live.invalidate()
+        if self.stream:
+            self.stream.clear()
         with self.state_lock:
             if self.state in {"stopped", "complete"}:
                 return
@@ -284,6 +306,8 @@ class PlaySession:
 
     def stop(self):
         self.stop_event.set()
+        if self.stream:
+            self.stream.close()
         try:
             self.pause("사용자 중지")
         finally:
@@ -360,7 +384,15 @@ class PlaySession:
             self.check()
             epoch = self.epoch
             observed_at, observed_actions = self.clock(), self.action_count
-            image, region = self.backend.capture()
+            started = self.clock()
+            if self.stream:
+                sample = self.stream.sample()
+                image, region = sample["image"], sample["region"]
+                observed_at = sample["time"]
+            else:
+                image, region = self.backend.capture()
+            if self.live:
+                self.live.measure("capture", (self.clock() - started) * 1000)
             self.check()
             if epoch != self.epoch:
                 raise BridgeError("STALE_OBSERVATION", "상태가 변경되어 화면을 폐기했습니다.")
@@ -379,7 +411,7 @@ class PlaySession:
         metadata = {"frame_id": frame_id, "time": observed_at, "epoch": epoch,
             "region": list(region), "sha256": __import__("hashlib").sha256(raw).hexdigest(),
             "action_count": observed_actions, "bytes": len(raw)}
-        if self.learning:
+        if self.learning and not self.live:
             try:
                 self.learning.store.save_frame(self.learning.task, metadata, raw)
             except Exception:
@@ -392,13 +424,36 @@ class PlaySession:
                 raise BridgeError("STALE_OBSERVATION", "저장 중 실행 상태가 바뀐 관찰은 입력에 사용하지 않습니다.")
             previous = next(reversed(self.frames.values()), None) if self.frames else None
             self.frames[frame_id] = metadata
+            if self.live:
+                self.ephemeral_frames[frame_id] = raw
+                while (len(self.ephemeral_frames) > 6 or
+                       sum(len(b) for b in self.ephemeral_frames.values()) > 12_000_000):
+                    expired = next(iter(self.ephemeral_frames))
+                    del self.ephemeral_frames[expired]
+                    self.frames.pop(expired, None)
             self.latest = frame_id
             self.frame_count += 1
+        started = self.clock()
         self._persist()
+        if self.live:
+            self.live.measure("observation_save", (self.clock() - started) * 1000)
         change = "첫 화면" if previous is None else "이전 관찰과 동일" if previous["sha256"] == metadata["sha256"] else "이전 관찰과 화면 변화 있음"
         self.trace.emit("observe_done", f"화면 {self.frame_count}장 확인: {image.width}x{image.height} 범위={list(region)} · {change} "
                         "· 캐릭터 이동·목표 달성 여부는 GPT 확인 필요", phase="GPT 판단 대기")
-        return {**metadata, "width": image.width, "height": image.height,
+        recent = []
+        if self.stream:
+            for previous_sample in self.stream.recent(3):
+                if previous_sample["time"] >= observed_at or previous_sample["region"] != list(region):
+                    continue
+                preview = previous_sample["image"].copy()
+                preview.thumbnail((480, 270))
+                output = io.BytesIO()
+                preview.save(output, format="PNG")
+                if len(output.getvalue()) <= 150_000:
+                    recent.append({"time": previous_sample["time"], "age_ms": round((observed_at - previous_sample["time"]) * 1000),
+                                   "historical_not_current": True, "ephemeral": True,
+                                   "png_base64": base64.b64encode(output.getvalue()).decode()})
+        return {**metadata, "width": image.width, "height": image.height, "recent": recent,
             "coordinate_space": "image pixels, relative to client area", "png_base64": base64.b64encode(raw).decode()}
 
     def _frame(self, frame_id, fresh=False):
@@ -408,13 +463,23 @@ class PlaySession:
         if not frame:
             raise BridgeError("EVIDENCE_REQUIRED", "이 세션에서 관찰한 화면 ID가 필요합니다.")
         if fresh and (frame_id != self.latest or frame["epoch"] != self.epoch
-                      or self.clock() - frame["time"] > 20 or frame["action_count"] != self.action_count):
+                      or self.clock() - frame["time"] > (10 if self.live else 20) or frame["action_count"] != self.action_count):
             raise BridgeError("STALE_OBSERVATION", "화면이 오래됐습니다. 다시 관찰하고 판단하세요.")
+        if frame_id in self.ephemeral_frames:
+            try:
+                self.learning.store.save_frame(self.learning.task, frame, self.ephemeral_frames[frame_id])
+                del self.ephemeral_frames[frame_id]
+            except Exception:
+                self.storage_failed = True
+                self.input_cancelled.set()
+                self._release_async()
+                raise
         return frame
 
     def read_frame(self, frame_id):
         self.check()
         if self.learning:
+            self._frame(frame_id)
             return self.learning.frame(frame_id)
         metadata = self._frame(frame_id)
         path = within(self.folder / "frames" / (frame_id + ".png"), self.folder / "frames")
@@ -456,7 +521,16 @@ class PlaySession:
             self._persist()  # Write-ahead: uncertain delivery must never be resent blindly.
             target = f" 화면좌표({rect[0] + action['x']}, {rect[1] + action['y']})" if kind == "click" else ""
             self.trace.emit("action_begin", f"요청 {self.action_count}: {action_text(action)}{target} · 목적={concise(purpose, 250)}", phase="입력 수행")
+            transmission_started = False
             try:
+                # The write-ahead already reserves this action's cost. Only that
+                # reservation may differ from the originating observation.
+                if (self.latest != observation_id or frame["epoch"] != self.epoch
+                        or self.action_count != frame["action_count"] + cost
+                        or self.clock() - frame["time"] > (10 if self.live else 20)):
+                    raise BridgeError("STALE_OBSERVATION", "저장 중 화면 근거가 오래되거나 상태가 바뀌었습니다.")
+                self.check(input_allowed=True)
+                self.backend.validate(rect)
                 if _guard is not None:
                     from .behaviors import confirm_before_send
                     confirm_before_send(self.backend, rect, _guard)
@@ -468,17 +542,25 @@ class PlaySession:
                         self.stop_event.wait(min(.05, end - self.clock()))
                     ok = True
                 else:
+                    started = self.clock()
+                    transmission_started = True
                     ok = self.backend.send(action, rect, lambda: self.check(input_allowed=True))
+                    if self.live:
+                        self.live.measure("device_and_feedback", (self.clock() - started) * 1000)
+                    if isinstance(ok, dict):
+                        receipt["feedback"] = copy.deepcopy(ok)
+                        if self.live and kind == "navigate":
+                            self.live.navigation = copy.deepcopy(ok)
                 if not ok:
                     raise BridgeError("DELIVERY_UNKNOWN", "입력 완료를 확인하지 못했습니다. 재전송하지 말고 화면을 확인하세요.")
                 receipt["state"] = "sent_not_game_success"
                 self.trace.emit("action_sent", f"{action_text(action)} · " + ("대기 완료" if kind == "wait" else "장치 전송 완료")
                     + " · 게임 반응은 아직 미확인, 다음 화면으로 확인합니다.", phase="다음 화면 확인 대기")
             except Exception as exc:
-                changed = getattr(exc, "code", "") == "BEHAVIOR_GUARD_CHANGED"
-                if changed:
+                changed = getattr(exc, "code", "") in {"BEHAVIOR_GUARD_CHANGED", "STALE_OBSERVATION"}
+                if changed or not transmission_started:
                     receipt["state"] = "not_sent"
-                if kind in {"hold", "control"} and getattr(exc, "code", "") == "TIMED_INPUT_UNSUPPORTED":
+                if kind in {"hold", "control", "navigate"} and getattr(exc, "code", "") == "TIMED_INPUT_UNSUPPORTED":
                     receipt["state"] = "not_sent"
                 if self.learning and receipt["state"] == "unknown":
                     self.learning.pending.append(copy.deepcopy(receipt))
@@ -495,7 +577,23 @@ class PlaySession:
         receipt = self.act(observation_id, request_id, {"kind": "control", "segments": segments}, purpose)
         # One model/tool round trip delivers the local input bundle AND its
         # fresh result frame. A repeated request ID never repeats the inputs.
-        return {"receipt": receipt, "observation": self.observe()}
+        observation = self.observe()
+        observation.pop("recent", None)
+        return {"receipt": receipt, "observation": observation}
+
+    def navigate(self, observation_id, request_id, target, axis_order, hold_ms, max_ms, scene, purpose):
+        from .navigation import validate_navigation
+        from .behaviors import _guard
+        profile = self.learning.store.get(self.learning.task, "coordinate_profile", "active")
+        action = validate_navigation({"kind": "navigate", "profile": profile, "target": target,
+            "axis_order": axis_order, "hold_ms": hold_ms, "max_ms": max_ms,
+            "scene_guard": _guard(self, scene, profile["size"])})
+        result = self.act(observation_id, request_id, action, purpose)
+        if self.live and result.get("feedback", {}).get("reason") in {"scene_changed", "coordinate_jump", "blocked", "unexpected_motion"}:
+            self.live.invalidate()
+        observation = self.observe()
+        observation.pop("recent", None)
+        return {"receipt": result, "observation": observation}
 
     def ask(self, observation_id, question, context):
         self.check()
@@ -529,15 +627,23 @@ class PlaySession:
     def dispatch(self, method, arguments):
         if method == "play_act" and set(arguments) - {"observation_id", "request_id", "action", "purpose"}:
             raise BridgeError("INVALID_ARGUMENT", "내부 화면 조건은 공개 입력 도구에서 지정할 수 없습니다.")
-        if method in {"play_experience", "play_memory", "play_memory_frame", "play_attempt", "play_behavior", "play_run_behavior", "play_reconcile"}:
+        if method in {"play_experience", "play_memory", "play_memory_frame", "play_attempt", "play_behavior", "play_run_behavior", "play_reconcile",
+                      "play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate"}:
             self.check()
             if not self.learning:
                 raise BridgeError("MEMORY_UNAVAILABLE", "경험 저장소가 연결되지 않았습니다.")
             from .behaviors import author, run_behavior
+            from .navigation import calibrate
+            if method in {"play_use_experience", "play_goal_achieved", "play_coordinate_setup", "play_navigate"} and not self.live:
+                raise BridgeError("LIVE_POLICY_REQUIRED", "새 GPT 플레이 세션에서 사용할 수 있습니다.")
             learning_methods = {"play_experience": self.learning.record,
-                "play_memory": lambda offset=0: self.learning.store.context(self.learning.task, offset),
+                "play_memory": (self.live.recall if self.live else lambda offset=0, stage="start": self.learning.store.context(self.learning.task, offset)),
                 "play_memory_frame": self.learning.frame, "play_attempt": self.learning.attempt_event,
                 "play_reconcile": self.learning.reconcile,
+                "play_use_experience": self.live.use if self.live else None,
+                "play_goal_achieved": self.live.achieved if self.live else None,
+                "play_coordinate_setup": lambda **kw: calibrate(self, **kw),
+                "play_navigate": self.navigate,
                 "play_behavior": lambda **kw: author(self, **kw),
                 "play_run_behavior": lambda **kw: run_behavior(self, **kw)}
             try:

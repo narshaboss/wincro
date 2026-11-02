@@ -195,6 +195,45 @@ class ExperienceStore:
             raise BridgeError("EVIDENCE_CHANGED", "영구 관찰 장면 검증 실패")
         self.put(task, "frame", metadata["frame_id"], metadata)
 
+    def relevant(self, task, stage, offset=0):
+        if type(offset) is not int or not 0 <= offset <= 1_000_000:
+            raise BridgeError("INVALID_ARGUMENT", "경험 조회 위치가 올바르지 않습니다.")
+        # Search the entire task, not only its last ten events. Parameterized
+        # JSON access keeps quotes and SQL syntax in stage names inert.
+        with self.connection() as db:
+            events = db.execute("SELECT seq,kind,payload FROM events WHERE task=? AND kind IN "
+                "('fact','hypothesis','experiment','recovery','outcome','goal_achieved') "
+                "ORDER BY (COALESCE(json_extract(payload,'$.stage'),'')=?) DESC,seq DESC LIMIT 21 OFFSET ?",
+                (task, stage, offset)).fetchall()
+            docs = db.execute("SELECT kind,id,payload FROM documents WHERE task=? AND kind IN ('attempt','behavior') "
+                "ORDER BY (COALESCE(json_extract(payload,'$.stage'),'')=?) DESC,"
+                "(COALESCE(json_extract(payload,'$.status'),'') IN ('repeated','success')) DESC,updated DESC LIMIT 21 OFFSET ?",
+                (task, stage, offset)).fetchall()
+        records = [{"reference": f"event:{seq}", "kind": kind, "record": json.loads(body)}
+                   for seq, kind, body in events[:20]]
+        for kind, ident, body in docs[:20]:
+            value = json.loads(body)
+            value.pop("program", None)
+            records.append({"reference": f"{kind}:{ident}", "kind": kind, "record": value})
+        return {"task": self.get(task, "task", task), "stage": stage, "records": records,
+                "offset": offset, "has_more": len(events) > 20 or len(docs) > 20,
+                "historical_not_current": True}
+
+    def usage(self):
+        return {"evidence_bytes": self._asset_bytes, "quota_bytes": self.quota,
+                "automatic_evidence_deletion": False}
+
+    def only_entry_mismatches(self, task, behavior_id, failure_count):
+        if type(failure_count) is not int or failure_count < 1:
+            return False
+        with self.connection() as db:
+            rows = db.execute("SELECT payload FROM events WHERE task=? AND kind='behavior_run' "
+                "AND json_extract(payload,'$.behavior_id')=? AND json_extract(payload,'$.status')='mismatch'",
+                (task, behavior_id)).fetchall()
+        failures = [json.loads(row[0]) for row in rows]
+        return len(failures) == failure_count and all(f.get("step") == 1 and f.get("reason") in
+            {"start_condition", "condition_changed_before_send"} for f in failures)
+
     def read_frame(self, task, ident):
         meta = self.get(task, "frame", ident)
         root = self.root / "evidence" / task

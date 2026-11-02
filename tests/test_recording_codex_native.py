@@ -65,10 +65,18 @@ def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tm
         def do_POST(self):
             requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             namespace = next(t["name"] for t in declared_tools(requests[0]) if t.get("name", "").startswith("mcp__wincroRecording_"))
-            count = len(requests)
-            if (count <= 3 or (count == 4 and not continue_once) or (count == 5 and continue_once)) and not (use_control and count > 3):
+            count = len(requests) - 2
+            if len(requests) <= 2:
+                name = "play_memory" if len(requests) == 1 else "play_observe"
+                arguments = {"stage": "fixture"} if len(requests) == 1 else {}
+                item = {"id": f"fc_setup_{len(requests)}", "type": "function_call", "call_id": f"setup_{len(requests)}",
+                        "namespace": namespace, "name": name, "arguments": json.dumps(arguments)}
+            elif (count <= 3 or (count == 4 and not continue_once) or (count == 5 and continue_once)) and not (use_control and count > 3):
                 name, arguments = "play_observe", {}
-                if count == 2:
+                if count == 1:
+                    name, arguments = "play_use_experience", {"observation_id": jobs.session.latest,
+                        "retrieval_id": jobs.session.live.retrieval["id"], "references": [], "decision": "No prior task experience; inspect fixture."}
+                elif count == 2:
                     name, arguments = "play_act", {"observation_id": jobs.session.latest, "request_id": "native-one",
                         "action": {"kind": "key", "key": "enter"}, "purpose": "join fixture arena"}
                     if use_control:
@@ -117,7 +125,7 @@ def test_actual_codex_play_tools_reach_fake_game_and_question_without_desktop(tm
         jobs.worker.join(80)
         assert not jobs.busy, jobs.snapshot()
         assert jobs.session.state == "question", jobs.snapshot()
-        assert len(requests) == (4 if use_control else 6 if continue_once else 5)
+        assert len(requests) == (6 if use_control else 8 if continue_once else 7)
         assert len([row for row in jobs.trace.since(0) if row["event"] == "model_start"]) == 1
         assert len([row for row in jobs.trace.since(0) if row["event"] == "model_continue"]) == (1 if continue_once else 0)
         assert backend.sent == ([{"kind": "control", "segments": [{"keys": ["enter"], "duration_ms": 100}] * 2}]

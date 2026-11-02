@@ -84,6 +84,8 @@ def test_intervention_cancels_old_turn_persists_command_and_reobserves(tmp_path,
             else:
                 assert "NPC에 다시 말을 걸고 참가해" in prompt
                 assert scope.session.latest != observations[0]
+                from tests.test_gpt_play import review_live_memory
+                review_live_memory(scope, observation)
                 scope.dispatch("play_act", {"observation_id": observation, "request_id": "new-turn",
                     "action": {"kind": "key", "key": "up"}, "purpose": "new instruction"})
             return "end"

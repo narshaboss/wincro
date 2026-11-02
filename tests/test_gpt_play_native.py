@@ -341,6 +341,8 @@ def test_panel_intervention_start_command_resume_and_durable_log(tmp_path, ui_ro
                 first_turn.set()
                 assert cancel.wait(5)
             else:
+                from tests.test_gpt_play import review_live_memory
+                review_live_memory(scope, observation)
                 scope.dispatch("play_act", {"observation_id": observation, "request_id": "after-command",
                     "action": {"kind": "key", "key": "up"}, "purpose": "user instruction"})
             return "turn done"
