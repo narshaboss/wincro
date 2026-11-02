@@ -87,6 +87,15 @@ def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monk
         previews = [w for w in panel.winfo_children() if isinstance(w, ctk.CTkToplevel)]
         assert len(previews) == 1 and "현재 게임 화면 아님" in previews[0].title()
         previews[0].destroy()
+        panel.tabs.set("플랜 검수")
+        window.update()
+        for control in (panel.verification_text, panel.verification_permission):
+            assert control.winfo_ismapped()
+            assert control.winfo_rootx() + control.winfo_width() <= window.winfo_rootx() + window.winfo_width()
+            assert control.winfo_rooty() + control.winfo_height() <= window.winfo_rooty() + window.winfo_height()
+        assert panel.verification_permission.cget("state") == "disabled"
+        assert panel.verification_permission._text_label.winfo_reqwidth() <= panel.verification_permission.winfo_width()
+        ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"verification_permission_{scale}.png")
     finally:
         panel.close()
         panel.destroy()
