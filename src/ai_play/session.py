@@ -561,9 +561,10 @@ class PlaySession:
                     if self.live:
                         self.live.measure("device_and_feedback", (self.clock() - started) * 1000)
                     if isinstance(ok, dict):
-                        receipt["feedback"] = copy.deepcopy(ok)
-                        if self.live and kind == "navigate":
-                            self.live.navigation = copy.deepcopy(ok)
+                        with self.state_lock:
+                            receipt["feedback"] = copy.deepcopy(ok)
+                            if self.live and kind == "navigate":
+                                self.live.navigation = copy.deepcopy(ok)
                 if not ok:
                     raise BridgeError("DELIVERY_UNKNOWN", "입력 완료를 확인하지 못했습니다. 재전송하지 말고 화면을 확인하세요.")
                 receipt["state"] = "sent_not_game_success"

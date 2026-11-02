@@ -232,7 +232,8 @@ def run_behavior(session, behavior_id, observation_id, request_id):
         return session.act(current["frame_id"], new_id("routine_"), action, purpose, _guard=guard)
     try:
         result = execute(record["program"], session.backend, check, transmit)
-        receipt.update(result)
+        with session.state_lock:
+            receipt.update(result)
         if result["status"] == "conditions_matched":
             record["successes"] += 1
             record["status"] = "repeated" if record["successes"] >= 3 else "provisional"
