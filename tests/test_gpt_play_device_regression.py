@@ -145,3 +145,18 @@ def test_explicit_device_recovery_allowed_after_stopped_lab_but_not_running(tmp_
             assert not ownership.device_change_allowed()
     finally:
         ownership.release(manager)
+
+
+@pytest.mark.parametrize("label,expected", [("연결", "connect"), ("해제", "disconnect")])
+def test_settings_toggle_follows_button_intent_not_stale_serial_cache(label, expected):
+    source = ast.parse(Path("src/ui/settings_view.py").read_text(encoding="utf-8-sig"))
+    cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "SettingsView")
+    method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_toggle_arduino_connection")
+    namespace = {}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), "settings-toggle-fixture", "exec"), namespace)
+    calls = []
+    view = SimpleNamespace(_arduino_connect_btn=SimpleNamespace(cget=lambda _: label),
+        _arduino_serial=SimpleNamespace(is_open=True),
+        _connect_arduino=lambda: calls.append("connect"), _disconnect_arduino=lambda: calls.append("disconnect"))
+    namespace[method.name](view)
+    assert calls == [expected]

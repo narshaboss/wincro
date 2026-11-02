@@ -3513,9 +3513,9 @@ del "%~f0"
 
     def _toggle_arduino_connection(self) -> None:
         """아두이노 연결/해제 토글"""
-        from ..utils.arduino_hid import get_arduino_hid
-        state = get_arduino_hid().connection_status()
-        if state["open"]:
+        # Follow the displayed intent even if auto-connect changed the singleton.
+        # The connect path safely reuses a session that was opened elsewhere.
+        if self._arduino_connect_btn.cget("text") == "해제":
             self._disconnect_arduino()
         else:
             self._connect_arduino()
