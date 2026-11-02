@@ -40,6 +40,10 @@ class Learning:
                 value = {**receipt, "request_id": ident}
                 if not any(r.get("request_id") == ident for r in uncertain):
                     uncertain.append(value)
+        for ident, receipt in snapshot.get("behavior_receipts", {}).items():
+            if receipt["status"] == "unknown" and ident not in self.resolved:
+                if not any(r.get("request_id") == ident for r in uncertain):
+                    uncertain.append({**receipt, "request_id": ident, "kind": "behavior"})
         checkpoint = {
             "session_id": self.session.instance_id, "state": snapshot["state"],
             "message": snapshot["message"], "latest_observation": snapshot["latest_observation"],
@@ -74,7 +78,7 @@ class Learning:
 
     def attempt_event(self, event, observation_id, stage, strategy, outcome="", observation="", hypothesis="", next_experiment=""):
         s = self.session
-        s.check(input_allowed=True)
+        s.check(input_allowed=event == "start")
         frame = s._frame(observation_id, fresh=True)
         stage, strategy = required(stage, 200), required(strategy)
         if event == "start":

@@ -140,9 +140,9 @@ class ExperienceStore:
                               "ORDER BY updated DESC LIMIT ? OFFSET ?", (task, kind, min(100, limit), offset)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
-    def tasks(self, limit=50):
+    def tasks(self, limit=50, offset=0):
         with self.connection() as db:
-            rows = db.execute("SELECT payload FROM documents WHERE kind='task' ORDER BY updated DESC LIMIT ?", (limit,)).fetchall()
+            rows = db.execute("SELECT payload FROM documents WHERE kind='task' ORDER BY updated DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def event(self, task, kind, value):
@@ -158,16 +158,26 @@ class ExperienceStore:
             raise BridgeError("SAVE_STATE_UNKNOWN", "경험 이벤트 재로딩 실패")
         return seq
 
-    def context(self, task):
+    def context(self, task, offset=0, *, details=False):
+        if type(offset) is not int or not 0 <= offset <= 1_000_000:
+            raise BridgeError("INVALID_ARGUMENT", "경험 조회 위치가 올바르지 않습니다.")
         with self.connection() as db:
-            rows = db.execute("SELECT kind,payload FROM events WHERE task=? ORDER BY seq DESC LIMIT 10", (task,)).fetchall()
+            rows = db.execute("SELECT kind,payload FROM events WHERE task=? ORDER BY seq DESC LIMIT 10 OFFSET ?", (task, offset)).fetchall()
+            counts = dict(db.execute("SELECT kind,COUNT(*) FROM documents WHERE task=? AND kind IN ('attempt','behavior') GROUP BY kind", (task,)))
+            counts["events"] = db.execute("SELECT COUNT(*) FROM events WHERE task=?", (task,)).fetchone()[0]
         checkpoints = self.documents(task, "checkpoint", 1)
         return {"task": self.get(task, "task", task), "recent": [
             {"kind": kind, "record": json.loads(body)} for kind, body in reversed(rows)],
-            "attempts": self.documents(task, "attempt", 10),
-            "behaviors": [{k: v for k, v in b.items() if k != "program"}
-                          for b in self.documents(task, "behavior", 20)],
+            "attempts": self.documents(task, "attempt", 10, offset),
+            "behaviors": [{**{k: v for k, v in b.items() if k != "program"},
+                           **({"steps": [{"action": step["action"], "purpose": step["purpose"],
+                              "expected_result": step["expected_result"],
+                              "before": {k: v for k, v in step["before"].items() if k != "png"},
+                              "after": {k: v for k, v in step["after"].items() if k != "png"}}
+                              for step in b["program"]["steps"]]} if details else {})}
+                          for b in self.documents(task, "behavior", 10, offset)],
             "checkpoint": checkpoints[0] if checkpoints else None,
+            "offset": offset, "has_more": max(counts.values(), default=0) > offset + 10,
             "historical_not_current": True}
 
     def save_frame(self, task, metadata, raw):

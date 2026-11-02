@@ -297,3 +297,240 @@ def test_old_model_scope_rejects_late_input(learned):
     with pytest.raises(BridgeError, match="이전 GPT 턴"):
         scope.dispatch("play_observe", {})
     assert not learned.backend.sent
+
+
+def test_uncertain_input_survives_multiple_restarts_until_fresh_reconciliation(learned, tmp_path):
+    s, m = learned, learned.learning
+    ident = frame(s)
+    s.backend.fail = True
+    with pytest.raises(BridgeError):
+        s.act(ident, "unknown-send", {"kind": "key", "key": "space"}, "join")
+    released(s)
+    s.stop()
+    released(s)
+    for index in range(2):
+        next_session = PlaySession(tmp_path / str(index), s.goal, s.keys, Game(), lambda: True,
+                                   memory=m.store, task_id=m.task)
+        next_session.start()
+        fresh = frame(next_session)
+        with pytest.raises(BridgeError, match="불확실"):
+            next_session.act(fresh, "must-not-send", {"kind": "key", "key": "space"}, "join")
+        assert not next_session.backend.sent
+        if index == 1:
+            next_session.learning.reconcile("unknown-send", fresh, "observed_applied", "arena already shown")
+            assert not next_session.learning.pending
+            next_session.act(fresh, "new-purpose", {"kind": "key", "key": "z"}, "attack observed enemy")
+            assert len(next_session.backend.sent) == 1
+        next_session.stop()
+        released(next_session)
+    assert not m.store.context(m.task)["checkpoint"]["uncertain_requests"]
+
+
+def test_save_atomic_session_and_checkpoint_failure_rolls_back(learned, monkeypatch):
+    store, task = learned.learning.store, learned.learning.task
+    before = store.get(task, "checkpoint", "latest")
+    # Invalid JSON is detected before either row is committed.
+    with pytest.raises(ValueError):
+        store.put_many(task, [("checkpoint", "latest", {"changed": True}), ("session", "bad", {"nan": float("nan")})])
+    assert store.get(task, "checkpoint", "latest") == before
+
+
+def test_pause_signals_cancel_before_a_busy_state_lock(learned):
+    reached = threading.Event()
+    with learned.state_lock:
+        worker = threading.Thread(target=lambda: (learned.pause(), reached.set()))
+        worker.start()
+        assert learned.input_cancelled.wait(1)
+        assert not reached.is_set()
+    worker.join(3)
+    assert reached.is_set()
+    released(learned)
+
+
+def test_candidate_and_reviews_survive_restart_but_need_new_round(learned, tmp_path):
+    from src.ai_play.playback import CandidatePlayback
+    s, m = learned, learned.learning
+    behavior = confirmed(s)
+    current = candidate.build(s, "verified timing", [{"kind": "behavior", "behavior_id": behavior["behavior_id"],
+        "frame_id": frame(s), "purpose": "enter", "expected_result": "arena"}], [])
+    for direction in ("experience_to_plan", "plan_to_experience"):
+        candidate.review(s, current["revision"], direction, [{"rule_id": item["rule_id"], "frame_id": item["frame_id"],
+            "result": "match", "note": "guard and hold timing match observed outcome"} for item in current["evidence"]], [])
+    s.trials = [{"success": True, "session_id": s.instance_id, "reviewed_at": 999999999}]
+    s.stop()
+    released(s)
+    new = PlaySession(tmp_path / "restart", s.goal, s.keys, Game(), lambda: True, memory=m.store, task_id=m.task,
+                      clock=lambda: 100)
+    try:
+        new.start()
+        assert new.candidate == s.candidate and new.reviews == s.reviews
+        assert candidate.ready(new) and new.trials == s.trials
+        new.playback = CandidatePlayback(new, executor_factory=lambda _: SimpleNamespace(run=lambda *_: True, stop=lambda: None))
+        trial = new.playback.start(current["revision"], frame(new), "fresh NPC initial screen")
+        new.playback.worker.join(3)
+        assert trial["session_id"] == new.instance_id
+    finally:
+        new.stop()
+        released(new)
+
+
+def test_new_instruction_cannot_rereview_an_old_candidate(learned):
+    behavior = confirmed(learned)
+    current = candidate.build(learned, "old", [{"kind": "behavior", "behavior_id": behavior["behavior_id"],
+        "frame_id": frame(learned), "purpose": "enter", "expected_result": "arena"}], [])
+    learned.pause()
+    released(learned)
+    learned.add_command("do not enter again")
+    learned.resume()
+    with pytest.raises(BridgeError, match="지시가 바뀌"):
+        candidate.review(learned, current["revision"], "experience_to_plan", [], [])
+    assert not candidate.ready(learned)
+
+
+def test_native_player_dispatches_new_type_once_without_legacy_fallback(learned, monkeypatch):
+    from src.player.rule_executor import RuleExecutor
+    from src.analyzer.automation_models import AutomationRule
+    import src.ai_play.saved_runtime as runtime
+    record = routine(learned)
+    program = learned.learning.store.get(learned.learning.task, "behavior", record["behavior_id"])["program"]
+    rule = AutomationRule(action_type="gpt_play_behavior", gpt_play_config=program)
+    executor = object.__new__(RuleExecutor)
+    executor._stop_event, executor._pause_event = threading.Event(), threading.Event()
+    executor._pause_event.set()
+    executor._make_result = lambda _rule, ok, message, _start: {"ok": ok, "message": message}
+    seen = []
+    def run(value, check):
+        check()
+        seen.append(value)
+        return {"status": "conditions_matched"}
+    monkeypatch.setattr(runtime, "run_saved", run)
+    assert executor._execute_rule(rule)["ok"]
+    assert seen == [program]
+    executor._pause_event.clear()
+    with pytest.raises(BridgeError, match="일시정지"):
+        executor._execute_gpt_play_behavior(rule, None)
+
+
+def test_old_plans_do_not_gain_new_fields_on_save():
+    from src.analyzer.automation_models import AutomationRule
+    rule = AutomationRule(action_type="key_press", action_keys=["up"])
+    assert "gpt_play_config" not in rule.to_dict()
+
+
+def test_ui_poll_does_not_wait_for_database_state_lock(learned):
+    expected = learned.ui_snapshot()
+    ready, finish = threading.Event(), threading.Event()
+    def hold():
+        with learned.state_lock:
+            ready.set()
+            finish.wait(3)
+    worker = threading.Thread(target=hold)
+    worker.start()
+    assert ready.wait(1)
+    try:
+        assert learned.ui_snapshot() is expected
+        assert learned.input_released is False
+        assert not finish.is_set()
+    finally:
+        finish.set()
+        worker.join(3)
+
+
+def test_memory_pages_keep_old_facts_accessible(learned):
+    store, task = learned.learning.store, learned.learning.task
+    for i in range(23):
+        store.event(task, "fact", {"observation": str(i)})
+    first, older, last = [store.context(task, offset) for offset in (0, 10, 20)]
+    assert first["has_more"] and older["has_more"] and not last["has_more"]
+    values = [r["record"]["observation"] for page in (first, older, last) for r in page["recent"]]
+    assert len(set(values)) == 23
+    with pytest.raises(BridgeError):
+        store.context(task, -1)
+
+
+def test_post_input_save_failure_restores_unknown_not_duplicate_send(learned, monkeypatch, tmp_path):
+    s, m = learned, learned.learning
+    ident = frame(s)
+    original = m.store.put_many
+    def fail_after_input(task, rows):
+        if s.backend.sent:
+            raise OSError("post-input disk failure")
+        return original(task, rows)
+    monkeypatch.setattr(m.store, "put_many", fail_after_input)
+    with pytest.raises(OSError):
+        s.act(ident, "sent-before-crash", {"kind": "key", "key": "space"}, "join once")
+    assert len(s.backend.sent) == 1 and s.storage_failed
+    assert m.store.context(m.task)["checkpoint"]["uncertain_requests"][0]["request_id"] == "sent-before-crash"
+    monkeypatch.undo()
+    restored = PlaySession(tmp_path / "restored", s.goal, s.keys, Game(), lambda: True, memory=m.store, task_id=m.task)
+    try:
+        restored.start()
+        with pytest.raises(BridgeError, match="불확실"):
+            restored.act(frame(restored), "again", {"kind": "key", "key": "space"}, "join")
+        assert not restored.backend.sent
+    finally:
+        restored.stop()
+        released(restored)
+
+
+def test_native_candidate_unknown_input_blocks_same_session_retrial(learned, monkeypatch):
+    from src.ai_play.playback import native_executor
+    from src.player import rule_executor
+    monkeypatch.setattr(rule_executor.pyautogui, "position", lambda: (0, 0))
+    s = learned
+    behavior = confirmed(s)
+    candidate.build(s, "unknown test", [{"kind": "behavior", "behavior_id": behavior["behavior_id"],
+        "frame_id": frame(s), "purpose": "enter", "expected_result": "arena"}], [])
+    s.trial = {"trial_id": "trial"}
+    s.backend.fail = True
+    with pytest.raises(BridgeError):
+        native_executor(s)._send({"kind": "hold", "keys": ["up"], "duration_ms": 100}, s.backend.validate())
+    assert s.learning.pending
+    with pytest.raises(BridgeError, match="불확실"):
+        s.check(input_allowed=True)
+
+
+def test_new_guarded_candidate_ten_native_trials_and_durable_publication(learned, monkeypatch, tmp_path):
+    from src.ai_play.playback import CandidatePlayback
+    from src.player import rule_executor
+    from src.analyzer.automation_models import AutomationPlan
+    monkeypatch.setattr(rule_executor.pyautogui, "position", lambda: (0, 0))
+    s = learned
+    behavior = confirmed(s)
+    current = candidate.build(s, "Guarded new plan", [{"kind": "behavior", "behavior_id": behavior["behavior_id"],
+        "frame_id": frame(s), "purpose": "enter", "expected_result": "arena"}], [])
+    for direction in ("experience_to_plan", "plan_to_experience"):
+        candidate.review(s, current["revision"], direction, [{"rule_id": item["rule_id"], "frame_id": item["frame_id"],
+            "result": "match", "note": "source and compiled program agree"} for item in current["evidence"]], [])
+    s.playback = CandidatePlayback(s)
+    for i in range(10):
+        s.backend.color = 1
+        trial = s.playback.start(current["revision"], frame(s), "new simulated initial round " + str(i))
+        s.playback.worker.join(5)
+        assert not s.playback.busy and s.trial["execution_ok"]
+        result = s.playback.result(trial["trial_id"], frame(s), True, "simulated result differs from initial screen")
+        assert result["success"]
+    s.state = "complete"
+    plans, templates = tmp_path / "new-plans", tmp_path / "new-templates"
+    publication = candidate.publish(s, plans, templates)
+    files = list(plans.glob("*.json"))
+    assert len(files) == 1
+    saved = read_json(files[0])
+    model = AutomationPlan.from_dict(saved, templates)
+    assert model.to_dict() == saved
+    assert model.initial_rules[0].gpt_play_config == s.candidate["plan"]["initial_rules"][0]["gpt_play_config"]
+    assert all(action["kind"] == "hold" and action["duration_ms"] == 200 for action in s.backend.sent)
+    assert publication["plan_id"] == saved["plan_id"]
+
+
+def test_native_receipt_limit_never_deletes_or_sends(learned, monkeypatch, tmp_path):
+    from src.ai_play import saved_runtime
+    record = routine(learned)
+    program = learned.learning.store.get(learned.learning.task, "behavior", record["behavior_id"])["program"]
+    root = tmp_path / "receipts"
+    (root / "run_existing").mkdir(parents=True)
+    monkeypatch.setattr(saved_runtime, "MAX_RECEIPT_RUNS", 1)
+    backend = Game()
+    with pytest.raises(BridgeError, match="한도"):
+        saved_runtime.run_saved(program, lambda: None, backend=backend, receipt_root=root)
+    assert not backend.sent and (root / "run_existing").exists()

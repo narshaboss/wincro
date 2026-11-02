@@ -248,7 +248,7 @@ class CodexRunner:
         """Default remains draft-only; a live runner must opt in explicitly."""
         return status.get("editing_only") is True and status.get("live_execution") is not True
 
-    def run(self, descriptor, prompt, cancelled, progress, *, idle=False, ready=None):
+    def run(self, descriptor, prompt, cancelled, progress, *, idle=False, ready=None, continue_prompt=None):
         codex, python, server = self.preflight()
         if cancelled.is_set():
             raise BridgeError("JOB_CANCELLED", "분석이 취소되었습니다.")
@@ -437,6 +437,16 @@ class CodexRunner:
                     turn = params.get("turn", {})
                     if turn.get("status") != "completed":
                         raise execution_error(turn.get("error") or turn.get("status"))
+                    # Explicit GPT-play-only continuation keeps the same scoped
+                    # process/tools. Recording callers leave this hook unset.
+                    if not idle and continue_prompt is not None and not cancelled.is_set():
+                        followup = continue_prompt()
+                        if followup is not None:
+                            if not isinstance(followup, str) or not followup.strip():
+                                raise BridgeError("INVALID_CONTINUATION", "빈 GPT 계속 요청입니다.")
+                            final = ""
+                            send({"id": 3, "method": "turn/start", "params": self.turn_parameters(thread_id, followup)})
+                            continue
                     return {"exit_code": 0, "message": final}
                 item = params.get("item", {})
                 kind = item.get("type")

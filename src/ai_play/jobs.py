@@ -21,6 +21,11 @@ class PlayRunner(CodexRunner):
     def __init__(self, settings, folder):
         super().__init__(settings, folder, tools=TOOLS)
         self.trace = None
+        self.continue_prompt = None
+
+    def run(self, descriptor, prompt, cancelled, progress, **kwargs):
+        return super().run(descriptor, prompt, cancelled, progress,
+                           continue_prompt=self.continue_prompt, **kwargs)
 
     def accepts_connection(self, status):
         accepted = (status.get("editing_only") is False and status.get("live_execution") is True
@@ -225,11 +230,12 @@ class PlayJobs:
                 self.store = ExperienceStore(self.memory_dir)
             return self.store
 
-    def experience_snapshot(self, task_id=None):
+    def experience_snapshot(self, task_id=None, offset=0, task_offset=0):
         store = self.memory()
-        tasks = store.tasks()
+        tasks = store.tasks(51, task_offset)
         task_id = task_id or (self.session.learning.task if self.session and self.session.learning else None)
-        return {"tasks": tasks, "context": store.context(task_id) if task_id else None}
+        return {"tasks": tasks[:50], "task_has_more": len(tasks) > 50,
+                "context": store.context(task_id, offset, details=True) if task_id else None}
 
     @property
     def trace(self):
@@ -356,6 +362,8 @@ class PlayJobs:
             s.check()
             s.trace.emit("prepare_begin", "입력 장치와 게임 창 전면 상태를 확인합니다. 아직 입력하지 않습니다.", phase="게임 창 준비")
             s.backend.prepare()  # Only following user Start/Continue, never model-driven refocus.
+            if not s.backend.release():
+                raise BridgeError("RELEASE_UNKNOWN", "시작 전 Arduino 입력 해제를 확인하지 못했습니다.")
             s.trace.emit("prepare_done", "게임 창·입력 장치 준비 확인 완료", phase="GPT 연결 준비")
             if initial:
                 s.start()
@@ -370,11 +378,26 @@ class PlayJobs:
             runner = self.runner_factory(self.runtime, folder)
             if isinstance(runner, PlayRunner):
                 runner.trace = s.trace
+                last_progress = [s.action_count, 0, 0]
+                def continue_play():
+                    if self.cancel.is_set() or s.state in {"complete", "needs_review", "paused", "question", "stopped", "error"}:
+                        return None
+                    s.check()
+                    last_progress[2] += 1
+                    last_progress[1] = last_progress[1] + 1 if last_progress[0] == s.action_count else 0
+                    last_progress[0] = s.action_count
+                    if last_progress[1] >= 2 or last_progress[2] >= 20:
+                        s.pause("GPT 턴 진행이 없거나 20회 턴 한도에 도달했습니다. 기록 확인 후 계속하세요.")
+                        return None
+                    s.trace.emit("model_continue", "같은 GPT 플레이 연결에서 다음 판단을 이어갑니다. 실행 예산은 초기화하지 않습니다.")
+                    return "Continue the same authorized task within the remaining budget. Observe fresh state. " \
+                        "Use recorded experience; do not repeat uncertain sends. SESSION:\n" + json.dumps(s.model_context(), ensure_ascii=False)
+                runner.continue_prompt = continue_play
             self.runner = runner
             s.trace.emit("model_start", "GPT 실행 요청 · 화면 관찰 도구가 호출될 때까지 대기합니다.", phase="GPT 응답 대기")
             context = s.learning.store.context(s.learning.task) if s.learning else None
             started = time.monotonic()
-            result = runner.run(descriptor, PROMPT + "\nSESSION:\n" + json.dumps(s.snapshot(), ensure_ascii=False)
+            result = runner.run(descriptor, PROMPT + "\nSESSION:\n" + json.dumps(s.model_context(), ensure_ascii=False)
                                 + "\nRELEVANT EXPERIENCE:\n" + json.dumps(context, ensure_ascii=False),
                                 self.cancel, lambda message: self._progress(message))
             s.trace.emit("turn_timing", f"이번 GPT 턴 총 {time.monotonic() - started:.1f}초 (도구 실행·관찰 포함)")

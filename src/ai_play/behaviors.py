@@ -211,6 +211,7 @@ def run_behavior(session, behavior_id, observation_id, request_id):
                            " · 실제 클리어 판정은 GPT가 새 화면으로 확인합니다.")
     except Exception:
         receipt["status"] = "unknown"
+        memory.pending.append(copy.deepcopy(receipt))
         raise
     finally:
         session.latest = None

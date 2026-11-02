@@ -90,8 +90,16 @@ def build(session, title, steps, remaining_issues):
     plan["plan_id"] = new_id("plan_")
     plan["total_repeat_count"] = 1
     plan["user_verified"] = False
+    if len(encoded(plan)) > 1_000_000:
+        raise BridgeError("CANDIDATE_TOO_LARGE", "후보 근거 용량이 1MB를 넘습니다. 작은 조건 영역으로 나누고 불필요한 중복을 줄이세요.")
     candidate = {"plan": plan, "revision": (session.candidate or {}).get("revision", 0) + 1,
         "evidence": evidence, "assets": assets, "remaining_issues": remaining_issues, "digest": digest(plan)}
+    from .diagnostics import action_text
+    candidate["ui_steps"] = [str(index + 1) + ". " + rule["description"] + (
+        "\n   " + " → ".join(action_text(step["action"]) for step in rule["gpt_play_config"]["steps"])
+        if rule["action_type"] == "gpt_play_behavior" else "") for index, rule in enumerate(plan["initial_rules"])]
+    if session.learning:
+        candidate["goal_revision"] = session.learning.revision
     with session.state_lock:
         session.check(input_allowed=True)
         write_json(session.folder / "candidate.json", candidate)
@@ -110,6 +118,8 @@ def review(session, revision, direction, checks, remaining_issues):
     candidate = session.candidate
     if not candidate or revision != candidate["revision"]:
         raise BridgeError("STALE_CANDIDATE", "현재 후보 버전을 확인하세요.")
+    if session.learning and candidate.get("goal_revision") != session.learning.revision:
+        raise BridgeError("STALE_CANDIDATE", "사용자 지시가 바뀌었습니다. 이전 후보를 그대로 재검수하지 말고 새로 작성하세요.")
     if direction not in {"experience_to_plan", "plan_to_experience"} or not isinstance(checks, list):
         raise BridgeError("INVALID_REVIEW", "경험→플랜 / 플랜→경험 대조가 필요합니다.")
     expected = {item["rule_id"] for item in candidate["evidence"]}
@@ -137,6 +147,8 @@ def review(session, revision, direction, checks, remaining_issues):
 
 def ready(session):
     candidate = session.candidate
+    if session.learning and candidate and candidate.get("goal_revision") != session.learning.revision:
+        return False
     return bool(candidate and not candidate["remaining_issues"] and
         {r["direction"] for r in session.reviews if r["passed"] and r["revision"] == candidate["revision"]}
         == {"experience_to_plan", "plan_to_experience"})

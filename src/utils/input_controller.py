@@ -721,6 +721,12 @@ class InputController:
         device = self._play_lab_device()
         return device.supports_key_combo_tap() and device.supports_mouse_move()
 
+    def play_lab_capabilities(self):
+        from ..ai_play.timed_hid import supported
+        device = self._play_lab_device()
+        return {"arduino_only": True, "timed_input_gl1": supported(device),
+                "maximum_hold_ms": 1000, "maximum_simultaneous_keys": 2}
+
     def play_lab_hold(self, keys, milliseconds, check) -> bool:
         from ..ai_play.actions import validate_action
         from ..ai_play.timed_hid import run

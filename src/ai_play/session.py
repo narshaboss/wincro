@@ -10,7 +10,7 @@ from pathlib import Path
 import threading
 import time
 
-from ..agent_bridge.contracts import BridgeError, digest, number
+from ..agent_bridge.contracts import BridgeError, digest, encoded, number
 from ..agent_bridge.storage import new_id, publish_bytes, write_json, within
 from .diagnostics import PlayTrace, action_text, concise, error_text
 from .key_policy import SAFE_KEYS, reserved_keys
@@ -71,18 +71,39 @@ class PlaySession:
         self.storage_failed = False
         self.learning = None
         self.behavior_receipts = {}
+        self._ui_cache = None
         if memory is not None:
             from .learning import Learning
             self.learning = Learning(memory, task_id, self)
             checkpoint = self.learning.context.get("checkpoint") or {}
             self.commands = copy.deepcopy(checkpoint.get("commands", []))
             self.answers = copy.deepcopy(checkpoint.get("answers", []))
+            previous_id = checkpoint.get("session_id")
+            if previous_id:
+                previous = memory.get(task_id, "session", previous_id)
+                saved = previous.get("candidate")
+                if saved:
+                    from .behaviors import ACTION_TYPE, validate_program
+                    if digest(saved["plan"]) != saved["digest"] or saved.get("assets"):
+                        raise BridgeError("CANDIDATE_CHANGED", "저장된 경험 후보의 무결성을 확인하지 못했습니다. 원본은 보존했습니다.")
+                    for rule in saved["plan"]["initial_rules"]:
+                        if rule["action_type"] != ACTION_TYPE:
+                            raise BridgeError("CANDIDATE_UNSUPPORTED", "경험 이어하기는 GPT 검수 구간 후보만 지원합니다.")
+                        validate_program(rule["gpt_play_config"])
+                    self.candidate = copy.deepcopy(saved)
+                    self.reviews = copy.deepcopy(previous.get("reviews", []))
+                    self.trials = copy.deepcopy(previous.get("trials", []))
+                    self.publication = copy.deepcopy(previous.get("publication"))
+        self._initial_answers = len(self.answers)
+        self._initial_commands = len(self.commands)
         self._persist()
         self.trace.emit("session_ready", "세션 생성 완료 · 아직 화면 관찰과 입력은 시작하지 않았습니다.")
 
     def _persist(self):
         try:
             value = self.snapshot(internal=True)
+            if len(encoded(value)) > 3_800_000:
+                raise BridgeError("SESSION_STORAGE_LIMIT", "세션 기록 크기 한도입니다. 마지막 정상 저장을 보존하며 입력을 중단합니다.")
             write_json(self.folder / "session.json", value)
             if self.learning:
                 self.learning.persist(value)
@@ -96,6 +117,7 @@ class PlaySession:
     def snapshot(self, internal=False):
         with self.state_lock:
             value = {"session_id": self.instance_id, "goal": self.goal, "allowed_keys": self.keys,
+                "device_capabilities": copy.deepcopy(getattr(self.backend, "capabilities", {})),
                 "state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
                 "answers": copy.deepcopy(self.answers), "commands": copy.deepcopy(self.commands), "notes": copy.deepcopy(self.notes),
                 "action_count": self.action_count, "max_actions": self.max_actions,
@@ -116,16 +138,24 @@ class PlaySession:
                     {key: rule.get(key) for key in ("rule_id", "action_type", "description", "action_keys",
                         "target_image", "search_region", "confidence", "wait_after", "repeat_count", "repeat_delay")}
                     for rule in current["plan"]["initial_rules"]]
+                for summary, rule in zip(value["candidate"]["compiled_steps"], current["plan"]["initial_rules"]):
+                    if rule.get("action_type") == "gpt_play_behavior":
+                        program = rule["gpt_play_config"]
+                        summary["guarded_program"] = {**program, "steps": [
+                            {**step, **{key: {k: v for k, v in step[key].items() if k != "png"}
+                                        for key in ("before", "after")}} for step in program["steps"]]}
             if self.learning:
                 value["learning"] = self.learning.summary()
             return value
 
     def ui_snapshot(self):
         # UI polling must not repeatedly copy all evidence and native rule fields.
-        with self.state_lock:
+        if not self.state_lock.acquire(blocking=False):
+            return self._ui_cache
+        try:
             phase, quiet = self.trace.status()
             phase = {"paused": "일시정지", "question": "답변 대기", "stopped": "중지"}.get(self.state, phase)
-            return {"state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
+            self._ui_cache = {"state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
                 "action_count": self.action_count, "max_actions": self.max_actions,
                 "phase": phase, "quiet_seconds": quiet, "frame_count": len(self.frames),
                 "publication": copy.deepcopy(self.publication), "trial_count": len(self.trials),
@@ -134,8 +164,18 @@ class PlaySession:
                 "verification": {"revision": self.candidate["revision"],
                     "required": 10 if self.learning else 3,
                     "successes": sum(bool(t.get("success")) for t in self.trials),
-                    "steps": [str(i + 1) + ". " + r["purpose"] for i, r in enumerate(self.candidate["evidence"])],
+                    "steps": list(self.candidate.get("ui_steps", [])),
                     "remaining": list(self.candidate["remaining_issues"])} if self.candidate else None}
+            return self._ui_cache
+        finally:
+            self.state_lock.release()
+
+    def model_context(self):
+        value = self.snapshot()
+        # Keep user authority intact, but don't resend the whole observation diary.
+        value["notes"] = value["notes"][-8:]
+        value["trials"] = value["trials"][-10:]
+        return value
 
     def check(self, *, input_allowed=False, playback=False):
         if self.stop_event.is_set() or self.storage_failed:
@@ -247,17 +287,21 @@ class PlaySession:
 
     @property
     def input_released(self):
-        with self.state_lock:
+        if not self.state_lock.acquire(blocking=False):
+            return False
+        try:
             return (self.release_confirmed.is_set() and not self.io_lock.locked()
                     and not any(worker.is_alive() for worker in self.release_workers)
                     and not (self.playback and self.playback.busy))
+        finally:
+            self.state_lock.release()
 
     def add_command(self, command):
         command = text(command, "중간 명령", 2000)
         with self.state_lock:
             if self.state not in {"paused", "question"} or self.stop_event.is_set():
                 raise BridgeError("INVALID_STATE", "개입 또는 일시정지 후 명령을 전달하세요.")
-            if len(self.commands) >= 100:
+            if len(self.commands) - self._initial_commands >= 100:
                 raise BridgeError("LIMIT_REACHED", "중간 명령은 세션당 100개까지 보관합니다.")
             previous = self.reviews, self.trials, self.trial
             self.commands.append({"command": command, "action_count": self.action_count,
@@ -278,6 +322,7 @@ class PlaySession:
         with self.io_lock:
             self.check()
             epoch = self.epoch
+            observed_at, observed_actions = self.clock(), self.action_count
             image, region = self.backend.capture()
             self.check()
             if epoch != self.epoch:
@@ -293,9 +338,9 @@ class PlaySession:
             raise BridgeError("LIMIT_REACHED", "세션 화면 근거 128MB 한도에 도달했습니다.")
         frame_id = new_id("frame_")
         publish_bytes(self.folder / "frames", frame_id + ".png", raw)
-        metadata = {"frame_id": frame_id, "time": self.clock(), "epoch": epoch,
+        metadata = {"frame_id": frame_id, "time": observed_at, "epoch": epoch,
             "region": list(region), "sha256": __import__("hashlib").sha256(raw).hexdigest(),
-            "action_count": self.action_count, "bytes": len(raw)}
+            "action_count": observed_actions, "bytes": len(raw)}
         if self.learning:
             try:
                 self.learning.store.save_frame(self.learning.task, metadata, raw)
@@ -304,6 +349,9 @@ class PlaySession:
                 self._release_async()
                 raise
         with self.state_lock:
+            self.check()
+            if epoch != self.epoch or observed_actions != self.action_count:
+                raise BridgeError("STALE_OBSERVATION", "저장 중 실행 상태가 바뀐 관찰은 입력에 사용하지 않습니다.")
             previous = next(reversed(self.frames.values()), None) if self.frames else None
             self.frames[frame_id] = metadata
             self.latest = frame_id
@@ -316,6 +364,8 @@ class PlaySession:
 
     def _frame(self, frame_id, fresh=False):
         frame = self.frames.get(frame_id)
+        if not frame and not fresh and self.learning:
+            return self.learning.store.get(self.learning.task, "frame", frame_id)
         if not frame:
             raise BridgeError("EVIDENCE_REQUIRED", "이 세션에서 관찰한 화면 ID가 필요합니다.")
         if fresh and (frame_id != self.latest or frame["epoch"] != self.epoch
@@ -325,6 +375,8 @@ class PlaySession:
 
     def read_frame(self, frame_id):
         self.check()
+        if frame_id not in self.frames and self.learning:
+            return self.learning.frame(frame_id)
         metadata = self._frame(frame_id)
         path = within(self.folder / "frames" / (frame_id + ".png"), self.folder / "frames")
         data = path.read_bytes()
@@ -380,7 +432,9 @@ class PlaySession:
                 self.trace.emit("action_sent", f"{action_text(action)} · " + ("대기 완료" if kind == "wait" else "장치 전송 완료")
                     + " · 게임 반응은 아직 미확인, 다음 화면으로 확인합니다.", phase="다음 화면 확인 대기")
             except Exception as exc:
-                if self.learning:
+                if kind == "hold" and getattr(exc, "code", "") == "TIMED_INPUT_UNSUPPORTED":
+                    receipt["state"] = "not_sent"
+                if self.learning and receipt["state"] == "unknown":
                     self.learning.pending.append(copy.deepcopy(receipt))
                 self.trace.emit("action_failed", action_text(action) + " · " + error_text(exc), level="error")
                 self.pause("동작 확인 실패: " + error_text(exc) + " · 원인을 확인한 뒤 계속을 누르세요.")
@@ -395,7 +449,7 @@ class PlaySession:
         self._frame(observation_id, fresh=True)
         if self.state in {"verifying", "reviewing_trial"}:
             raise BridgeError("OBSERVER_ONLY", "검수 중 개입하면 해당 검수는 중단해야 합니다.")
-        if len(self.answers) >= 40:
+        if len(self.answers) - self._initial_answers >= 40:
             raise BridgeError("LIMIT_REACHED", "질문 한도에 도달했습니다.")
         self.question = {"id": new_id("question_"), "observation_id": observation_id,
             "question": text(question, "질문"), "context": text(context, "관찰·불확실한 점")}
@@ -423,12 +477,20 @@ class PlaySession:
                 raise BridgeError("MEMORY_UNAVAILABLE", "경험 저장소가 연결되지 않았습니다.")
             from .behaviors import author, run_behavior
             learning_methods = {"play_experience": self.learning.record,
-                "play_memory": lambda: self.learning.store.context(self.learning.task),
+                "play_memory": lambda offset=0: self.learning.store.context(self.learning.task, offset),
                 "play_memory_frame": self.learning.frame, "play_attempt": self.learning.attempt_event,
                 "play_reconcile": self.learning.reconcile,
                 "play_behavior": lambda **kw: author(self, **kw),
                 "play_run_behavior": lambda **kw: run_behavior(self, **kw)}
-            return learning_methods[method](**arguments)
+            try:
+                return learning_methods[method](**arguments)
+            except Exception as exc:
+                if isinstance(exc, OSError) or getattr(exc, "code", "") in {
+                        "MEMORY_IO", "MEMORY_FULL", "SAVE_STATE_UNKNOWN", "EVIDENCE_CHANGED"}:
+                    self.storage_failed = True
+                    self.input_cancelled.set()
+                    self._release_async()
+                raise
         methods = {"play_observe": self.observe, "play_frame": self.read_frame, "play_act": self.act, "play_status": self.snapshot,
             "play_question": self.ask, "play_note": self.note}
         if method not in methods:

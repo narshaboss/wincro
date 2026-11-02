@@ -33,9 +33,10 @@ class CandidatePlayback:
             raise BridgeError("REVIEW_REQUIRED", "현재 후보의 미해결 항목과 양방향 대조부터 끝내세요.")
         candidate.verify_assets(s)
         frame = s._frame(start_frame_id, fresh=True)
-        if s.trials and frame["time"] < s.trials[-1]["reviewed_at"]:
+        if s.trials and s.trials[-1].get("session_id", s.instance_id) == s.instance_id and frame["time"] < s.trials[-1]["reviewed_at"]:
             raise BridgeError("FRESH_ROUND_REQUIRED", "이전 결과 확인 이후 새 시작 화면을 관찰하세요.")
         trial = {"trial_id": new_id("trial_"), "revision": revision, "candidate_digest": s.candidate["digest"],
+            "session_id": s.instance_id,
             "start_frame_id": start_frame_id, "start_sha256": frame["sha256"],
             "fresh_round_evidence": text(fresh_round_evidence, "새 시도 근거"), "state": "running",
             "started_at": s.clock(), "start_action_count": s.action_count, "success": False}
@@ -72,10 +73,13 @@ class CandidatePlayback:
             with s.state_lock:
                 if not released:
                     trial.update(state="failed", execution_ok=False, error="input release unconfirmed")
+                    s.release_confirmed.clear()
                 if s.state == "verifying":
                     s.state, s.message = "reviewing_trial", "재생 종료: GPT가 실제 클리어·보상 결과를 확인합니다."
                 s.latest = None
                 s._persist()
+            if not released:
+                s.pause("후보 재생 입력 해제 미확인: 장치 상태 확인 후 계속하세요.")
             s.trace.emit("trial_end", "후보 실행 종료 · 실행 결과=" + str(trial["execution_ok"])
                          + " · 실제 클리어·보상 확인은 별도입니다.", phase="후보 결과 확인")
 
@@ -214,6 +218,8 @@ def native_executor(session):
                     session.trace.emit("trial_input_sent", action_text(action) + " · 전송 완료, 게임 반응 미확인")
                     return True
                 except Exception as exc:
+                    if session.learning and receipt["state"] == "unknown":
+                        session.learning.pending.append(dict(receipt))
                     session.trace.emit("trial_input_failed", action_text(action) + " · " + error_text(exc), level="error")
                     self._stop_event.set()
                     raise

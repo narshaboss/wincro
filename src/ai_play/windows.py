@@ -25,6 +25,7 @@ class WindowIO:
         self.trace = None
         self.preparation_check = lambda: None
         self.controls = None
+        self.capabilities = {"arduino_only": True, "timed_input_gl1": None}
         self.user = ctypes.WinDLL("user32", use_last_error=True)
         self.user.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         self.user.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
@@ -44,6 +45,11 @@ class WindowIO:
             raise BridgeError("INPUT_CLEANUP_PENDING", "이전 입력 장치 정리가 끝난 뒤 계속하세요.")
         if not self.controller.play_lab_prepare():
             raise BridgeError("DEVICE_NOT_READY", "GPT 플레이는 이미 연결된 Arduino의 KQ·MM 지원이 필요합니다. 펌웨어를 자동 수정하지 않습니다.")
+        capability_reader = getattr(self.controller, "play_lab_capabilities", None)
+        if capability_reader:
+            self.capabilities = capability_reader()
+            self._log("device_capabilities", "GL1 키 유지·동시 입력: " +
+                      ("지원" if self.capabilities["timed_input_gl1"] else "미지원 · 기존 짧은 탭만 가능, 펌웨어 자동 업로드 없음"))
         self._log("device_ready", "입력 장치 준비 확인 완료 · 아직 키·마우스 입력은 없습니다.")
         self._prepare_foreground(check)
         check()

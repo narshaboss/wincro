@@ -11,7 +11,7 @@ if os.name != "nt" or os.environ.get("WINCRO_GPT_PLAY_UI_QA") != "1":
     pytest.skip("Isolated Windows runner only", allow_module_level=True)
 
 
-@pytest.mark.parametrize("scale,width,height", [(1, 640, 680), (1.25, 800, 720), (1.5, 960, 780)])
+@pytest.mark.parametrize("scale,width,height", [(1, 640, 680), (1.25, 800, 700), (1.5, 960, 700)])
 def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monkeypatch, scale, width, height):
     import time
     from src.ui.gpt_play_panel import GPTPlayPanel
@@ -23,6 +23,15 @@ def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monk
     store.put(task, "attempt", "attempt_1", {"attempt_id": "attempt_1", "status": "defeat", "stage": "전투",
         "strategy": "오른쪽 이동 후 스킬 사용", "observation": "결과창에서 실패 확인",
         "hypothesis": "사거리 부족일 가능성", "next_experiment": "이동 시간만 200ms 늘려 비교"})
+    import hashlib
+    import io
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (100, 80), "#258164").save(buffer, "PNG")
+    raw = buffer.getvalue()
+    store.save_frame(task, {"frame_id": "frame_ci_evidence", "sha256": hashlib.sha256(raw).hexdigest()}, raw)
+    for index in range(12):
+        store.event(task, "fact", {"frame_id": "frame_ci_evidence", "observation": f"독립 관찰 {index}"})
     ctk.set_widget_scaling(scale)
     window = ctk.CTkToplevel(ui_root)
     window.geometry(f"{width}x{height}+0+0")
@@ -52,12 +61,31 @@ def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monk
         assert "원인 후보(미확정)" in panel.memory_text.get("1.0", "end")
         assert panel.jobs.session is None and not panel.jobs.active
         assert panel.start_button.cget("state") == "disabled"
-        for control in (panel.memory_selection, panel.memory_refresh, panel.memory_text):
+        for control in (panel.memory_selection, panel.memory_refresh, panel.memory_text,
+                        panel.header_stop, panel.header_pause, panel.memory_next_button, panel.evidence_button):
             assert control.winfo_width() > 40
             assert control.winfo_rootx() + control.winfo_width() <= window.winfo_rootx() + window.winfo_width()
+            assert control.winfo_rooty() + control.winfo_height() <= window.winfo_rooty() + window.winfo_height()
+        assert panel.header_stop.winfo_ismapped() and panel.header_pause.winfo_ismapped()
         artifacts = Path("artifacts/gpt_play")
         artifacts.mkdir(parents=True, exist_ok=True)
         ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"learning_memory_{scale}.png")
+        assert panel.memory_next_button.cget("state") == "normal"
+        panel.memory_next_button.invoke()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and panel.memory_previous.cget("state") != "normal":
+            window.update()
+            time.sleep(.02)
+        assert panel.memory_offset == 10
+        assert "독립 관찰 0" in panel.memory_text.get("1.0", "end")
+        panel.evidence_button.invoke()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(isinstance(w, ctk.CTkToplevel) for w in panel.winfo_children()):
+            window.update()
+            time.sleep(.02)
+        previews = [w for w in panel.winfo_children() if isinstance(w, ctk.CTkToplevel)]
+        assert len(previews) == 1 and "현재 게임 화면 아님" in previews[0].title()
+        previews[0].destroy()
     finally:
         panel.close()
         panel.destroy()
@@ -280,7 +308,7 @@ def test_live_pipe_uses_separate_authenticated_authority(tmp_path):
         assert call(descriptor, "read_plan", {"plan_id": "arbitrary"})["code"] == "TOOL_DENIED"
         assert call(descriptor, "play_observe", {})["ok"]
         session.pause()
-        assert call(descriptor, "play_observe", {})["code"] == "WAITING_FOR_USER"
+        assert call(descriptor, "play_observe", {})["code"] == "STALE_EXECUTION"
     finally:
         session.stop()
         host.close()
@@ -442,6 +470,24 @@ root.mainloop()
         monkeypatch.setattr(ic, "is_arduino_strict_enabled", lambda: False)
         monkeypatch.setattr(ic, "is_automation_input_blocked", lambda: False)
         monkeypatch.setattr(controller, "_use_arduino", lambda: False)
+        # Production GPT play is Arduino-only. Inject an explicit CI-only adapter
+        # for this OWNED window test; never re-enable production software fallback.
+        monkeypatch.setattr(controller, "play_lab_prepare", lambda: True)
+        monkeypatch.setattr(controller, "play_lab_capabilities", lambda: {"arduino_only": True, "timed_input_gl1": False})
+        def move(x, y, check, duration=.2):
+            check()
+            ic.pyautogui.moveTo(x, y, duration=duration)
+            return True
+        def tap(key):
+            ic.pyautogui.press(key)
+            return True
+        def click():
+            ic.pyautogui.click(button="left")
+            return True
+        monkeypatch.setattr(controller, "play_lab_move_to", move)
+        monkeypatch.setattr(controller, "play_lab_tap", tap)
+        monkeypatch.setattr(controller, "play_lab_click", click)
+        monkeypatch.setattr(controller, "play_lab_release", lambda _: True)
         backend = WindowIO(target)
         backend.prepare()
         image, region = backend.capture()

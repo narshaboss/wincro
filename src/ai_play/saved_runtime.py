@@ -8,6 +8,8 @@ from .actions import input_cost
 from .behaviors import execute, validate_program
 from .experience import memory_root
 
+MAX_RECEIPT_RUNS = 1000
+
 
 def run_saved(program, check, *, backend=None, transmit=None, receipt_root=None):
     program = validate_program(program)
@@ -25,7 +27,10 @@ def run_saved(program, check, *, backend=None, transmit=None, receipt_root=None)
     count = 0
     folder = None
     if transmit is None:
-        folder = (receipt_root or memory_root() / "playback") / new_id("run_")
+        root = receipt_root or memory_root() / "playback"
+        if root.exists() and sum(1 for p in root.glob("run_*") if p.is_dir()) >= MAX_RECEIPT_RUNS:
+            raise BridgeError("MEMORY_FULL", "GPT 플랜 실행 기록 1000회 한도입니다. 기존 근거를 보존하며 새 입력을 중단합니다.")
+        folder = root / new_id("run_")
         folder.mkdir(parents=True, exist_ok=False)
         def transmit(action, region, purpose):
             nonlocal count
