@@ -150,7 +150,7 @@ def test_panel_on_off_question_controls_and_layout(tmp_path, ui_root, monkeypatc
         root.update()
         assert panel.test_environment.get() is True
         assert panel.confirm.cget("state") == "disabled"
-        assert not hasattr(panel, "keys")
+        assert "keys" not in panel.__dict__
         panel._refresh_controls()
         assert panel.start_button.cget("state") == "disabled"
         connection.connected = True
@@ -291,7 +291,7 @@ def test_panel_intervention_start_command_resume_and_durable_log(tmp_path, ui_ro
         assert pump(first_turn.is_set)
         assert pump(lambda: panel.interrupt_button.cget("state") == "normal")
         panel.interrupt_button.invoke()
-        assert pump(lambda: panel.command_button.cget("state") == "normal")
+        assert pump(lambda: panel.command_button.cget("state") == "normal" and window.focus_get() == panel.command._textbox)
         assert panel.jobs.session.latest is None and not backend.sent
         assert window.focus_get() == panel.command._textbox
         panel.command.insert("1.0", "NPC부터 다시 확인해")

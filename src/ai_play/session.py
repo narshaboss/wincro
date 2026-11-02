@@ -156,10 +156,12 @@ class PlaySession:
                     if self.backend.release():
                         self.release_confirmed.set()
                     else:
+                        self.release_confirmed.clear()
                         with self.state_lock:
                             self.message += " / 입력 장치 해제 확인 실패"
                         self.trace.emit("release_failed", "입력 장치 해제 확인 실패", level="error")
                 except Exception as exc:
+                    self.release_confirmed.clear()
                     with self.state_lock:
                         self.message += " / 입력 장치 해제 확인 실패"
                     self.trace.emit("release_failed", error_text(exc), level="error")
