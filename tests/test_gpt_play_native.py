@@ -10,6 +10,60 @@ import pytest
 if os.name != "nt" or os.environ.get("WINCRO_GPT_PLAY_UI_QA") != "1":
     pytest.skip("Isolated Windows runner only", allow_module_level=True)
 
+
+@pytest.mark.parametrize("scale,width,height", [(1, 640, 680), (1.25, 800, 720), (1.5, 960, 780)])
+def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monkeypatch, scale, width, height):
+    import time
+    from src.ui.gpt_play_panel import GPTPlayPanel
+    from src.ui.recording_workspace import RecordingWorkspace
+    from src.ai_play.experience import ExperienceStore, memory_root
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    store = ExperienceStore(memory_root())
+    task = store.create("NPC 입장 후 클리어하고 보상 확인", {"executable": "game.exe", "title": "테스트 게임"})
+    store.put(task, "attempt", "attempt_1", {"attempt_id": "attempt_1", "status": "defeat", "stage": "전투",
+        "strategy": "오른쪽 이동 후 스킬 사용", "observation": "결과창에서 실패 확인",
+        "hypothesis": "사거리 부족일 가능성", "next_experiment": "이동 시간만 200ms 늘려 비교"})
+    ctk.set_widget_scaling(scale)
+    window = ctk.CTkToplevel(ui_root)
+    window.geometry(f"{width}x{height}+0+0")
+    workspace = SimpleNamespace(connection=SimpleNamespace(connected=False), _notify_publication=lambda _: None,
+        tabs=SimpleNamespace(set=lambda _: None))
+    workspace._button = lambda parent, text, command, **kwargs: RecordingWorkspace._button(workspace, parent, text, command, **kwargs)
+    panel = GPTPlayPanel(window, workspace, tmp_path, tmp_path / "plans", tmp_path / "templates")
+    panel.pack(fill="both", expand=True)
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not panel.memory_rows:
+            window.update()
+            time.sleep(.02)
+        assert panel.memory_rows
+        label = next(iter(panel.memory_rows))
+        panel.memory_selection.set(label)
+        panel._select_memory(label)
+        assert "NPC 입장" in panel.goal.get("1.0", "end")
+        panel.tabs.set("경험 기록")
+        panel._request_memory()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            window.update()
+            if "사거리 부족" in panel.memory_text.get("1.0", "end"):
+                break
+            time.sleep(.02)
+        assert "원인 후보(미확정)" in panel.memory_text.get("1.0", "end")
+        assert panel.jobs.session is None and not panel.jobs.active
+        assert panel.start_button.cget("state") == "disabled"
+        for control in (panel.memory_selection, panel.memory_refresh, panel.memory_text):
+            assert control.winfo_width() > 40
+            assert control.winfo_rootx() + control.winfo_width() <= window.winfo_rootx() + window.winfo_width()
+        artifacts = Path("artifacts/gpt_play")
+        artifacts.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"learning_memory_{scale}.png")
+    finally:
+        panel.close()
+        panel.destroy()
+        window.destroy()
+        ctk.set_widget_scaling(1)
+
 import customtkinter as ctk
 from PIL import ImageGrab
 

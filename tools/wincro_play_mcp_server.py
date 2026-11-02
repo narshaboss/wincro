@@ -117,6 +117,57 @@ def play_note(observation_id: str, observation: str, purpose: str, expected_resu
 
 
 @mcp.tool()
+def play_memory() -> dict:
+    """Task-scoped recent attempts, hypotheses, routines, checkpoint. Historical only."""
+    return invoke("play_memory", {})
+
+
+@mcp.tool()
+def play_memory_frame(ident: str) -> list:
+    """Reopen evidence from this task's previous runs. NOT a fresh input observation."""
+    response = invoke("play_memory_frame", locals())
+    if not response.get("ok"):
+        return [json.dumps(response, ensure_ascii=False)]
+    result = response["result"]
+    raw = base64.b64decode(result.pop("png_base64"))
+    return [json.dumps(result, ensure_ascii=False), Image(data=raw, format="png")]
+
+
+@mcp.tool()
+def play_reconcile(request_id: str, observation_id: str, result: str, observation: str) -> dict:
+    """Reconcile uncertain delivery from a FRESH screen: observed_applied|observed_not_applied|unknown.
+    Never automatically resend it; unknown remains input-blocking.
+    """
+    return invoke("play_reconcile", locals())
+
+
+@mcp.tool()
+def play_experience(observation_id: str, kind: str, observation: str, hypothesis: str = "", next_experiment: str = "", stage: str = "") -> dict:
+    """Save fact|hypothesis|experiment|recovery|outcome. Causal guesses are NOT proven facts."""
+    return invoke("play_experience", locals())
+
+
+@mcp.tool()
+def play_attempt(event: str, observation_id: str, stage: str, strategy: str, outcome: str = "", observation: str = "", hypothesis: str = "", next_experiment: str = "") -> dict:
+    """Start/result a genuine attempt. Outcome: success|defeat|technical_error|incomplete."""
+    return invoke("play_attempt", locals())
+
+
+@mcp.tool()
+def play_behavior(name: str, steps: list[dict]) -> dict:
+    """Author guarded routine. Each step: before/after={frame_id,region,threshold},
+    action,timeout,purpose,expected_result. One local action between distinctive guards.
+    """
+    return invoke("play_behavior", locals())
+
+
+@mcp.tool()
+def play_run_behavior(behavior_id: str, observation_id: str, request_id: str) -> dict:
+    """Execute this task's guarded routine locally; no blind retries after mismatch/unknown."""
+    return invoke("play_run_behavior", locals())
+
+
+@mcp.tool()
 def play_candidate(title: str, steps: list[dict], remaining_issues: list[str]) -> dict:
     """Author NEW native candidate; each step needs kind,frame_id,purpose,expected_result.
 

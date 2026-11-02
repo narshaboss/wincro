@@ -240,6 +240,7 @@ class AutomationRule:
     monitoring_final_image: Optional[str] = None  # ??? ???? (??? ??????????? ???)
     monitoring_watches: List[Dict[str, Any]] = field(default_factory=list)  # ??? ??? [{image: str, goto_index: int}]
     window_control_config: Dict[str, Any] = field(default_factory=dict)
+    gpt_play_config: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """??????????"""
@@ -267,6 +268,11 @@ class AutomationRule:
             self.window_control_config = normalize_window_control_config(self.window_control_config)
         else:
             self.window_control_config = {}
+        if self.action_type == "gpt_play_behavior":
+            from ..ai_play.behaviors import validate_program
+            self.gpt_play_config = validate_program(self.gpt_play_config)
+        else:
+            self.gpt_play_config = {}
         if self.action_type == ACTION_CALL_ACTION_TYPE:
             self.action_call_rule_id = str(self.action_call_rule_id or "").strip() or None
             self.action_call_include_children = bool(self.action_call_include_children)
@@ -514,6 +520,9 @@ class AutomationRule:
         if self.action_type == "window_control":
             from ..utils.window_control import normalize_window_control_config
             result["window_control_config"] = normalize_window_control_config(self.window_control_config)
+        if self.action_type == "gpt_play_behavior":
+            from ..ai_play.behaviors import validate_program
+            result["gpt_play_config"] = validate_program(self.gpt_play_config)
         return result
 
     @classmethod
@@ -614,6 +623,7 @@ class AutomationRule:
             auto_list_repeat_confirm_confidence=data.get("auto_list_repeat_confirm_confidence", 0.9),
             auto_list_config=auto_list_config_from_saved(data.get("auto_list_config", {}), templates_dir),
             window_control_config=data.get("window_control_config", {}),
+            gpt_play_config=data.get("gpt_play_config", {}),
             action_call_rule_id=data.get("action_call_rule_id"),
             action_call_include_children=data.get("action_call_include_children", True),
             wait_after=data.get("wait_after", 0.5),
@@ -660,6 +670,8 @@ class AutomationRule:
         )
 
     def __str__(self) -> str:
+        if self.action_type == "gpt_play_behavior":
+            return "GPT 검수 구간 · " + str(len(self.gpt_play_config.get("steps", []))) + "단계 (Arduino 전용)"
         if self.action_type == "window_control":
             from ..utils.window_control import format_window_control_summary
             return format_window_control_summary(self.window_control_config)

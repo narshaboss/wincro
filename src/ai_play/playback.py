@@ -161,6 +161,14 @@ def native_executor(session):
                 raise BridgeError("ACTION_DENIED", "후보에서 허용하지 않은 실행 유형입니다.")
             return super()._execute_fixed_action(rule, start_time)
 
+        def _execute_gpt_play_behavior(self, rule, start_time):
+            from .saved_runtime import run_saved
+            candidate.verify_assets(session)
+            result = run_saved(rule.gpt_play_config, self.check, backend=session.backend,
+                               transmit=lambda action, region, purpose: self._send(action, region))
+            ok = result["status"] == "conditions_matched"
+            return self._make_result(rule, ok, str(result), start_time)
+
         def _find_rule_image_click_target(self, rule, valid_images):
             self.check()
             candidate.verify_assets(session)
@@ -172,23 +180,34 @@ def native_executor(session):
             return result
 
         def _send(self, action, region):
+            from .actions import validate_action, input_cost
+            action = validate_action(action, session.keys)
+            cost = input_cost(action)
             with session.io_lock:
                 self.check()
                 if action["kind"] == "key" and (action["key"] not in session.keys or action["key"] in reserved_keys()):
                     raise BridgeError("KEY_DENIED", "WinCro 제어 단축키는 후보 재생에서도 전송하지 않습니다.")
-                if session.action_count >= session.max_actions:
+                if session.action_count + cost > session.max_actions:
                     raise BridgeError("BUDGET_EXHAUSTED", "입력 한도 도달")
                 request_id = new_id("trial_input_")
                 receipt = {"request_id": request_id, "state": "unknown", "action": action,
                     "trial_id": session.trial["trial_id"], "candidate_digest": session.candidate["digest"]}
                 with session.state_lock:
-                    session.action_count += 1
+                    session.action_count += cost
                     session.latest = None
                     session.receipts[request_id] = receipt
                 session._persist()
                 session.trace.emit("trial_input_begin", action_text(action) + f" · 요청 {session.action_count}")
                 try:
-                    ok = session.backend.send(action, region, self.check)
+                    if action["kind"] == "wait":
+                        import time
+                        end = session.clock() + action["seconds"]
+                        while session.clock() < end:
+                            self.check()
+                            time.sleep(min(.05, max(0, end - session.clock())))
+                        ok = True
+                    else:
+                        ok = session.backend.send(action, region, self.check)
                     if not ok:
                         raise BridgeError("DELIVERY_UNKNOWN", "후보 입력 전송 결과가 불확실합니다.")
                     receipt["state"] = "sent_not_game_success"

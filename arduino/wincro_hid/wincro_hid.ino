@@ -20,6 +20,7 @@
 
 #include <Mouse.h>
 #include <Keyboard.h>
+#include "gpt_play.h"
 
 // LED 핀 (Leonardo 내장 LED)
 const int LED_PIN = 13;
@@ -47,6 +48,7 @@ void setup() {
 int cmdCount = 0;
 
 void loop() {
+  if (glPoll()) return;
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
@@ -72,6 +74,7 @@ void blinkLED(int times) {
 }
 
 void processCommand(String cmd) {
+  if (glCommand(cmd)) return;
   // PING 명령
   if (cmd == "PING") {
     Serial.println("PONG");

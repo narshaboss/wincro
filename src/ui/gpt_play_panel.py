@@ -2,11 +2,15 @@
 
 from pathlib import Path
 import tkinter as tk
+import queue
+import threading
+import time
 import customtkinter as ctk
 from PIL import Image
 
 from ..ai_play.jobs import PlayJobs
 from ..ai_play.key_policy import automatic_keys, reserved_keys
+from ..ai_play.experience import memory_root
 from .theme import COLORS, IOS_FONTS
 
 
@@ -19,7 +23,8 @@ class GPTPlayPanel(ctk.CTkFrame):
     def __init__(self, parent, workspace, root, plans_dir, templates_dir):
         super().__init__(parent, fg_color="transparent")
         self.workspace = workspace
-        self.jobs = PlayJobs(root / "gpt_play", plans_dir, templates_dir, lambda: workspace.connection.connected)
+        self.jobs = PlayJobs(root / "gpt_play", plans_dir, templates_dir, lambda: workspace.connection.connected,
+                             memory_dir=memory_root())
         self.targets = {}
         self.closed = False
         self._signature = self._image_id = None
@@ -28,7 +33,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self._log_trace = None
         self._log_sequence = self._log_lines = 0
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=8, pady=5)
         header.grid_columnconfigure(0, weight=1)
@@ -37,8 +42,35 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.status.grid(row=0, column=0, sticky="ew")
         self.interrupt_button = self._button(header, "개입·명령 F10", self._interrupt, width=125, state="disabled")
         self.interrupt_button.grid(row=0, column=1, padx=(6, 0))
-        body = ctk.CTkScrollableFrame(self, fg_color=COLORS["bg_content"])
-        body.grid(row=1, column=0, sticky="nsew")
+        self.memory_rows = {}
+        self.memory_queue = queue.Queue(maxsize=1)
+        self.memory_worker = None
+        self.memory_next = 0
+        self.memory_signature = None
+        memory_bar = ctk.CTkFrame(self, fg_color="transparent")
+        memory_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=3)
+        memory_bar.grid_columnconfigure(0, weight=1)
+        self.memory_selection = ctk.CTkComboBox(memory_bar, values=["새 경험 시작"], state="readonly",
+            command=self._select_memory, fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"], border_color=COLORS["border"])
+        self.memory_selection.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.memory_selection.set("새 경험 시작")
+        self.memory_refresh = self._button(memory_bar, "기록 새로고침", self._request_memory, width=110)
+        self.memory_refresh.grid(row=0, column=1)
+        self.tabs = ctk.CTkTabview(self, fg_color=COLORS["bg_content"])
+        self.tabs.grid(row=2, column=0, sticky="nsew")
+        for label in ("플레이", "경험 기록", "플랜 검수"):
+            page = self.tabs.add(label)
+            page.grid_columnconfigure(0, weight=1)
+            page.grid_rowconfigure(0, weight=1)
+        body = ctk.CTkScrollableFrame(self.tabs.tab("플레이"), fg_color=COLORS["bg_content"])
+        body.grid(row=0, column=0, sticky="nsew")
+        self.memory_text = ctk.CTkTextbox(self.tabs.tab("경험 기록"), wrap="word", state="disabled",
+            fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
+        self.memory_text.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.verification_text = ctk.CTkTextbox(self.tabs.tab("플랜 검수"), wrap="word", state="disabled",
+            fg_color=COLORS["bg_dark"], text_color=COLORS["text_primary"])
+        self.verification_text.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self._verification_signature = None
         body.grid_columnconfigure(0, weight=1)
         self.body = body
         self._label("1. 테스트용 게임 창 선택", 0)
@@ -63,7 +95,7 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.confirm = ctk.CTkCheckBox(body, text="테스트 PC 모드 · 항상 사용", variable=self.test_environment,
             state="disabled", text_color=COLORS["text_primary"])
         self.confirm.grid(row=6, column=0, sticky="w", padx=10, pady=8)
-        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\n선택한 창에만 실제 입력합니다. 긴 누르기·동시 키·OS 제어는 지원하지 않습니다.\n질문·개입 중에도 게임은 계속될 수 있습니다. 테스트 PC에서만 시작하세요.",
+        self.warning = ctk.CTkLabel(body, text="F10 개입·중간 명령 / F11 일시정지 / F12 긴급 중지\n시작·계속은 화면 버튼 · 명령 전달은 Ctrl+Enter\nArduino 전용: 키 유지·2키 동시 입력은 GL1 펌웨어가 필요합니다. 자동 업로드하지 않습니다.\n위 목록에서 경험을 선택하면 기록을 이어갑니다. 과거 화면·입력은 자동 재생하지 않습니다.\n질문·개입 중에도 게임은 계속됩니다. 테스트 PC에서만 시작하세요.",
             justify="left", anchor="w", text_color=COLORS["warning"], wraplength=510)
         self.warning.grid(row=7, column=0, sticky="ew", padx=10, pady=5)
         self.actions = ctk.CTkFrame(body, fg_color="transparent")
@@ -116,6 +148,83 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.result.grid(row=13, column=0, sticky="ew", padx=10, pady=8)
         self.bind("<Configure>", self._resize, add="+")
         self._poll()
+
+    def _select_memory(self, label):
+        if self.jobs.active or self.jobs.busy:
+            return
+        value = self.memory_rows.get(label)
+        if value:
+            self.goal.delete("1.0", "end")
+            self.goal.insert("1.0", value["goal"])
+        self.memory_next = 0
+
+    def _request_memory(self):
+        if self.closed or (self.memory_worker and self.memory_worker.is_alive()):
+            return
+        selected = self.memory_rows.get(self.memory_selection.get(), {}).get("task_id")
+        # The worker never reads/writes Tk widgets, including during shutdown.
+        def query():
+            try:
+                value = self.jobs.experience_snapshot(selected)
+            except Exception as exc:
+                value = {"error": str(exc)}
+            try:
+                self.memory_queue.put_nowait(value)
+            except queue.Full:
+                pass
+        self.memory_worker = threading.Thread(target=query, daemon=True, name="gpt-memory-view")
+        self.memory_worker.start()
+        self.memory_next = time.monotonic() + 3
+
+    @staticmethod
+    def _replace_text(widget, value):
+        position = widget._textbox.yview()[0]
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", value)
+        widget._textbox.yview_moveto(position)
+        widget.configure(state="disabled")
+
+    def _render_memory(self):
+        if time.monotonic() >= self.memory_next:
+            self._request_memory()
+        try:
+            value = self.memory_queue.get_nowait()
+        except queue.Empty:
+            return
+        if value == self.memory_signature:
+            return
+        self.memory_signature = value
+        if "error" in value:
+            self._replace_text(self.memory_text, "경험을 읽지 못했습니다. 원본은 삭제하지 않았습니다.\n" + value["error"])
+            return
+        self.memory_rows = {f"{row['goal'][:38]} · {row['task_id'][-8:]}": row for row in value["tasks"]}
+        self.memory_selection.configure(values=["새 경험 시작"] + list(self.memory_rows))
+        context = value.get("context")
+        if not context:
+            message = "저장된 경험을 위 목록에서 선택하세요.\n게임 성공·패배와 기술 오류·미완료를 따로 보관합니다.\n기록 원본은 이 PC에 저장되며 GPT 판단에 관련 근거가 전달됩니다."
+        else:
+            task = context["task"]
+            lines = [task["goal"], "대상: " + task["environment"]["executable"],
+                     "저장 위치: " + str(self.jobs.memory_dir), "", "최근 시도 (최대 10개)"]
+            names = {"running": "진행 중", "success": "성공 관찰", "defeat": "게임 패배", "technical_error": "기술 오류", "incomplete": "미완료"}
+            for item in context["attempts"]:
+                lines += [f"• {names.get(item['status'], item['status'])} / {item['stage']}",
+                    "전략: " + item["strategy"], "관찰: " + item.get("observation", "결과 미기록"),
+                    "원인 후보(미확정): " + item.get("hypothesis", "-"), "다음 실험: " + item.get("next_experiment", "-"), ""]
+            lines += ["재사용 구간 (화면 조건 확인 횟수이며 게임 승률이 아닙니다)"]
+            for item in context["behaviors"]:
+                lines += [f"• {item['name']} | {item['status']} | 조건 확인 {item['successes']} / 불일치 {item['failures']}"]
+            lines += ["", "최근 경험 근거"]
+            for item in context["recent"]:
+                record = item["record"]
+                lines += [f"• {item['kind']}: {record.get('observation', record.get('status', ''))}",
+                          "근거: " + str(record.get("frame_id", "-"))]
+            checkpoint = context.get("checkpoint") or {}
+            if checkpoint.get("uncertain_requests"):
+                lines += ["", "주의: 전달 결과가 불확실한 과거 입력이 있습니다. 이어하기는 현재 화면부터 확인합니다."]
+            message = "\n".join(lines)
+        self._replace_text(self.memory_text, message)
 
     def _label(self, text, row):
         ctk.CTkLabel(self.body, text=text, anchor="w", text_color=COLORS["accent_text"],
@@ -198,7 +307,7 @@ class GPTPlayPanel(ctk.CTkFrame):
                 raise ValueError("먼저 게임 창 목록을 새로고침하고 대상을 선택하세요.")
             keys = automatic_keys()
             self.jobs.start(target, self.goal.get("1.0", "end").strip(), keys, w.runtime,
-                test_environment=True)
+                test_environment=True, task_id=self.memory_rows.get(self.memory_selection.get(), {}).get("task_id"))
         except Exception as exc:
             self.jobs.report_error("start_rejected", exc)
         self._render_log()
@@ -212,6 +321,7 @@ class GPTPlayPanel(ctk.CTkFrame):
 
     def _show_intervention(self):
         self.workspace.tabs.set("GPT 플레이")
+        self.tabs.set("플레이")
         root = self.winfo_toplevel()
         root.deiconify()
         root.lift()
@@ -262,6 +372,8 @@ class GPTPlayPanel(ctk.CTkFrame):
         configure_changed(self.refresh, state="disabled" if active else "normal")
         configure_changed(self.target, state="disabled" if active else "readonly")
         configure_changed(self.goal, state="disabled" if active else "normal")
+        configure_changed(self.memory_selection, state="disabled" if active else "readonly")
+        configure_changed(self.start_button, text="새 실행으로 경험 이어하기" if self.memory_selection.get() != "새 경험 시작" else "GPT 플레이 시작")
         configure_changed(self.keys_summary, text="일반 키·숫자·기호·방향키·기능키 자동 사용\n제외: "
                           + ", ".join(key.upper() for key in sorted(reserved_keys())) + " · Windows 등 OS 제어키·동시 조합키")
 
@@ -271,10 +383,20 @@ class GPTPlayPanel(ctk.CTkFrame):
         from .recording_workspace import configure_changed
         self._refresh_controls()
         self._render_log()
+        self._render_memory()
         if self.jobs.intervention_requested.is_set() and self.jobs.session and self.jobs.session.input_released:
             self.jobs.intervention_requested.clear()
             self._show_intervention()
         state = self.jobs.ui_snapshot()
+        summary = (state or {}).get("verification")
+        if summary != self._verification_signature:
+            self._verification_signature = summary
+            if summary:
+                self._replace_text(self.verification_text,
+                    f"후보 v{summary['revision']}\n현재 후보 독립 성공: {summary['successes']} / {summary['required']}회\n"
+                    "실제 게임 결과를 GPT가 확인한 횟수이며 모든 상황을 보증하지 않습니다.\n\n"
+                    + "\n".join(summary["steps"]) + "\n\n미해결: " + (", ".join(summary["remaining"]) or "없음")
+                    + "\n기존 플랜·재생목록은 덮어쓰지 않습니다. 동적 GPT 판단이 필수인 후보는 완료 등록하지 않습니다.")
         if state:
             problem = state["state"] in {"paused", "error", "needs_review"}
             configure_changed(self.status, text=f'{STATE_LABELS.get(state["state"], state["state"])} | 관찰 {state["frame_count"]}회 · 요청 {state["action_count"]}/{state["max_actions"]}\n'
@@ -297,6 +419,7 @@ class GPTPlayPanel(ctk.CTkFrame):
                     except (OSError, ValueError):
                         self.preview.configure(image=None, text="관찰 화면을 읽지 못했습니다. 상황을 확인한 뒤 답변하세요.")
                     self.workspace.tabs.set("GPT 플레이")
+                    self.tabs.set("플레이")
                     self.body.update_idletasks()
                     self.body._parent_canvas.yview_moveto(1.0)
                     self.winfo_toplevel().deiconify()

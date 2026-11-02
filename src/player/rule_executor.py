@@ -2612,7 +2612,7 @@ class RuleExecutor:
         # policy, so the generic outer retry must run it only once.
         retry_count = (
             1
-            if repeat_from_auto_list or rule.action_type == AUTO_LIST_ACTION_TYPE
+            if repeat_from_auto_list or rule.action_type in {AUTO_LIST_ACTION_TYPE, "gpt_play_behavior"}
             else max_retries
         )
         for attempt in range(retry_count):
@@ -2767,6 +2767,9 @@ class RuleExecutor:
         try:
             rule_type = rule.rule_type
 
+            if rule.action_type == "gpt_play_behavior":
+                return self._execute_gpt_play_behavior(rule, start_time)
+
             if rule.action_type == WINDOW_CONTROL_ACTION_TYPE:
                 return self._execute_window_control(rule, start_time)
 
@@ -2881,6 +2884,9 @@ class RuleExecutor:
         action_type = rule.action_type
 
         try:
+            if action_type == "gpt_play_behavior":
+                return self._execute_gpt_play_behavior(rule, start_time)
+
             if action_type == WINDOW_CONTROL_ACTION_TYPE:
                 return self._execute_window_control(rule, start_time)
 
@@ -4508,6 +4514,16 @@ class RuleExecutor:
             on_wait=lambda message: logger.info("%s[창 제어] 대기: %s", self._step_prefix, message),
         )
         return self._make_result(rule, success, message, start_time)
+
+    def _execute_gpt_play_behavior(self, rule, start_time):
+        from ..ai_play.saved_runtime import run_saved
+        from ..agent_bridge.contracts import BridgeError
+        def check():
+            if self._stop_event.is_set() or not self._pause_event.is_set():
+                raise BridgeError("PLAYBACK_INTERRUPTED", "중지·일시정지로 GPT 행동 구간을 취소했습니다. 중간 입력은 재전송하지 않습니다.")
+        result = run_saved(rule.gpt_play_config, check)
+        ok = result["status"] == "conditions_matched"
+        return self._make_result(rule, ok, "GPT 구간 화면 조건 확인" if ok else "GPT 구간 조건 불일치: " + str(result), start_time)
 
     def _execute_action_call(
         self,

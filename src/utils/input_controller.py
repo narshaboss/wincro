@@ -709,9 +709,7 @@ class InputController:
         from ..agent_bridge.contracts import BridgeError
         settings = get_config().arduino
         if not settings.enabled:
-            if getattr(settings, "require_for_playback", True):
-                raise BridgeError("ARDUINO_DISABLED", "설정에서 아두이노 필수 사용은 켜져 있지만 아두이노 사용이 꺼져 있습니다.")
-            return None
+            raise BridgeError("ARDUINO_DISABLED", "GPT 플레이는 아두이노 필수 사용입니다. 소프트웨어 입력으로 대체하지 않습니다.")
         from .arduino_hid import get_arduino_hid
         device = get_arduino_hid()
         if not device.is_connected:
@@ -721,24 +719,30 @@ class InputController:
 
     def play_lab_prepare(self) -> bool:
         device = self._play_lab_device()
-        return device is None or (device.supports_key_combo_tap() and device.supports_mouse_move())
+        return device.supports_key_combo_tap() and device.supports_mouse_move()
+
+    def play_lab_hold(self, keys, milliseconds, check) -> bool:
+        from ..ai_play.actions import validate_action
+        from ..ai_play.timed_hid import run
+        from ..agent_bridge.contracts import BridgeError
+        validate_action({"kind": "hold", "keys": keys, "duration_ms": milliseconds})
+        device = self._play_lab_device()
+        def guarded():
+            check()
+            if is_automation_input_blocked():
+                raise BridgeError("INPUT_BLOCKED", "키 유지 중 입력 중지 요청")
+        codes = [219 if key == "numlock" else device._get_keycode(key) for key in keys]
+        return run(device, codes, milliseconds, guarded)
 
     def play_lab_tap(self, key: str) -> bool:
         """Opt-in GPT lab only: never use split KP/KR or software fallback for HID."""
         if is_automation_input_blocked():
             return False
         device = self._play_lab_device()
-        if device is not None:
-            if not device.supports_key_combo_tap():
-                return False
-            code = 219 if key == "numlock" else device._get_keycode(key)
-            return device._send_command("KQ," + str(code))
-        try:
-            pyautogui.keyDown(key, _pause=False)
-            time.sleep(_KEY_TAP_HOLD_DELAY)
-        finally:
-            pyautogui.keyUp(key, _pause=False)
-        return True
+        if not device.supports_key_combo_tap():
+            return False
+        code = 219 if key == "numlock" else device._get_keycode(key)
+        return device._send_command("KQ," + str(code))
 
     def play_lab_move_to(self, x, y, check, duration=.2) -> bool:
         from ..agent_bridge.contracts import BridgeError
@@ -746,9 +750,6 @@ class InputController:
         check()
         if is_automation_input_blocked():
             raise BridgeError("INPUT_BLOCKED", "입력 정리 또는 중지 상태이므로 마우스를 이동하지 않습니다.")
-        if device is None:
-            pyautogui.moveTo(x, y, duration=duration)
-            return True
         if not device.supports_mouse_move():
             raise BridgeError("ARDUINO_MM_UNSUPPORTED", "연결된 아두이노가 마우스 이동 MM 명령을 지원하지 않습니다.")
         previous = command = None
@@ -799,30 +800,14 @@ class InputController:
         if is_automation_input_blocked():
             return False
         device = self._play_lab_device()
-        if device is not None:
-            if not device.mouse_click("left"):
-                raise BridgeError("CLICK_DELIVERY_UNKNOWN", "왼쪽 클릭 MC 응답을 확인하지 못했습니다. 실제 화면 확인 전에는 재전송하지 마세요.")
-            return True
-        pyautogui.click(button="left")
+        if not device.mouse_click("left"):
+            raise BridgeError("CLICK_DELIVERY_UNKNOWN", "왼쪽 클릭 MC 응답을 확인하지 못했습니다. 실제 화면 확인 전에는 재전송하지 마세요.")
         return True
 
     def play_lab_release(self, keys) -> bool:
         """Release lab inputs without reconnecting or refreshing device firmware."""
         device = self._play_lab_device()
-        if device is not None:
-            return bool(device.release_all())
-        ok = True
-        for key in keys:
-            try:
-                pyautogui.keyUp(key, _pause=False)
-            except Exception:
-                ok = False
-        if 'left' in _get_pressed_mouse_buttons():
-            try:
-                pyautogui.mouseUp(button='left', _pause=False)
-            except Exception:
-                ok = False
-        return ok
+        return bool(device.release_all())
 
     def tap_combo_once(self, *keys) -> bool:
         """Press modifiers, tap the final key once, then release modifiers immediately."""

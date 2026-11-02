@@ -10,6 +10,15 @@ permissions:
   contents: read
 
 jobs:
+  gpt-firmware-simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Actual GL1 source with fake hardware and clock
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror tests/gpt_play_firmware_sim.cpp -o /tmp/gl1-simulation
+          /tmp/gl1-simulation
   recording-legacy-ui:
     runs-on: windows-latest
     timeout-minutes: 8
@@ -68,7 +77,7 @@ jobs:
         run: python -m pytest -q tests/test_recording_timing.py --junitxml=artifacts/ai_draft/timing.xml
       - name: GPT play isolation, input admission and candidate simulations
         if: ${{ !cancelled() }}
-        run: python -m pytest -q tests/test_gpt_play.py tests/test_gpt_play_diagnostics.py tests/test_gpt_play_device_regression.py tests/test_gpt_play_intervention.py --junitxml=artifacts/gpt_play/simulations.xml
+        run: python -m pytest -q tests/test_gpt_play.py tests/test_gpt_play_diagnostics.py tests/test_gpt_play_device_regression.py tests/test_gpt_play_intervention.py tests/test_gpt_play_learning.py --junitxml=artifacts/gpt_play/simulations.xml
       - name: GPT play UI and authenticated pipe on isolated Windows
         if: ${{ !cancelled() }}
         env:

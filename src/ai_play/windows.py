@@ -130,8 +130,25 @@ class WindowIO:
         return result, region
 
     def send(self, action, region, check):
+        from .actions import validate_action
+        action = validate_action(action)
         check()
         self.validate(region)
+        if action["kind"] in {"hold", "repeat"}:
+            keys = action["keys"] if action["kind"] == "hold" else [action["key"]]
+            self.used_keys.update(keys)
+            def guarded():
+                check()
+                self.validate(region)
+            for index in range(action.get("count", 1)):
+                if index:
+                    end = time.monotonic() + action["interval_ms"] / 1000
+                    while time.monotonic() < end:
+                        guarded()
+                        time.sleep(min(.02, max(0, end - time.monotonic())))
+                if not self.controller.play_lab_hold(keys, action["duration_ms"], guarded):
+                    return False
+            return True
         if action["kind"] == "key":
             from .key_policy import SAFE_KEYS, reserved_keys
             if action["key"] not in SAFE_KEYS or action["key"] in reserved_keys():

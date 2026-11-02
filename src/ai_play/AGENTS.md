@@ -6,6 +6,15 @@
 - Inputs must pass through WinCro's configured InputController. No Parsec or
   direct model-driven OS input. No firmware uploads, backend substitution or raw
   key-down/key-up exposed to the model. KQ atomically releases Arduino keys.
+- GL1 is the opt-in timed-input protocol. Keep legacy KQ/KP/KR semantics unchanged.
+  Its firmware enforces duration and a heartbeat lease without a blocking delay.
+  Never upload firmware from GPT play or fall back to software on unsupported devices.
+- Learning, routine reuse, candidate trials and native gpt_play_behavior playback
+  must use the same versioned program validator/executor. Never flatten timed/guarded
+  behavior to legacy naked key actions. Dynamic GPT-dependent branches stay incomplete.
+- Experience is task-scoped and durable. Technical errors are not game defeats.
+  Resume uses a fresh selected target and observation, never old HWNDs or input queues.
+  Uncertain deliveries require evidence-backed reconciliation, never blind replay.
 - Existing plans, recordings, maps and both special-mode engines are protected.
   The player entrypoint decorators are admission gates, not algorithm overrides.
 - Candidate compiler owns the accepted schema. Do not accept arbitrary imported

@@ -12,6 +12,10 @@ from .session import text
 from .key_policy import reserved_keys
 
 
+def required_trials(session):
+    return 10 if session.learning else 3
+
+
 def build(session, title, steps, remaining_issues):
     session.check(input_allowed=True)
     if session.state == "verifying":
@@ -23,7 +27,7 @@ def build(session, title, steps, remaining_issues):
     from ..analyzer.automation_models import AutomationPlan, AutomationRule
     rules, evidence, assets = [], [], {}
     for step in steps:
-        if not isinstance(step, dict) or set(step) - {"kind", "key", "frame_id", "crop", "purpose", "expected_result", "wait_after", "repeat_count", "repeat_delay", "confidence"}:
+        if not isinstance(step, dict) or set(step) - {"kind", "key", "frame_id", "crop", "purpose", "expected_result", "wait_after", "repeat_count", "repeat_delay", "confidence", "behavior_id"}:
             raise BridgeError("INVALID_PLAN", "지원되지 않는 후보 필드입니다. 임의 분기·특화모드로 우회하지 마세요.")
         purpose = text(step.get("purpose"), "동작 목적", 200)
         expected = text(step.get("expected_result"), "예상 결과")
@@ -34,9 +38,22 @@ def build(session, title, steps, remaining_issues):
         if not number(wait, 0, 30) or not number(delay, .05, 30) or type(repeat) is not int or not 1 <= repeat <= 30:
             raise BridgeError("INVALID_PLAN", "대기 0~30초, 반복 1~30회, 반복 대기 0.05~30초만 허용합니다.")
         kind = step.get("kind")
+        if session.learning and kind != "behavior":
+            raise BridgeError("GUARDED_EXPORT_REQUIRED", "경험 기반 플랜은 검수된 재사용 구간으로 작성하세요. 키 유지·화면 조건을 일반 키 액션으로 바꾸지 않습니다.")
         rule = AutomationRule(description="GPT: " + purpose, wait_after=wait,
             repeat_count=repeat, repeat_delay=delay, wait_random=False, repeat_delay_random=False)
-        if kind == "key" and step.get("key") in session.keys and step["key"] not in reserved_keys():
+        if kind == "behavior" and session.learning:
+            from .behaviors import ACTION_TYPE, validate_program
+            memory = session.learning
+            behavior = memory.store.get(memory.task, "behavior", step.get("behavior_id"))
+            if behavior["goal_revision"] != memory.revision or behavior["status"] != "repeated":
+                raise BridgeError("BEHAVIOR_UNVERIFIED", "같은 목표·정의에서 화면 조건 확인 3회 이상인 구간만 후보로 옮깁니다.")
+            program = validate_program(behavior["program"])
+            if digest(program) != behavior["digest"]:
+                raise BridgeError("BEHAVIOR_CHANGED", "재사용 정의 해시가 다릅니다.")
+            rule.action_type = ACTION_TYPE
+            rule.gpt_play_config = program
+        elif kind == "key" and step.get("key") in session.keys and step["key"] not in reserved_keys():
             rule.action_type, rule.action_keys = "key_press", [step["key"]]
         elif kind == "click":
             crop = step.get("crop")
@@ -109,6 +126,10 @@ def review(session, revision, direction, checks, remaining_issues):
         raise BridgeError("INVALID_REVIEW", "액션 대조가 누락되었거나 미해결 목록이 올바르지 않습니다.")
     record = {"revision": revision, "direction": direction, "checks": checks,
         "remaining_issues": remaining_issues, "passed": not remaining_issues and all(x["result"] == "match" for x in checks)}
+    if session.learning:
+        expected_direction = "experience_to_plan" if not session.reviews or session.reviews[-1]["direction"] == "plan_to_experience" else "plan_to_experience"
+        if direction != expected_direction:
+            raise BridgeError("REVIEW_ORDER", "경험→플랜 다음 플랜→경험 순서로 교차 확인하세요.")
     session.reviews = [r for r in session.reviews if r["direction"] != direction] + [record]
     session._persist()
     return record
@@ -133,8 +154,9 @@ def verify_assets(session):
 
 def publish(session, plans_dir, templates_dir):
     """App-owner-only: agent cannot invoke filesystem publication."""
-    if session.state != "complete" or not ready(session) or len(session.trials) < 3 or any(not t["success"] for t in session.trials[-3:]):
-        raise BridgeError("VERIFICATION_REQUIRED", "현재 후보의 독립 재생 3회와 양방향 대조가 필요합니다.")
+    count = required_trials(session)
+    if session.state != "complete" or not ready(session) or len(session.trials) < count or any(not t["success"] for t in session.trials[-count:]):
+        raise BridgeError("VERIFICATION_REQUIRED", f"현재 후보의 독립 재생 {count}회와 양방향 대조가 필요합니다.")
     verify_assets(session)
     plan = copy.deepcopy(session.candidate["plan"])
     plan["user_verified"] = True  # Listing permission only, not human review.

@@ -19,6 +19,7 @@
 
 #include <Mouse.h>
 #include <Keyboard.h>
+#include "wincro_hid/gpt_play.h"
 
 // LED 핀 (Leonardo 내장 LED)
 const int LED_PIN = 13;
@@ -40,12 +41,13 @@ void setup() {
 }
 
 void loop() {
+  if (glPoll()) return;
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     if (cmd.length() > 0) {
       processCommand(cmd);
-      blinkLED(1);  // 명령 수신 시 LED 깜빡
+      if (!cmd.startsWith("GL")) blinkLED(1);  // No blocking delay during GL1 holds.
     }
   }
 }
@@ -60,6 +62,7 @@ void blinkLED(int times) {
 }
 
 void processCommand(String cmd) {
+  if (glCommand(cmd)) return;
   // PING 명령
   if (cmd == "PING") {
     Serial.println("PONG");

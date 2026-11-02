@@ -26,6 +26,10 @@ def action_text(action):
     kind = action.get("kind")
     if kind == "key":
         return "키 " + concise(action.get("key"), 30).upper()
+    if kind == "hold":
+        return "키 유지 " + "+".join(action.get("keys", [])).upper() + f" {action.get('duration_ms')}ms"
+    if kind == "repeat":
+        return f"키 반복 {action.get('key')} {action.get('count')}회 · 유지 {action.get('duration_ms')}ms / 간격 {action.get('interval_ms')}ms"
     if kind == "click":
         return f"왼쪽 클릭 창내({action.get('x')}, {action.get('y')})"
     if kind == "wait":
