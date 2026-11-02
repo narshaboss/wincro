@@ -13,6 +13,7 @@ from src.ai_play.jobs import PlayJobs
 from src.ai_play.windows import WindowIO
 from tests.test_gpt_play import frame, released, isolated_admission_registry
 from tests.test_gpt_play_learning import learned
+from tests.test_gpt_play_learning import routine
 
 
 def segments():
@@ -174,3 +175,31 @@ def test_archived_frame_remains_readable_and_600_does_not_stop_learning(learned)
     with pytest.raises(BridgeError, match="관찰"):
         learned._frame(first, fresh=True)
     assert learned._frame(result["frame_id"], fresh=True)
+
+
+def test_saved_control_program_preserves_all_160_validated_input_segments(learned, tmp_path):
+    from src.ai_play.saved_runtime import run_saved
+    s = learned
+    entry = routine(s)
+    program = copy.deepcopy(s.learning.store.get(s.learning.task, "behavior", entry["behavior_id"])["program"])
+    step = program["steps"][0]
+    step["action"] = {"kind": "control", "segments": [{"keys": ["up"], "duration_ms": 50}] * 8}
+    program["steps"] = []
+    for i in range(20):
+        current = copy.deepcopy(step)
+        if i % 2:
+            current["before"], current["after"] = current["after"], current["before"]
+        program["steps"].append(current)
+    original_send = s.backend.send
+    def toggle(action, region, check):
+        color = s.backend.color
+        result = original_send(action, region, check)
+        s.backend.color = 2 if color == 1 else 1
+        return result
+    s.backend.send = toggle
+    s.backend.color = 1
+    before = len(s.backend.sent)
+    result = run_saved(program, lambda: None, backend=s.backend, receipt_root=tmp_path / "receipts")
+    assert result["status"] == "conditions_matched"
+    assert len(s.backend.sent) - before == 20
+    assert sum(input_cost(action) for action in s.backend.sent[before:]) == 160

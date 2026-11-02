@@ -25,6 +25,7 @@ def run_saved(program, check, *, backend=None, transmit=None, receipt_root=None)
         if not backend.controller.play_lab_prepare():
             raise BridgeError("DEVICE_NOT_READY", "GPT 행동 플랜은 연결된 Arduino 전용입니다.")
     count = 0
+    input_limit = sum(input_cost(step["action"]) for step in program["steps"])
     folder = None
     if transmit is None:
         root = receipt_root or memory_root() / "playback"
@@ -36,8 +37,8 @@ def run_saved(program, check, *, backend=None, transmit=None, receipt_root=None)
             nonlocal count
             check()
             count += input_cost(action)
-            if count > 100:
-                raise BridgeError("BUDGET_EXHAUSTED", "저장 구간 입력 한도 도달")
+            if count > input_limit:
+                raise BridgeError("PROGRAM_INPUT_MISMATCH", "검증된 프로그램보다 많은 입력 요청을 차단했습니다.")
             ident = new_id("input_")
             receipt = {"id": ident, "action": action, "purpose": purpose, "state": "unknown"}
             write_json(folder / (ident + ".json"), receipt)
