@@ -523,7 +523,7 @@ class GPTPlayPanel(ctk.CTkFrame):
             self._verification_signature = summary
             if summary:
                 self._replace_text(self.verification_text,
-                    f"후보 v{summary['revision']}\n현재 후보 독립 성공: {summary['successes']} / {summary['required']}회\n"
+                    f"후보 v{summary['revision']}\n현재 후보 독립 연속 성공: {summary['successes']} / {summary['required']}회\n"
                     "실제 게임 결과를 GPT가 확인한 횟수이며 모든 상황을 보증하지 않습니다.\n\n"
                     + "\n".join(summary["steps"]) + "\n\n미해결: " + (", ".join(summary["remaining"]) or "없음")
                     + "\n기존 플랜·재생목록은 덮어쓰지 않습니다. 동적 GPT 판단이 필수인 후보는 완료 등록하지 않습니다.")

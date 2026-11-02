@@ -153,6 +153,7 @@ class PlaySession:
         if not self.state_lock.acquire(blocking=False):
             return self._ui_cache
         try:
+            from .candidate import success_streak
             phase, quiet = self.trace.status()
             phase = {"paused": "일시정지", "question": "답변 대기", "stopped": "중지"}.get(self.state, phase)
             self._ui_cache = {"state": self.state, "message": self.message, "question": copy.deepcopy(self.question),
@@ -163,7 +164,7 @@ class PlaySession:
                 "learning": self.learning.summary() if self.learning else None,
                 "verification": {"revision": self.candidate["revision"],
                     "required": 10 if self.learning else 3,
-                    "successes": sum(bool(t.get("success")) for t in self.trials),
+                    "successes": success_streak(self),
                     "steps": list(self.candidate.get("ui_steps", [])),
                     "remaining": list(self.candidate["remaining_issues"])} if self.candidate else None}
             return self._ui_cache
@@ -252,10 +253,16 @@ class PlaySession:
 
     def stop(self):
         self.stop_event.set()
-        self.pause("사용자 중지")
-        self.state = "stopped"
-        self._persist()
-        self.trace.emit("stopped", "사용자 중지 · 이전 실패 원인은 이 로그에 보존됩니다.", phase="중지")
+        try:
+            self.pause("사용자 중지")
+        finally:
+            # A failed disk write must never leave a stopped process resumable.
+            with self.state_lock:
+                self.state = "stopped"
+            try:
+                self._persist()
+            finally:
+                self.trace.emit("stopped", "사용자 중지 · 이전 실패 원인은 이 로그에 보존됩니다.", phase="중지")
 
     def resume(self, answer=None):
         with self.state_lock:

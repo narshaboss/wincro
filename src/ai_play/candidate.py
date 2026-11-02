@@ -16,6 +16,19 @@ def required_trials(session):
     return 10 if session.learning else 3
 
 
+def success_streak(session):
+    count = 0
+    for trial in reversed(session.trials):
+        if not trial.get("success") or trial.get("interrupted"):
+            break
+        if session.learning and (not session.candidate or
+                trial.get("revision") != session.candidate["revision"] or
+                trial.get("candidate_digest") != session.candidate["digest"]):
+            break
+        count += 1
+    return count
+
+
 def build(session, title, steps, remaining_issues):
     session.check(input_allowed=True)
     if session.state == "verifying":
@@ -167,7 +180,7 @@ def verify_assets(session):
 def publish(session, plans_dir, templates_dir):
     """App-owner-only: agent cannot invoke filesystem publication."""
     count = required_trials(session)
-    if session.state != "complete" or not ready(session) or len(session.trials) < count or any(not t["success"] for t in session.trials[-count:]):
+    if session.state != "complete" or not ready(session) or success_streak(session) < count:
         raise BridgeError("VERIFICATION_REQUIRED", f"현재 후보의 독립 재생 {count}회와 양방향 대조가 필요합니다.")
     verify_assets(session)
     plan = copy.deepcopy(session.candidate["plan"])

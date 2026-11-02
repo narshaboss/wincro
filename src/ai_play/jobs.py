@@ -109,7 +109,7 @@ class PlayScope:
             if record["status"] == "unknown" and key not in remaining_issues:
                 remaining_issues.append(key)
         count = candidate.required_trials(s)
-        verified = candidate.ready(s) and len(s.trials) >= count and all(t["success"] for t in s.trials[-count:])
+        verified = candidate.ready(s) and candidate.success_streak(s) >= count
         if not verified and not remaining_issues:
             raise BridgeError("VERIFICATION_REQUIRED", f"현재 후보의 독립 재생 성공 {count}회가 필요합니다.")
         with s.state_lock:
@@ -320,8 +320,10 @@ class PlayJobs:
             self._watch_loop(session, stop)
         except Exception as exc:
             self.report_error("controls_failed", exc)
-            session.pause(error_text(exc))
-            self._cancel_runner()
+            try:
+                session.pause(error_text(exc))
+            finally:
+                self._cancel_runner()
         finally:
             close = getattr(session.backend, "close_controls", None)
             if close:
@@ -350,10 +352,12 @@ class PlayJobs:
                     session.check()
                     session.backend.validate()
             except Exception as exc:
-                if session.state not in {"paused", "question"}:
-                    self.report_error("watchdog_blocked", exc)
-                    session.pause(error_text(exc))
-                self._cancel_runner()
+                try:
+                    if session.state not in {"paused", "question"}:
+                        self.report_error("watchdog_blocked", exc)
+                        session.pause(error_text(exc))
+                finally:
+                    self._cancel_runner()
 
     def _run(self, initial):
         s = self.session
@@ -423,18 +427,20 @@ class PlayJobs:
                 else:
                     self.retiring_host = None
             self.host = self.runner = None
-            if s.state == "complete":
-                try:
-                    s.trace.emit("publish_begin", "검수된 새 플랜 저장·재로딩을 확인합니다.", phase="새 플랜 등록")
-                    candidate.publish(s, self.plans_dir, self.templates_dir)
-                    s.trace.emit("published", "새 플랜 등록 완료 · 기존 플랜은 변경하지 않았습니다.", phase="완료")
-                except Exception as exc:
-                    self.report_error("publish_failed", exc)
-                    s.message = "플랜 등록 실패: " + str(exc)
-                    s.state = "needs_review"
-                    s._persist()
-            if s.state in {"complete", "needs_review", "stopped", "error"}:
-                self._release_owner(s)
+            try:
+                if s.state == "complete":
+                    try:
+                        s.trace.emit("publish_begin", "검수된 새 플랜 저장·재로딩을 확인합니다.", phase="새 플랜 등록")
+                        candidate.publish(s, self.plans_dir, self.templates_dir)
+                        s.trace.emit("published", "새 플랜 등록 완료 · 기존 플랜은 변경하지 않았습니다.", phase="완료")
+                    except Exception as exc:
+                        self.report_error("publish_failed", exc)
+                        s.message = "플랜 등록 실패: " + str(exc)
+                        s.state = "needs_review"
+                        s._persist()
+            finally:
+                if s.state in {"complete", "needs_review", "stopped", "error"}:
+                    self._release_owner(s)
 
     def _release_owner(self, session):
         with self._cleanup_lock:
@@ -494,17 +500,21 @@ class PlayJobs:
             self.runner.cancel()
 
     def pause(self):
-        if self.session and self._owns_input:
-            self.session.pause()
-        self._cancel_runner()
+        try:
+            if self.session and self._owns_input:
+                self.session.pause()
+        finally:
+            self._cancel_runner()
 
     def interrupt(self):
         s = self.session
         if not s or not self.active or s.state in {"complete", "needs_review", "stopped", "error"}:
             raise BridgeError("NO_ACTIVE_PLAY", "실행 중인 GPT 플레이가 없습니다.")
-        s.pause("사용자 개입: 이전 GPT 입력을 중단하고 중간 명령을 기다립니다.")
-        self.intervention_requested.set()
-        self._cancel_runner()
+        try:
+            s.pause("사용자 개입: 이전 GPT 입력을 중단하고 중간 명령을 기다립니다.")
+        finally:
+            self.intervention_requested.set()
+            self._cancel_runner()
 
     def send_command(self, command):
         if self.busy or not self.session or not self.session.input_released:
@@ -530,12 +540,14 @@ class PlayJobs:
         self.worker.start()
 
     def stop(self):
-        if self.session and self._owns_input:
-            self.session.stop()
-        self._cancel_runner()
-        self.monitor_stop.set()
-        if self.session and self._owns_input and not self.busy:
-            threading.Thread(target=self._release_owner, args=(self.session,), daemon=True).start()
+        try:
+            if self.session and self._owns_input:
+                self.session.stop()
+        finally:
+            self._cancel_runner()
+            self.monitor_stop.set()
+            if self.session and self._owns_input and not self.busy:
+                threading.Thread(target=self._release_owner, args=(self.session,), daemon=True).start()
 
     def close(self):
         self.closed = True

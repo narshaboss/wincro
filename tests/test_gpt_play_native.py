@@ -33,8 +33,9 @@ def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monk
     for index in range(12):
         store.event(task, "fact", {"frame_id": "frame_ci_evidence", "observation": f"독립 관찰 {index}"})
     ctk.set_widget_scaling(scale)
-    window = ctk.CTkToplevel(ui_root)
-    window.geometry(f"{width}x{height}+0+0")
+    from src.ui.theme import COLORS
+    window = ctk.CTkToplevel(ui_root, fg_color=COLORS["bg_dark"])
+    window.geometry(f"{width}x{height - 40}+0+0")
     workspace = SimpleNamespace(connection=SimpleNamespace(connected=False), _notify_publication=lambda _: None,
         tabs=SimpleNamespace(set=lambda _: None))
     workspace._button = lambda parent, text, command, **kwargs: RecordingWorkspace._button(workspace, parent, text, command, **kwargs)

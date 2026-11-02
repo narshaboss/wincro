@@ -534,3 +534,63 @@ def test_native_receipt_limit_never_deletes_or_sends(learned, monkeypatch, tmp_p
     with pytest.raises(BridgeError, match="한도"):
         saved_runtime.run_saved(program, lambda: None, backend=backend, receipt_root=root)
     assert not backend.sent and (root / "run_existing").exists()
+
+
+def test_stop_stays_stopped_and_releases_even_when_checkpoint_save_fails(learned, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+    monkeypatch.setattr(learned.learning.store, "put_many", fail)
+    with pytest.raises(OSError):
+        learned.stop()
+    assert learned.state == "stopped" and learned.stop_event.is_set()
+    released(learned)
+    assert learned.backend.releases > 0
+    monkeypatch.undo()
+
+
+@pytest.mark.parametrize("operation", ["pause", "stop", "interrupt"])
+def test_control_cancels_model_even_if_session_save_fails(tmp_path, operation, monkeypatch):
+    from unittest.mock import Mock
+    from src.ai_play.jobs import PlayJobs
+    jobs = PlayJobs(tmp_path / "jobs", tmp_path / "plans", tmp_path / "templates", lambda: True)
+    jobs._owns_input = True
+    jobs.session = SimpleNamespace(state="exploring", pause=Mock(side_effect=OSError("disk full")),
+                                   stop=Mock(side_effect=OSError("disk full")))
+    cancel, cleanup = Mock(), Mock()
+    monkeypatch.setattr(jobs, "_cancel_runner", cancel)
+    monkeypatch.setattr(jobs, "_release_owner", cleanup)
+    with pytest.raises(OSError):
+        getattr(jobs, operation)()
+    cancel.assert_called_once()
+    if operation == "stop":
+        assert jobs.monitor_stop.is_set()
+    if operation == "interrupt":
+        assert jobs.intervention_requested.is_set()
+
+
+def test_verification_counts_consecutive_current_candidate_only(learned):
+    behavior = confirmed(learned)
+    candidate.build(learned, "streak", [{"kind": "behavior", "behavior_id": behavior["behavior_id"],
+        "frame_id": frame(learned), "purpose": "enter", "expected_result": "arena"}], [])
+    result = {"success": True, "revision": learned.candidate["revision"], "candidate_digest": learned.candidate["digest"]}
+    learned.trials = [dict(result) for _ in range(10)] + [{"success": False}] + [dict(result)]
+    assert candidate.success_streak(learned) == 1
+    assert learned.ui_snapshot()["verification"]["successes"] == 1
+    learned.trials.append({**result, "candidate_digest": "stale"})
+    assert candidate.success_streak(learned) == 0
+
+
+def test_watchdog_save_failure_still_cancels_runner(learned, monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    from src.ai_play.jobs import PlayJobs
+    jobs = PlayJobs(tmp_path / "watch", tmp_path / "plans", tmp_path / "templates", lambda: True)
+    jobs.session = learned
+    monkeypatch.setattr(learned.backend, "start_controls", Mock(side_effect=OSError("controls failed")), raising=False)
+    monkeypatch.setattr(learned.learning.store, "put_many", Mock(side_effect=OSError("disk full")))
+    cancel = Mock()
+    monkeypatch.setattr(jobs, "_cancel_runner", cancel)
+    with pytest.raises(OSError):
+        jobs._watch(learned, threading.Event())
+    cancel.assert_called_once()
+    assert learned.input_cancelled.is_set()
+    monkeypatch.undo()
