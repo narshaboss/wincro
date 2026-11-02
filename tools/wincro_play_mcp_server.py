@@ -217,7 +217,8 @@ def play_coordinate_setup(observation_id: str, x_region: list[int], y_region: li
     """Screen-only XY calibration, saved per task. samples=[{digit:0,frame_id:...,region:[x1,y1,x2,y2]}].
     Crop individual observed glyphs, never invent missing digits. light=true for bright digits on dark.
     level is luminance threshold 1..254. Tight x/y ROIs must contain numbers ONLY.
-    No input. Unknown/ambiguous digits fail closed. New samples replace full profile, include old digits.
+    No input. Unknown/ambiguous digits fail closed. Same geometry/light/threshold merges old samples;
+    changed settings require a complete fresh calibration. Old profile versions remain saved.
     """
     return invoke("play_coordinate_setup", locals())
 

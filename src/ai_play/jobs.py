@@ -164,6 +164,8 @@ weaken guards to force reuse. Choose SMALL stable, distinctive NPC/dialog anchor
 MOVEMENT: If XY is visible, calibrate screen-only digits via play_coordinate_setup.
 Choose tight separate x/y number ROIs (no labels/punctuation), and label only digits
 actually visible in observed frame crops. Missing/ambiguous digits STOP local movement.
+Additional samples merge with saved glyphs only when size, ROIs and threshold match.
+Changing those settings requires fresh calibration; never invent unseen glyphs.
 Then use play_navigate with GPT-selected target, axis_order, hold_ms=100 initially,
 max_ms<=4000, and a distinctive stable scene guard (map name etc.). It reads XY
 locally between bounded Arduino holds, returns trajectory/stop reason/current image.

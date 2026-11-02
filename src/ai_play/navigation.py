@@ -12,7 +12,7 @@ import time
 import numpy as np
 from PIL import Image
 
-from ..agent_bridge.contracts import BridgeError, number
+from ..agent_bridge.contracts import BridgeError, digest, number
 
 
 def rectangle(value, size):
@@ -134,10 +134,34 @@ def calibrate(session, observation_id, x_region, y_region, light, level, samples
                            "sha256": hashlib.sha256(raw).hexdigest()})
         profile = validate_profile({"version": 1, "size": size, "x_region": x_region, "y_region": y_region,
                                     "light": light, "level": level, "digits": digits})
+        store, task = session.learning.store, session.learning.task
+        try:
+            previous = validate_profile(store.get(task, "coordinate_profile", "active"))
+        except BridgeError as exc:
+            if exc.code != "MEMORY_NOT_FOUND":
+                raise
+            previous = None
+        compatible = previous is not None and all(previous[k] == profile[k] for k in profile if k != "digits")
+        # Keep learned glyphs for the same screen geometry/threshold. New labels
+        # explicitly correct an identical crop; old profile versions stay durable.
+        by_hash = {d["sha256"]: d for d in previous["digits"]} if compatible else {}
+        incoming = {}
+        for digit in digits:
+            old = incoming.get(digit["sha256"])
+            if old and old["digit"] != digit["digit"]:
+                raise BridgeError("INVALID_COORDINATE_PROFILE", "같은 숫자 표본에 서로 다른 라벨이 있습니다.")
+            incoming[digit["sha256"]] = digit
+        by_hash.update(incoming)
+        profile = validate_profile({**profile, "digits": list(by_hash.values())})
         reading = CoordinateReader(profile).read(image)
-    session.learning.store.put(session.learning.task, "coordinate_profile", "active", profile)
+    rows = [("coordinate_profile_version", digest(profile), profile), ("coordinate_profile", "active", profile)]
+    if previous:
+        rows.insert(0, ("coordinate_profile_version", digest(previous), previous))
+    store.put_many(task, rows)
     return {"saved_and_reloaded": True, "reading": reading,
-            "observed_digits": sorted({d["digit"] for d in digits}), "unseen_digits_are_rejected": True}
+            "observed_digits": sorted({d["digit"] for d in profile["digits"]}),
+            "previous_samples_merged": compatible, "profile_version": digest(profile),
+            "unseen_digits_are_rejected": True}
 
 
 def validate_navigation(action):

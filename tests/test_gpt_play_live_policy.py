@@ -475,6 +475,41 @@ def test_model_calibration_saves_reloadable_screen_samples(live):
     assert not live.backend.sent
 
 
+def test_incremental_calibration_keeps_old_digits_and_versions_after_reload(live):
+    live.backend = GridGame()
+    live.stream.capture = live.backend.capture
+    before = frame(live)
+    args = {"observation_id": before, "x_region": [1,30,35,40], "y_region": [1,45,35,55],
+            "light": True, "level": 128, "samples": [
+                {"digit": 1, "frame_id": before, "region": [1,30,7,40]},
+                {"digit": 2, "frame_id": before, "region": [9,30,15,40]},
+                {"digit": 7, "frame_id": before, "region": [1,45,7,55]}]}
+    initial = live.dispatch("play_coordinate_setup", args)
+    store, task = live.learning.store, live.learning.task
+    original = store.get(task, "coordinate_profile", "active")
+    live.backend.xy = [13,7]
+    current = frame(live)
+    args.update(observation_id=current, samples=[{"digit": 3, "frame_id": current, "region": [9,30,15,40]}])
+    result = live.dispatch("play_coordinate_setup", args)
+    assert result["observed_digits"] == [1,2,3,7] and result["previous_samples_merged"]
+    reopened = ExperienceStore(store.root)
+    active = reopened.get(task, "coordinate_profile", "active")
+    assert reopened.get(task, "coordinate_profile_version", initial["profile_version"]) == original
+    assert reopened.get(task, "coordinate_profile_version", result["profile_version"]) == active
+    live.backend.xy = [12,7]
+    assert CoordinateReader(active).read(live.backend.capture()[0])["xy"] == [12,7]
+    live.backend.xy = [13,7]
+    assert CoordinateReader(active).read(live.backend.capture()[0])["xy"] == [13,7]
+    again = live.dispatch("play_coordinate_setup", args)
+    assert again["profile_version"] == result["profile_version"]
+    assert len(reopened.get(task, "coordinate_profile", "active")["digits"]) == 4
+    args["level"] = 129
+    with pytest.raises(BridgeError):
+        live.dispatch("play_coordinate_setup", args)
+    assert reopened.get(task, "coordinate_profile", "active") == active
+    assert not live.backend.sent
+
+
 def test_model_receipts_do_not_send_guard_assets_as_text():
     from tools.wincro_play_mcp_server import public_result
     source = {"action": navigation(GridGame()), "observation": {"png_base64": "actual-screen"}}
