@@ -44,6 +44,9 @@ modified. No release, version bump, deployment, main-PC input or firmware upload
   capture time and between-tool time (model plus transport, not pure inference).
   Timings are bounded to 64 samples per category. Stale input is rechecked after
   write-ahead persistence and before any device transmission.
+- Completed receipt hot caches are bounded by both count and bytes, not just
+  128 entries. Larger navigation profiles cannot silently inflate the session
+  beyond its JSON safety cap. Archived request IDs still deduplicate from disk.
 
 ## Verification
 

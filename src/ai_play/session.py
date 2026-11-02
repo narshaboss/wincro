@@ -121,12 +121,17 @@ class PlaySession:
             with self.state_lock:
                 if self.learning:
                     for kind, cache in (("input", self.receipts), ("behavior", self.behavior_receipts)):
-                        for ident, receipt in list(cache.items())[:-128]:
+                        sizes = {ident: len(encoded(receipt)) for ident, receipt in cache.items()}
+                        total_bytes = sum(sizes.values())
+                        for ident, receipt in list(cache.items()):
+                            if len(cache) <= 128 and total_bytes <= 900_000:
+                                break
                             if receipt.get("state", receipt.get("status")) == "unknown":
                                 continue
                             self.learning.store.put(self.learning.task, kind + "_receipt",
                                 self.instance_id + ":" + ident, receipt)
                             del cache[ident]
+                            total_bytes -= sizes[ident]
                     while len(self.frames) > 128:
                         self.frames.pop(next(iter(self.frames)))
                 value = self.snapshot(internal=True)

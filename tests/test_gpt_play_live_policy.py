@@ -140,6 +140,18 @@ def test_new_run_restores_evidence_not_review_or_input_authority(live, tmp_path)
         released(other)
 
 
+def test_large_navigation_receipts_archive_by_bytes_before_session_limit(live):
+    first = {"state": "sent_not_game_success", "digest": "first", "payload": "a" * 80_000}
+    live.receipts["first"] = first
+    for i in range(20):
+        live.receipts[str(i)] = {"state": "sent_not_game_success", "digest": str(i), "payload": "b" * 80_000}
+    live._persist()
+    assert len(live.receipts) < 20
+    assert "first" not in live.receipts
+    assert live.receipt_for("input", "first") == first
+    assert not live.storage_failed
+
+
 def test_goal_freezes_input_but_allows_new_draft_and_disk_reload(live):
     review(live)
     record = routine(live)
