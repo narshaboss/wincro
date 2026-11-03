@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -108,8 +110,48 @@ class ExperienceStore:
         return task
 
     def claim(self, task):
-        self.get(task, "task", task)
+        lease = self._task_lease(task)
+        try:
+            if self.get(task, "task", task).get("deleting"):
+                raise BridgeError("EXPERIENCE_DELETING", "삭제가 끝나지 않은 경험입니다. 삭제를 다시 시도하세요.")
+            return lease
+        except Exception:
+            lease.close()
+            raise
+
+    def _task_lease(self, task):
+        if not isinstance(task, str) or not re.fullmatch(r"task_[0-9a-f]{32}", task):
+            raise BridgeError("INVALID_ARGUMENT", "잘못된 경험 ID입니다.")
         return TaskLease(self.root / (task + ".lock"))
+
+    def delete_task(self, task):
+        lease = self._task_lease(task)
+        try:
+            record = self.get(task, "task", task)
+            evidence = self.root.resolve() / "evidence"
+            folder = evidence / task
+            if evidence.resolve() != evidence or folder.resolve() != folder:
+                raise BridgeError("PATH_DENIED", "경험 이미지 경로가 저장소 밖을 가리킵니다.")
+            # Block resume before removing files. An interrupted cleanup remains retryable.
+            if not record.get("deleting"):
+                self.put(task, "task", task, {**record, "deleting": True})
+            with self._quota_lock:
+                try:
+                    if folder.exists():
+                        shutil.rmtree(folder)
+                    if folder.exists():
+                        raise OSError("Experience evidence directory still exists")
+                finally:
+                    self._asset_bytes = sum(p.stat().st_size for p in evidence.rglob("*") if p.is_file())
+            with self.connection() as db:
+                db.execute("DELETE FROM events WHERE task=?", (task,))
+                db.execute("DELETE FROM documents WHERE task=?", (task,))
+            with self.connection() as db:
+                if any(db.execute(f"SELECT 1 FROM {table} WHERE task=? LIMIT 1", (task,)).fetchone()
+                       for table in ("documents", "events")):
+                    raise BridgeError("SAVE_STATE_UNKNOWN", "경험 삭제를 확인하지 못했습니다.")
+        finally:
+            lease.close()
 
     def put(self, task, kind, ident, value):
         self.put_many(task, [(kind, ident, value)])

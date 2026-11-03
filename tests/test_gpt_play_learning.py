@@ -148,6 +148,52 @@ def test_task_lock_and_other_task_evidence_denied(learned):
         m.store.read_frame(other, frame(learned))
 
 
+def test_delete_experience_removes_only_selected_task_and_images(learned):
+    m = learned.learning
+    ident = frame(learned)
+    meta, raw = m.store.read_frame(m.task, ident)
+    other = m.store.create("other", {"executable": "other.exe"})
+    m.store.save_frame(other, meta, raw)
+    m.store.event(m.task, "fact", {"note": "delete this"})
+    with m.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM events WHERE task=?", (m.task,)).fetchone()[0]
+    lease = m.store.claim(m.task)
+    try:
+        with pytest.raises(BridgeError, match="다른 실행"):
+            m.store.delete_task(m.task)
+        assert m.store.read_frame(m.task, ident)[1] == raw
+    finally:
+        lease.close()
+    m.store.delete_task(m.task)
+    reopened = ExperienceStore(m.store.root)
+    assert [row["task_id"] for row in reopened.tasks()] == [other]
+    assert not (reopened.root / "evidence" / m.task).exists()
+    assert reopened.read_frame(other, ident)[1] == raw
+    assert reopened.usage()["evidence_bytes"] == len(raw)
+    with reopened.connection() as db:
+        assert not db.execute("SELECT 1 FROM events WHERE task=?", (m.task,)).fetchone()
+
+
+def test_delete_cleanup_failure_can_be_retried(learned, monkeypatch):
+    from src.ai_play import experience
+    m = learned.learning
+    ident = frame(learned)
+    with monkeypatch.context() as patch:
+        def locked(_folder):
+            raise PermissionError("locked")
+        patch.setattr(experience.shutil, "rmtree", locked)
+        with pytest.raises(PermissionError):
+            m.store.delete_task(m.task)
+    reopened = ExperienceStore(m.store.root)
+    assert reopened.get(m.task, "task", m.task)["deleting"]
+    assert reopened.read_frame(m.task, ident)
+    with pytest.raises(BridgeError) as error:
+        reopened.claim(m.task)
+    assert error.value.code == "EXPERIENCE_DELETING"
+    reopened.delete_task(m.task)
+    assert not reopened.tasks()
+
+
 def test_no_false_game_success_without_change(learned):
     ident = frame(learned)
     learned.learning.attempt_event("start", ident, "NPC", "join")

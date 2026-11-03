@@ -62,12 +62,15 @@ def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monk
         assert "원인 후보(미확정)" in panel.memory_text.get("1.0", "end")
         assert panel.jobs.session is None and not panel.jobs.active
         assert panel.start_button.cget("state") == "disabled"
-        for control in (panel.memory_selection, panel.memory_refresh, panel.memory_text,
+        for control in (panel.memory_selection, panel.memory_refresh, panel.memory_delete, panel.memory_text,
                         panel.header_stop, panel.header_pause, panel.memory_next_button, panel.evidence_button):
             assert control.winfo_width() > 40
             assert control.winfo_rootx() + control.winfo_width() <= window.winfo_rootx() + window.winfo_width()
             assert control.winfo_rooty() + control.winfo_height() <= window.winfo_rooty() + window.winfo_height()
         assert panel.header_stop.winfo_ismapped() and panel.header_pause.winfo_ismapped()
+        assert panel.memory_delete.winfo_ismapped()
+        assert panel.memory_delete.cget("state") == "normal"
+        assert panel.memory_delete._text_label.winfo_reqwidth() <= panel.memory_delete.winfo_width()
         artifacts = Path("artifacts/gpt_play")
         artifacts.mkdir(parents=True, exist_ok=True)
         ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"learning_memory_{scale}.png")
@@ -96,6 +99,16 @@ def test_learning_tabs_read_durable_memory_without_input(tmp_path, ui_root, monk
         assert panel.verification_permission.cget("state") == "disabled"
         assert panel.verification_permission._text_label.winfo_reqwidth() <= panel.verification_permission.winfo_width()
         ImageGrab.grab(bbox=(0, 0, width, height)).save(artifacts / f"verification_permission_{scale}.png")
+        from src.ui import gpt_play_panel
+        monkeypatch.setattr(gpt_play_panel.messagebox, "askyesno", lambda *a, **kw: True)
+        panel.memory_delete.invoke()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and panel.memory_delete_pending:
+            window.update()
+            time.sleep(.02)
+        assert panel.memory_selection.get() == "새 경험 시작"
+        assert not ExperienceStore(memory_root()).tasks()
+        assert not (memory_root() / "evidence" / task).exists()
     finally:
         panel.close()
         panel.destroy()

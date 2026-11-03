@@ -3,6 +3,7 @@
 from pathlib import Path
 import io
 import tkinter as tk
+from tkinter import messagebox
 import queue
 import threading
 import time
@@ -55,6 +56,8 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.memory_rows = {}
         self.memory_queue = queue.Queue(maxsize=1)
         self.memory_worker = None
+        self.memory_delete_pending = False
+        self.memory_delete_result = queue.SimpleQueue()
         self.memory_next = 0
         self.memory_signature = None
         self.memory_offset = self.task_offset = 0
@@ -70,8 +73,10 @@ class GPTPlayPanel(ctk.CTkFrame):
         self.memory_selection.set("새 경험 시작")
         self.memory_refresh = self._button(memory_bar, "기록 새로고침", self._request_memory, width=110)
         self.memory_refresh.grid(row=0, column=1)
+        self.memory_delete = self._button(memory_bar, "경험 삭제", self._delete_memory, width=90, state="disabled")
+        self.memory_delete.grid(row=0, column=2, padx=(6, 0))
         task_pages = ctk.CTkFrame(memory_bar, fg_color="transparent")
-        task_pages.grid(row=1, column=0, columnspan=2, sticky="ew", pady=3)
+        task_pages.grid(row=1, column=0, columnspan=3, sticky="ew", pady=3)
         task_pages.grid_columnconfigure(1, weight=1)
         self.task_previous = self._button(task_pages, "작업 이전", lambda: self._memory_page(-50, tasks=True), width=85)
         self.task_previous.grid(row=0, column=0)
@@ -220,8 +225,47 @@ class GPTPlayPanel(ctk.CTkFrame):
     def _memory_key(self):
         return (self.memory_rows.get(self.memory_selection.get(), {}).get("task_id"), self.memory_offset, self.task_offset)
 
+    def _delete_memory(self):
+        record = self.memory_rows.get(self.memory_selection.get())
+        if not record or self.jobs.active or self.jobs.busy or self._controls_busy() or self.memory_delete_pending:
+            return
+        if not messagebox.askyesno("경험 삭제",
+                f"{record['goal'][:100]}\n\n이 경험의 기록과 근거 이미지를 삭제할까요?\n"
+                "등록된 플랜은 삭제하지 않습니다. 이 작업은 되돌릴 수 없습니다.", parent=self.winfo_toplevel()):
+            return
+        self.memory_delete_pending = True
+        self._refresh_controls()
+
+        def remove():
+            try:
+                self.jobs.memory().delete_task(record["task_id"])
+            except Exception as exc:
+                self.memory_delete_result.put(str(exc))
+            else:
+                self.memory_delete_result.put(None)
+
+        threading.Thread(target=remove, daemon=True, name="gpt-memory-delete").start()
+
+    def _finish_memory_delete(self):
+        try:
+            error = self.memory_delete_result.get_nowait()
+        except queue.Empty:
+            return
+        self.memory_delete_pending = False
+        if error is None:
+            self.memory_rows.pop(self.memory_selection.get(), None)
+            self.memory_selection.configure(values=["새 경험 시작"] + list(self.memory_rows))
+            self.memory_selection.set("새 경험 시작")
+            self.memory_offset = self.task_offset = 0
+            self._memory_task = None
+            self.evidence_button.configure(state="disabled")
+        self.memory_signature = None
+        self.memory_next = 0
+        if error is not None:
+            messagebox.showerror("경험 삭제 실패", error + "\n필요하면 삭제를 다시 시도하세요.", parent=self.winfo_toplevel())
+
     def _request_memory(self):
-        if self.closed or (self.memory_worker and self.memory_worker.is_alive()):
+        if self.closed or self.memory_delete_pending or (self.memory_worker and self.memory_worker.is_alive()):
             return
         key = self._memory_key()
         # The worker never reads/writes Tk widgets, including during shutdown.
@@ -280,6 +324,8 @@ class GPTPlayPanel(ctk.CTkFrame):
             task = context["task"]
             lines = [task["goal"], "대상: " + task["environment"]["executable"],
                      "저장 위치: " + str(self.jobs.memory_dir), "", "시도 기록 (페이지당 10개)"]
+            if task.get("deleting"):
+                lines.insert(1, "삭제 미완료: 아래 버튼으로 이미지 정리를 다시 시도하세요.")
             names = {"running": "진행 중", "success": "성공 관찰", "defeat": "게임 패배", "technical_error": "기술 오류", "incomplete": "미완료"}
             for item in context["attempts"]:
                 lines += [f"• {names.get(item['status'], item['status'])} / {item['stage']}",
@@ -415,6 +461,8 @@ class GPTPlayPanel(ctk.CTkFrame):
             self._render_log()
 
     def _start(self):
+        if self.memory_delete_pending:
+            return
         self.jobs.trace.emit("start_button", "플레이 시작 버튼 요청 · 설정과 실행 가능 상태를 확인합니다.")
         try:
             if self._controls_busy():
@@ -512,7 +560,9 @@ class GPTPlayPanel(ctk.CTkFrame):
         connected = self.workspace.connection.connected
         active = self.jobs.active or self.jobs.busy
         control_busy = self._controls_busy()
-        enabled = connected and not active and not control_busy
+        selected = self.memory_rows.get(self.memory_selection.get(), {})
+        enabled = (connected and not active and not control_busy and not self.memory_delete_pending
+                   and not selected.get("deleting"))
         session = self.jobs.session
         released = bool(session and session.input_released)
         configure_changed(self.start_button, state="normal" if enabled else "disabled")
@@ -531,7 +581,9 @@ class GPTPlayPanel(ctk.CTkFrame):
         configure_changed(self.verification_permission, state="normal" if connected and not control_busy
             and not self.jobs.busy and released and state.get("state") == "paused"
             and live.get("goal") and state.get("candidate") else "disabled")
-        configure_changed(self.memory_selection, state="disabled" if active else "readonly")
+        configure_changed(self.memory_selection, state="disabled" if active or self.memory_delete_pending else "readonly")
+        configure_changed(self.memory_delete, state="normal" if not active and not control_busy
+            and not self.memory_delete_pending and self.memory_selection.get() in self.memory_rows else "disabled")
         configure_changed(self.start_button, text="새 실행으로 경험 이어하기" if self.memory_selection.get() != "새 경험 시작" else "GPT 플레이 시작")
         configure_changed(self.keys_summary, text="일반 키·숫자·기호·방향키·기능키 자동 사용\n제외: "
                           + ", ".join(key.upper() for key in sorted(reserved_keys())) + " · Windows 등 OS 제어키·동시 조합키")
@@ -539,6 +591,7 @@ class GPTPlayPanel(ctk.CTkFrame):
     def _poll(self):
         if self.closed:
             return
+        self._finish_memory_delete()
         if self._pending_stop and not (self._control_worker and self._control_worker.is_alive()):
             self._control(self.jobs.stop, stop=True)
         from .recording_workspace import configure_changed
